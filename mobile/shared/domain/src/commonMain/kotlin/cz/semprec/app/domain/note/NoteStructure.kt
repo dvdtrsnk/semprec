@@ -56,10 +56,12 @@ object NoteStructure {
 
     /**
      * [ids] moved together, in their order, so that they stand before the block that was at [targetIndex] among all
-     * blocks ([blocks].size for the end).
+     * blocks ([blocks].size for the end), each indented by [indentDelta] more levels, kept within 0 to
+     * [NOTE_MAX_INDENT].
      */
-    fun move(blocks: List<NoteBlock>, ids: Set<String>, targetIndex: Int): List<NoteBlock> {
+    fun move(blocks: List<NoteBlock>, ids: Set<String>, targetIndex: Int, indentDelta: Int = 0): List<NoteBlock> {
         val moving = blocks.filter { it.id in ids }
+            .map { it.copy(indent = (it.indent + indentDelta).coerceIn(0, NOTE_MAX_INDENT)) }
         if (moving.isEmpty()) return blocks
         val before = blocks.take(targetIndex.coerceIn(0, blocks.size)).count { it.id !in ids }
         val rest = blocks.filter { it.id !in ids }

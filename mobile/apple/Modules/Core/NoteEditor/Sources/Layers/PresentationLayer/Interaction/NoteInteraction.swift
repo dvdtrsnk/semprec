@@ -33,6 +33,10 @@ struct NoteDragState: Equatable {
     let blockIds: [String]
     var location: CGPoint
     var target: Int
+    /// The level the first dragged block takes where it is dropped; the others keep their levels under it.
+    var indent: Int
+    /// Where along the row the drag started; moving the finger sideways from there picks a level where more fit.
+    let startX: CGFloat
 }
 
 /// What the person does with whole blocks by touch: swipes with their thresholds and menus, holding a block (to select
@@ -235,17 +239,49 @@ final class NoteInteraction: ObservableObject {
             selected.contains(block.id) ? selectedIds(in: blocks) : [block.id],
             in: blocks
         )
-        drag = NoteDragState(blockIds: ids, location: location, target: target(at: location, moving: ids, in: blocks))
+        let target = target(at: location, moving: ids, in: blocks)
+        let startX = drag?.startX ?? holdStart?.x ?? location.x
+        let original = blocks.first { ids.contains($0.id) }?.indent ?? 0
+        let preferred = original + Int(((location.x - startX) / NoteBlockStyle.indentWidth).rounded())
+        drag = NoteDragState(
+            blockIds: ids,
+            location: location,
+            target: target,
+            indent: level(preferred, at: target, moving: ids, in: blocks),
+            startX: startX
+        )
     }
 
-    /// The dragged blocks were let go: the one move it asks for, unless the blocks stay where they were.
+    /// The level blocks dropped before `target` take: as deep as the block above them and one more, and no shallower
+    /// than the block below them, so a block stays where a toggle's children are. Right under an open toggle they go
+    /// inside it. Between those bounds `preferred` decides.
+    func level(_ preferred: Int, at target: Int, moving ids: [String], in blocks: [NoteEditorBlock]) -> Int {
+        guard let above = blocks[..<min(target, blocks.count)].last(where: {
+            !ids.contains($0.id) && rowFrames[$0.id] != nil
+        }) else { return 0 }
+        let deepest = above.indent + 1
+        let below = blocks.indices.contains(target) ? blocks[target].indent : 0
+        let shallowest = NoteFolding.folds(above) && isOpen(above, in: blocks) ? deepest : min(below, deepest)
+        return min(max(preferred, shallowest), deepest)
+    }
+
+    /// The dragged blocks were let go: the one move it asks for, unless the blocks stay where and as deep as they were.
     func dropped(in blocks: [NoteEditorBlock]) -> [NoteEditorBlockEdit] {
         defer { drag = nil }
         let indices = blocks.indices.filter { drag?.blockIds.contains(blocks[$0].id) == true }
         guard let drag, let first = indices.first, let last = indices.last else { return [] }
         // Blocks that lie together and are dropped among themselves stay where they are.
         let staysPut = indices.count == last - first + 1 && (first...(last + 1)).contains(drag.target)
-        return staysPut ? [] : [.move(blockIds: drag.blockIds, targetIndex: drag.target)]
+        let delta = drag.indent - blocks[first].indent
+        if staysPut && delta == 0 { return [] }
+        return [.move(blockIds: drag.blockIds, targetIndex: drag.target, indentDelta: delta)]
+    }
+
+    /// Whether the toggle `block` shows its children: it has none, or the first is on screen.
+    private func isOpen(_ block: NoteEditorBlock, in blocks: [NoteEditorBlock]) -> Bool {
+        guard let index = blocks.firstIndex(where: { $0.id == block.id }), blocks.indices.contains(index + 1),
+              blocks[index + 1].indent > block.indent else { return true }
+        return rowFrames[blocks[index + 1].id] != nil
     }
 
     /// The index in the note before which blocks dropped at `location` go: before the first other block whose middle

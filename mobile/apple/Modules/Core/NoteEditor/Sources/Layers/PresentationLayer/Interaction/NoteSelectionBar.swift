@@ -109,8 +109,9 @@ struct NoteDragPreview: View {
         .padding(.horizontal, Theme.Spacing.medium)
         .padding(.vertical, Theme.Spacing.small)
         .frame(width: max(width - 2 * Theme.Spacing.small, 0), alignment: .leading)
-        .background(Theme.Colors.card, in: .rect(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+        .background(Theme.Colors.card.opacity(0.45), in: .rect(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        .opacity(0.85)
         .offset(x: Theme.Spacing.small)
         .allowsHitTesting(false)
     }
@@ -122,14 +123,18 @@ struct NoteDropLine: View {
     /// Where in the blocks' space the line is.
     let top: CGFloat
     let inset: CGFloat
+    /// The level the dropped blocks take, which the line starts at.
+    let indent: Int
 
     var body: some View {
         Capsule()
             .fill(Theme.Colors.accent)
             .frame(height: 3)
-            .padding(.horizontal, inset)
+            .padding(.leading, inset + CGFloat(indent) * NoteBlockStyle.indentWidth)
+            .padding(.trailing, inset)
             .offset(y: top - 1.5)
             .animation(.snappy(duration: 0.2), value: top)
+            .animation(.snappy(duration: 0.2), value: indent)
             .allowsHitTesting(false)
     }
 }

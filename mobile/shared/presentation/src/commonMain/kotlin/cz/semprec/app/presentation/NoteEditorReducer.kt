@@ -65,7 +65,9 @@ internal object NoteEditorReducer {
                 NoteReduction(NoteStructure.shiftIndent(blocks, action.blockIds.toSet(), action.delta))
             is NoteEditorAction.ToggleDone -> NoteReduction(NoteStructure.toggleDone(blocks, action.blockId))
             is NoteEditorAction.Move ->
-                NoteReduction(NoteStructure.move(blocks, action.blockIds.toSet(), action.targetIndex))
+                NoteReduction(
+                    NoteStructure.move(blocks, action.blockIds.toSet(), action.targetIndex, action.indentDelta),
+                )
             is NoteEditorAction.Duplicate ->
                 NoteReduction(NoteStructure.duplicate(blocks, action.blockIds.toSet(), newId))
             is NoteEditorAction.Delete ->

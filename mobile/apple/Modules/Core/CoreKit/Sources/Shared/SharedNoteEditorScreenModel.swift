@@ -133,7 +133,8 @@ private extension SharedNoteEditorScreenModel {
         case .toggleType(let ids, let type): SharedSDK.NoteEditorActionToggleType(blockIds: ids, type: type.shared)
         case .shiftIndent(let ids, let delta): SharedSDK.NoteEditorActionShiftIndent(blockIds: ids, delta: Int32(delta))
         case .toggleDone(let blockId): SharedSDK.NoteEditorActionToggleDone(blockId: blockId)
-        case .move(let ids, let index): SharedSDK.NoteEditorActionMove(blockIds: ids, targetIndex: Int32(index))
+        case .move(let ids, let index, let delta):
+            SharedSDK.NoteEditorActionMove(blockIds: ids, targetIndex: Int32(index), indentDelta: Int32(delta))
         case .duplicate(let ids): SharedSDK.NoteEditorActionDuplicate(blockIds: ids)
         case .delete(let ids): SharedSDK.NoteEditorActionDelete(blockIds: ids)
         case .makeSubpage(let blockId): SharedSDK.NoteEditorActionMakeSubpage(blockId: blockId)

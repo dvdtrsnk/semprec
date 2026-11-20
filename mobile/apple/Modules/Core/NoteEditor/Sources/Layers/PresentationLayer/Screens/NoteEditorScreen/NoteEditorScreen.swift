@@ -41,7 +41,7 @@ struct NoteEditorScreen: View {
             .sensoryFeedback(.success, trigger: confirmations)
             .sensoryFeedback(.selection, trigger: interaction.swipe?.step)
             .sensoryFeedback(.selection, trigger: interaction.menu?.highlighted)
-            .sensoryFeedback(.impact(weight: .light), trigger: interaction.drag?.target)
+            .sensoryFeedback(.impact(weight: .light), trigger: interaction.drag.map { [$0.target, $0.indent] })
             .sensoryFeedback(.impact(weight: .light), trigger: interaction.holds)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(NoteEditorIdentifiers.editor)
@@ -135,7 +135,9 @@ private extension NoteEditorScreen {
             if let problem = state.problem { NoteProblemBanner(problem: problem) { viewModel.send(.dismissProblem) } }
             ForEach(NoteFolding.visible(state.blocks, folded: folded)) { block in
                 slot(block)
-                if showsEmptyToggle(block) { emptyToggle(block) }
+                if showsEmptyToggle(block) {
+                    NoteEmptyToggleRow(block: block) { viewModel.typing(.addChild(blockId: block.id)) }
+                }
             }
                 .animation(.snappy(duration: 0.3), value: state.blocks.map(\.id))
                 .animation(.snappy(duration: 0.25), value: folded)
@@ -153,21 +155,6 @@ private extension NoteEditorScreen {
         guard NoteFolding.folds(block), !folded.contains(block.id), !interaction.selecting,
               let index = state.blocks.firstIndex(where: { $0.id == block.id }) else { return false }
         return NoteFolding.isEmpty(at: index, in: state.blocks)
-    }
-
-    /// An open toggle with nothing in it says so; a tap puts the cursor in its first child.
-    func emptyToggle(_ block: NoteEditorBlock) -> some View {
-        Button { viewModel.typing(.addChild(blockId: block.id)) } label: {
-            Text("noteEditor.toggle.empty", bundle: .module)
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, NoteEditorMetrics.editorInset.height)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.leading, CGFloat(block.indent + 1) * NoteBlockStyle.indentWidth + NoteEditorMetrics.editorInset.width)
-        .accessibilityIdentifier(NoteEditorIdentifiers.emptyToggle(block.id))
     }
 
     func slot(_ block: NoteEditorBlock) -> some View {
@@ -234,7 +221,11 @@ private extension NoteEditorScreen {
             }
         }
         if let drag = interaction.drag, let first = state.blocks.first(where: { $0.id == drag.blockIds.first }) {
-            NoteDropLine(top: dropLineY(drag), inset: viewModel.variant == .full ? Theme.Spacing.medium : 0)
+            NoteDropLine(
+                top: dropLineY(drag),
+                inset: viewModel.variant == .full ? Theme.Spacing.medium : 0,
+                indent: drag.indent
+            )
             NoteDragPreview(block: first, count: drag.blockIds.count, width: interaction.visible.width)
                 .offset(y: drag.location.y - (interaction.rowFrames[first.id]?.height ?? 44) / 2)
         }
@@ -334,7 +325,8 @@ private extension NoteEditorScreen {
         return switch edit {
         case .shiftIndent(let ids, let delta):
             .shiftIndent(blockIds: NoteFolding.withChildren(ids, in: blocks), delta: delta)
-        case .move(let ids, let target): .move(blockIds: NoteFolding.withChildren(ids, in: blocks), targetIndex: target)
+        case .move(let ids, let target, let delta):
+            .move(blockIds: NoteFolding.withChildren(ids, in: blocks), targetIndex: target, indentDelta: delta)
         case .duplicate(let ids): .duplicate(blockIds: NoteFolding.withChildren(ids, in: blocks))
         case .delete(let ids): .delete(blockIds: NoteFolding.withChildren(ids, in: blocks))
         default: edit

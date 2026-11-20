@@ -116,7 +116,8 @@ sealed interface NoteEditorAction {
     data class ToggleType(val blockIds: List<String>, val type: NoteEditorBlockType) : NoteEditorAction
     data class ShiftIndent(val blockIds: List<String>, val delta: Int) : NoteEditorAction
     data class ToggleDone(val blockId: String) : NoteEditorAction
-    data class Move(val blockIds: List<String>, val targetIndex: Int) : NoteEditorAction
+    /** Moves the blocks before [targetIndex], each indented by [indentDelta] more levels. */
+    data class Move(val blockIds: List<String>, val targetIndex: Int, val indentDelta: Int = 0) : NoteEditorAction
     data class Duplicate(val blockIds: List<String>) : NoteEditorAction
     data class Delete(val blockIds: List<String>) : NoteEditorAction
     data object TapBelow : NoteEditorAction

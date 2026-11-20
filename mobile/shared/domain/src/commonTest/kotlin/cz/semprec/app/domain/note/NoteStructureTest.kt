@@ -46,6 +46,13 @@ class NoteStructureTest {
         assertEquals(listOf("a", "c", "e", "b", "d"), NoteStructure.move(blocks, setOf("b", "d"), 5).map { it.id })
     }
 
+    @Test fun `moved blocks shift their indent together and stay within the levels`() {
+        val blocks = listOf(block("t", type = PageBlockType.TOGGLE), block("a"), block("b", indent = 1))
+        val moved = NoteStructure.move(blocks, setOf("a", "b"), 1, indentDelta = 1)
+        assertEquals(listOf("t:toggle:0:", "a:text:1:", "b:text:2:"), moved.shape())
+        assertEquals(listOf(0, 0, 0), NoteStructure.move(blocks, setOf("b"), 1, indentDelta = -3).map { it.indent })
+    }
+
     @Test fun `duplicates go right after the last selected block and page blocks are left to the server`() {
         val blocks = listOf(block("a", "x"), page, block("c", "y"), block("d", "z"))
         val copied = NoteStructure.duplicate(blocks, setOf("a", "p", "c"), TestIds().newId)

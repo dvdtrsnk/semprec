@@ -211,7 +211,8 @@ public enum NoteEditorBlockEdit: Equatable, Sendable {
     case toggleType(blockIds: [String], type: NoteEditorBlockType)
     case shiftIndent(blockIds: [String], delta: Int)
     case toggleDone(blockId: String)
-    case move(blockIds: [String], targetIndex: Int)
+    /// Moves the blocks before `targetIndex`, each indented by `indentDelta` more levels.
+    case move(blockIds: [String], targetIndex: Int, indentDelta: Int = 0)
     case duplicate(blockIds: [String])
     case delete(blockIds: [String])
     case makeSubpage(blockId: String)

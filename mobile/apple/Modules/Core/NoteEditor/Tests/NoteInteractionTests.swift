@@ -172,6 +172,47 @@ final class NoteInteractionTests: XCTestCase {
         XCTAssertEqual(interaction.holdEnded(in: notes), [.move(blockIds: ["t", "c"], targetIndex: 4)])
     }
 
+    /// Holds the last of `notes` and drags it to `location`, every row 40 high; the edits its drop asks for.
+    private func drop(
+        _ notes: [NoteEditorBlock],
+        at location: CGPoint,
+        hidden: Set<String> = []
+    ) -> [NoteEditorBlockEdit] {
+        let interaction = NoteInteraction()
+        interaction.rowFrames = Dictionary(uniqueKeysWithValues: notes.enumerated().compactMap { index, row in
+            hidden.contains(row.id) ? nil : (row.id, CGRect(x: 0, y: CGFloat(index) * 40, width: 300, height: 40))
+        })
+        guard let held = notes.last else { return [] }
+        interaction.hold(held)
+        interaction.holdMoved(held, to: CGPoint(x: 100, y: 0), in: notes)
+        interaction.holdMoved(held, to: location, in: notes)
+        return interaction.holdEnded(in: notes)
+    }
+
+    func testABlockDroppedIntoAToggleTakesItsLevel() {
+        let notes = [
+            NoteEditorBlock(id: "t", type: .toggle),
+            NoteEditorBlock(id: "c1", type: .text, indent: 1),
+            NoteEditorBlock(id: "c2", type: .text, indent: 1),
+            NoteEditorBlock(id: "x", type: .text),
+            NoteEditorBlock(id: "y", type: .text)
+        ]
+        // Right under the open toggle and between its children it goes inside.
+        let inside = { (target: Int) in
+            [NoteEditorBlockEdit.move(blockIds: ["y"], targetIndex: target, indentDelta: 1)]
+        }
+        XCTAssertEqual(drop(notes, at: CGPoint(x: 100, y: 30)), inside(1))
+        XCTAssertEqual(drop(notes, at: CGPoint(x: 100, y: 70)), inside(2))
+        // After the last child it stays outside, unless the finger goes right by a level.
+        XCTAssertEqual(drop(notes, at: CGPoint(x: 100, y: 110)), [.move(blockIds: ["y"], targetIndex: 3)])
+        XCTAssertEqual(drop(notes, at: CGPoint(x: 130, y: 110)), inside(3))
+        // Under a closed toggle it goes after its children, beside it.
+        XCTAssertEqual(
+            drop(notes, at: CGPoint(x: 100, y: 110), hidden: ["c1", "c2"]),
+            [.move(blockIds: ["y"], targetIndex: 3)]
+        )
+    }
+
     func testAMenuLeftWithoutAChoiceStaysOpenForATap() {
         let interaction = interaction()
         drag(interaction, blocks[0], 200, 0, at: 20)
