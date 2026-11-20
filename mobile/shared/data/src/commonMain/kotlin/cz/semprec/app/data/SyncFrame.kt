@@ -34,6 +34,7 @@ private val TOPICS_BY_NOTIFICATION_KIND: Map<String, Set<SyncTopic>> = mapOf(
     "calendar_event_added" to setOf(SyncTopic.CALENDAR),
     "calendar_event_changed" to setOf(SyncTopic.CALENDAR),
     "calendar_event_cancelled" to setOf(SyncTopic.CALENDAR),
+    "calendar_change_overwritten" to setOf(SyncTopic.CALENDAR),
     "mail_sync_error" to setOf(SyncTopic.MAIL_ACCOUNTS),
     "mail_sync_stalled" to setOf(SyncTopic.MAIL_ACCOUNTS),
 )

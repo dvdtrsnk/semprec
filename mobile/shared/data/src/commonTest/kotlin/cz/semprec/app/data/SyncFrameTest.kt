@@ -67,6 +67,7 @@ class SyncFrameTest {
             SyncFrame.Notified("calendar_event_added") to calendar,
             SyncFrame.Notified("calendar_event_changed") to calendar,
             SyncFrame.Notified("calendar_event_cancelled") to calendar,
+            SyncFrame.Notified("calendar_change_overwritten") to calendar,
             SyncFrame.Notified("mail_sync_error") to mail,
             SyncFrame.Notified("mail_sync_stalled") to mail,
             SyncFrame.Notified("approval_pending") to emptySet(),
