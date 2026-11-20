@@ -20,7 +20,7 @@ struct JournalAxisCellLabel: View {
         .background(cell.current ? fill : .clear, in: .rect(cornerRadius: 10))
         .overlay {
             if cell.onPath && !cell.current {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(cell.today ? Color.orange : ring, lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: 10).strokeBorder(cell.today ? Theme.Colors.accent : ring, lineWidth: 1.5)
             }
         }
         .padding(2)
@@ -30,11 +30,11 @@ struct JournalAxisCellLabel: View {
     private var emphasized: Bool { cell.current || cell.today }
     private var weekend: Bool { cell.kind == .day && cell.weekday > 5 }
     private var color: Color {
-        if cell.today { return .orange }
+        if cell.today { return Theme.Colors.accent }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
-    private var subColor: Color { cell.today ? .orange : Theme.Colors.secondaryText }
-    private var fill: Color { cell.today ? Color.orange.opacity(0.15) : Color.secondary.opacity(0.15) }
+    private var subColor: Color { cell.today ? Theme.Colors.accent : Theme.Colors.secondaryText }
+    private var fill: Color { cell.today ? Theme.Colors.accent.opacity(0.15) : Color.secondary.opacity(0.15) }
     private var ring: Color { Color.secondary.opacity(0.5) }
     private var font: Font { cell.kind == .year ? .body : .subheadline }
 }

@@ -5,11 +5,11 @@ import SwiftUI
 /// The time axis of the diary: a row of years, quarters, months and days that move together. All rows show the same
 /// moment in their middle, each at its own scale, so a day sits under its month, the month under its quarter and the
 /// quarter under its year. Dragging any row moves the moment, and every row with it; a tap selects a period. The
-/// selection and the periods that contain it are marked, today is orange. As the page below scrolls by `scrolled`
-/// points, the rows above and below the selected level fold away step by step, as in the design: the whole fold takes
-/// as many points as those rows are tall, and the row of the selected level stays. The rows hold a window of periods
-/// around the selection; a
-/// drag that ends near the edge of the days asks for the windows around the day it reached (`onMove`).
+/// selection and the periods that contain it are marked, today is in the accent colour. As the page below scrolls by
+/// `scrolled` points, the rows above and below the selected level fold away step by step, as in the design: the whole
+/// fold takes as many points as those rows are tall, and the row of the selected level stays. The rows hold a window of
+/// periods around the selection; a drag that ends near the edge of the days asks for the windows around the day it
+/// reached (`onMove`).
 struct JournalAxisView: View {
 
     // MARK: - Dependencies
