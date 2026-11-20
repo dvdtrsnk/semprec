@@ -885,6 +885,29 @@ ALTER TABLE ONLY public.calendar_feed_state
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_feed_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- calendar_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar's identity at its provider and its sync cursors; written by the calendar sync.
+CREATE TABLE public.calendar_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_url text,
+    sync_token text,
+    ctag text,
+    last_synced_at timestamp with time zone,
+    last_error_code text
+);
+
+COMMENT ON TABLE public.calendar_remote_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_remote_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- credential_access_log
 -- ----------------------------------------------------------------------------------------------------
 
@@ -1105,6 +1128,32 @@ CREATE UNIQUE INDEX docs_tenant_id_id_uq ON public.docs USING btree (tenant_id, 
 CREATE UNIQUE INDEX docs_tenant_item_id_uq ON public.docs USING btree (tenant_id, item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.docs TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- event_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar Event's identity at its provider and `base_snapshot`, the field values of the last sync (the
+-- base of the three-way merge); written by the calendar sync.
+CREATE TABLE public.event_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_href text,
+    etag text,
+    base_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT event_remote_state_base_snapshot_check CHECK ((jsonb_typeof(base_snapshot) = 'object'::text))
+);
+
+COMMENT ON TABLE public.event_remote_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE UNIQUE INDEX event_remote_state_tenant_calendar_remote_id_uq ON public.event_remote_state USING btree (tenant_id, calendar_item_id, remote_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.event_remote_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- external_credentials
@@ -3042,6 +3091,12 @@ ALTER TABLE ONLY public.blobs
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.credential_access_log
     ADD CONSTRAINT credential_access_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3465,6 +3520,15 @@ ALTER TABLE ONLY public.agent_database_grants
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.docs
     ADD CONSTRAINT docs_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -3643,6 +3707,18 @@ ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.calendar_feed_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.calendar_feed_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_remote_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.event_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.event_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.event_remote_state USING (true) WITH CHECK (true);
 
 ALTER TABLE public.credential_access_log ENABLE ROW LEVEL SECURITY;
 

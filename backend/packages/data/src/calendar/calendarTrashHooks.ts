@@ -1,6 +1,7 @@
 // Trash and restore of a calendar: it goes to the Trash with its live Events and comes back with the Events
-// trashed with it. System/subscription calendars and the last own calendar cannot be deleted; the default mark
-// moves to another own calendar. The hooks run in the cascade's transaction, so a refusal undoes the cascade.
+// trashed with it. System/subscription calendars and the last own calendar cannot be deleted, an account calendar
+// only by the system writer; the default mark moves to another own calendar. The hooks run in the cascade's
+// transaction, so a refusal undoes the cascade.
 // The pre-lock hooks take the default-mark lock before the cascade locks the calendar's row, the order every
 // other writer of the mark uses.
 import type { PoolClient } from "pg";
@@ -18,7 +19,7 @@ import { itemDeleteWithClient, restoreItemWithClient } from "../chokePoint/itemT
 import type { WriterIdentity, WriterKind } from "../chokePoint/writerKind.js";
 import { ConflictError, ForbiddenError } from "../errors.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
-import { isCalendarsDatabase, isSystemOrSubscription, lockDefaultMark } from "./calendarRowHooks.js";
+import { isAccountCalendar, isCalendarsDatabase, isSystemOrSubscription, lockDefaultMark } from "./calendarRowHooks.js";
 
 const CALENDAR_EVENTS_PROPERTY_KEY = "events";
 
@@ -67,7 +68,7 @@ async function oldestOtherLiveOwnCalendar(
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM items
       WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL
-        AND COALESCE(properties->>'kind', '') NOT IN ('system', 'subscription')
+        AND COALESCE(properties->>'kind', '') IN ('', 'own')
       ORDER BY created_at, id
       LIMIT 1`,
     [calendarsDatabaseId, calendarId],
@@ -96,7 +97,9 @@ export const calendarItemRestorePreLockHook: ItemRestorePreLockHook = async ({ c
 /**
  * Runs after the calendar's own soft delete:
  *
- * 1. a `system` or `subscription` calendar is a 403;
+ * 1. a `system` or `subscription` calendar is a 403, and so is an `account` calendar unless the writer is `system`
+ *    (the provider or the account removed it); an account calendar is never the default or the last own calendar, so
+ *    it goes straight to step 4;
  * 2. with the default-mark lock held, no other live own calendar means a 409 `last_own_calendar`. Every delete
  *    takes the lock, so two deletes of the last two own calendars serialize and the second finds itself last;
  * 3. a default calendar's successor gets `isDefault` true as the system writer. The trashed row's own `isDefault`
@@ -113,17 +116,29 @@ export const calendarItemDeleteHook: ItemDeleteHook = async (context) => {
   if (isSystemOrSubscription(item.properties.kind)) {
     throw new ForbiddenError("A system or subscription calendar cannot be deleted", { field: "kind" });
   }
-  await lockDefaultMark(client, database.id);
-  const successor = await oldestOtherLiveOwnCalendar(client, database.id, item.id);
-  if (successor === null) {
-    throw new ConflictError("The last own calendar cannot be deleted", { calendarId: item.id }, LAST_OWN_CALENDAR_CODE);
-  }
-  if (item.properties.isDefault === true) {
-    await updateItemWithClient(client, {
-      databaseId: database.id,
-      itemId: successor.id,
-      propertiesPatch: { isDefault: true },
-    });
+  if (isAccountCalendar(item.properties.kind)) {
+    if (context.writerKind !== "system") {
+      throw new ForbiddenError("An internet account's calendar leaves with the provider or the account", {
+        field: "kind",
+      });
+    }
+  } else {
+    await lockDefaultMark(client, database.id);
+    const successor = await oldestOtherLiveOwnCalendar(client, database.id, item.id);
+    if (successor === null) {
+      throw new ConflictError(
+        "The last own calendar cannot be deleted",
+        { calendarId: item.id },
+        LAST_OWN_CALENDAR_CODE,
+      );
+    }
+    if (item.properties.isDefault === true) {
+      await updateItemWithClient(client, {
+        databaseId: database.id,
+        itemId: successor.id,
+        propertiesPatch: { isDefault: true },
+      });
+    }
   }
   const events = await lockCalendarEvents(client, database.id, item.id, null);
   if (events.length === 0) return;

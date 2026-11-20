@@ -105,6 +105,15 @@ import {
 } from "./calendar/eventReminderValuesHook.js";
 import { eventParticipantEdgeWriteHook } from "./calendar/eventParticipantEdgeHook.js";
 import { defaultCalendarCreateHook } from "./calendar/defaultCalendarCreateHook.js";
+import {
+  accountCalendarEventDeleteApprovalGuard,
+  accountCalendarEventDeleteHook,
+  accountCalendarEventDeletePreLockHook,
+  accountCalendarEventEdgeDeleteHook,
+  accountCalendarEventEdgeWriteHook,
+  accountCalendarEventUpdateHook,
+  accountCalendarEventUpdatePreLockHook,
+} from "./calendar/accountCalendarWriteGuard.js";
 import { eventInvitationItemDeleteHook, eventInvitationItemUpdateHook } from "./calendar/eventInvitationHooks.js";
 import {
   calendarItemCreateHook,
@@ -261,6 +270,8 @@ const itemUpdatePreLockHooks: readonly (readonly [string, ItemUpdatePreLockHook]
   [SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook],
   // Lock order: the mailbox's sync guard and sync state row before the Mailboxes row, as a removal takes them.
   [MAILBOXES_MODULE_ID, mailboxServiceItemUpdatePreLockHook],
+  // Lock order: an Event's account calendar before the Event's row, as a calendar trash takes them.
+  [EVENTS_MODULE_ID, accountCalendarEventUpdatePreLockHook],
 ];
 
 const itemDeletePreLockHooks: readonly (readonly [string, ItemDeletePreLockHook])[] = [
@@ -268,6 +279,8 @@ const itemDeletePreLockHooks: readonly (readonly [string, ItemDeletePreLockHook]
   [CALENDARS_MODULE_ID, calendarItemDeletePreLockHook],
   // The whole recurring task series, before the cascade locks the named task.
   [TASKS_MODULE_ID, taskSeriesItemDeletePreLockHook],
+  // Lock order: an Event's account calendar before the Event's row, as a calendar trash takes them.
+  [EVENTS_MODULE_ID, accountCalendarEventDeletePreLockHook],
 ];
 
 const itemRestorePreLockHooks: readonly (readonly [string, ItemRestorePreLockHook])[] = [
@@ -320,6 +333,8 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
 
 /** After the row update. */
 const itemUpdateHooks: readonly ItemUpdateHook[] = [
+  // A user's or agent's change of an Event in a read-only account calendar is refused before any other rule runs.
+  accountCalendarEventUpdateHook,
   // A cancelled, restored or moved occurrence recomputes its series' next occurrence day.
   nextOccurrenceSeriesItemUpdateHook,
   eventValidationItemUpdateHook,
@@ -365,6 +380,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
  * `transcriptCompanyLinkReleaseItemDeleteHook`, then `eventHostedTasksDeleteHook`) is part of the contract.
  */
 const itemDeleteHooks: readonly ItemDeleteHook[] = [
+  // A user's or agent's trash of an Event in a read-only account calendar is refused before any other hook runs.
+  accountCalendarEventDeleteHook,
   nextOccurrenceSeriesItemDeleteHook,
   itemSearchDeleteHook,
   // A user's or agent's trash of a Mailboxes item is refused (only the mailbox removal, as the system writer,
@@ -439,12 +456,16 @@ const relationEdgeWriteHooks: readonly RelationEdgeWriteHook[] = [
   inboxTypeLockWriteHook,
   inboxSourceEdgeWriteHook,
   eventParticipantEdgeWriteHook,
+  // A user's or agent's move of an Event into a read-only account calendar.
+  accountCalendarEventEdgeWriteHook,
 ];
 
 const relationEdgeDeleteHooks: readonly RelationEdgeDeleteHook[] = [
   threadValueEdgeDeleteHook,
   inboxTypeEdgeDeleteHook,
   inboxSourceEdgeDeleteHook,
+  // A user's or agent's move of an Event out of a read-only account calendar.
+  accountCalendarEventEdgeDeleteHook,
 ];
 
 const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
@@ -515,6 +536,7 @@ registerItemUpdateCommand(TASKS_MODULE_ID, {
 });
 // An agent run's request to trash a Mailboxes item is refused before it is queued for approval.
 registerItemDeleteApprovalGuard(MAILBOXES_MODULE_ID, mailboxDeleteApprovalGuard);
+registerItemDeleteApprovalGuard(EVENTS_MODULE_ID, accountCalendarEventDeleteApprovalGuard);
 // A recurring task's trash covers its whole series; the delete impact reader feeds the delete preview and the
 // `item.delete` approval projection.
 registerItemCascadeExpansion(TASKS_MODULE_ID, taskSeriesCascadeExpansion);

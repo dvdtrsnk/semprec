@@ -61,7 +61,10 @@ export interface CalendarTimelineItem {
   updatedAt: string;
   /** The item's `version`; a write passes it back as `ifVersion`. */
   version: string;
-  /** `true` for an entry that is not a stored row, or whose row no client may edit (a subscribed event). */
+  /**
+   * `true` for an entry that is not a stored row, or whose row no client may edit (a subscribed event, an Event of a
+   * read-only account calendar).
+   */
   readOnly: boolean;
 }
 

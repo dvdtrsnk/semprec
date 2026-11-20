@@ -422,7 +422,8 @@ export async function computeDestructiveResourceProjection(
       // the refusal one of them would answer an agent with; it comes last, as the hooks do.
       const guard = database.ownerModuleId ? getItemDeleteApprovalGuard(database.ownerModuleId) : undefined;
       const refusal = guard ? await guard({ client, database, item }) : null;
-      if (refusal !== null) throw new ForbiddenError(refusal, { currentResource: projected });
+      if (typeof refusal === "string") throw new ForbiddenError(refusal, { currentResource: projected });
+      if (refusal !== null) throw new ForbiddenError(refusal.message, { currentResource: projected }, refusal.code);
       return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
     }
     case "relation.delete": {

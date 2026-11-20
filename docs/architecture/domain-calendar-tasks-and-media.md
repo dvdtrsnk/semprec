@@ -16,15 +16,30 @@ agents, approvals and the AI gateway in [agents-approvals-and-ai.md](agents-appr
 
 - Calendars, Events and invitations are private to their tenant: no cross-tenant reads, writes or calendar sharing.
 - Meetings arrive by email invitation (iMIP, `calendar/invitationIngestAction.ts`); external calendars arrive by ICS
-  subscription (`calendar/subscribedEventsImport.ts`). Both stay inside one tenant.
+  subscription (`calendar/subscribedEventsImport.ts`), read-only, and through internet accounts, synced both ways.
+  All stay inside one tenant.
+- An internet account's calendar is a Calendars row of `kind` `account` linked to its Mailboxes item by the
+  `Calendars.account` ↔ `Mailboxes.calendars` relation (one-to-many). Its remote identity lives in tenant side tables
+  keyed by item: `calendar_remote_state` (per calendar: `remote_id`, `remote_url`, `sync_token`, `ctag`,
+  `last_synced_at`, `last_error_code`) and `event_remote_state` (per Event: its calendar, `remote_id`, `remote_href`,
+  `etag`, `base_snapshot`, the field values of the last sync; `remote_id` unique per calendar). Both cascade with their
+  items and are exported with the tenant (they hold no secret).
+- The calendar sync is the system writer `CALENDAR_SYNC_WRITER` (`systemProcess: "calendarSync"`,
+  `chokePoint/writerKind.ts`). It alone creates `account` calendars and writes `remoteName`, `remoteColor` and
+  `readOnly` (system-owned, owner process `calendar`, checked against the writer in `calendarItemCreateHook` /
+  `calendarItemUpdateHook`, `403 owner_violation` otherwise) and the `account` relation.
 
 ### Calendars and the default mark
 
 Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts`, registered in `domainWriteHooks.ts`.
 
-- A calendar's `kind` is `own` (or empty), `system` or `subscription`. Only own calendars may be renamed, made default
-  or deleted; other kinds answer `403 forbidden` / `400 validation_failed`.
-- `color` must be `#RRGGBB`; `null` is refused.
+- A calendar's `kind` is `own` (or empty), `system`, `subscription` or `account`. Only own calendars may be made
+  default; only own and account calendars renamed. Own calendars may be deleted; an account calendar only by a
+  `system` writer (it leaves when the provider or the account removes it). Other cases answer `403 forbidden` /
+  `400 validation_failed`.
+- An account calendar's `name`, `color`, `notify` and `hidden` are the user's: `name` and `color` override the
+  provider's `remoteName` and `remoteColor`, and `null` means the provider's value.
+- `color` must be `#RRGGBB`, `name` a non-blank title; `null` is refused for both except on an account calendar.
 - Exactly one live own calendar holds `isDefault: true`. Marking one clears the others through `updateItemWithClient`;
   writing `isDefault` to anything else is refused unless another live own calendar holds the mark.
 - **Lock order:** every reader/writer of the mark takes the advisory lock
@@ -32,8 +47,8 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   calendar rows (`FOR UPDATE`, id order). An update takes it in `calendarItemUpdatePreLockHook`; delete and restore
   take it in `calendarItemDeletePreLockHook` / `calendarItemRestorePreLockHook` (pre-lock registries in
   `chokePoint/hooks.ts`), before the root row is locked.
-- Deleting a calendar: refused with `409 last_own_calendar` when no other live own calendar exists; when it was the
-  default, the oldest other own calendar becomes default (system writer); every live Event on it is trashed with the
+- Deleting an own calendar: refused with `409 last_own_calendar` when no other live own calendar exists; when it was
+  the default, the oldest other own calendar becomes default (system writer); every live Event on it is trashed with the
   calendar's deletion epoch. Restoring brings back exactly the Events of that epoch and clears the restored calendar's
   default mark.
 
@@ -43,8 +58,15 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   hooks, links every new Event that has no `calendar` edge to the chosen calendar or the live default calendar
   (lowest id if several). The edge is a system write in the create transaction.
 - A caller chooses a calendar with `createEventInCalendar` / `withChosenCalendar` (a module-private
-  `AsyncLocalStorage`). The chosen calendar must be a live own calendar of the tenant; anything else is the same
-  `validation_failed` on `calendarId`.
+  `AsyncLocalStorage`). The chosen calendar must be a live own or account calendar of the tenant; anything else is
+  the same `validation_failed` on `calendarId`. A read-only account calendar answers `403 calendar_read_only` unless
+  the writer is `system`.
+- The Events of a read-only account calendar follow the provider (`calendar/accountCalendarWriteGuard.ts`): a user's
+  or agent's update, trash, or move into or out of it (an `Events.calendar` edge written or deleted) answers
+  `403 calendar_read_only`; an agent's `item.delete` is refused the same way before an approval is stored. System
+  writers pass: the calendar sync, and the internal writers of derived fields (`nextOccurrenceDate`) and cascades
+  (a calendar trash). Lock order: the account calendar's row `FOR SHARE` before the Event's row, taken by the Events
+  update and delete pre-lock hooks, the order a calendar trash takes them in.
 - The hook reads the chosen or default calendar `FOR SHARE`; the default read is retried once when the mark moved
   while it waited. A missing default fails the create (`default_calendar_missing` log line).
 
@@ -118,6 +140,7 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   - derived entries (birthdays, holidays) with a non-item id and `readOnly: true`;
   - sleep nights: id `sleep:<night>`, `readOnly: false` (edited through the sleep module, never `/api/items`);
   - subscribed events: stored rows of `subscribedEvents`, `readOnly: true`, told apart by `databaseId`.
+- A stored Event of a read-only account calendar is `readOnly: true`; one of a writable account calendar is not.
 - `attachTaskInEventState` (`calendar/timelineTaskInEvent.ts`) runs once after the sources, batched, at the context's
   single instant `at`, using `taskStateInEvent` via `readEventsTasks` — the same function as the Event tasks route.
   The Tasks source places a task on `taskDisplayDay` and omits tasks still hidden in an Event or completed in one.
@@ -235,7 +258,9 @@ Link rules declared in the `systemDatabases` manifest (engine: [data-model-and-w
 
 ## Event trash: lock order
 
-The Event delete hooks' order in the `itemDeleteHooks` list of `domainWriteHooks.ts` is part of the contract:
+The Event delete hooks' order in the `itemDeleteHooks` list of `domainWriteHooks.ts` is part of the contract. Before
+them, `accountCalendarEventDeletePreLockHook` locks an account calendar's row `FOR SHARE` before the Event's row, and
+`accountCalendarEventDeleteHook` runs first and reads `readOnly` under that lock.
 
 1. `valueLinkSourceDeleteHook`: locks the Tasks rows whose links the Event feeds (id order, `FOR UPDATE OF i`), then
    the links via `deleteValueLinkSourcesBySourceItem` ordered by item id, rule catalog position (`loadLinkRules`), link

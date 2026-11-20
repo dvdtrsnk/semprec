@@ -13,11 +13,15 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import type { DatabaseRow } from "../types.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
-import { seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
+import { MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
+import { insertCalendarOwnedRelationProperty, seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
 import { createProps, type PropSpec } from "./propSpecs.js";
 
-/** The `kind` options of a calendar; a row without a `kind` is `own`. */
-const CALENDAR_KINDS = ["own", "system", "subscription"] as const;
+/**
+ * The `kind` options of a calendar; a row without a `kind` is `own`. An `account` calendar is synced from an internet
+ * account (a Mailboxes item, its `account` relation).
+ */
+const CALENDAR_KINDS = ["own", "system", "subscription", "account"] as const;
 
 interface CalendarRow {
   /** Label key `seed.calendars.<catalogKey>.name` in the calendar module catalog. */
@@ -57,6 +61,11 @@ const CALENDAR_PROPERTIES: readonly PropSpec[] = [
   { key: "systemKey", type: "text", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
   // Validated by `calendar/calendarSubscriptionUrlTransform.ts`.
   { key: "subscriptionUrl", type: "url", owner: "user" },
+  // An account calendar's name and colour at the provider; `name` and `color` override them when set.
+  { key: "remoteName", type: "text", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
+  { key: "remoteColor", type: "color", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
+  // An account calendar the provider does not let the user write to.
+  { key: "readOnly", type: "checkbox", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
 ];
 
 async function insertUserRelationProperty(client: PoolClient, databaseId: string, key: string): Promise<string> {
@@ -103,6 +112,39 @@ async function createCalendarEventsRelation(
   return relationDefinitionId;
 }
 
+/**
+ * `Mailboxes.calendars` (property A of a `one_to_many`) / `Calendars.account`, both system-owned by the calendar
+ * module. Both databases are locked, so this uses raw SQL under an exclusive `properties` lock, as
+ * `createCalendarEventsRelation` does.
+ */
+async function createAccountCalendarsRelation(
+  client: PoolClient,
+  mailboxesDatabaseId: string,
+  calendarsDatabaseId: string,
+): Promise<void> {
+  await client.query("LOCK TABLE properties IN EXCLUSIVE MODE");
+  const accountCalendars = await insertCalendarOwnedRelationProperty(client, mailboxesDatabaseId, "calendars");
+  const calendarAccount = await insertCalendarOwnedRelationProperty(client, calendarsDatabaseId, "account");
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO relation_definitions (property_id_a, property_id_b, cardinality)
+     VALUES ($1, $2, 'one_to_many') RETURNING id`,
+    [accountCalendars, calendarAccount],
+  );
+  const relationDefinitionId = requireSingleRow(rows, "relation_definitions row").id;
+  for (const [propertyId, targetDatabaseId] of [
+    [accountCalendars, calendarsDatabaseId],
+    [calendarAccount, mailboxesDatabaseId],
+  ] as const) {
+    const result = await client.query(
+      `UPDATE properties
+         SET config = jsonb_build_object('relationDefinitionId', $2::uuid, 'targetDatabaseId', $3::uuid)
+       WHERE id = $1`,
+      [propertyId, relationDefinitionId, targetDatabaseId],
+    );
+    requireAffectedRows(result, "account calendars relation property config");
+  }
+}
+
 export interface CalendarsSeedResult {
   calendars: DatabaseRow;
   relationDefinitionId: string;
@@ -111,9 +153,10 @@ export interface CalendarsSeedResult {
 
 /**
  * Seeds the calendar module into the caller's transaction: a system project, the `calendars` database
- * (`kind` and `systemKey` system-owned), the events relation, the eight default calendars, and the daily
- * `calendar.refreshNextOccurrence` heartbeat. Names come from the module catalog in the tenant user's
- * language (`cs` without a user). The schema is locked once complete; `subscribedEvents` is created last.
+ * (`kind`, `systemKey` and the account calendar fields system-owned), the events relation, the account relation to
+ * Mailboxes, the eight default calendars, and the daily `calendar.refreshNextOccurrence` heartbeat. Names come from
+ * the module catalog in the tenant user's language (`cs` without a user). The schema is locked once complete;
+ * `subscribedEvents` is created last.
  *
  * Not idempotent: `seedSystem` calls it once per new tenant.
  */
@@ -138,6 +181,9 @@ export async function seedCalendarsInTransaction(
   });
   await createProps(client, calendars.id, CALENDAR_PROPERTIES);
   const relationDefinitionId = await createCalendarEventsRelation(client, calendars.id, eventsDatabaseId);
+  const mailboxes = await databasesStore.getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
+  if (!mailboxes) throw new Error("The calendar seed needs the Mailboxes database");
+  await createAccountCalendarsRelation(client, mailboxes.id, calendars.id);
   requireAffectedRows(
     await client.query("UPDATE databases SET schema_locked = true WHERE id = $1", [calendars.id]),
     "calendars schema lock",

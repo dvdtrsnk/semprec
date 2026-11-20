@@ -289,13 +289,21 @@ export interface ItemDeleteApprovalGuardContext {
 }
 
 /**
- * A module's part of the `item.delete` approval projection: the 403 `forbidden` message a delete hook
- * would answer an agent's trash with, or `null`. The projection runs before a request is stored and
- * again before execution, so a trash a hook can only refuse is never queued, and a queued one ends as
- * a conflict. A delete hook that refuses by rule (not by this attempt's state) registers a matching
- * guard, since the hooks run only after the soft delete.
+ * A module's part of the `item.delete` approval projection: the 403 a delete hook would answer an agent's
+ * trash with (a message, code `forbidden`, or a message and the hook's code), or `null`. The projection runs
+ * before a request is stored and again before execution, so a trash a hook can only refuse is never queued,
+ * and a queued one ends as a conflict. A delete hook that refuses by rule (not by this attempt's state)
+ * registers a matching guard, since the hooks run only after the soft delete.
  */
-export type ItemDeleteApprovalGuard = (context: ItemDeleteApprovalGuardContext) => Promise<string | null>;
+export type ItemDeleteApprovalGuard = (
+  context: ItemDeleteApprovalGuardContext,
+) => Promise<string | ItemDeleteApprovalRefusal | null>;
+
+/** A refusal whose 403 carries the delete hook's own code instead of `forbidden`. */
+export interface ItemDeleteApprovalRefusal {
+  message: string;
+  code: string;
+}
 const itemDeleteApprovalGuards = new Map<string, ItemDeleteApprovalGuard>();
 /** One per owning module; a second registration is refused. */
 export function registerItemDeleteApprovalGuard(moduleId: string, guard: ItemDeleteApprovalGuard): void {

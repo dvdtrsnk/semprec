@@ -16,6 +16,7 @@
   "property.mailboxes.syncStatus.option.never": "Nikdy",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Vyžaduje novou autorizaci",
   "property.mailboxes.folders.name": "Složky",
+  "property.mailboxes.calendars.name": "Kalendáře účtu",
   "database.folders.name": "Složky",
   "property.folders.name.name": "Název",
   "property.folders.behavior.name": "Chování",

@@ -242,7 +242,7 @@ describe("default calendar create hook (issue #1761)", () => {
           expect(error).toMatchObject(refusal);
           // Every refusal reads alike, so another tenant's calendar cannot be told from an unknown id.
           expect(error).toMatchObject({
-            message: "The chosen calendar must be one of the tenant's own live calendars",
+            message: "The chosen calendar must be one of the tenant's own or account calendars",
           });
           expect(await f.eventIds()).toEqual([]);
           expect(await f.eventsIn(f.calendar("Personal"))).toEqual([]);

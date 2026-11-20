@@ -16,6 +16,7 @@
   "property.mailboxes.syncStatus.option.never": "Never",
   "property.mailboxes.syncStatus.option.needsReauthorization": "Needs reauthorization",
   "property.mailboxes.folders.name": "Folders",
+  "property.mailboxes.calendars.name": "Account calendars",
   "database.folders.name": "Folders",
   "property.folders.name.name": "Name",
   "property.folders.behavior.name": "Behavior",

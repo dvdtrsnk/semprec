@@ -143,22 +143,33 @@ async function readEdges(
   return rows;
 }
 
-export async function readCalendarIds(
-  client: PoolClient,
-): Promise<{ defaultCalendarId: string | null; tasksCalendarId: string | null }> {
+/** `readOnlyCalendarIds`: the live account calendars the provider does not let the user write to. */
+export async function readCalendarIds(client: PoolClient): Promise<{
+  defaultCalendarId: string | null;
+  tasksCalendarId: string | null;
+  readOnlyCalendarIds: ReadonlySet<string>;
+}> {
   const calendars = await getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
-  if (!calendars) return { defaultCalendarId: null, tasksCalendarId: null };
-  const { rows } = await client.query<{ id: string; is_default: boolean | null; system_key: string | null }>(
-    `SELECT id, properties->'isDefault' = 'true'::jsonb AS is_default, properties->>'systemKey' AS system_key
+  if (!calendars) return { defaultCalendarId: null, tasksCalendarId: null, readOnlyCalendarIds: new Set() };
+  const { rows } = await client.query<{
+    id: string;
+    is_default: boolean | null;
+    system_key: string | null;
+    read_only: boolean;
+  }>(
+    `SELECT id, properties->'isDefault' = 'true'::jsonb AS is_default, properties->>'systemKey' AS system_key,
+            (properties->>'kind' = 'account' AND properties->'readOnly' = 'true'::jsonb) IS TRUE AS read_only
        FROM items
       WHERE database_id = $1 AND deleted_at IS NULL
-        AND (properties->'isDefault' = 'true'::jsonb OR properties->>'systemKey' = $2)
+        AND (properties->'isDefault' = 'true'::jsonb OR properties->>'systemKey' = $2
+             OR (properties->>'kind' = 'account' AND properties->'readOnly' = 'true'::jsonb))
       ORDER BY id`,
     [calendars.id, "tasks"],
   );
   return {
     defaultCalendarId: rows.find((row) => row.is_default === true)?.id ?? null,
     tasksCalendarId: rows.find((row) => row.system_key === "tasks")?.id ?? null,
+    readOnlyCalendarIds: new Set(rows.filter((row) => row.read_only).map((row) => row.id)),
   };
 }
 
@@ -272,6 +283,9 @@ export async function toTimelineItems(
   return scheduled.map(({ row, schedule }) => {
     const isEvent = kind === "event";
     const project = liveTargets(row.id, "project")[0];
+    const calendarId = isEvent
+      ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId)
+      : calendars.tasksCalendarId;
     return {
       kind,
       id: row.id,
@@ -285,9 +299,7 @@ export async function toTimelineItems(
       effectiveTo: effectiveTo(kind, schedule, context.timezone),
       hasEnd: schedule.timeTo !== null,
       allDay: schedule.timeFrom === null,
-      calendarId: isEvent
-        ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId)
-        : calendars.tasksCalendarId,
+      calendarId,
       status: isEvent ? null : text(row.properties.status),
       place: isEvent ? text(row.properties.place) : null,
       project:
@@ -303,7 +315,7 @@ export async function toTimelineItems(
       carriedFrom: null,
       updatedAt: row.updated_at.toISOString(),
       version: row.version,
-      readOnly: false,
+      readOnly: isEvent && calendarId !== null && calendars.readOnlyCalendarIds.has(calendarId),
     };
   });
 }

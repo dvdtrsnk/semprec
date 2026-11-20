@@ -14,10 +14,13 @@ import {
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow } from "../types.js";
+import { assertAccountCalendarWritable } from "./accountCalendarWriteGuard.js";
+import { isAccountCalendar, isOwnCalendar } from "./calendarRowHooks.js";
 import { logger } from "./logger.js";
 
 const EVENT_CALENDAR_PROPERTY_KEY = "calendar";
@@ -30,7 +33,8 @@ export function withChosenCalendar<T>(calendarId: string, fn: () => T): T {
 }
 
 /**
- * A refused calendar fails with `validation_failed` on `calendarId`. The default calendar is not read, so a tenant
+ * A refused calendar fails with `validation_failed` on `calendarId`, a read-only account calendar with
+ * `calendar_read_only` unless the writer is `system`. The default calendar is not read, so a tenant
  * without one does not fail this. An idempotency-key replay returns the stored Event without checking
  * `calendarId`; so does a tenant without a calendars database.
  */
@@ -51,27 +55,30 @@ const calendarIdSchema = z.uuid();
 
 /**
  * Locked `FOR SHARE`. Non-UUID, unknown, other tenant's (hidden by RLS), trashed, and system or subscription
- * calendars all get the same `validation_failed`.
+ * calendars all get the same `validation_failed`. An account calendar is accepted unless it is read-only and the
+ * writer is not `system`.
  */
 async function lockChosenCalendar(
   client: PoolClient,
   calendarsDatabaseId: string,
   calendarId: string,
+  writer: WriterIdentity,
 ): Promise<string> {
   const { rows } = calendarIdSchema.safeParse(calendarId).success
-    ? await client.query<{ id: string; kind: string | null }>(
-        `SELECT id, properties->>'kind' AS kind FROM items
+    ? await client.query<{ id: string; kind: string | null; read_only: boolean }>(
+        `SELECT id, properties->>'kind' AS kind, properties->'readOnly' = 'true'::jsonb AS read_only FROM items
           WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
           FOR SHARE`,
         [calendarsDatabaseId, calendarId],
       )
     : { rows: [] };
   const calendar = rows[0];
-  if (!calendar || !(calendar.kind === null || calendar.kind === "" || calendar.kind === "own")) {
-    throw new ValidationError("The chosen calendar must be one of the tenant's own live calendars", {
+  if (!calendar || !(isOwnCalendar(calendar.kind) || isAccountCalendar(calendar.kind))) {
+    throw new ValidationError("The chosen calendar must be one of the tenant's own or account calendars", {
       field: "calendarId",
     });
   }
+  if (isAccountCalendar(calendar.kind)) assertAccountCalendarWritable(calendar.id, calendar.read_only, writer);
   return calendar.id;
 }
 
@@ -103,7 +110,13 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
  * `default_calendar_missing`. A missing calendars database or Events `calendar` relation fails every create (the
  * seed creates both). The edge is written as a system write.
  */
-export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, database, item, initialRelations }) => {
+export const defaultCalendarCreateHook: ItemCreateHook = async ({
+  client,
+  database,
+  item,
+  initialRelations,
+  writer,
+}) => {
   if (!database.system || database.ownerModuleId !== EVENTS_MODULE_ID) return;
   const calendars = await databasesStore.getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
   if (!calendars) throw new Error("Calendars database not found");
@@ -118,7 +131,7 @@ export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, databa
   const chosen = chosenCalendarScope.getStore();
   let calendarId: string;
   if (chosen !== undefined) {
-    calendarId = await lockChosenCalendar(client, calendars.id, chosen);
+    calendarId = await lockChosenCalendar(client, calendars.id, chosen, writer);
   } else {
     const defaultCalendarId = await lockDefaultCalendar(client, calendars.id);
     if (defaultCalendarId === null) {
