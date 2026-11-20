@@ -39,6 +39,8 @@ struct CalendarScreen: View {
             .navigationTitle(Text(verbatim: ""))
             .inlineNavigationTitle()
             .toolbar { toolbar }
+            // Today answers as starting to select rows does in a note: a soft impact.
+            .sensoryFeedback(.impact(flexibility: .soft), trigger: todayRequests)
             .safeAreaInset(edge: .bottom) {
                 if viewModel.state.phase == .content {
                     CalendarBottomBar(

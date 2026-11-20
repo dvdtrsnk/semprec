@@ -4,7 +4,7 @@ import SwiftUI
 /// A short, soft pulse: a little longer than the system's tap, so it feels as strong without its sharp edge.
 public enum HapticPulse: Sendable {
 
-    /// A day switched to, an object armed to drop.
+    /// An object armed to drop.
     case standard
 
     var intensity: Float { 0.45 }
