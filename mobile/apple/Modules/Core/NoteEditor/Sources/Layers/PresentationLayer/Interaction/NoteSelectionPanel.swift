@@ -25,9 +25,13 @@ struct NoteSelectionPanel: View {
                 }
                 .disabled(actions.count < 1)
             }
-            .padding(.horizontal, Theme.Spacing.small)
         }
+        // The ends stay clear of the rounded edges, and nothing scrolled shows outside the capsule.
+        .contentMargins(.horizontal, 14, for: .scrollContent)
         .frame(height: 62)
+        .mask { edgeFade }
+        .clipShape(.capsule)
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
         .glassEffect(.regular, in: .capsule)
         .padding(.horizontal, Theme.Spacing.medium)
         .padding(.bottom, Theme.Spacing.small)
@@ -97,6 +101,15 @@ enum NoteBulkEdit: Equatable, CaseIterable {
 
 // MARK: - Subviews
 private extension NoteSelectionPanel {
+
+    /// What scrolls under the rounded ends fades out instead of being cut.
+    var edgeFade: some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing).frame(width: 18)
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 18)
+        }
+    }
 
     var selectAll: some View {
         tool(
