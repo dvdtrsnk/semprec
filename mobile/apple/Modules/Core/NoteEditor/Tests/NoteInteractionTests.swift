@@ -155,6 +155,23 @@ final class NoteInteractionTests: XCTestCase {
         XCTAssertNil(interaction.held)
     }
 
+    func testADraggedToggleMovesWithItsChildren() {
+        let notes = [
+            NoteEditorBlock(id: "t", type: .toggle),
+            NoteEditorBlock(id: "c", type: .text, indent: 1),
+            NoteEditorBlock(id: "x", type: .text),
+            NoteEditorBlock(id: "y", type: .text)
+        ]
+        let interaction = NoteInteraction()
+        interaction.rowFrames = Dictionary(uniqueKeysWithValues: notes.enumerated().map { index, block in
+            (block.id, CGRect(x: 0, y: CGFloat(index) * 40, width: 300, height: 40))
+        })
+        interaction.hold(notes[0])
+        interaction.holdMoved(notes[0], to: CGPoint(x: 10, y: 20), in: notes)
+        interaction.holdMoved(notes[0], to: CGPoint(x: 10, y: 150), in: notes)
+        XCTAssertEqual(interaction.holdEnded(in: notes), [.move(blockIds: ["t", "c"], targetIndex: 4)])
+    }
+
     func testAMenuLeftWithoutAChoiceStaysOpenForATap() {
         let interaction = interaction()
         drag(interaction, blocks[0], 200, 0, at: 20)

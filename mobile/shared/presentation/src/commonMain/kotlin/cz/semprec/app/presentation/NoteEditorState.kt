@@ -82,7 +82,11 @@ sealed interface NoteEditorAction {
 
     /** Typing: the block's text as the person left it; a Markdown prefix at the start of a text block applies. */
     data class SetRuns(val blockId: String, val runs: List<NoteEditorRun>) : NoteEditorAction
-    data class Enter(val blockId: String, val offset: Int) : NoteEditorAction
+    /** Enter; [folded] says whether the block is a closed toggle, which the editor alone knows. */
+    data class Enter(val blockId: String, val offset: Int, val folded: Boolean = false) : NoteEditorAction
+
+    /** Adds an empty first child to an open toggle that has none. */
+    data class AddChild(val blockId: String) : NoteEditorAction
     data class BackspaceAtStart(val blockId: String) : NoteEditorAction
     data class DeleteAtEnd(val blockId: String) : NoteEditorAction
     data class CommandEnter(val blockId: String) : NoteEditorAction

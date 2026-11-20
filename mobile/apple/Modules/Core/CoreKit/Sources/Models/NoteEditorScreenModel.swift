@@ -183,7 +183,10 @@ public enum NoteEditorTyping: Equatable, Sendable {
 
     /// The block's text as the person left it; a Markdown prefix at the start of a text block applies.
     case setRuns(blockId: String, runs: [NoteEditorRun])
-    case enter(blockId: String, offset: Int)
+    /// `folded` says whether the block is a closed toggle, which only the editor knows.
+    case enter(blockId: String, offset: Int, folded: Bool = false)
+    /// An empty first child for an open toggle that has none.
+    case addChild(blockId: String)
     case backspaceAtStart(blockId: String)
     case deleteAtEnd(blockId: String)
     case commandEnter(blockId: String)

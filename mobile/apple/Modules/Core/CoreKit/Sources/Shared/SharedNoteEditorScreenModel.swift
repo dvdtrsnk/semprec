@@ -99,7 +99,9 @@ private extension SharedNoteEditorScreenModel {
         switch action {
         case .setRuns(let blockId, let runs):
             SharedSDK.NoteEditorActionSetRuns(blockId: blockId, runs: runs.map(\.shared))
-        case .enter(let blockId, let offset): SharedSDK.NoteEditorActionEnter(blockId: blockId, offset: Int32(offset))
+        case .enter(let blockId, let offset, let folded):
+            SharedSDK.NoteEditorActionEnter(blockId: blockId, offset: Int32(offset), folded: folded)
+        case .addChild(let blockId): SharedSDK.NoteEditorActionAddChild(blockId: blockId)
         case .backspaceAtStart(let blockId): SharedSDK.NoteEditorActionBackspaceAtStart(blockId: blockId)
         case .deleteAtEnd(let blockId): SharedSDK.NoteEditorActionDeleteAtEnd(blockId: blockId)
         case .commandEnter(let blockId): SharedSDK.NoteEditorActionCommandEnter(blockId: blockId)

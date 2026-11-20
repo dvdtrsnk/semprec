@@ -133,7 +133,10 @@ private extension NoteEditorScreen {
                 )
             }
             if let problem = state.problem { NoteProblemBanner(problem: problem) { viewModel.send(.dismissProblem) } }
-            ForEach(NoteFolding.visible(state.blocks, folded: folded)) { block in slot(block) }
+            ForEach(NoteFolding.visible(state.blocks, folded: folded)) { block in
+                slot(block)
+                if showsEmptyToggle(block) { emptyToggle(block) }
+            }
                 .animation(.snappy(duration: 0.3), value: state.blocks.map(\.id))
                 .animation(.snappy(duration: 0.25), value: folded)
             if !interaction.selecting { tapBelow }
@@ -144,6 +147,27 @@ private extension NoteEditorScreen {
     var hint: LocalizedStringKey? {
         if interaction.selecting { return "noteEditor.hint.selecting" }
         return viewModel.editingBlockId == nil ? nil : "noteEditor.hint.editing"
+    }
+
+    func showsEmptyToggle(_ block: NoteEditorBlock) -> Bool {
+        guard NoteFolding.folds(block), !folded.contains(block.id), !interaction.selecting,
+              let index = state.blocks.firstIndex(where: { $0.id == block.id }) else { return false }
+        return NoteFolding.isEmpty(at: index, in: state.blocks)
+    }
+
+    /// An open toggle with nothing in it says so; a tap puts the cursor in its first child.
+    func emptyToggle(_ block: NoteEditorBlock) -> some View {
+        Button { viewModel.typing(.addChild(blockId: block.id)) } label: {
+            Text("noteEditor.toggle.empty", bundle: .module)
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, NoteEditorMetrics.editorInset.height)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, CGFloat(block.indent + 1) * NoteBlockStyle.indentWidth + NoteEditorMetrics.editorInset.width)
+        .accessibilityIdentifier(NoteEditorIdentifiers.emptyToggle(block.id))
     }
 
     func slot(_ block: NoteEditorBlock) -> some View {
@@ -188,7 +212,7 @@ private extension NoteEditorScreen {
             caretTarget: viewModel.caretTarget,
             pendingMark: viewModel.pendingMark?.mark,
             onBeginEditing: { viewModel.beginEditing(block.id, at: $0) },
-            onTyping: { viewModel.typing($0) },
+            onTyping: { typing($0) },
             onKey: { key(key: $0, block: block) },
             onSelection: { selection = $0 },
             onBlur: { blurred(block.id) },
@@ -267,7 +291,7 @@ private extension NoteEditorScreen {
 
     func edit(_ edit: NoteEditorBlockEdit) {
         if case .makeSubpage = edit, !viewModel.variant.offersSubpages { return }
-        viewModel.edit(edit)
+        viewModel.edit(withChildren(edit))
         switch edit {
         case .duplicate, .delete, .makeSubpage, .move: confirmations += 1
         default: break
@@ -300,6 +324,29 @@ private extension NoteEditorScreen {
             edit(.makeSubpage(blockId: id))
         } else {
             edit(.setType(blockIds: ids, type: type, toggle: toggle))
+        }
+    }
+
+    /// The edit applied to the children of the toggles it changes too: a toggle indents, moves, duplicates and goes
+    /// away with what it holds.
+    func withChildren(_ edit: NoteEditorBlockEdit) -> NoteEditorBlockEdit {
+        let blocks = state.blocks
+        return switch edit {
+        case .shiftIndent(let ids, let delta):
+            .shiftIndent(blockIds: NoteFolding.withChildren(ids, in: blocks), delta: delta)
+        case .move(let ids, let target): .move(blockIds: NoteFolding.withChildren(ids, in: blocks), targetIndex: target)
+        case .duplicate(let ids): .duplicate(blockIds: NoteFolding.withChildren(ids, in: blocks))
+        case .delete(let ids): .delete(blockIds: NoteFolding.withChildren(ids, in: blocks))
+        default: edit
+        }
+    }
+
+    /// Typing, with Enter told whether its block is a closed toggle.
+    func typing(_ typing: NoteEditorTyping) {
+        if case .enter(let blockId, let offset, _) = typing {
+            viewModel.typing(.enter(blockId: blockId, offset: offset, folded: folded.contains(blockId)))
+        } else {
+            viewModel.typing(typing)
         }
     }
 

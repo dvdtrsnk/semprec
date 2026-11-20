@@ -1067,6 +1067,7 @@
         "noteEditor.todo.done",
         "noteEditor.todo.open",
         "noteEditor.toggle.close",
+        "noteEditor.toggle.empty",
         "noteEditor.toggle.open",
         "noteEditor.type.bullet",
         "noteEditor.type.heading1",

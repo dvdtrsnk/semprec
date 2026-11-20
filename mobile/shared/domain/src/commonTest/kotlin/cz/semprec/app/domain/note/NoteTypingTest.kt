@@ -19,12 +19,11 @@ class NoteTypingTest {
         assertEquals(NoteCaret("n1", 0), change.caret)
     }
 
-    @Test fun `enter keeps a list or toggle type and the indent and the new to-do is not done`() {
+    @Test fun `enter keeps a list type and the indent and the new to-do is not done`() {
         val cases = listOf(
             PageBlockType.BULLET to PageBlockType.BULLET,
             PageBlockType.NUMBER to PageBlockType.NUMBER,
             PageBlockType.TODO to PageBlockType.TODO,
-            PageBlockType.TOGGLE to PageBlockType.TOGGLE,
             PageBlockType.H1 to PageBlockType.TEXT,
             PageBlockType.QUOTE to PageBlockType.TEXT,
             PageBlockType.TEXT to PageBlockType.TEXT,

@@ -12,9 +12,10 @@ object NoteTyping {
     /**
      * Enter at [caret]: a page block only ends editing. An empty block steps out (less indent, then text, then a new
      * text block below). At the start of a block with text an empty block goes above it. Anywhere else the block
-     * splits there; the new block keeps a list's or a toggle's type and the indent, is not done, and gets the cursor.
+     * splits there; the new block keeps a list's or a toggle's type and the indent, is not done, and gets the cursor. A
+     * toggle with text splits into its children instead ([NoteToggles.split]); [folded] says whether it is closed.
      */
-    fun enter(blocks: List<NoteBlock>, caret: NoteCaret, newId: () -> String): NoteChange {
+    fun enter(blocks: List<NoteBlock>, caret: NoteCaret, newId: () -> String, folded: Boolean = false): NoteChange {
         val index = blocks.indexOfFirst { it.id == caret.blockId }
         val block = blocks.getOrNull(index)
         return when {
@@ -24,6 +25,7 @@ object NoteTyping {
                 val above = NoteBlock(newId(), block.nextType, block.indent)
                 NoteChange(blocks.inserting(index, above), caret.copy(offset = 0))
             }
+            NoteToggles.folds(block) -> NoteToggles.split(blocks, index, caret.offset, folded, newId)
             else -> {
                 val (left, right) = NoteRuns.split(block.runs, caret.offset)
                 val below = NoteBlock(newId(), block.nextType, block.indent, runs = right)

@@ -228,10 +228,13 @@ final class NoteInteraction: ObservableObject {
     }
 
     // MARK: - Moving
-    /// `block` is dragged to `location`: it moves, with the selection when it is in it.
+    /// `block` is dragged to `location`: it moves, with the selection when it is in it, and a toggle with its
+    /// children.
     func moved(_ block: NoteEditorBlock, to location: CGPoint, in blocks: [NoteEditorBlock]) {
-        let ids = drag?.blockIds
-            ?? (selected.contains(block.id) ? selectedIds(in: blocks) : [block.id])
+        let ids = drag?.blockIds ?? NoteFolding.withChildren(
+            selected.contains(block.id) ? selectedIds(in: blocks) : [block.id],
+            in: blocks
+        )
         drag = NoteDragState(blockIds: ids, location: location, target: target(at: location, moving: ids, in: blocks))
     }
 

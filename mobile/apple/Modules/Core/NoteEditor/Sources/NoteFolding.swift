@@ -15,6 +15,31 @@ enum NoteFolding {
         return blocks.filter { hidden[$0.id] == nil }
     }
 
+    /// Whether the toggle at `index` has no children.
+    static func isEmpty(at index: Int, in blocks: [NoteEditorBlock]) -> Bool {
+        guard blocks.indices.contains(index + 1) else { return true }
+        return blocks[index + 1].indent <= blocks[index].indent
+    }
+
+    /// `ids` with the children of every toggle among them, in the order of the note: a toggle moves, indents,
+    /// duplicates and goes away with what it holds.
+    static func withChildren(_ ids: [String], in blocks: [NoteEditorBlock]) -> [String] {
+        let chosen = Set(ids)
+        var result: [String] = []
+        var holder: NoteEditorBlock?
+        for block in blocks {
+            if let current = holder, block.indent > current.indent {
+                result.append(block.id)
+                continue
+            }
+            holder = nil
+            guard chosen.contains(block.id) else { continue }
+            result.append(block.id)
+            if folds(block) { holder = block }
+        }
+        return result
+    }
+
     /// `folded` with every toggle that hides `blockId` opened.
     static func revealing(_ blockId: String, in blocks: [NoteEditorBlock], folded: Set<String>) -> Set<String> {
         var open = folded

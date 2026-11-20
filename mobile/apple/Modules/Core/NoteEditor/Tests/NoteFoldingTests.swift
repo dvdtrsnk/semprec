@@ -41,6 +41,18 @@ final class NoteFoldingTests: XCTestCase {
         XCTAssertEqual(NoteFolding.revealing("after", in: blocks, folded: ["t"]), ["t"])
     }
 
+    func testAToggleTakesItsChildrenAlongAndOtherBlocksGoAlone() {
+        XCTAssertEqual(NoteFolding.withChildren(["t"], in: blocks), ["t", "t1", "t2", "t3"])
+        XCTAssertEqual(NoteFolding.withChildren(["h", "t2"], in: blocks), ["t2", "t3", "h", "h1", "h2"])
+        XCTAssertEqual(NoteFolding.withChildren(["t1", "plain"], in: blocks), ["t1", "plain"])
+    }
+
+    func testOnlyAToggleWithNothingIndentedUnderItIsEmpty() {
+        XCTAssertFalse(NoteFolding.isEmpty(at: 0, in: blocks))
+        XCTAssertTrue(NoteFolding.isEmpty(at: 0, in: [NoteEditorBlock(id: "t", type: .toggle), blocks[4]]))
+        XCTAssertTrue(NoteFolding.isEmpty(at: 0, in: [NoteEditorBlock(id: "t", type: .toggle)]))
+    }
+
     func testAToggleHeadingOptionSetsTheHeadingWithItsToggle() {
         let option = NoteMenuKind.style.options.first { $0.type == .heading1 && $0.toggle }
         XCTAssertEqual(

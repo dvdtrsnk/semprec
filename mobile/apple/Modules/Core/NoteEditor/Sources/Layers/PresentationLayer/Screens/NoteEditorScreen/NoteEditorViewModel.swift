@@ -56,10 +56,15 @@ final class NoteEditorViewModel: ObservableObject {
     }
 
     // MARK: - Methods
-    /// Applies shared state and routes shared effects until the editor's task is cancelled.
+    /// Applies shared state and routes shared effects until the editor's task is cancelled. A change is read as the
+    /// model's current state, not the copy it came with: that copy can arrive after `send` already took a newer one,
+    /// and showing it would undo what was typed since.
     func observe() async {
         await model.observe(
-            onState: { [weak self] in self?.apply($0) },
+            onState: { [weak self] _ in
+                guard let self else { return }
+                apply(model.state)
+            },
             onEffect: { [weak self] in self?.route($0) }
         )
     }

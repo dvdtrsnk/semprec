@@ -1129,6 +1129,22 @@
         }
       }
     },
+    "noteEditor.toggle.empty" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Empty toggle. Tap to add content."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prázdný přepínač. Klepni a přidej obsah."
+          }
+        }
+      }
+    },
     "noteEditor.toggle.open" : {
       "localizations" : {
         "en" : {

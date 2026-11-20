@@ -9,6 +9,7 @@ import cz.semprec.app.domain.note.NotePaste
 import cz.semprec.app.domain.note.NoteRunStyles
 import cz.semprec.app.domain.note.NoteRuns
 import cz.semprec.app.domain.note.NoteStructure
+import cz.semprec.app.domain.note.NoteToggles
 import cz.semprec.app.domain.note.NoteTyping
 import cz.semprec.app.domain.note.NoteWords
 
@@ -29,7 +30,8 @@ internal object NoteEditorReducer {
         when (action) {
             is NoteEditorAction.SetRuns -> setRuns(blocks, action)
             is NoteEditorAction.Enter ->
-                NoteTyping.enter(blocks, NoteCaret(action.blockId, action.offset), newId).moved()
+                NoteTyping.enter(blocks, NoteCaret(action.blockId, action.offset), newId, action.folded).moved()
+            is NoteEditorAction.AddChild -> NoteToggles.addChild(blocks, action.blockId, newId).moved()
             is NoteEditorAction.BackspaceAtStart -> NoteTyping.backspaceAtStart(blocks, action.blockId, newId).moved()
             is NoteEditorAction.DeleteAtEnd -> NoteTyping.deleteAtEnd(blocks, action.blockId).moved()
             is NoteEditorAction.CommandEnter -> NoteReduction(NoteTyping.commandEnter(blocks, action.blockId))
