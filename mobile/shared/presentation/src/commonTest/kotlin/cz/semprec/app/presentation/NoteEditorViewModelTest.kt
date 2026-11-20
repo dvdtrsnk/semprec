@@ -186,6 +186,24 @@ class NoteEditorViewModelTest : NoteEditorTest() {
         vm.close()
     }
 
+    @Test fun `a read again that answers after a newer write is not shown`() = runTest(dispatcher) {
+        val vm = loaded()
+        val gate = CompletableDeferred<Unit>()
+        pages.readGate = gate
+        vm.onAction(NoteEditorAction.Refresh)
+        runCurrent()
+        pages.readGate = null
+        typed(vm, 1, "Mine")
+        assertEquals(NOTE_PAGE.replace("First idea", "Mine"), pages.markdown["p1"])
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("Mine", vm.texts()[1])
+        typed(vm, 1, "Mine again")
+        assertNull(vm.state.value.problem)
+        assertEquals(NOTE_PAGE.replace("First idea", "Mine again"), pages.markdown["p1"])
+        vm.close()
+    }
+
     @Test fun `a block keeps what this app cannot show when another block is edited`() = runTest(dispatcher) {
         val teal = "Mind the <span data-color=\"teal\">teal</span> note"
         pages.put("p1", "$teal\n\nSecond")

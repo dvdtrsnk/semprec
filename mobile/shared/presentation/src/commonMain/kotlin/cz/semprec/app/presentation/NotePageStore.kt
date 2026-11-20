@@ -34,6 +34,9 @@ internal class NotePageStore(
     private var etag: String? = null
     private var saved = ""
     private var origin = NoteSource.NONE
+
+    /** Counts what changed the blocks or their version, so a read answering after any of it is not applied. */
+    private var generation = 0
     private val writes = Mutex()
     private var loadJob: Job? = null
     private var waitJob: Job? = null
@@ -52,20 +55,25 @@ internal class NotePageStore(
         }
     }
 
-    /** Reads the page again in place; nothing happens while a change waits to be written or the page is not shown. */
+    /**
+     * Reads the page again in place; nothing happens while a change waits to be written or the page is not shown. An
+     * answer is dropped when a change, a write or another read came meanwhile: it may be older than what they left.
+     */
     fun reread() {
         if (host.state.phase != NoteEditorPhase.CONTENT || host.state.saving || source is NoteEditorSource.Text) return
         loadJob?.cancel()
+        val seen = generation
         loadJob = host.scope.launch {
             val answered = reads.fetch()
             ensureActive()
-            if (answered is Answer.Done && !host.state.saving) apply(answered.value)
+            if (answered is Answer.Done && generation == seen && !host.state.saving) apply(answered.value)
         }
     }
 
     /** Shows [next] and writes it after the pause. */
     fun change(next: List<NoteBlock>) {
         blocks = next
+        generation++
         val pending = NoteDocument.markdown(next, origin) != saved
         host.update { it.copy(blocks = next.toEditor(), wordCount = NoteDocument.wordCount(next), saving = pending) }
         waitJob?.cancel()
@@ -102,6 +110,7 @@ internal class NotePageStore(
     }
 
     private fun apply(snapshot: NoteSnapshot) {
+        generation++
         itemId = snapshot.itemId
         etag = snapshot.etag
         val read = NoteDocument.parse(snapshot.markdown, newId)
@@ -146,6 +155,7 @@ internal class NotePageStore(
                     false
                 }
                 is PageWrite.Saved -> {
+                    generation++
                     etag = written.etag
                     saved = markdown
                     host.update {
