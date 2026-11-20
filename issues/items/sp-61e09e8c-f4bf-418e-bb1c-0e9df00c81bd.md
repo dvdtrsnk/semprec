@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-61e09e8c-f4bf-418e-bb1c-0e9df00c81bd"
 title: "[internet-accounts 19/19] Add the seed's missing system definitions to carried tenants"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-85e6cbc4-7de7-4385-81a9-a493c421b817"
 assignees: []
 milestone: null
 createdAt: "2026-11-20T19:03:12.643Z"
-updatedAt: "2026-11-20T19:03:22.405Z"
-closedAt: null
+updatedAt: "2026-11-20T20:24:02.258Z"
+closedAt: "2026-11-20T20:24:02.258Z"
 source: null
 approval: {"specSha256":"d50a07fe1b05e327929579d46fd983742f5af71f2b595c8178e7a8a532184b6d","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-20T19:03:22.405Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"80d818e6d0e9dec00cc20eb2fbc742b5626d6841","at":"2026-11-20T20:24:02.258Z"}
 ---
 **Blocked by:** sp-cb9c39d0-a4a6-45c2-9ba8-39b72f56e0bf
 **Model tier:** high
