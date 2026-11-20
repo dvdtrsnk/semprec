@@ -220,6 +220,46 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a new selection keeps the shown period until its own arrives`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            if (it.key == "2026-10-17") {
+                repository.late(gate, content(periodPage(it, markdown = "NEW")))
+            } else {
+                content(periodPage(it, markdown = "OLD"))
+            }
+        }
+        val vm = viewModel()
+        runCurrent()
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        val waiting = vm.state.value
+        assertEquals(JournalPhase.CONTENT, waiting.phase)
+        assertEquals("OLD", waiting.page?.blocks?.single()?.runs?.single()?.text)
+        assertEquals("2026-10-17", waiting.selection.start)
+        assertEquals("2026-10-17", waiting.axis.last().cells.single { it.current }.start)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("NEW", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        vm.close()
+    }
+
+    @Test fun `a new selection after a failure shows it loading`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            if (it.key == "2026-10-16") journalFailure() else repository.late(gate, content(periodPage(it)))
+        }
+        val vm = loaded()
+        assertEquals(JournalPhase.ERROR, vm.state.value.phase)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        assertEquals(JournalPhase.LOADING, vm.state.value.phase)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
     @Test fun `a load that never answers is cancelled by the next one`() = runTest(dispatcher) {
         repository.onPeriod = { if (it.key == "2026-10-16") repository.never() else content(periodPage(it)) }
         val vm = viewModel()

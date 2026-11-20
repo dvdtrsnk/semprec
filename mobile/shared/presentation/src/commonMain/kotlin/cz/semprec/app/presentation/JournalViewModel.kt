@@ -75,8 +75,11 @@ class JournalViewModel internal constructor(
         val reloads = selection != current.selection || current.phase == JournalPhase.ERROR
         if (kind == JournalPeriodKind.WEEK || selection == null) return
         if (reloads) {
-            update { it.copy(selection = selection) }
-            load()
+            // Over a shown period, the axis moves to the new selection at once while the period it shows stays until
+            // the new one arrives, so the screen changes in place instead of passing through a loading state.
+            val keepsContent = current.phase == JournalPhase.CONTENT
+            update { it.copy(selection = selection, axis = axisFor(selection, it.today)) }
+            load(keepsContent)
         } else {
             // The same period again: nothing to load, but the axis returns to it from wherever it was moved.
             update { it.copy(axis = axisFor(it.selection, it.today)) }
@@ -89,11 +92,12 @@ class JournalViewModel internal constructor(
         update { it.copy(axis = axisFor(it.selection, it.today, around)) }
     }
 
-    private fun load() {
+    /** Loads the selected period; with [keepsContent] the period shown so far stays until the answer replaces it. */
+    private fun load(keepsContent: Boolean = false) {
         loadJob?.cancel()
         val selection = state.value.selection
         val period = selection.toPeriod()
-        update { loading(it) }
+        if (!keepsContent) update { loading(it) }
         loadJob = viewModelScope.launch {
             val result = try {
                 loadPeriod(period)
