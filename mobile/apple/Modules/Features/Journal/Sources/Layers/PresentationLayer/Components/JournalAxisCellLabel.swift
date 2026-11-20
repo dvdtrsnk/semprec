@@ -116,9 +116,4 @@ extension JournalPeriodKind {
         case .day: 1
         }
     }
-
-    /// How many days one point of the row stands for: dragging a row by a point moves the axis this far.
-    var daysPerPoint: Double {
-        typicalSpan / Double(width)
-    }
 }

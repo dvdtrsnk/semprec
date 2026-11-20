@@ -4,11 +4,11 @@ import SwiftUI
 
 /// The time axis of the diary: a row of years, quarters, months and days that move together. All rows show the same
 /// moment in their middle, each at its own scale, so a day sits under its month, the month under its quarter and the
-/// quarter under its year. Dragging any row moves the moment, and every row with it; a tap selects a period. The
-/// selection and the periods that contain it are marked, today is in the accent colour. The rows hold a window of
-/// periods around the selection; a drag that ends near the edge of the days asks for the windows around the day it
-/// reached (`onMove`). The diary may show the rows apart, each part its own view over all `rows`: the parts share one
-/// `motion`, so they still move together.
+/// quarter under its year. Each row is a plain horizontal scroll view: the row the person scrolls sets the moment, and
+/// every other row is placed under it at once, without an animation of its own; a tap selects a period. The rows hold
+/// a window of periods around the selection; a scroll that comes to rest near the edge of the days asks for the
+/// windows around the day it reached (`onMove`). The diary may show the rows apart, each part its own view over all
+/// `rows`: the parts share one `motion`, so they still move together.
 struct JournalAxisView: View {
 
     // MARK: - Dependencies
@@ -21,51 +21,32 @@ struct JournalAxisView: View {
     let onMove: (String) -> Void
 
     // MARK: - State
-    /// Where the axis stands and how it is being dragged, shared by every part of the axis.
+    /// Where the axis stands and which row the person scrolls, shared by every part of the axis.
     @Binding var motion: JournalAxisMotion
-
-    private var cursor: Double? {
-        get { motion.cursor }
-        nonmutating set { motion.cursor = newValue }
-    }
-    private var dragOrigin: Double? {
-        get { motion.dragOrigin }
-        nonmutating set { motion.dragOrigin = newValue }
-    }
-    private var dragged: Bool {
-        get { motion.dragged }
-        nonmutating set { motion.dragged = newValue }
-    }
 
     // MARK: - Body
     var body: some View {
         VStack(spacing: Self.rowSpacing) {
-            ForEach(shown) { row in rowView(row) }
+            ForEach(shown) { row in
+                JournalAxisRowView(
+                    row: row,
+                    track: JournalAxisTrack(row: row),
+                    cursor: currentCursor,
+                    motion: $motion,
+                    onSelect: onSelect,
+                    onRest: settle
+                )
+                .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
         .onChange(of: selectionStart) { _, _ in follow(animated: true) }
         .onChange(of: rows) { _, _ in returnIfOutside() }
-        .onAppear { follow(animated: false) }
-    }
-
-    private func rowView(_ row: JournalAxisRow) -> some View {
-        JournalAxisRowView(
-            row: row,
-            track: JournalAxisTrack(row: row),
-            cursor: currentCursor,
-            onSelect: { cell in
-                guard !dragged else { return }
-                onSelect(cell)
-                glide(to: cell.start, kind: cell.kind)
-            }
-        )
-        .highPriorityGesture(drag(scale: row.kind.daysPerPoint))
-        .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
     }
 
     private var currentCursor: Double {
-        cursor ?? anchor
+        motion.cursor ?? anchor
     }
 
     /// Where the axis rests for the selection: the middle of a day, or about the middle of a longer period.
@@ -78,97 +59,76 @@ struct JournalAxisView: View {
 }
 
 // MARK: - Motion
-/// Where the axis stands and how it is being dragged.
+/// Where the axis stands and which row moves it.
 struct JournalAxisMotion: Equatable {
 
     /// The moment in the middle of every row, in days since 1970 (a fraction is a part of the day).
     var cursor: Double?
-    /// The cursor when the running drag began.
-    var dragOrigin: Double?
-    /// True from the start of a drag until just after it ended: the cell under the finger moved with it, so lifting
-    /// the finger must not count as a tap on that cell.
-    var dragged = false
+    /// The row the person is scrolling; the other rows follow it. `nil` while no row is scrolled by hand.
+    var driver: JournalPeriodKind?
+    /// Whether the rows move to the next cursor with the system's scroll animation: only for a jump the person asked
+    /// for, such as a tap on a period or Today.
+    var animated = false
 }
 
 // MARK: - Movement
 private extension JournalAxisView {
 
-    func drag(scale: Double) -> some Gesture {
-        DragGesture(minimumDistance: Self.dragThreshold)
-            .onChanged { value in
-                let origin = dragOrigin ?? currentCursor
-                dragOrigin = origin
-                dragged = true
-                cursor = clamped(origin - value.translation.width * scale)
-            }
-            .onEnded { value in
-                let origin = dragOrigin ?? currentCursor
-                dragOrigin = nil
-                let target = clamped(origin - value.predictedEndTranslation.width * scale)
-                withAnimation(.smooth(duration: Self.glideDuration)) { cursor = target }
-                Task { @MainActor in dragged = false }
-                if nearEdge(target) { onMove(JournalAxisTrack.key(target)) }
-            }
-    }
-
     /// Brings the selected period into the middle, unless the axis already shows it there.
     func follow(animated: Bool) {
-        glide(to: selectionStart, kind: selectionKind, animated: animated)
-    }
-
-    /// Brings the period of `kind` that starts on `start` into the middle, unless the axis already shows it there.
-    func glide(to start: String, kind: JournalPeriodKind, animated: Bool = true) {
-        guard let first = JournalAxisTrack.epochDay(start) else { return }
-        let span = rows.first(where: { $0.kind == kind })
+        guard let first = JournalAxisTrack.epochDay(selectionStart) else { return }
+        let span = rows.first(where: { $0.kind == selectionKind })
             .flatMap { JournalAxisTrack(row: $0).span(startingAt: first) } ?? 1
-        if let cursor, cursor >= first, cursor < first + span { return }
-        withAnimation(animated ? .smooth(duration: Self.glideDuration) : nil) {
-            cursor = first + (kind == .day ? 0.5 : min(Self.longPeriodAnchor, span / 2))
-        }
+        if let cursor = motion.cursor, cursor >= first, cursor < first + span { return }
+        jump(to: anchor, animated: animated)
     }
 
     /// The windows moved back to the selection (the person asked for it again, or for today): when the cursor is no
     /// longer inside them, the axis returns to the selection.
     func returnIfOutside() {
-        guard let cursor, let range = cursorRange, !range.contains(cursor) else { return }
-        withAnimation(.smooth(duration: Self.glideDuration)) { self.cursor = anchor }
+        guard let cursor = motion.cursor, let range = cursorRange, !range.contains(cursor) else { return }
+        jump(to: anchor, animated: false)
+    }
+
+    func jump(to cursor: Double, animated: Bool) {
+        motion.driver = nil
+        motion.animated = animated
+        motion.cursor = cursor
+    }
+
+    /// A scroll came to rest: near the edge of the days, the windows move with it.
+    func settle() {
+        guard let cursor = motion.cursor, let range = cursorRange else { return }
+        if cursor - range.lowerBound < Self.edgeDays || range.upperBound - cursor < Self.edgeDays {
+            onMove(JournalAxisTrack.key(cursor))
+        }
     }
 
     func adjust(row: JournalAxisRow, direction: AccessibilityAdjustmentDirection) {
-        let step = row.kind.daysPerPoint * row.kind.width
+        let step = row.kind.typicalSpan
         switch direction {
-        case .increment: cursor = clamped(currentCursor + step)
-        case .decrement: cursor = clamped(currentCursor - step)
+        case .increment: jump(to: clamped(currentCursor + step), animated: false)
+        case .decrement: jump(to: clamped(currentCursor - step), animated: false)
         @unknown default: break
         }
     }
 
-    /// Keeps the cursor where every row, the days included, still fills the width around it.
     func clamped(_ value: Double) -> Double {
         guard let range = cursorRange else { return value }
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
-    /// Whether the cursor came so close to the edge of the days that the windows should move with it.
-    func nearEdge(_ value: Double) -> Bool {
-        guard let range = cursorRange else { return false }
-        return value - range.lowerBound < Self.edgeDays || range.upperBound - value < Self.edgeDays
-    }
-
-    private var cursorRange: ClosedRange<Double>? {
+    /// Where every row, the days included, has periods under the cursor.
+    var cursorRange: ClosedRange<Double>? {
         let bounds = rows.compactMap { row in JournalAxisTrack(row: row).bounds }
         guard let lower = bounds.map(\.lowerBound).max(), let upper = bounds.map(\.upperBound).min(),
-              lower + Self.margin < upper - Self.margin else { return nil }
-        return (lower + Self.margin)...(upper - Self.margin)
+              lower < upper else { return nil }
+        return lower...upper
     }
 
-    static let dragThreshold: CGFloat = 6
     static let rowSpacing: CGFloat = 2
-    /// About half the width of the row of days, so the row never shows empty space at an edge.
-    static let margin: Double = 6
-    /// How close to the edge of the days a drag may end before the windows move: about a quarter of a year.
+    /// How close to the edge of the days a scroll may rest before the windows move: about a quarter of a year.
     static let edgeDays: Double = 100
-    static let glideDuration: Double = 0.35
     /// A longer period rests about half a month in, as in the design.
     static let longPeriodAnchor: Double = 15.5
 }
@@ -197,6 +157,13 @@ private struct JournalAxisTrack {
     /// The length of the period that starts on `start`, if the row has it.
     func span(startingAt start: Double) -> Double? {
         starts.firstIndex(of: start).map { ends[$0] - starts[$0] }
+    }
+
+    /// The moment at `position` in cells, the inverse of `position(of:)`.
+    func moment(at position: Double) -> Double {
+        guard !starts.isEmpty else { return 0 }
+        let index = min(max(Int(position.rounded(.down)), 0), starts.count - 1)
+        return starts[index] + (position - Double(index)) * (ends[index] - starts[index])
     }
 
     /// The position of `cursor` in cells: 3.5 is the middle of the fourth cell.
@@ -229,35 +196,65 @@ private struct JournalAxisTrack {
 }
 
 // MARK: - Row
+/// One row of the axis as a horizontal scroll view. The cells sit side by side at the row's width each, with half the
+/// row's width of room at both ends, so a scroll offset of `x` puts the point `x` of the cells in the middle.
 private struct JournalAxisRowView: View {
 
     // MARK: - Dependencies
     let row: JournalAxisRow
     let track: JournalAxisTrack
     let cursor: Double
+    @Binding var motion: JournalAxisMotion
     let onSelect: (JournalAxisCell) -> Void
+    let onRest: () -> Void
+
+    // MARK: - State
+    @State private var position = ScrollPosition()
+    @State private var width: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
-        GeometryReader { proxy in
-            let middle = proxy.size.width / 2
-            let position = track.position(of: cursor)
-            let reach = Double(middle / row.kind.width) + 1
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(row.cells.enumerated()), id: \.element.id) { index, cell in
-                    if abs(Double(index) - position) <= reach + 1 {
-                        Button { onSelect(cell) } label: { JournalAxisCellLabel(cell: cell) }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(Text(cell.accessibilityTitle))
-                            .accessibilityAddTraits(cell.current ? .isSelected : [])
-                            .accessibilityIdentifier(cell.identifier)
-                            .offset(x: middle + (Double(index) - position) * row.kind.width)
-                    }
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 0) {
+                ForEach(row.cells) { cell in
+                    Button { onSelect(cell) } label: { JournalAxisCellLabel(cell: cell) }
+                        .buttonStyle(.plain)
+                        .frame(width: row.kind.width)
+                        .accessibilityLabel(Text(cell.accessibilityTitle))
+                        .accessibilityAddTraits(cell.current ? .isSelected : [])
+                        .accessibilityIdentifier(cell.identifier)
                 }
             }
+            .padding(.horizontal, width / 2)
         }
+        .scrollIndicators(.hidden)
+        .scrollPosition($position)
         .frame(height: row.kind.height)
-        .clipped()
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { newWidth in
+            width = newWidth
+            place(animated: false)
+        })
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }, action: { _, offset in
+            guard motion.driver == row.kind else { return }
+            motion.cursor = track.moment(at: offset / row.kind.width)
+        })
+        .onScrollPhaseChange { _, phase in
+            switch phase {
+            case .interacting:
+                motion.animated = false
+                motion.driver = row.kind
+            case .idle where motion.driver == row.kind:
+                motion.driver = nil
+                onRest()
+            default:
+                break
+            }
+        }
+        .onChange(of: cursor) { _, _ in
+            guard motion.driver != row.kind else { return }
+            place(animated: motion.animated)
+        }
+        .onChange(of: row) { _, _ in place(animated: false) }
         .mask {
             LinearGradient(
                 stops: [
@@ -270,7 +267,16 @@ private struct JournalAxisRowView: View {
                 endPoint: .trailing
             )
         }
-        .contentShape(.rect)
+    }
+
+    /// Scrolls the row so that the cursor is in its middle.
+    private func place(animated: Bool) {
+        let offset = track.position(of: cursor) * row.kind.width
+        if animated {
+            withAnimation { position.scrollTo(x: offset) }
+        } else {
+            position.scrollTo(x: offset)
+        }
     }
 
     /// The share of the width at each edge where the cells fade out, as in the design.
