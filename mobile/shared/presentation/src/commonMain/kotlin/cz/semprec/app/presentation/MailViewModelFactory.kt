@@ -36,10 +36,4 @@ class MailViewModelFactory(
 
     fun foldersViewModel(): MailFoldersViewModel =
         MailFoldersViewModel(mail, mailboxes, sync.changes(SyncTopic.MAIL_ACCOUNTS))
-
-    fun accountsViewModel(): MailAccountsViewModel =
-        MailAccountsViewModel(mailboxes, sync.changes(SyncTopic.MAIL_ACCOUNTS))
-
-    fun accountViewModel(mailboxId: String): MailAccountViewModel =
-        MailAccountViewModel(mailboxId, mailboxes, sync.changes(SyncTopic.MAIL_ACCOUNTS))
 }

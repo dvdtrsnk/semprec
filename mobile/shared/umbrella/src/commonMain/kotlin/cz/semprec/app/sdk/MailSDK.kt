@@ -5,8 +5,9 @@ import cz.semprec.app.data.HttpMailDraftRepository
 import cz.semprec.app.data.HttpMailRepository
 import cz.semprec.app.data.HttpMailboxRepository
 import cz.semprec.app.domain.SyncChanges
-import cz.semprec.app.presentation.MailAccountViewModel
-import cz.semprec.app.presentation.MailAccountsViewModel
+import cz.semprec.app.presentation.InternetAccountViewModel
+import cz.semprec.app.presentation.InternetAccountViewModelFactory
+import cz.semprec.app.presentation.InternetAccountsViewModel
 import cz.semprec.app.presentation.MailComposeStart
 import cz.semprec.app.presentation.MailComposeViewModel
 import cz.semprec.app.presentation.MailFoldersViewModel
@@ -15,16 +16,22 @@ import cz.semprec.app.presentation.MailThreadViewModel
 import cz.semprec.app.presentation.MailThreadsViewModel
 import cz.semprec.app.presentation.MailViewModelFactory
 
-/** The mail screens; [HomeSDK.mail] hands it out. */
-class MailSDK internal constructor(private val factory: MailViewModelFactory) {
-    internal constructor(api: AuthenticatedApi, sync: SyncChanges) : this(
+/** The mail screens and the internet accounts, which are the mailboxes; [HomeSDK.mail] hands it out. */
+class MailSDK internal constructor(
+    private val factory: MailViewModelFactory,
+    private val accounts: InternetAccountViewModelFactory,
+) {
+    internal constructor(api: AuthenticatedApi, sync: SyncChanges) : this(HttpMailboxRepository(api), api, sync)
+
+    private constructor(mailboxes: HttpMailboxRepository, api: AuthenticatedApi, sync: SyncChanges) : this(
         MailViewModelFactory(
             HttpMailRepository(api),
             HttpMailDraftRepository(api),
-            HttpMailboxRepository(api),
+            mailboxes,
             api.changes.events,
             sync,
         ),
+        InternetAccountViewModelFactory(mailboxes, mailboxes, sync),
     )
 
     /** The thread list that [start] selects. */
@@ -36,7 +43,7 @@ class MailSDK internal constructor(private val factory: MailViewModelFactory) {
 
     fun foldersViewModel(): MailFoldersViewModel = factory.foldersViewModel()
 
-    fun accountsViewModel(): MailAccountsViewModel = factory.accountsViewModel()
+    fun internetAccountsViewModel(): InternetAccountsViewModel = accounts.accountsViewModel()
 
-    fun accountViewModel(mailboxId: String): MailAccountViewModel = factory.accountViewModel(mailboxId)
+    fun internetAccountViewModel(accountId: String): InternetAccountViewModel = accounts.accountViewModel(accountId)
 }

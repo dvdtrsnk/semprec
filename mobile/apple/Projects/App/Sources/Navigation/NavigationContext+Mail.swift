@@ -8,9 +8,4 @@ extension NavigationContext {
     func showMail(_ start: MailListStart, title: String? = nil, in tab: AppTab) {
         push(.mailList(start, title: title, tab: tab), in: tab)
     }
-
-    /// Pushes the connected e-mail accounts onto the stack of `tab`.
-    func showMailAccounts(in tab: AppTab) {
-        push(.mailAccounts(tab: tab), in: tab)
-    }
 }

@@ -18,12 +18,4 @@ extension SharedScreenModelFactory {
     public func makeMailFolders() -> any MailFoldersScreenModel {
         SharedMailFoldersScreenModel(sdk.mail.foldersViewModel())
     }
-
-    public func makeMailAccounts() -> any MailAccountsScreenModel {
-        SharedMailAccountsScreenModel(sdk.mail.accountsViewModel())
-    }
-
-    public func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel {
-        SharedMailAccountScreenModel(sdk.mail.accountViewModel(mailboxId: mailboxId))
-    }
 }

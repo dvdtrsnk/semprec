@@ -34,6 +34,15 @@ enum AccountFormat {
         return date.formatted(Date.FormatStyle(date: .numeric, time: .omitted, locale: locale, timeZone: timeZone))
     }
 
+    /// The weekday, day, month and clock time of an account's last sync, or nil for a text that is no instant. The
+    /// server writes microseconds, which the system parser does not take, so the fraction is dropped.
+    static func syncTime(_ iso: String?, locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
+        guard let iso, let date = instant(iso.replacing(/\.\d+/, with: "")) else { return nil }
+        var style = Date.FormatStyle(locale: locale, timeZone: timeZone)
+        style = style.weekday(.abbreviated).day().month().hour().minute()
+        return date.formatted(style)
+    }
+
     // MARK: - Identity
     /// The initials of the display name as the person's locale abbreviates a name; without a name, the first letters
     /// of the first two words of the part of the address before the `@`, capitalized.

@@ -11,7 +11,7 @@ final class MailNavigationTests: XCTestCase {
 
     // MARK: - Router
     @MainActor
-    func testTheRouterPushesEveryMailScreenOntoTheStackOfItsTab() {
+    func testTheRouterPushesEveryMailScreenOntoTheStackOfItsTabAndOpensTheAccountsInTheSettings() {
         let context = NavigationContext()
         let calendar = MailStackSpy()
         let overview = MailStackSpy()
@@ -29,12 +29,16 @@ final class MailNavigationTests: XCTestCase {
             [
                 .mailList(start, title: "Klienti", tab: .calendar),
                 .mailThread(threadId: "t1", tab: .calendar),
-                .mailFolders(tab: .calendar),
-                .mailAccounts(tab: .calendar),
-                .mailAccount(mailboxId: "m1", tab: .calendar)
+                .mailFolders(tab: .calendar)
             ]
         )
-        XCTAssertTrue(calendar.sheets.isEmpty)
+        XCTAssertEqual(
+            calendar.sheets,
+            [
+                .profile(opening: [.page(.internetAccounts)]),
+                .profile(opening: [.page(.internetAccounts), .internetAccount(accountId: "m1")])
+            ]
+        )
         XCTAssertTrue(overview.pushed.isEmpty)
     }
 
@@ -62,13 +66,11 @@ final class MailNavigationTests: XCTestCase {
         context.register(journal, for: .journal)
         context.showMail(MailListStart(areaId: "a1"), in: .journal)
         context.showMail(MailListStart(projectId: "p1"), title: nil, in: .journal)
-        context.showMailAccounts(in: .journal)
         XCTAssertEqual(
             journal.pushed,
             [
                 .mailList(MailListStart(areaId: "a1"), title: nil, tab: .journal),
-                .mailList(MailListStart(projectId: "p1"), title: nil, tab: .journal),
-                .mailAccounts(tab: .journal)
+                .mailList(MailListStart(projectId: "p1"), title: nil, tab: .journal)
             ]
         )
     }
@@ -91,7 +93,7 @@ final class MailNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheSceneShowsTheMailboxesTheAccountsAndAnAccount() async throws {
+    func testTheSceneShowsTheMailboxesAndOpensTheInternetAccountsInTheSettingsSheet() async throws {
         let window = try SceneWindow()
         let scene = AppComposition(models: SignedInModels())
         try await window.show(AppScene(composition: scene))
@@ -100,9 +102,15 @@ final class MailNavigationTests: XCTestCase {
         scene.navigation.push(.mailFolders(tab: .overview), in: .overview)
         try await eventually { window.stackTitle == "Mailboxes" }
         XCTAssertEqual(window.stackTitle, "Mailboxes")
-        scene.navigation.showMailAccounts(in: .overview)
-        try await eventually { window.stackTitle == "E-mail accounts" }
-        XCTAssertEqual(window.stackTitle, "E-mail accounts")
+        let overview = try XCTUnwrap(scene.navigation.stack(for: .overview) as? NavigatorStackAdapter)
+        scene.mailRouter(in: .overview).showAccounts()
+        XCTAssertEqual(
+            overview.navigator.presentingSheetOrCover as? AppDestination,
+            .profile(opening: [.page(.internetAccounts)])
+        )
+        try await eventually { window.presentsSheet }
+        XCTAssertTrue(window.presentsSheet, "The accounts must open in the settings sheet")
+        XCTAssertEqual(window.stackTitle, "Mailboxes", "The Overview stack keeps the mailboxes under the sheet")
         window.close()
     }
 

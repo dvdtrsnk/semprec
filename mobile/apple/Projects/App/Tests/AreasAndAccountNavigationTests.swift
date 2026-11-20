@@ -75,28 +75,37 @@ final class AreasAndAccountNavigationTests: XCTestCase {
         router.show(.devices)
         router.show(.devices)
         router.show(.trash)
-        XCTAssertEqual(path.pages, [.devices, .trash])
+        XCTAssertEqual(path.pages, [.page(.devices), .page(.trash)])
         router.show(.devices)
-        XCTAssertEqual(path.pages, [.devices, .trash, .devices], "Only the page on top is not pushed again")
+        XCTAssertEqual(
+            path.pages,
+            [.page(.devices), .page(.trash), .page(.devices)],
+            "Only the page on top is not pushed again"
+        )
     }
 
     @MainActor
-    func testTheMailAccountsRowClosesTheSheetAndOpensTheAccountsOnTheOverviewStack() {
+    func testTheInternetAccountsAndAnAccountArePagesOfTheSheetsOwnStack() {
         let context = NavigationContext()
         let overview = AreaStackSpy()
         context.register(overview, for: .overview)
         let path = AccountPath()
         var dismissals = 0
+        var permissionRequests = 0
         let router = AppAccountRouter(
             path: path,
             context: context,
             dismissSheet: { dismissals += 1 },
-            requestPermission: {}
+            requestPermission: { permissionRequests += 1 }
         )
-        router.show(.mailAccounts)
-        XCTAssertEqual(dismissals, 1)
-        XCTAssertEqual(overview.pushed, [.mailAccounts(tab: .overview)])
-        XCTAssertTrue(path.pages.isEmpty, "The accounts are not a page of the sheet's own stack")
+        router.show(.internetAccounts)
+        router.showInternetAccount(accountId: "m1")
+        router.showInternetAccount(accountId: "m1")
+        router.requestNotificationPermission()
+        XCTAssertEqual(path.pages, [.page(.internetAccounts), .internetAccount(accountId: "m1")])
+        XCTAssertEqual(dismissals, 0)
+        XCTAssertEqual(permissionRequests, 1)
+        XCTAssertTrue(overview.pushed.isEmpty, "The accounts are not on the Overview stack any more")
     }
 
     @MainActor

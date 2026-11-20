@@ -122,32 +122,6 @@ final class MailViewModelTests: XCTestCase {
         XCTAssertEqual(router.calls, ["list Klienti m1 f1", "compose new", "accounts"])
     }
 
-    // MARK: - Accounts
-    @MainActor
-    func testAccountsRouteTheOpenedAccountAndCountConnections() async throws {
-        let router = MailRouterSpy()
-        let model = ScriptedMailAccountsScreenModel(state: MailAccountsState())
-        let viewModel = MailAccountsViewModel(model: model, router: router)
-        let observer = Task { await viewModel.observe() }
-        defer { observer.cancel() }
-        model.emit(.openAccount(mailboxId: "m1"))
-        model.emit(.connected)
-        try await eventually { router.calls.count == 1 && viewModel.connections == 1 }
-        XCTAssertEqual(router.calls, ["account m1"])
-    }
-
-    @MainActor
-    func testAccountRequestsToCloseWhenItWasRemoved() async throws {
-        let model = ScriptedMailAccountScreenModel(state: MailAccountState())
-        let viewModel = MailAccountViewModel(model: model)
-        viewModel.send(.requestRemoval)
-        XCTAssertEqual(model.actions, [.requestRemoval])
-        let observer = Task { await viewModel.observe() }
-        defer { observer.cancel() }
-        model.emit(.removed)
-        try await eventually { viewModel.closeRequests == 1 }
-    }
-
     // MARK: - Lifetime
     @MainActor
     func testReleasingAViewModelReleasesItsModel() {

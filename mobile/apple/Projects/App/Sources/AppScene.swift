@@ -147,7 +147,7 @@ private extension AppScene {
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)
-        case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
+        case .mailList, .mailThread, .mailFolders, .mailCompose:
             mailView(destination, composition: composition)
         }
     }
@@ -173,7 +173,7 @@ private extension AppScene {
         }
     }
 
-    /// The Mail screens, type-erased: with their six cases inline the destination provider's result type grows so deep
+    /// The Mail screens, type-erased: with their cases inline the destination provider's result type grows so deep
     /// that the Swift compiler crashes lowering the closure that `tabs` hands to NavigatorUI (the crash `tabs` already
     /// notes for method references).
     static func mailView(_ destination: AppDestination, composition: AppComposition) -> AnyView {
@@ -202,15 +202,6 @@ private extension AppScene {
             )
         case .mailCompose(let start):
             AnyView(MailScreenFactory.compose { composition.models.makeMailCompose(start: start) })
-        case .mailAccounts(let tab):
-            AnyView(
-                MailScreenFactory.accounts(
-                    makeModel: { composition.models.makeMailAccounts() },
-                    router: composition.mailRouter(in: tab)
-                )
-            )
-        case .mailAccount(let mailboxId, _):
-            AnyView(MailScreenFactory.account { composition.models.makeMailAccount(mailboxId: mailboxId) })
         default:
             AnyView(EmptyView())
         }

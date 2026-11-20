@@ -1,6 +1,9 @@
 package cz.semprec.app.data
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
+import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailPasswordAccount
@@ -52,6 +55,7 @@ class HttpMailboxRepositoryTest {
         request.url.encodedPath == "/api/mail/mailboxes/$BOX" && request.method == HttpMethod.Delete ->
             ok("""{"id":"$BOX"}""")
         request.url.encodedPath == "/api/mail/mailboxes/$BOX" -> ok(MAILBOX)
+        request.url.encodedPath == "/api/accounts/$BOX/calendars/sync" -> HttpStatusCode.Accepted to "{}"
         request.url.encodedPath == "/api/items/$BOX" && request.method == HttpMethod.Get ->
             ok(
                 """{"id":"$BOX","databaseId":"d","properties":{"name":"Gmail"},""" +
@@ -179,5 +183,113 @@ class HttpMailboxRepositoryTest {
         assertEquals("Osobní", rename.getValue("properties").jsonObject.getValue("name").jsonPrimitive.content)
         val limit = Json.parseToJsonElement(server.bodies[patches[1]]).jsonObject
         assertEquals("4", limit.getValue("properties").jsonObject.getValue("connectionLimit").jsonPrimitive.content)
+    }
+
+    @Test
+    fun accountsCarryTheirSwitchesAndTheCalendarStatus() = runTest {
+        fun imapRow(id: String, fields: String) =
+            IMAP_MAILBOX.replace("\"x2\"", "\"$id\"").replace("\"autonomousSendProjectCount\":0", fields)
+        val rows = listOf(
+            // No switches and no status: Mail on, Calendars off.
+            MAILBOX,
+            imapRow("x2", """"mailEnabled":false,"calendarsEnabled":true"""),
+            imapRow("x3", """"calendarsEnabled":true,"calendarStatus":"needsConsent""""),
+            imapRow("x4", """"calendarsEnabled":true,"calendarStatus":"somethingNew""""),
+        )
+        val server = MailTestServer { ok("""{"mailboxes":[${rows.joinToString(",")}]}""") }
+
+        val accounts =
+            assertIs<RepositoryResult.Content<List<InternetAccount>>>(server.mailboxes().accounts()).value
+
+        assertEquals(
+            listOf(
+                Triple(true, false, CalendarSyncStatus.OFF),
+                Triple(false, true, CalendarSyncStatus.PENDING),
+                Triple(true, true, CalendarSyncStatus.NEEDS_CONSENT),
+                Triple(true, true, CalendarSyncStatus.PENDING),
+            ),
+            accounts.map { Triple(it.mailEnabled, it.calendarsEnabled, it.calendarStatus) },
+        )
+        assertEquals(MailSyncStatus.NEEDS_REAUTHORIZATION, accounts.first().mailbox.syncStatus)
+        assertEquals("/api/mail/mailboxes", server.requests.single().url.encodedPath)
+    }
+
+    @Test
+    fun oneAccountIsReadFromItsMailbox() = runTest {
+        val server = MailTestServer(::routes)
+
+        val account = assertIs<RepositoryResult.Content<InternetAccount>>(server.mailboxes().account(BOX)).value
+
+        assertEquals("Gmail", account.mailbox.name)
+        assertEquals(CalendarSyncStatus.OFF, account.calendarStatus)
+    }
+
+    @Test
+    fun aServiceSwitchPatchesItsPropertyWithTheVersionJustRead() = runTest {
+        val server = MailTestServer(::routes)
+        val accounts = server.mailboxes()
+
+        assertEquals(RepositoryResult.Content(Unit), accounts.setServiceEnabled(BOX, InternetService.CALENDARS, true))
+        assertEquals(RepositoryResult.Content(Unit), accounts.setServiceEnabled(BOX, InternetService.MAIL, false))
+
+        val patches = server.requests.indices.filter { server.requests[it].method == HttpMethod.Patch }
+        val bodies = patches.map { Json.parseToJsonElement(server.bodies[it]).jsonObject }
+        assertEquals(listOf("7", "7"), bodies.map { it.getValue("ifVersion").jsonPrimitive.content })
+        assertEquals(
+            listOf(mapOf("calendarsEnabled" to "true"), mapOf("mailEnabled" to "false")),
+            bodies.map { body ->
+                body.getValue("properties").jsonObject.mapValues { it.value.jsonPrimitive.content }
+            },
+        )
+    }
+
+    @Test
+    fun aSwitchTheServerRefusesWhileTheMailboxSyncsIsARejection() = runTest {
+        val server = MailTestServer { request ->
+            if (request.method == HttpMethod.Patch) {
+                HttpStatusCode.Conflict to """{"error":{"code":"mailbox_sync_busy"}}"""
+            } else {
+                routes(request)
+            }
+        }
+
+        assertEquals(
+            RepositoryResult.Failure(FailureKind.REJECTED),
+            server.mailboxes().setServiceEnabled(BOX, InternetService.MAIL, false),
+        )
+    }
+
+    @Test
+    fun syncingCalendarsNowPostsToTheAccount() = runTest {
+        val server = MailTestServer(::routes)
+
+        assertEquals(RepositoryResult.Content(Unit), server.mailboxes().syncCalendars(BOX))
+
+        val request = server.requests.single()
+        assertEquals(HttpMethod.Post, request.method)
+        assertEquals("/api/accounts/$BOX/calendars/sync", request.url.encodedPath)
+    }
+
+    @Test
+    fun aCaldavServerIsSentOnlyWhenGiven() = runTest {
+        val server = MailTestServer(::routes)
+
+        server.mailboxes().connect(
+            MailPasswordAccount(
+                MailPasswordProvider.GENERIC,
+                "me@firma.cz",
+                "pw",
+                "imap.firma.cz",
+                "smtp.firma.cz",
+                caldavUrl = "https://dav.firma.cz",
+            ),
+        )
+        server.mailboxes().connect(
+            MailPasswordAccount(MailPasswordProvider.GENERIC, "me@firma.cz", "pw", "imap.firma.cz", "smtp.firma.cz"),
+        )
+
+        val (with, without) = server.bodies.map { Json.parseToJsonElement(it).jsonObject }
+        assertEquals("https://dav.firma.cz", with.getValue("caldavUrl").jsonPrimitive.content)
+        assertFalse("caldavUrl" in without)
     }
 }

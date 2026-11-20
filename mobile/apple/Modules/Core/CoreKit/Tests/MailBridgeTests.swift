@@ -15,8 +15,8 @@ final class MailBridgeTests: XCTestCase {
         let thread = factory.makeMailThread(threadId: "t1")
         let compose = factory.makeMailCompose(start: .draft(draftId: "d1"))
         let folders = factory.makeMailFolders()
-        let accounts = factory.makeMailAccounts()
-        let account = factory.makeMailAccount(mailboxId: "m1")
+        let accounts = factory.makeInternetAccounts()
+        let account = factory.makeInternetAccount(accountId: "m1")
         let threadsState = await firstState(of: threads) { $0.phase != .loading }
         let threadState = await firstState(of: thread) { $0.phase != .loading }
         let composeState = await firstState(of: compose) { $0.phase != .loading }
@@ -126,15 +126,15 @@ final class MailBridgeTests: XCTestCase {
             factory.makeMailThread(threadId: "t1"),
             factory.makeMailCompose(start: .new),
             factory.makeMailFolders(),
-            factory.makeMailAccounts(),
-            factory.makeMailAccount(mailboxId: "m1")
+            factory.makeInternetAccounts(),
+            factory.makeInternetAccount(accountId: "m1")
         ]
         let leases = try [
             XCTUnwrap((models[0] as? SharedMailThreadScreenModel)?.lease),
             XCTUnwrap((models[1] as? SharedMailComposeScreenModel)?.lease),
             XCTUnwrap((models[2] as? SharedMailFoldersScreenModel)?.lease),
-            XCTUnwrap((models[3] as? SharedMailAccountsScreenModel)?.lease),
-            XCTUnwrap((models[4] as? SharedMailAccountScreenModel)?.lease)
+            XCTUnwrap((models[3] as? SharedInternetAccountsScreenModel)?.lease),
+            XCTUnwrap((models[4] as? SharedInternetAccountScreenModel)?.lease)
         ]
         XCTAssertTrue(leases.allSatisfy { !$0.isClosed })
         models.removeAll()

@@ -206,6 +206,10 @@ internal data class MailMailboxDto(
     val connectionLimit: MailConnectionLimitDto,
     val autonomousSendProjectCount: Int = 0,
     val syncedMessageCount: Int? = null,
+    val mailEnabled: Boolean = true,
+    val calendarsEnabled: Boolean = false,
+    /** Read as text: the server adds values as the calendar sync grows, and an unknown one must not fail the row. */
+    val calendarStatus: String? = null,
 )
 
 @Serializable

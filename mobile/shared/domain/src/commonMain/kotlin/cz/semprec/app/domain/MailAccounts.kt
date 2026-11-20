@@ -34,11 +34,15 @@ data class MailRemovalImpact(val messages: Int, val drafts: Int, val threads: In
 
 enum class MailPasswordProvider { ICLOUD, GENERIC }
 
-/** The login of an iCloud or generic IMAP mailbox; the servers are for [MailPasswordProvider.GENERIC] only. */
+/**
+ * The login of an iCloud or generic IMAP mailbox; the servers are for [MailPasswordProvider.GENERIC] only.
+ * [caldavUrl] is the CalDAV server of a generic account, `null` when the person left it empty.
+ */
 data class MailPasswordAccount(
     val provider: MailPasswordProvider,
     val address: String,
     val password: String,
     val imapHost: String?,
     val smtpHost: String?,
+    val caldavUrl: String? = null,
 )

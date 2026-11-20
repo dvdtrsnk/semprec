@@ -126,49 +126,4 @@ extension XCTestCase {
             ]
         )
     }
-
-    func accountsState(
-        _ phase: SharedSDK.MailAccountsPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        connectFailure: SharedSDK.MailConnectFailure? = nil
-    ) -> SharedSDK.MailAccountsState {
-        SharedSDK.MailAccountsState(
-            phase: phase,
-            failure: failure,
-            refreshing: false,
-            accounts: [
-                SharedSDK.MailAccountItem(id: "m1", name: "Gmail", address: nil, provider: "gmail", status: .ok)
-            ],
-            connecting: true,
-            connectFailure: connectFailure
-        )
-    }
-
-    func accountState(
-        _ phase: SharedSDK.MailAccountPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        removal: SharedSDK.MailRemovalPhase = .confirming
-    ) -> SharedSDK.MailAccountState {
-        SharedSDK.MailAccountState(
-            phase: phase,
-            failure: failure,
-            account: SharedSDK.MailAccountDetail(
-                id: "m1",
-                name: "Gmail",
-                address: "me@gmail.com",
-                provider: "gmail",
-                syncMode: "imap",
-                status: .needsReauthorization,
-                lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
-                failingSince: "2026-10-19T09:12:00Z",
-                connectionLimit: 3,
-                connectionLimitApplies: true,
-                autonomousSendProjectCount: 1,
-                syncedMessageCount: 42
-            ),
-            removal: removal,
-            impact: SharedSDK.MailRemovalImpactItem(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),
-            actionFailed: true
-        )
-    }
 }

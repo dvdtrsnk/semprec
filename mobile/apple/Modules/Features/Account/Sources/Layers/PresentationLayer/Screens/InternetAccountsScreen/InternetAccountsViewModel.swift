@@ -2,22 +2,23 @@ import Combine
 import CoreKit
 import Foundation
 
-/// Thin adapter between the accounts screen and its shared screen model: republishes the state, forwards intents and
-/// maps each effect to the router. It owns the model; releasing it closes the shared ViewModel behind the model.
+/// Thin adapter between the internet accounts screen and its shared screen model: republishes the state, forwards
+/// intents and maps each effect to the router. It owns the model; releasing it closes the shared ViewModel behind the
+/// model.
 @MainActor
-final class MailAccountsViewModel: ObservableObject {
+final class InternetAccountsViewModel: ObservableObject {
 
     // MARK: - Dependencies
-    private let model: any MailAccountsScreenModel
-    private let router: any MailRouting
+    private let model: any InternetAccountsScreenModel
+    private let router: any AccountRouting
 
     // MARK: - Published Properties
-    @Published private(set) var state: MailAccountsState
-    /// Counts the mailboxes that were connected; the form closes whenever it grows.
+    @Published private(set) var state: InternetAccountsState
+    /// Counts the accounts that were connected; the add sheet closes whenever it grows.
     @Published private(set) var connections = 0
 
     // MARK: - Init
-    init(model: any MailAccountsScreenModel, router: any MailRouting) {
+    init(model: any InternetAccountsScreenModel, router: any AccountRouting) {
         self.model = model
         self.router = router
         state = model.state
@@ -32,7 +33,7 @@ final class MailAccountsViewModel: ObservableObject {
         )
     }
 
-    func send(_ action: MailAccountsAction) {
+    func send(_ action: InternetAccountsAction) {
         model.send(action)
     }
 
@@ -46,11 +47,11 @@ final class MailAccountsViewModel: ObservableObject {
 }
 
 // MARK: - Private
-private extension MailAccountsViewModel {
+private extension InternetAccountsViewModel {
 
-    func route(_ effect: MailAccountsEffect) {
+    func route(_ effect: InternetAccountsEffect) {
         switch effect {
-        case .openAccount(let mailboxId): router.showAccount(mailboxId: mailboxId)
+        case .openAccount(let accountId): router.showInternetAccount(accountId: accountId)
         case .connected: connections += 1
         }
     }

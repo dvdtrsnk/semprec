@@ -5,7 +5,7 @@ import cz.semprec.app.core.FailureKind
 enum class ProfilePhase { LOADING, CONTENT, ERROR }
 
 /** Where a row of the profile leads. The app decides which screen shows it. */
-enum class AccountPage { DEVICES, NOTIFICATIONS, AI_USAGE, TRASH, SEMP_STATUS, MAIL_ACCOUNTS, APPEARANCE }
+enum class AccountPage { DEVICES, NOTIFICATIONS, AI_USAGE, TRASH, SEMP_STATUS, INTERNET_ACCOUNTS, APPEARANCE }
 
 /** What the profile asks the app to do: show the screen a row leads to. */
 sealed interface ProfileEffect {

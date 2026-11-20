@@ -1,6 +1,10 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
+import cz.semprec.app.domain.InternetAccountRepository
+import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailAddress
 import cz.semprec.app.domain.MailContact
@@ -139,6 +143,32 @@ internal class ScriptedMailboxRepository(
 
     override suspend fun setConnectionLimit(mailboxId: String, limit: Int) = this.limit.answer(mailboxId to limit)
 }
+
+internal class ScriptedInternetAccountRepository(
+    val list: MailCall<Unit, List<InternetAccount>> = MailCall(mailContent(listOf(internetAccount()))),
+    val one: MailCall<String, InternetAccount> = MailCall(mailContent(internetAccount())),
+    val services: MailCall<Triple<String, InternetService, Boolean>, Unit> = MailCall(mailContent(Unit)),
+    val syncs: MailCall<String, Unit> = MailCall(mailContent(Unit)),
+) : InternetAccountRepository {
+    override suspend fun accounts() = list.answer(Unit)
+
+    override suspend fun account(accountId: String) = one.answer(accountId)
+
+    override suspend fun setServiceEnabled(accountId: String, service: InternetService, enabled: Boolean) =
+        services.answer(Triple(accountId, service, enabled))
+
+    override suspend fun syncCalendars(accountId: String) = syncs.answer(accountId)
+}
+
+internal fun internetAccount(
+    id: String = "m1",
+    status: MailSyncStatus = MailSyncStatus.OK,
+    mail: Boolean = true,
+    calendars: Boolean = false,
+    calendarStatus: CalendarSyncStatus = if (calendars) CalendarSyncStatus.PENDING else CalendarSyncStatus.OFF,
+    initial: Boolean = false,
+    limitApplies: Boolean = true,
+) = InternetAccount(mailAccount(id, status, initial, limitApplies), mail, calendars, calendarStatus)
 
 internal fun mailThread(
     id: String = "t1",

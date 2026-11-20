@@ -71,7 +71,10 @@ extension AppSempRouter: SempRouting {
 
     func showMailbox(mailboxId: String) {
         afterClosing { [context, tab] in
-            context.push(.mailAccount(mailboxId: mailboxId, tab: tab()), in: tab())
+            context.presentSheet(
+                .profile(opening: [.page(.internetAccounts), .internetAccount(accountId: mailboxId)]),
+                from: tab()
+            )
         }
     }
 

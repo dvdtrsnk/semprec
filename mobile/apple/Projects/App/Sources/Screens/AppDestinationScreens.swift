@@ -132,8 +132,9 @@ struct ShellDestination: View {
         switch destination {
         case .pending(let title):
             PendingScreen(title: title)
-        case .profile:
+        case .profile(let opening):
             ProfileSheet(
+                opening: opening,
                 models: composition.models,
                 navigation: composition.navigation,
                 notifications: composition.notifications

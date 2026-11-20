@@ -8,7 +8,7 @@ public enum AccountPage: Equatable, Hashable, Sendable, CaseIterable {
     case aiUsage
     case trash
     case sempStatus
-    case mailAccounts
+    case internetAccounts
     /// The look of the app on this device: light, dark or the system's, and its accent colour.
     case appearance
 }

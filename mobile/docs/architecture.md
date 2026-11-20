@@ -348,8 +348,9 @@ process over `HttpPushRepository` (`shared/data`: `POST /api/push-subscriptions`
 `AppNotifications.shared`) carries its answers to the system:
 
 - Permission: turning a notification on in the notification settings emits
-  `NotificationSettingsEffect.RequestPermission`, which `AppAccountRouter` hands to
-  `AppNotifications.requestPermission()`; the system asks the person only once.
+  `NotificationSettingsEffect.RequestPermission`, and switching an internet account's
+  Calendars on emits `InternetAccountEffect.CalendarsTurnedOn`; `AppAccountRouter` hands
+  both to `AppNotifications.requestPermission()`; the system asks the person only once.
 - Registration: whenever a signed-in scene shows its tabs and notifications are
   allowed, iOS asks APNs for the token (`AppDelegate`), and the token is registered
   for the build's environment; the subscription id is kept in the user defaults
@@ -380,8 +381,8 @@ raises `INVITATIONS`, `mail_sync_error` and `mail_sync_stalled` raise `MAIL_ACCO
 Frames within 300 ms of each other raise once. The topics are revisions of
 `SyncChanges` (`shared/domain`), which `HomeSDK` shares with `CalendarSDK` and
 `MailSDK`: the calendar reloads on `CALENDAR` and `INVITATIONS`, the calendars sheet on
-`CALENDAR`, the invitations on `INVITATIONS`, and the mailboxes, the accounts and an
-account on `MAIL_ACCOUNTS`, each quietly and not while its own read or write runs.
+`CALENDAR`, the invitations on `INVITATIONS`, and the mailboxes, the internet accounts
+and an internet account on `MAIL_ACCOUNTS`, each quietly and not while its own read or write runs.
 
 `HomeSDK.sync` starts and stops the socket. On Apple the app's `LiveUpdates` modifier
 on the signed-in tabs of each scene calls `ScreenModelFactory.startLiveUpdates()`

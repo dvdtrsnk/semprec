@@ -2,8 +2,8 @@ import AccountFeature
 import CoreKit
 import SwiftUI
 
-/// The sheet the profile button of the Overview opens: the profile, and the account screens it leads to on a stack of
-/// the sheet's own.
+/// The sheet of the profile and settings: the profile, and the account screens it leads to on a stack of the sheet's
+/// own. The profile button of the Overview opens it on the profile; the Mail screens open it on the internet accounts.
 struct ProfileSheet: View {
 
     // MARK: - Dependencies
@@ -12,12 +12,19 @@ struct ProfileSheet: View {
     private let notifications: AppNotifications?
 
     // MARK: - State
-    @StateObject private var path = AccountPath()
+    @StateObject private var path: AccountPath
     @Environment(\.dismiss)
     private var dismiss
 
     // MARK: - Init
-    init(models: any ScreenModelFactory, navigation: NavigationContext, notifications: AppNotifications?) {
+    /// `opening` are the pages the sheet shows over the profile when it opens.
+    init(
+        opening: [ProfileSheetPage] = [],
+        models: any ScreenModelFactory,
+        navigation: NavigationContext,
+        notifications: AppNotifications?
+    ) {
+        _path = StateObject(wrappedValue: AccountPath(pages: opening))
         self.models = models
         self.navigation = navigation
         self.notifications = notifications
@@ -33,7 +40,7 @@ struct ProfileSheet: View {
         )
         NavigationStack(path: $path.pages) {
             AccountScreenFactory.profile(makeModel: { [models] in models.makeProfile() }, router: router)
-                .navigationDestination(for: AccountPage.self) { [models] page in
+                .navigationDestination(for: ProfileSheetPage.self) { [models] page in
                     Self.destination(page, models, router: router)
                 }
         }
@@ -45,10 +52,23 @@ extension ProfileSheet {
 
     @ViewBuilder
     static func destination(
-        _ page: AccountPage,
+        _ page: ProfileSheetPage,
         _ models: any ScreenModelFactory,
         router: AppAccountRouter
     ) -> some View {
+        switch page {
+        case .page(let page):
+            Self.page(page, models, router: router)
+        case .internetAccount(let accountId):
+            AccountScreenFactory.internetAccount(
+                makeModel: { models.makeInternetAccount(accountId: accountId) },
+                router: router
+            )
+        }
+    }
+
+    @ViewBuilder
+    static func page(_ page: AccountPage, _ models: any ScreenModelFactory, router: AppAccountRouter) -> some View {
         switch page {
         case .devices:
             AccountScreenFactory.devices { models.makeDevices() }
@@ -60,8 +80,10 @@ extension ProfileSheet {
             AccountScreenFactory.trash { models.makeTrash() }
         case .appearance:
             AccountScreenFactory.appearance()
-        case .sempStatus, .mailAccounts:
-            // The router closes the sheet and opens these on the Overview stack; they are never pushed here.
+        case .internetAccounts:
+            AccountScreenFactory.internetAccounts(makeModel: { models.makeInternetAccounts() }, router: router)
+        case .sempStatus:
+            // The router closes the sheet and opens it on the Overview stack; it is never pushed here.
             EmptyView()
         }
     }
