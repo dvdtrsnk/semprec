@@ -1363,6 +1363,34 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const eventsId = await moduleDatabaseId(tenant, "events");
+      const eventItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const event = await createItemWithClient(client, {
+            databaseId: eventsId,
+            properties: { name: "Dinner", date: "2026-11-27" },
+          });
+          // An Event outside account calendars records no push itself; the row stands for a change since moved out.
+          await client.query("INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, 'update')", [
+            event.id,
+          ]);
+          return event.id;
+        }),
+      );
+      return { eventItemId };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT status FROM calendar_event_push_state WHERE event_item_id = $1",
+        [str(payload, "eventItemId")],
+        [{ status: "sent" }],
+      );
+    },
+  },
   [CORE_TASK_NAMES.MAILBOX_REMOVAL]: {
     tenancy: "tenant",
     async seed(tenant) {

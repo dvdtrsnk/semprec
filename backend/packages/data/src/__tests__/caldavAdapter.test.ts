@@ -438,6 +438,29 @@ describe("CalDAV adapter against a fake server", () => {
     expect(events.get(override.remoteId)?.fields).toEqual(LATE_STANDUP_FIELDS);
   });
 
+  it("adds a new override to its series' resource and reads single Events back", async () => {
+    const caldav = adapter();
+    const work = await calendarNamed(caldav, "Work");
+    const series = await caldav.putEvent(work, { ref: null, fields: STANDUP_FIELDS }, signal());
+    const override = await caldav.putEvent(
+      work,
+      { ref: null, fields: LATE_STANDUP_FIELDS, seriesRef: series },
+      signal(),
+    );
+    expect(override).toMatchObject({
+      remoteId: JSON.stringify([series.remoteId, "2026-11-25T09:00"]),
+      href: series.href,
+    });
+
+    const options = { window: WINDOW, signal: signal() };
+    expect((await caldav.getEvent(work, override, options))?.fields).toEqual(LATE_STANDUP_FIELDS);
+    expect(await caldav.getEvent(work, { ...override, etag: null }, options)).toMatchObject({
+      seriesRemoteId: series.remoteId,
+    });
+    await caldav.deleteEvent(work, { ...series, etag: override.etag }, signal());
+    expect(await caldav.getEvent(work, series, options)).toBeNull();
+  });
+
   it("creates with If-None-Match and reports a 412 on a write as a conflict, not a failure", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");

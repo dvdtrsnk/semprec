@@ -1,5 +1,6 @@
 import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscriptionSweep.js";
 import { handleCalendarAccountCleanupTask } from "./calendar/sync/calendarAccountCleanupJob.js";
+import { handleCalendarEventPushTask } from "./calendar/sync/eventPushJob.js";
 import {
   handleCalendarAccountSyncSweepTask,
   handleCalendarAccountSyncTask,
@@ -222,6 +223,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: async (payload) => {
       await handleCalendarAccountCleanupTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: async (payload, helpers) => {
+      await handleCalendarEventPushTask(pool, payload, { jobId: helpers.job.id });
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);

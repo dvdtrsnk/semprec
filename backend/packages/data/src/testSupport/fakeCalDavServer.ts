@@ -178,6 +178,7 @@ export class FakeCalDavServer {
 
     if (method === "PROPFIND") return this.propfind(res, path, req.headers.depth);
     if (method === "REPORT") return this.report(res, path, report, body);
+    if (method === "GET") return this.get(res, path);
     if (method === "PUT") return this.put(req, res, path, body);
     if (method === "DELETE") return this.delete(req, res, path);
     return this.send(res, 405, "");
@@ -295,6 +296,14 @@ export class FakeCalDavServer {
       return this.send(res, 207, multistatus(responses));
     }
     return this.send(res, 400, "");
+  }
+
+  private get(res: ServerResponse, path: string): void {
+    const located = this.locate(path);
+    const resource = located?.file ? located.stored.resources.get(located.file) : undefined;
+    if (resource === undefined) return this.send(res, 404, "");
+    res.writeHead(200, { "Content-Type": "text/calendar; charset=utf-8", ETag: resource.etag });
+    res.end(resource.text);
   }
 
   private put(req: IncomingMessage, res: ServerResponse, path: string, body: string): void {

@@ -199,12 +199,25 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
         signal,
       );
       saved = parseOrInvalid(graphEventSchema, response.json);
-    } else {
-      if (fields.recurrenceId !== null) {
+    } else if (fields.recurrenceId !== null) {
+      // Microsoft makes an override by changing the occurrence the series has at that start.
+      if (!event.seriesRef) {
         throw new GraphCalendarWriteUnsupportedError(
-          "A new override is made by changing its occurrence at Microsoft, which needs the occurrence's id",
+          "A new override is made by changing its occurrence at Microsoft, which needs its series",
         );
       }
+      const occurrence = await this.occurrenceAt(event.seriesRef.remoteId, fields.recurrenceId, signal);
+      const response = await this.http.send(
+        {
+          method: "PATCH",
+          url: eventPath(occurrence.id),
+          body,
+          ...(occurrence["@odata.etag"] ? { headers: { "If-Match": occurrence["@odata.etag"] } } : {}),
+        },
+        signal,
+      );
+      saved = parseOrInvalid(graphEventSchema, response.json);
+    } else {
       const response = await this.http.send(
         {
           method: "POST",
@@ -223,6 +236,32 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
       }
     }
     return { remoteId: saved.id, href: null, etag: saved["@odata.etag"] ?? null };
+  }
+
+  /** A cancelled Event, or one Microsoft no longer has, is `null`; a series is read with its instances in `window`. */
+  async getEvent(
+    _calendar: RemoteCalendar,
+    ref: RemoteEventRef,
+    options: { window: CalendarSyncWindow; signal: AbortSignal },
+  ): Promise<RemoteEvent | null> {
+    const { window, signal } = options;
+    const response = await this.http.send({ method: "GET", url: eventPath(ref.remoteId), tolerate: [404] }, signal);
+    if (response.status === 404) return null;
+    const event = parseOrInvalid(graphEventSchema, response.json);
+    if (event.isCancelled) return null;
+    if (event.type === "seriesMaster" || event.type === "exception") {
+      const seriesId = event.type === "seriesMaster" ? event.id : event.seriesMasterId;
+      if (!seriesId) throw invalidResponse();
+      const series = await this.seriesChanges(seriesId, window, signal);
+      return series.upserts.find((upsert) => upsert.remoteId === event.id) ?? null;
+    }
+    return remoteEventOf(event, {
+      seriesRemoteId: null,
+      zone: zoneOfGraphEvent(event, this.tenantTimeZone),
+      recurrenceRule: null,
+      exceptionDates: null,
+      recurrenceId: null,
+    });
   }
 
   async deleteEvent(_calendar: RemoteCalendar, event: RemoteEventRef, signal: AbortSignal): Promise<void> {
@@ -445,6 +484,32 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
       recurrenceId: null,
     });
     return { upserts: [masterEvent, ...overrides], deletions };
+  }
+
+  /** The live instance of the series whose original start, in the series' zone, is `recurrenceId`. */
+  private async occurrenceAt(seriesId: string, recurrenceId: string, signal: AbortSignal): Promise<GraphEvent> {
+    const masterResponse = await this.http.send({ method: "GET", url: eventPath(seriesId) }, signal);
+    const master = parseOrInvalid(graphEventSchema, masterResponse.json);
+    const zone = zoneOfGraphEvent(master, this.tenantTimeZone);
+    const allDay = master.isAllDay === true;
+    const day = recurrenceId.slice(0, 10);
+    const found: GraphEvent[] = [];
+    await this.eachPage(
+      `${eventPath(seriesId)}/instances?${windowRange({ start: day, end: day })}&$select=id,type,originalStart,start,isCancelled`,
+      signal,
+      (item) => {
+        const instance = parseOrInvalid(graphEventSchema, item);
+        const original = originalStartOf(instance);
+        if (!instance.isCancelled && original !== null && localStartOf(original, zone, allDay) === recurrenceId) {
+          found.push(instance);
+        }
+      },
+    );
+    const [occurrence] = found;
+    if (occurrence === undefined) {
+      throw new GraphCalendarWriteUnsupportedError("The Microsoft series has no occurrence at the override's start");
+    }
+    return occurrence;
   }
 
   /** Deletes the occurrences the exception dates name that still exist; `true` when any was deleted. */

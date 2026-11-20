@@ -108,6 +108,11 @@ export interface PutRemoteEventInput {
    * is set and by providers that assign their own (Microsoft Graph).
    */
   icalUid?: string | null;
+  /**
+   * For a new override (`ref` `null`, `fields.recurrenceId` set): its series' Event at the provider, whose
+   * occurrence at `recurrenceId` the override changes.
+   */
+  seriesRef?: RemoteEventRef | null;
 }
 
 /**
@@ -128,6 +133,25 @@ export interface CalendarSyncAdapter {
    */
   putEvent(calendar: RemoteCalendar, event: PutRemoteEventInput, signal: AbortSignal): Promise<RemoteEventRef>;
   deleteEvent(calendar: RemoteCalendar, event: RemoteEventRef, signal: AbortSignal): Promise<void>;
+  /**
+   * The provider's current version of one Event (a series master with the exception dates of `window`), or `null`
+   * when the provider no longer has it.
+   */
+  getEvent(
+    calendar: RemoteCalendar,
+    event: RemoteEventRef,
+    options: { window: CalendarSyncWindow; signal: AbortSignal },
+  ): Promise<RemoteEvent | null>;
+  /**
+   * Moves an Event to another calendar of the account, keeping its identity at the provider. A provider without a
+   * move leaves it out, and the caller deletes the Event and creates it in the other calendar.
+   */
+  moveEvent?(
+    from: RemoteCalendar,
+    to: RemoteCalendar,
+    event: RemoteEventRef,
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef>;
 }
 
 /** What an adapter factory gets to reach the account's server; `credential` is the stored secret as decrypted. */
@@ -172,6 +196,14 @@ export class CalendarSyncEventConflictError extends Error {
   constructor(message = "The Event changed at the provider since it was last synced") {
     super(message);
     this.name = "CalendarSyncEventConflictError";
+  }
+}
+
+/** A write the provider cannot represent (an RRULE outside its patterns, an occurrence it does not have, …). */
+export class CalendarSyncWriteUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CalendarSyncWriteUnsupportedError";
   }
 }
 

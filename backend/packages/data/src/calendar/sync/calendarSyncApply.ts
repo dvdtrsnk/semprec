@@ -5,7 +5,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { getItemById } from "../../chokePoint/itemsStore.js";
+import { getItemById, lockItemById, lockItemForShare } from "../../chokePoint/itemsStore.js";
 import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -36,12 +36,14 @@ import {
   type CalendarChangeNotice,
   type NotifiedCalendar,
 } from "./calendarChangeNotifications.js";
-import { enqueueCalendarAccountCleanup } from "./calendarAccountSyncEnqueue.js";
+import { enqueueCalendarAccountCleanup, enqueueCalendarEventPush } from "./calendarAccountSyncEnqueue.js";
 import {
   deleteCalendarRemoteStates,
   deleteEventRemoteStates,
   getCalendarAccountSyncState,
+  getEventPushState,
   listEventRemoteStates,
+  listAccountWaitingEventPushes,
   listSyncedAccountCalendars,
   recordCalendarSyncSuccess,
   upsertCalendarRemoteState,
@@ -197,7 +199,7 @@ export interface CalendarSyncApplyInput {
 
 const REMOTE_CALENDAR_KEYS = ["remoteName", "remoteColor", "readOnly"] as const;
 const SYNC_EVENT_SYSTEM_KEYS = [...SYNCED_EVENT_PROPERTY_KEYS, EVENT_SERIES_ID_PROPERTY_KEY] as const;
-const FIELD_KEYS = [
+export const REMOTE_EVENT_FIELD_KEYS = [
   "name",
   "date",
   "endDate",
@@ -214,7 +216,7 @@ const FIELD_KEYS = [
 ] as const satisfies readonly (keyof RemoteEventFields)[];
 
 /** What `base_snapshot` stores: the provider's fields and participants as last applied. */
-function snapshotOf(event: RemoteEvent): Record<string, unknown> {
+export function snapshotOf(event: Pick<RemoteEvent, "fields" | "seriesRemoteId" | "organizer" | "attendees">) {
   return {
     fields: event.fields,
     seriesRemoteId: event.seriesRemoteId,
@@ -223,7 +225,7 @@ function snapshotOf(event: RemoteEvent): Record<string, unknown> {
   };
 }
 
-function snapshotFields(snapshot: Record<string, unknown>): Record<string, unknown> {
+export function snapshotFields(snapshot: Record<string, unknown>): Record<string, unknown> {
   const fields = snapshot.fields;
   return typeof fields === "object" && fields !== null && !Array.isArray(fields) ? { ...fields } : {};
 }
@@ -234,7 +236,7 @@ function snapshotFields(snapshot: Record<string, unknown>): Record<string, unkno
  */
 function createProperties(fields: RemoteEventFields, seriesItemId: string | null): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
-  for (const key of FIELD_KEYS) {
+  for (const key of REMOTE_EVENT_FIELD_KEYS) {
     if (key === "recurrenceId" && seriesItemId === null) continue;
     if (fields[key] !== null) properties[key] = fields[key];
   }
@@ -245,7 +247,7 @@ function createProperties(fields: RemoteEventFields, seriesItemId: string | null
 /** The fields the provider changed since the last applied snapshot; a local edit of any other field stays. */
 function providerChanges(fields: RemoteEventFields, base: Record<string, unknown>, isOverride: boolean) {
   const patch: Record<string, unknown> = {};
-  for (const key of FIELD_KEYS) {
+  for (const key of REMOTE_EVENT_FIELD_KEYS) {
     if (key === "recurrenceId" && !isOverride) continue;
     if (!isDeepStrictEqual(fields[key], base[key] ?? null)) patch[key] = fields[key];
   }
@@ -399,7 +401,10 @@ export async function applyCalendarSync(
   const cancelled: SyncedEventChange[] = [];
   const notices: CalendarChangeNotice[] = [];
   let skippedEvents = 0;
+  const pushesToRequeue = new Set<string>();
   for (const { calendar, changes, calendarItemId, notify } of targets) {
+    // Lock order: the calendar before its Events' rows, as an Event write takes them.
+    await lockItemForShare(client, ids.calendarsDatabaseId, calendarItemId);
     const storedEvents = new Map(
       (await listEventRemoteStates(client, calendarItemId)).map((event) => [event.remoteId, event]),
     );
@@ -413,6 +418,11 @@ export async function applyCalendarSync(
     for (const remoteId of deletions) {
       const event = storedEvents.get(remoteId);
       if (!event) continue;
+      if (await hasPendingPush(client, ids, event.eventItemId)) {
+        pushesToRequeue.add(event.eventItemId);
+        storedEvents.delete(remoteId);
+        continue;
+      }
       if (!event.deleted) {
         await itemDeleteWithClient(client, ids.eventsDatabaseId, event.eventItemId, {
           queueAffinity,
@@ -450,6 +460,10 @@ export async function applyCalendarSync(
         queueAffinity,
         notify,
       });
+      if (outcome.kind === "pendingPush") {
+        pushesToRequeue.add(outcome.eventItemId);
+        continue;
+      }
       if (outcome.kind === "skipped") {
         skippedEvents += 1;
         continue;
@@ -477,6 +491,16 @@ export async function applyCalendarSync(
     });
   }
 
+  // The pushes this pass left to their job, and the ones that waited for the account to work again.
+  for (const eventItemId of await listAccountWaitingEventPushes(
+    client,
+    ids,
+    targets.map((target) => target.calendarItemId),
+  )) {
+    pushesToRequeue.add(eventItemId);
+  }
+  for (const eventItemId of [...pushesToRequeue].sort()) await enqueueCalendarEventPush(client, eventItemId);
+
   await notifyCalendarChanges(client, {
     accountItemId,
     calendars: notifiedCalendars,
@@ -490,6 +514,8 @@ export async function applyCalendarSync(
 
 type EventOutcome =
   | { kind: "created" | "unchanged"; eventItemId: string }
+  /** A local change of the Event waits for its push, which merges the provider's change in. */
+  | { kind: "pendingPush"; eventItemId: string }
   /** `news`: the provider changed a notified field to a value the Event did not already have. */
   | { kind: "updated"; eventItemId: string; news: boolean }
   | { kind: "skipped" };
@@ -530,6 +556,9 @@ async function applyEvent(
     }
     return { kind: "unchanged", eventItemId: existing.eventItemId };
   }
+  if (existing && (await hasPendingPush(client, ids, existing.eventItemId))) {
+    return { kind: "pendingPush", eventItemId: existing.eventItemId };
+  }
   const options = { writer: CALENDAR_SYNC_WRITER, allowedSystemKeys: SYNC_EVENT_SYSTEM_KEYS, queueAffinity };
   try {
     return await withSavepoint(client, async (): Promise<EventOutcome> => {
@@ -567,4 +596,13 @@ async function applyEvent(
     logger.warn({ ...log, field: refusedField(error) }, "Calendar sync skipped an Event an Event rule refused");
     return { kind: "skipped" };
   }
+}
+
+/**
+ * Read under the Event's row lock, which every writer of its push state holds, so a local change recorded after this
+ * check waits for the pass to commit and is pushed against what it wrote.
+ */
+async function hasPendingPush(client: PoolClient, ids: CalendarSyncIds, eventItemId: string): Promise<boolean> {
+  await lockItemById(client, ids.eventsDatabaseId, eventItemId);
+  return (await getEventPushState(client, eventItemId))?.status === "pending";
 }

@@ -7,7 +7,7 @@ import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
-import type { WriterIdentity, WriterKind } from "./writerKind.js";
+import type { SystemWriterProcess, WriterIdentity, WriterKind } from "./writerKind.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 
@@ -107,6 +107,8 @@ export interface ItemDeleteHookContext {
   /** Shared by every row this cascade trashed. */
   deletedAt: string;
   writerKind: WriterKind;
+  /** The named system process of a `system` writer (`WriterIdentity.systemProcess`). */
+  systemProcess?: SystemWriterProcess;
   agentRunId?: string;
   actingUserId?: string;
 }
@@ -130,6 +132,8 @@ export interface ItemRestoreHookContext {
   /** For a hook that runs a nested choke-point write. */
   queueAffinity: ActionQueueAffinity;
   writerKind: WriterKind;
+  /** The named system process of a `system` writer (`WriterIdentity.systemProcess`). */
+  systemProcess?: SystemWriterProcess;
   agentRunId?: string;
   actingUserId?: string;
 }

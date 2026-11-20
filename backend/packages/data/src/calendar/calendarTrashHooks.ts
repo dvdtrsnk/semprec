@@ -16,7 +16,7 @@ import type {
 import { lockItemTrashEpoch } from "../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient, restoreItemWithClient } from "../chokePoint/itemTrash.js";
-import type { WriterIdentity, WriterKind } from "../chokePoint/writerKind.js";
+import type { SystemWriterProcess, WriterIdentity, WriterKind } from "../chokePoint/writerKind.js";
 import { ConflictError, ForbiddenError } from "../errors.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { isAccountCalendar, isCalendarsDatabase, isSystemOrSubscription, lockDefaultMark } from "./calendarRowHooks.js";
@@ -26,9 +26,14 @@ const CALENDAR_EVENTS_PROPERTY_KEY = "events";
 /** `ConflictError` otherwise carries `version_conflict`. */
 const LAST_OWN_CALENDAR_CODE = "last_own_calendar";
 
-function writerOf(context: { writerKind: WriterKind; agentRunId?: string }): WriterIdentity {
+function writerOf(context: {
+  writerKind: WriterKind;
+  systemProcess?: SystemWriterProcess;
+  agentRunId?: string;
+}): WriterIdentity {
   return {
     writerKind: context.writerKind,
+    ...(context.systemProcess === undefined ? {} : { systemProcess: context.systemProcess }),
     ...(context.agentRunId === undefined ? {} : { agentRunId: context.agentRunId }),
   };
 }

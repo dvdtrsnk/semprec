@@ -72,6 +72,13 @@ const KEYS: ItemKey[] = [
     insert: (c, id) => c.query("INSERT INTO calendar_account_sync_state (account_item_id) VALUES ($1)", [id]),
   },
   {
+    table: "calendar_event_push_state",
+    column: "event_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, 'create')", [id]),
+  },
+  {
     table: "calendar_remote_state",
     column: "calendar_item_id",
     behaviour: "cascade",

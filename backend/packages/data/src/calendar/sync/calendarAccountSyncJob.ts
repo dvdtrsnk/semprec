@@ -2,7 +2,7 @@
 // fetch through the adapter of its sync mode with no transaction open, then apply everything in one transaction.
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getTenantUserId } from "../../auth/usersStore.js";
 import { getItemById } from "../../chokePoint/itemsStore.js";
@@ -11,7 +11,11 @@ import { getMailServerSettings } from "../../mail/mailServerSettingsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 import type { CustomRouteResult, RouteParams } from "../../customRoute.js";
-import { defaultSyncModeForProvider, getMailAccountGrant } from "../../mail/mailAccountSyncStateStore.js";
+import {
+  defaultSyncModeForProvider,
+  getMailAccountGrant,
+  type SyncMode,
+} from "../../mail/mailAccountSyncStateStore.js";
 import { areCalendarsEnabled } from "../../mail/mailboxServiceHooks.js";
 import { hasCalendarConsent } from "../../mail/oauthServiceScopes.js";
 import { MailReauthorizationRequiredError } from "../../mail/providerTypes.js";
@@ -25,6 +29,7 @@ import {
   CalendarSyncConsentRequiredError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
+  type CalendarSyncAdapter,
   type CalendarSyncAdapterRegistry,
   type CalendarSyncWindow,
 } from "./adapter.js";
@@ -46,6 +51,7 @@ import {
   recordManualCalendarSyncRequest,
   resolveCalendarSyncIds,
   type CalendarSyncFailureStatus,
+  type CalendarSyncIds,
 } from "./calendarSyncStore.js";
 
 export { enqueueCalendarAccountSync, calendarAccountSyncJobKey } from "./calendarAccountSyncEnqueue.js";
@@ -62,18 +68,18 @@ export const MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS = 60;
 const payloadSchema = z.strictObject({ accountItemId: z.uuid() });
 
 /** The first sync's days: one year back to two years ahead of today in the tenant's zone. */
-function syncWindow(zone: string, at: Date): CalendarSyncWindow {
+export function syncWindow(zone: string, at: Date): CalendarSyncWindow {
   const today = DateTime.fromJSDate(at, { zone }).startOf("day");
   return { start: today.minus({ years: 1 }).toISODate() ?? "", end: today.plus({ years: 2 }).toISODate() ?? "" };
 }
 
-interface FailureRecord {
+export interface FailureRecord {
   status: CalendarSyncFailureStatus;
   code: string;
 }
 
 /** The stored status and code of a failed pass; the code is a fixed identifier, never provider text. */
-function failureRecordOf(error: unknown, signal: AbortSignal): FailureRecord {
+export function failureRecordOf(error: unknown, signal: AbortSignal): FailureRecord {
   if (error instanceof CalendarSyncReauthorizationRequiredError || error instanceof MailReauthorizationRequiredError) {
     return { status: "needsReauthorization", code: "reauthorizationRequired" };
   }
@@ -110,28 +116,14 @@ export async function handleCalendarAccountSyncTask(
   const prologue = await withTransaction(pool, async (client) => {
     const ids = await resolveCalendarSyncIds(client);
     if (ids === null) return null;
-    const account = await getItemById(client, ids.mailboxesDatabaseId, accountItemId);
-    if (!account || account.deletedAt || !areCalendarsEnabled(account.properties)) return null;
-    const provider = typeof account.properties.provider === "string" ? account.properties.provider : null;
-    const grant = await getMailAccountGrant(client, accountItemId);
-    const syncMode = grant?.syncMode ?? defaultSyncModeForProvider(provider ?? "");
-    if (!hasCalendarConsent({ syncMode, grantedScopes: grant?.grantedScopes ?? null })) return null;
-    const zone = await getSystemTimezone(client);
-    assertValidTimezone(zone);
-    const addresses = typeof account.properties.addresses === "string" ? account.properties.addresses : "";
+    const account = await readCalendarSyncAccount(client, ids, accountItemId);
+    if (account === null) return null;
     return {
       ids,
-      provider,
-      syncMode,
-      primaryAddress:
-        addresses
-          .split(/[\n,\r]+/)
-          .map((value) => value.trim())
-          .find(Boolean) ?? null,
+      account,
+      syncMode: account.syncMode,
       tracked: await listSyncedAccountCalendars(client, ids, accountItemId),
-      serverSettings: await getMailServerSettings(client, accountItemId),
-      window: syncWindow(zone, new Date()),
-      tenantTimeZone: zone,
+      window: syncWindow(account.tenantTimeZone, new Date()),
     };
   });
   if (prologue === null) {
@@ -141,27 +133,7 @@ export async function handleCalendarAccountSyncTask(
 
   const signal = AbortSignal.timeout(options.passTimeoutMs ?? CALENDAR_SYNC_PASS_TIMEOUT_MS);
   try {
-    const factory = adapters[prologue.syncMode];
-    if (factory === undefined) throw new Error(`No calendar adapter configured for sync mode ${prologue.syncMode}`);
-    // Uses `pool`: the access-log insert commits on its own, so a decrypt failure stays logged.
-    const credential = await getDecryptedCredential(pool, {
-      itemId: accountItemId,
-      actorType: "sync_worker",
-      purpose: "calendar_sync",
-    });
-    if (credential === null) throw new CalendarSyncReauthorizationRequiredError("The account has no stored credential");
-    const adapter = factory({
-      accountItemId,
-      provider: prologue.provider,
-      syncMode: prologue.syncMode,
-      primaryAddress: prologue.primaryAddress,
-      credential,
-      serverSettings: prologue.serverSettings && {
-        username: prologue.serverSettings.username,
-        caldavUrl: prologue.serverSettings.caldavUrl,
-      },
-      tenantTimeZone: prologue.tenantTimeZone,
-    });
+    const adapter = await openCalendarSyncAdapter(pool, prologue.account, adapters);
     const cursors = new Map(prologue.tracked.map((calendar) => [calendar.remoteId, calendar]));
     const fetched: FetchedCalendar[] = [];
     for (const calendar of parseRemoteCalendars(await adapter.listCalendars(signal))) {
@@ -216,7 +188,7 @@ export async function handleCalendarAccountSyncTask(
       "Calendar sync failed",
     );
     try {
-      await recordFailure(pool, accountItemId, failure, options.jobId ?? randomUUID());
+      await recordCalendarAccountFailure(pool, accountItemId, failure, options.jobId ?? randomUUID());
     } catch (recordError) {
       // The pass's own failure is what the caller must see.
       logger.error(
@@ -229,11 +201,77 @@ export async function handleCalendarAccountSyncTask(
   }
 }
 
+/** What opening an account's calendar adapter needs, read in a tenant transaction. */
+export interface CalendarSyncAccountContext {
+  accountItemId: string;
+  provider: string | null;
+  syncMode: SyncMode;
+  primaryAddress: string | null;
+  serverSettings: { username: string; caldavUrl: string | null } | null;
+  tenantTimeZone: string;
+}
+
+/** `null` when the account is gone, trashed, has Calendars off, or its OAuth grant lacks the calendar scope. */
+export async function readCalendarSyncAccount(
+  client: PoolClient,
+  ids: CalendarSyncIds,
+  accountItemId: string,
+): Promise<CalendarSyncAccountContext | null> {
+  const account = await getItemById(client, ids.mailboxesDatabaseId, accountItemId);
+  if (!account || account.deletedAt || !areCalendarsEnabled(account.properties)) return null;
+  const provider = typeof account.properties.provider === "string" ? account.properties.provider : null;
+  const grant = await getMailAccountGrant(client, accountItemId);
+  const syncMode = grant?.syncMode ?? defaultSyncModeForProvider(provider ?? "");
+  if (!hasCalendarConsent({ syncMode, grantedScopes: grant?.grantedScopes ?? null })) return null;
+  const zone = await getSystemTimezone(client);
+  assertValidTimezone(zone);
+  const addresses = typeof account.properties.addresses === "string" ? account.properties.addresses : "";
+  const serverSettings = await getMailServerSettings(client, accountItemId);
+  return {
+    accountItemId,
+    provider,
+    syncMode,
+    primaryAddress:
+      addresses
+        .split(/[\n,\r]+/)
+        .map((value) => value.trim())
+        .find(Boolean) ?? null,
+    serverSettings: serverSettings && { username: serverSettings.username, caldavUrl: serverSettings.caldavUrl },
+    tenantTimeZone: zone,
+  };
+}
+
+/**
+ * Decrypts the account's credential (`calendar_sync` in `credential_access_log`) and builds the adapter of its sync
+ * mode; call it with no transaction open. No stored credential is `CalendarSyncReauthorizationRequiredError`.
+ */
+export async function openCalendarSyncAdapter(
+  pool: Pool,
+  account: CalendarSyncAccountContext,
+  adapters: CalendarSyncAdapterRegistry,
+): Promise<CalendarSyncAdapter> {
+  const factory = adapters[account.syncMode];
+  if (factory === undefined) throw new Error(`No calendar adapter configured for sync mode ${account.syncMode}`);
+  // Uses `pool`: the access-log insert commits on its own, so a decrypt failure stays logged.
+  const credential = await getDecryptedCredential(pool, {
+    itemId: account.accountItemId,
+    actorType: "sync_worker",
+    purpose: "calendar_sync",
+  });
+  if (credential === null) throw new CalendarSyncReauthorizationRequiredError("The account has no stored credential");
+  return factory({ ...account, credential });
+}
+
 /**
  * Under the account's guard, so it cannot recreate the state of an account whose Calendars were switched off or
  * which was removed meanwhile: then nothing is written. A held guard skips the record.
  */
-async function recordFailure(pool: Pool, accountItemId: string, failure: FailureRecord, jobId: string): Promise<void> {
+export async function recordCalendarAccountFailure(
+  pool: Pool,
+  accountItemId: string,
+  failure: FailureRecord,
+  occurrenceKey: string,
+): Promise<void> {
   await withTransaction(pool, async (client) => {
     try {
       await lockCalendarAccountSync(client, accountItemId, { maxWaitMs: CALENDAR_SYNC_GUARD_WAIT_MS });
@@ -257,7 +295,7 @@ async function recordFailure(pool: Pool, accountItemId: string, failure: Failure
       sourceId: accountItemId,
       dedupeKey: calendarProblemKey(accountItemId),
       since: failingSince,
-      occurrenceKey: jobId,
+      occurrenceKey,
     });
   });
 }

@@ -1,5 +1,6 @@
 // The calendar sync's side tables: `calendar_account_sync_state` (per account), `calendar_remote_state` (per account
-// calendar) and `event_remote_state` (per synced Event). This module is their only writer.
+// calendar), `event_remote_state` (per synced Event) and `calendar_event_push_state` (per Event with a local change
+// for its provider). This module is their only writer.
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -347,6 +348,7 @@ export async function upsertEventRemoteState(
     `INSERT INTO event_remote_state (event_item_id, calendar_item_id, remote_id, remote_href, etag, base_snapshot)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
      ON CONFLICT (tenant_id, event_item_id) DO UPDATE SET
+       calendar_item_id = EXCLUDED.calendar_item_id, remote_id = EXCLUDED.remote_id,
        remote_href = EXCLUDED.remote_href, etag = EXCLUDED.etag, base_snapshot = EXCLUDED.base_snapshot`,
     [
       input.eventItemId,
@@ -391,4 +393,269 @@ export async function listLiveCalendarEventIds(
     [ids.calendarEventsRelationDefinitionId, calendarItemId, ids.eventsDatabaseId, limit],
   );
   return rows.map((row) => row.id);
+}
+
+/** `null` when the Event's remote state row is gone. */
+export async function getEventRemoteState(
+  client: Queryable,
+  eventItemId: string,
+): Promise<(StoredRemoteEvent & { calendarItemId: string }) | null> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT e.event_item_id, e.calendar_item_id, e.remote_id, e.remote_href, e.etag, e.base_snapshot,
+            (i.deleted_at IS NOT NULL) AS deleted
+       FROM event_remote_state e JOIN items i ON i.tenant_id = e.tenant_id AND i.id = e.event_item_id
+      WHERE e.event_item_id = $1`,
+    [eventItemId],
+  );
+  if (rows[0] === undefined) return null;
+  const row = eventRemoteRow.extend({ calendar_item_id: z.uuid() }).parse(rows[0]);
+  return {
+    eventItemId: row.event_item_id,
+    calendarItemId: row.calendar_item_id,
+    remoteId: row.remote_id,
+    href: row.remote_href,
+    etag: row.etag,
+    baseSnapshot: row.base_snapshot,
+    deleted: row.deleted,
+  };
+}
+
+/** The Event that holds `remoteId` in the calendar, if any. */
+export async function findEventByRemoteId(
+  client: Queryable,
+  calendarItemId: string,
+  remoteId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ event_item_id: string }>(
+    "SELECT event_item_id FROM event_remote_state WHERE calendar_item_id = $1 AND remote_id = $2",
+    [calendarItemId, remoteId],
+  );
+  return rows[0]?.event_item_id ?? null;
+}
+
+/** `null` for a calendar the sync does not track. */
+export async function getCalendarRemoteState(
+  client: Queryable,
+  calendarItemId: string,
+): Promise<{ remoteId: string; remoteUrl: string | null } | null> {
+  const { rows } = await client.query<{ remote_id: string; remote_url: string | null }>(
+    "SELECT remote_id, remote_url FROM calendar_remote_state WHERE calendar_item_id = $1",
+    [calendarItemId],
+  );
+  const row = rows[0];
+  return row === undefined ? null : { remoteId: row.remote_id, remoteUrl: row.remote_url };
+}
+
+/** The account (Mailboxes item) of an account calendar, through its `account` edge. */
+export async function getAccountOfCalendar(
+  client: Queryable,
+  ids: CalendarSyncIds,
+  calendarItemId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT CASE WHEN r.item_a = $2 THEN r.item_b ELSE r.item_a END AS id
+       FROM item_relations r
+      WHERE r.relation_definition_id = $1 AND (r.item_a = $2 OR r.item_b = $2)
+      ORDER BY 1 LIMIT 1`,
+    [ids.accountRelationDefinitionId, calendarItemId],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/** An Event's live account calendar, its `readOnly` flag and whether the sync tracks it; `null` for any other. */
+export async function getEventAccountCalendar(
+  client: Queryable,
+  ids: CalendarSyncIds,
+  eventItemId: string,
+): Promise<{ calendarItemId: string; readOnly: boolean; tracked: boolean } | null> {
+  const { rows } = await client.query<{ id: string; read_only: boolean; tracked: boolean }>(
+    `SELECT c.id, c.properties->'readOnly' = 'true'::jsonb AS read_only, s.calendar_item_id IS NOT NULL AS tracked
+       FROM item_relations r
+       JOIN items c ON c.id = CASE WHEN r.item_a = $2 THEN r.item_b ELSE r.item_a END
+       LEFT JOIN calendar_remote_state s ON s.tenant_id = c.tenant_id AND s.calendar_item_id = c.id
+      WHERE r.relation_definition_id = $1 AND (r.item_a = $2 OR r.item_b = $2)
+        AND c.database_id = $3 AND c.deleted_at IS NULL AND c.properties->>'kind' = 'account'
+      ORDER BY c.id LIMIT 1`,
+    [ids.calendarEventsRelationDefinitionId, eventItemId, ids.calendarsDatabaseId],
+  );
+  const row = rows[0];
+  return row === undefined ? null : { calendarItemId: row.id, readOnly: row.read_only, tracked: row.tracked };
+}
+
+export const CALENDAR_EVENT_PUSH_OPERATIONS = ["create", "update", "delete", "move"] as const;
+export type CalendarEventPushOperation = (typeof CALENDAR_EVENT_PUSH_OPERATIONS)[number];
+export const CALENDAR_EVENT_PUSH_STATUSES = ["pending", "sent", "conflict", "failed"] as const;
+export type CalendarEventPushStatus = (typeof CALENDAR_EVENT_PUSH_STATUSES)[number];
+
+const pushStateRow = z.object({
+  operation: z.enum(CALENDAR_EVENT_PUSH_OPERATIONS),
+  desired_revision: z.coerce.number().int(),
+  status: z.enum(CALENDAR_EVENT_PUSH_STATUSES),
+  attempts: z.number().int(),
+  last_error_code: z.string().nullable(),
+});
+
+export interface CalendarEventPushState {
+  operation: CalendarEventPushOperation;
+  desiredRevision: number;
+  status: CalendarEventPushStatus;
+  attempts: number;
+  lastErrorCode: string | null;
+}
+
+/**
+ * Records a local change for the provider: a new row, or the next revision of an existing one, `pending` with no
+ * attempts. Runs in the Event write's transaction, which holds the Event's row lock. Returns the new revision.
+ */
+export async function recordEventPushIntent(
+  client: Queryable,
+  eventItemId: string,
+  operation: CalendarEventPushOperation,
+): Promise<number> {
+  const { rows } = await client.query<{ desired_revision: string }>(
+    `INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, $2)
+     ON CONFLICT (tenant_id, event_item_id) DO UPDATE SET
+       operation = EXCLUDED.operation, desired_revision = calendar_event_push_state.desired_revision + 1,
+       status = 'pending', attempts = 0, last_error_code = NULL, updated_at = now()
+     RETURNING desired_revision`,
+    [eventItemId, operation],
+  );
+  const revision = rows[0]?.desired_revision;
+  if (revision === undefined) throw new Error("The calendar event push upsert returned no row");
+  return Number(revision);
+}
+
+export async function getEventPushState(
+  client: Queryable,
+  eventItemId: string,
+): Promise<CalendarEventPushState | null> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT operation, desired_revision, status, attempts, last_error_code
+       FROM calendar_event_push_state WHERE event_item_id = $1`,
+    [eventItemId],
+  );
+  if (rows[0] === undefined) return null;
+  const row = pushStateRow.parse(rows[0]);
+  return {
+    operation: row.operation,
+    desiredRevision: row.desired_revision,
+    status: row.status,
+    attempts: row.attempts,
+    lastErrorCode: row.last_error_code,
+  };
+}
+
+/**
+ * Ends the push of `desiredRevision`; `false` (nothing written) when a newer change was recorded meanwhile, whose own
+ * push is queued.
+ */
+export async function recordEventPushOutcome(
+  client: Queryable,
+  eventItemId: string,
+  desiredRevision: number,
+  outcome: { status: Exclude<CalendarEventPushStatus, "pending">; errorCode: string | null },
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE calendar_event_push_state SET status = $3, last_error_code = $4, updated_at = now()
+      WHERE event_item_id = $1 AND desired_revision = $2`,
+    [eventItemId, desiredRevision, outcome.status, outcome.errorCode],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Counts a failed attempt of `desiredRevision`, which stays `pending`; returns the attempts so far, or `null` when a
+ * newer change was recorded meanwhile.
+ */
+export async function recordEventPushAttemptFailure(
+  client: Queryable,
+  eventItemId: string,
+  desiredRevision: number,
+  errorCode: string,
+): Promise<number | null> {
+  const result = await client.query<{ attempts: number }>(
+    `UPDATE calendar_event_push_state SET attempts = attempts + 1, last_error_code = $3, updated_at = now()
+      WHERE event_item_id = $1 AND desired_revision = $2 AND status = 'pending'
+      RETURNING attempts`,
+    [eventItemId, desiredRevision, errorCode],
+  );
+  return (result.rowCount ?? 0) === 0 ? null : (result.rows[0]?.attempts ?? null);
+}
+
+/** The codes of push failures only a new sign-in or grant ends; a sync pass that reaches the provider re-queues them. */
+export const ACCOUNT_PUSH_ERROR_CODES = ["reauthorizationRequired", "consentRequired"] as const;
+
+/**
+ * Pending pushes of Events synced from, or now placed in, the given calendars that last failed with an account
+ * error (`ACCOUNT_PUSH_ERROR_CODES`), in id order.
+ */
+export async function listAccountWaitingEventPushes(
+  client: Queryable,
+  ids: CalendarSyncIds,
+  calendarItemIds: readonly string[],
+): Promise<string[]> {
+  if (calendarItemIds.length === 0) return [];
+  const { rows } = await client.query<{ event_item_id: string }>(
+    `SELECT p.event_item_id FROM calendar_event_push_state p
+      WHERE p.status = 'pending' AND p.last_error_code = ANY($3::text[])
+        AND (EXISTS (SELECT 1 FROM event_remote_state e
+                      WHERE e.tenant_id = p.tenant_id AND e.event_item_id = p.event_item_id
+                        AND e.calendar_item_id = ANY($2::uuid[]))
+             OR EXISTS (SELECT 1 FROM item_relations r
+                         WHERE r.relation_definition_id = $1
+                           AND ((r.item_a = p.event_item_id AND r.item_b = ANY($2::uuid[]))
+                                OR (r.item_b = p.event_item_id AND r.item_a = ANY($2::uuid[])))))
+      ORDER BY p.event_item_id`,
+    [ids.calendarEventsRelationDefinitionId, calendarItemIds, ACCOUNT_PUSH_ERROR_CODES],
+  );
+  return rows.map((row) => row.event_item_id);
+}
+
+export interface EventPushContext {
+  /** The Event's live account calendar, `null` without one. */
+  calendar: { calendarItemId: string; readOnly: boolean; tracked: boolean } | null;
+  /** The calendar of the Event's remote state, `null` when the provider does not have it as far as the sync knows. */
+  remoteCalendarItemId: string | null;
+  hasPushState: boolean;
+}
+
+/** One round trip for the write hooks of every Event write, account calendar or not. */
+export async function readEventPushContext(client: Queryable, eventItemId: string): Promise<EventPushContext> {
+  const { rows } = await client.query<{
+    calendar_id: string | null;
+    read_only: boolean | null;
+    tracked: boolean | null;
+    remote_calendar_id: string | null;
+    has_push_state: boolean;
+  }>(
+    `WITH definition AS (
+       SELECT (p.config->>'relationDefinitionId')::uuid AS id
+         FROM properties p JOIN databases d ON d.id = p.database_id AND d.tenant_id = p.tenant_id
+        WHERE d.system AND d.owner_module_id = $2 AND p.key = 'events'
+     ), calendar AS (
+       SELECT c.id, c.properties->'readOnly' = 'true'::jsonb AS read_only,
+              EXISTS (SELECT 1 FROM calendar_remote_state s
+                       WHERE s.tenant_id = c.tenant_id AND s.calendar_item_id = c.id) AS tracked
+         FROM item_relations r
+         JOIN definition ON definition.id = r.relation_definition_id
+         JOIN items c ON c.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
+        WHERE (r.item_a = $1 OR r.item_b = $1) AND c.deleted_at IS NULL AND c.properties->>'kind' = 'account'
+        ORDER BY c.id LIMIT 1
+     )
+     SELECT calendar.id AS calendar_id, calendar.read_only, calendar.tracked,
+            (SELECT e.calendar_item_id FROM event_remote_state e WHERE e.event_item_id = $1) AS remote_calendar_id,
+            EXISTS (SELECT 1 FROM calendar_event_push_state p WHERE p.event_item_id = $1) AS has_push_state
+       FROM (SELECT 1) one LEFT JOIN calendar ON true`,
+    [eventItemId, CALENDARS_MODULE_ID],
+  );
+  const row = rows[0];
+  if (row === undefined) throw new Error("The Event push context query returned no row");
+  return {
+    calendar:
+      row.calendar_id === null
+        ? null
+        : { calendarItemId: row.calendar_id, readOnly: row.read_only === true, tracked: row.tracked === true },
+    remoteCalendarItemId: row.remote_calendar_id,
+    hasPushState: row.has_push_state,
+  };
 }

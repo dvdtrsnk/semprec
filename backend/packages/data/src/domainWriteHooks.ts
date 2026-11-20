@@ -94,6 +94,14 @@ import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
 import { registerCalendarFeedConsumer } from "./calendar/calendarSubscriptionSweep.js";
 import { importSubscribedEvents } from "./calendar/subscribedEventsImport.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
+import { prepareZonedEventEdit, zonedEventEditTransform } from "./calendar/zonedEventEdit.js";
+import {
+  eventPushEdgeChangedHook,
+  eventPushItemCreateHook,
+  eventPushItemDeleteHook,
+  eventPushItemRestoreHook,
+  eventPushItemUpdateHook,
+} from "./calendar/sync/eventPushHooks.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { nextOccurrenceDateTransform, prepareNextOccurrenceDate } from "./calendar/nextOccurrenceDateTransform.js";
 import {
@@ -261,6 +269,8 @@ const itemPreWriteTransforms: readonly (readonly [string, ItemPreWriteTransform,
   ],
   // Events: the time transform first, so the iCalendar sequence compares normalized times.
   [EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime],
+  // A user's or agent's time edit of an Event with its own zone, read in the tenant's zone, is stored in the Event's.
+  [EVENTS_MODULE_ID, zonedEventEditTransform, prepareZonedEventEdit],
   [EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity],
   // A `recurrence` edit of a synced series clears its raw rule, before the next occurrence day reads the rule.
   [EVENTS_MODULE_ID, syncedRecurrenceTransform, prepareSyncedRecurrence],
@@ -333,6 +343,8 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   eventReminderValuesItemCreateHook,
   // A new Event gets its calendar, after every Events rule above accepted it.
   defaultCalendarCreateHook,
+  // An Event created in a writable account calendar is queued for its provider, once its calendar edge exists.
+  eventPushItemCreateHook,
   // Calendars: name, colour and single-default rules.
   calendarItemCreateHook,
   personBirthdayItemCreateHook,
@@ -387,6 +399,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   sleepResyncUpdateHook,
   // A moved Event queues an updated invitation.
   eventInvitationItemUpdateHook,
+  // A change of an account calendar Event's provider fields is queued for its provider, after every rule above.
+  eventPushItemUpdateHook,
   remindersResyncUpdateHook,
   // An open Processing proposals card that refers to an archived project becomes `invalid` in the same transaction.
   proposalReferenceItemUpdateHook,
@@ -425,6 +439,8 @@ const itemDeleteHooks: readonly ItemDeleteHook[] = [
   sleepResyncDeleteHook,
   // A trashed Event queues a cancellation.
   eventInvitationItemDeleteHook,
+  // A trashed account calendar Event is queued for deletion at its provider.
+  eventPushItemDeleteHook,
   transcriptProblemDeleteHook,
   remindersResyncDeleteHook,
   proposalReferenceItemDeleteHook,
@@ -454,6 +470,8 @@ const itemRestoreHooks: readonly ItemRestoreHook[] = [
   taskSeriesItemRestoreHook,
   sleepResyncRestoreHook,
   remindersResyncRestoreHook,
+  // A restored account calendar Event is queued for its provider again.
+  eventPushItemRestoreHook,
   // A Processing proposals card returns to `proposed` when the item it refers to comes back.
   proposalReferenceItemRestoreHook,
 ];
@@ -514,6 +532,8 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // It touches nothing else, so its position does not matter.
   transcriptSpeakerSuggestionEdgeChangedHook,
   threadTaskPeopleEdgeChangedHook,
+  // An Event moved into, out of or between account calendars is queued for its providers.
+  eventPushEdgeChangedHook,
 ];
 
 /** A user or agent edge write, before the write ends a value link; lock only. */

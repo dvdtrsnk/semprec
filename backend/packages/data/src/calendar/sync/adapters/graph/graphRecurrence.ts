@@ -3,6 +3,7 @@
 // occurrences, or none); RRULE parts outside what a pattern can say are refused on the way to Graph.
 import { DateTime } from "luxon";
 import { z } from "zod";
+import { CalendarSyncWriteUnsupportedError } from "../../adapter.js";
 
 const GRAPH_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
 type GraphDay = (typeof GRAPH_DAYS)[number];
@@ -33,7 +34,7 @@ export const graphRecurrenceSchema = z.object({
 export type GraphRecurrence = z.infer<typeof graphRecurrenceSchema>;
 
 /** A write Graph cannot represent: an RRULE outside what a pattern says, an override without its series, … */
-export class GraphCalendarWriteUnsupportedError extends Error {
+export class GraphCalendarWriteUnsupportedError extends CalendarSyncWriteUnsupportedError {
   constructor(message: string) {
     super(message);
     this.name = "GraphCalendarWriteUnsupportedError";

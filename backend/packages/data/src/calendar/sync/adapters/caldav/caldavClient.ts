@@ -294,6 +294,20 @@ export async function fetchResources(
   return resources;
 }
 
+/** One resource by a plain GET; `null` when the server no longer has it (404, 410). */
+export async function fetchResource(session: CalDavSession, href: URL): Promise<CalendarResourceText | null> {
+  const response = await session.fetch(href.href, { method: "GET", headers: { Accept: ICALENDAR_TYPE } });
+  if (response.status === 404 || response.status === 410) {
+    await response.body?.cancel();
+    return null;
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw statusFailure(response.status);
+  }
+  return { href, etag: response.headers.get("etag"), text: await response.text() };
+}
+
 export type SyncDelta =
   | { kind: "changes"; syncToken: string; changed: URL[]; deleted: number }
   /** The token is no longer valid, or the server has no sync-collection: a full fetch follows. */

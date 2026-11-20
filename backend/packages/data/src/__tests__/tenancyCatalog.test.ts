@@ -94,6 +94,7 @@ const TENANT_TABLES = [
   "calendar_remote_state",
   "event_remote_state",
   "calendar_account_sync_state",
+  "calendar_event_push_state",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;

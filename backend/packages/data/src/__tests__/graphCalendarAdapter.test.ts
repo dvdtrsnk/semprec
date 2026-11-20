@@ -568,6 +568,81 @@ describe("Microsoft Graph calendar adapter", () => {
       expect(graph.graphRequests()).toEqual([]);
     });
 
+    it("makes a new override by changing the series' occurrence at its original start", async () => {
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "PATCH /me/events/AAMkSeries-standup-occ-1130": () => saved("AAMkSeries-standup-occ-1130", 'W/"o2"'),
+      });
+      const override = remoteFields({
+        name: "Standup, later",
+        date: "2026-11-30",
+        timeFrom: "10:00",
+        timeTo: "10:15",
+        timeZone: "Europe/Prague",
+        recurrenceId: "2026-11-30T09:00",
+      });
+      const seriesRef = { remoteId: "AAMkSeries-standup", href: null, etag: 'W/"s1"' };
+      expect(await adapterOn(graph).putEvent(WORK, { ref: null, fields: override, seriesRef }, signal())).toEqual({
+        remoteId: "AAMkSeries-standup-occ-1130",
+        href: null,
+        etag: 'W/"o2"',
+      });
+      const patch = graph.graphRequests().find((request) => request.method === "PATCH");
+      expect(patch?.headers.get("if-match")).toBe('W/"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA=="');
+      expect(patch?.body).toMatchObject({
+        subject: "Standup, later",
+        start: { dateTime: "2026-11-30T10:00:00", timeZone: "Central Europe Standard Time" },
+      });
+      expect(patch?.body).not.toHaveProperty("recurrence");
+    });
+
+    it("refuses an override of an occurrence the series does not have", async () => {
+      const graph = new FakeGraph(workRoutes());
+      const seriesRef = { remoteId: "AAMkSeries-standup", href: null, etag: null };
+      const override = remoteFields({
+        date: "2026-11-18",
+        timeFrom: "10:00",
+        timeZone: "Europe/Prague",
+        recurrenceId: "2026-11-18T09:00",
+      });
+      await expect(
+        adapterOn(graph).putEvent(WORK, { ref: null, fields: override, seriesRef }, signal()),
+      ).rejects.toBeInstanceOf(GraphCalendarWriteUnsupportedError);
+      expect(graph.graphRequests().filter((request) => request.method === "PATCH")).toEqual([]);
+    });
+
+    it("reads one Event back: a single one mapped, an override through its series, and a gone one as null", async () => {
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/events/AAMkEv-review": () =>
+          json({
+            id: "AAMkEv-review",
+            "@odata.etag": 'W/"r3"',
+            type: "singleInstance",
+            subject: "Review",
+            start: { dateTime: "2026-11-23T09:00:00", timeZone: "UTC" },
+            end: { dateTime: "2026-11-23T10:00:00", timeZone: "UTC" },
+            originalStartTimeZone: "Central Europe Standard Time",
+          }),
+        "GET /me/events/AAMkSeries-standup-exc-1104": () =>
+          json({ id: "AAMkSeries-standup-exc-1104", type: "exception", seriesMasterId: "AAMkSeries-standup" }),
+        "GET /me/events/AAMkEv-gone": () => json({}, 404),
+      });
+      const adapter = adapterOn(graph);
+      const options = { window: WINDOW, signal: signal() };
+      expect(
+        await adapter.getEvent(WORK, { remoteId: "AAMkEv-review", href: null, etag: null }, options),
+      ).toMatchObject({
+        remoteId: "AAMkEv-review",
+        etag: 'W/"r3"',
+        fields: { name: "Review", date: "2026-11-23", timeFrom: "10:00", timeTo: "11:00", timeZone: "Europe/Prague" },
+      });
+      expect(
+        await adapter.getEvent(WORK, { remoteId: "AAMkSeries-standup-exc-1104", href: null, etag: null }, options),
+      ).toMatchObject({ seriesRemoteId: "AAMkSeries-standup", fields: { recurrenceId: "2026-11-04T09:00" } });
+      expect(await adapter.getEvent(WORK, { remoteId: "AAMkEv-gone", href: null, etag: null }, options)).toBeNull();
+    });
+
     it("deletes with If-Match, and an Event already gone is deleted", async () => {
       const graph = new FakeGraph({ "DELETE /me/events/AAMkEv-review": () => json({}, 404) });
       await adapterOn(graph).deleteEvent(WORK, { remoteId: "AAMkEv-review", href: null, etag: 'W/"r1"' }, signal());

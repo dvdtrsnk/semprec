@@ -902,6 +902,37 @@ ALTER TABLE ONLY public.calendar_account_sync_state
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- calendar_event_push_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The desired state of an account calendar Event that a user's or agent's change must bring to its provider: the
+-- operation last recorded, a revision every recorded change raises, and the push job's outcome. Written in the
+-- transaction of the Event's write and by the `calendarEventPush` job.
+CREATE TABLE public.calendar_event_push_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    operation text NOT NULL,
+    desired_revision bigint DEFAULT 1 NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT calendar_event_push_state_operation_check CHECK ((operation = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'move'::text]))),
+    CONSTRAINT calendar_event_push_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'sent'::text, 'conflict'::text, 'failed'::text]))),
+    CONSTRAINT calendar_event_push_state_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT calendar_event_push_state_desired_revision_check CHECK ((desired_revision >= 1))
+);
+
+COMMENT ON TABLE public.calendar_event_push_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE INDEX calendar_event_push_state_pending_idx ON public.calendar_event_push_state USING btree (tenant_id, event_item_id) WHERE (status = 'pending'::text);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_event_push_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- calendar_feed_state
 -- ----------------------------------------------------------------------------------------------------
 
@@ -2087,7 +2118,7 @@ CREATE TABLE public.notifications (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     resolved_at timestamp with time zone,
     body text,
-    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text, 'calendar_event_added'::text, 'calendar_event_changed'::text, 'calendar_event_cancelled'::text])))
+    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text, 'calendar_event_added'::text, 'calendar_event_changed'::text, 'calendar_event_cancelled'::text, 'calendar_change_overwritten'::text])))
 );
 
 COMMENT ON TABLE public.notifications IS 'semprec:tenancy=tenant';
@@ -3149,6 +3180,9 @@ ALTER TABLE ONLY public.blobs
 ALTER TABLE ONLY public.calendar_account_sync_state
     ADD CONSTRAINT calendar_account_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3581,6 +3615,9 @@ ALTER TABLE ONLY public.agent_database_grants
 ALTER TABLE ONLY public.calendar_account_sync_state
     ADD CONSTRAINT calendar_account_sync_state_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -3771,6 +3808,12 @@ ALTER TABLE public.calendar_account_sync_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.calendar_account_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.calendar_account_sync_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_event_push_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_event_push_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_event_push_state USING (true) WITH CHECK (true);
 
 ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 

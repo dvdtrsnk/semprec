@@ -132,6 +132,9 @@ export const CORE_TASK_NAMES = {
   // Trashes, in chunks, the calendars an account no longer syncs and their Events; job key
   // `calendar-account-cleanup:<accountItemId>`.
   CALENDAR_ACCOUNT_CLEANUP: "calendarAccountCleanup",
+  // Brings a user's or agent's change of an account calendar Event to its provider; job key
+  // `calendar-event-push:<eventItemId>`, replaced by every newer change.
+  CALENDAR_EVENT_PUSH: "calendarEventPush",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -196,6 +199,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "api",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "api",
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "api",
 };
 
 /** The closed set of task names the agents runtime may run. */
@@ -270,6 +274,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "system",
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "tenant",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

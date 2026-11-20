@@ -35,6 +35,7 @@ import { assertWriterCascadeAccess, collectCascadeRows } from "./itemSubtreeAcce
 function hookWriterFields(writer: WriterIdentity | undefined, actingUserId: string | undefined) {
   return {
     writerKind: writer?.writerKind ?? "system",
+    ...(writer?.systemProcess === undefined ? {} : { systemProcess: writer.systemProcess }),
     ...(writer?.agentRunId === undefined ? {} : { agentRunId: writer.agentRunId }),
     ...(actingUserId === undefined ? {} : { actingUserId }),
   };

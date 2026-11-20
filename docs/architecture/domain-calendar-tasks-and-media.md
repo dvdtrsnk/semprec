@@ -104,7 +104,12 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   by `toTimelineItems`): the timeline and its consumers (agenda, agent tool) and the reminders feed. Their candidate
   reads take one day more on each side for a zoned Event and filter the converted days. A stored zone that is no
   IANA name leaves the row out with a log line (`property: timeZone`).
-- A user write of the time fields stores the values as sent, in the Event's zone.
+- A user's or agent's edit of `date`, `endDate`, `timeFrom` or `timeTo` is the tenant's wall clock, as every client
+  shows it. On a timed Event whose zone differs from the tenant's, the Events pre-write transform
+  `zonedEventEditTransform` (`calendar/zonedEventEdit.ts`, after the time transform) lays the edited values over the
+  stored ones shown in the tenant's zone and stores the result in the Event's zone, so the Event keeps its zone and
+  its unedited times their instant. An all-day result is not moved. The calendar sync and other system writers store
+  their values as sent.
 
 ### Recurrence model (Tasks and Events)
 
@@ -197,7 +202,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
 `event_remote_state` (`calendarSyncStore.ts` is their only writer) and the only writer as `CALENDAR_SYNC_WRITER`.
 
 - **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window })` →
-  `{ full, upserts, deletions, nextSyncState }`, `putEvent`, `deleteEvent`, each honouring the pass's deadline signal
+  `{ full, upserts, deletions, nextSyncState }`, `putEvent` (a new override names its series' `seriesRef`),
+  `deleteEvent`, `getEvent` (one Event as the provider has it now) and the optional `moveEvent`, each honouring the
+  pass's deadline signal
   (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
   `CalendarSyncEventConflictError` of every adapter; a new Event's `icalUid` becomes its Google `iCalUID` or CalDAV
   `UID` (Graph assigns its own). The factory gets the account and the tenant's zone. An adapter holds no database
@@ -220,7 +227,7 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
   the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
   the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
-  changed in the resource as the server has it now, adds a generated VTIMEZONE for a zone the resource lacks, and is
+  changed in the resource as the server has it now (read by a plain GET), adds a generated VTIMEZONE for a zone the resource lacks, and is
   conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
   stored one is `CalendarSyncEventConflictError`, not a provider error. Deleting an override cancels the occurrence
   in its series' resource. The password connect route verifies a body's `caldavUrl` by the same discovery
@@ -258,8 +265,34 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each Event runs in a
   savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass `allowedSystemKeys` for the
   provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass `systemOwnerProcess: "calendar"`.
-  The cursors, `ok` state and the resolution of the account's problem commit with the writes. The result lists the
-  Events added, changed and cancelled and whether this was the account's initial sync, for notifications.
+  An Event whose push is pending (read under its row lock, after the calendar's share lock) is left as it is and its
+  push re-queued: the push merges the provider's change in. The pushes that waited for a new sign-in or grant are
+  re-queued too. The cursors, `ok` state and the resolution of the account's problem commit with the writes. The
+  result lists the Events added, changed and cancelled and whether this was the account's initial sync, for
+  notifications.
+- **Write-back** (`eventPushHooks.ts`, `eventPushJob.ts`, `eventMerge.ts`). A create, a change of a provider field
+  (`name`, times, `place`, `description`, `url`, `alertMinutes`, `recurrence`), a trash, a restore or a calendar edge
+  change of an Event by any writer but `calendarSync` (agents' writes after their usual approval included), in or out
+  of a writable tracked account calendar, records the desired state in `calendar_event_push_state` (`operation`
+  `create` | `update` | `delete` | `move`, a `desired_revision` every change raises, `status` `pending` | `sent` |
+  `conflict` | `failed`, `attempts`, `last_error_code`) in the write's transaction and queues `calendarEventPush` (key
+  `calendar-event-push:<event>`, replaced). The job decides from the Event, its remote state and its calendar, with
+  no transaction open calls the adapter, and stores each result in its own transaction under the account's guard and
+  the Event's locks, setting the status only while its revision is current. What it sends: the Event's fields, a
+  timed Event without a zone in the tenant's, a `recurrence` rule as its RRULE; a new override as a change of its
+  series' occurrence (`seriesRef`); a cancelled occurrence the provider never had as an override as an exception date
+  of its series. After a push the sent fields are the new `base_snapshot`, so the next fetch of them is no change. A
+  move to another calendar of the account is the adapter's `moveEvent` (Google) and then the changes, otherwise a
+  delete and a create with the Event's remote id as UID; across accounts a delete and a create; a series or an
+  override is not moved (`failed`, `moveUnsupported`). A refused conditional write reads the provider's version
+  (`getEvent`) and merges per field against the base: the local value where the provider left it, the provider's
+  where it changed; a field changed on both sides to different values takes the provider's and writes one
+  `calendar_change_overwritten` notification (category `calendarChanges`, deduped by the provider's version). The
+  merge is applied here as `calendarSync`, then pushed once more; a second refusal is `conflict`. A provider deletion
+  wins over a local change (the Event is trashed). A provider or unexpected failure is retried by the queue and is
+  `failed` after 5 attempts; a write the provider cannot represent is `failed` (`unsupported`) at once; a refused
+  credential or grant keeps the push pending, records the account's status and Semp problem as a failed pass does,
+  and waits for a pass that reaches the provider.
 - **Change notifications** (`calendarChangeNotifications.ts`), written in the apply's transaction. Outside the
   account's initial sync, the Events added, cancelled, or changed in `name`, date, time, `timeZone` or `place` in a
   calendar that was tracked before the pass and has `notify` on become `calendar_event_added`, `calendar_event_changed`

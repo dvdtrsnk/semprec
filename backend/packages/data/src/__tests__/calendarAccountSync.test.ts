@@ -454,9 +454,10 @@ describe("calendar sync of internet accounts", () => {
     const accountId = await enableAndSync(fake);
     const lunch = await itemByRemoteId("lunch");
     const { eventsDatabaseId } = await ids();
+    // A field the provider does not store, so the edit queues no push and the pass applies the Event.
     await runInTenant(tenant, () =>
       createChokePoint(runtime).updateItem(
-        { databaseId: eventsDatabaseId, itemId: lunch.id, propertiesPatch: { place: "Rooftop" } },
+        { databaseId: eventsDatabaseId, itemId: lunch.id, propertiesPatch: { travelMinutes: 15 } },
         userIds.get(tenant),
         userIds.get(tenant),
         USER_WRITER,
@@ -475,7 +476,7 @@ describe("calendar sync of internet accounts", () => {
       cancelled: [],
       changed: [{ eventItemId: lunch.id, remoteId: "lunch" }],
     });
-    expect((await itemByRemoteId("lunch")).properties).toMatchObject({ name: "Team lunch", place: "Rooftop" });
+    expect((await itemByRemoteId("lunch")).properties).toMatchObject({ name: "Team lunch", travelMinutes: 15 });
     expect(await itemByRemoteId("new-year")).toEqual(newYearBefore);
     const events = (await remoteState()).events;
     expect(events.find((row) => row.remote_id === "new-year")?.etag).toBe('"n2"');

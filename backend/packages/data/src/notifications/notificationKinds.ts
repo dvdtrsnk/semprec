@@ -19,6 +19,7 @@ export const NOTIFICATION_KINDS = [
   "calendar_event_added",
   "calendar_event_changed",
   "calendar_event_cancelled",
+  "calendar_change_overwritten",
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -51,6 +52,8 @@ export const NOTIFICATION_KIND_POLICY: Record<NotificationKind, NotificationKind
   calendar_event_added: { category: "calendarChanges", push: true },
   calendar_event_changed: { category: "calendarChanges", push: true },
   calendar_event_cancelled: { category: "calendarChanges", push: true },
+  // A local change of a synced Event that lost to the provider's change of the same field.
+  calendar_change_overwritten: { category: "calendarChanges", push: true },
   // Stored for the in-app list only; the Semp problem they raise is what gets pushed.
   mail_sync_error: { category: "problems", severity: "critical", push: false },
   mail_sync_stalled: { category: "problems", severity: "critical", push: false },

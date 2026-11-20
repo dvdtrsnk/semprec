@@ -53,6 +53,7 @@
   "notification.calendar_event_added.title": "{calendar}",
   "notification.calendar_event_changed.title": "{calendar}",
   "notification.calendar_event_cancelled.title": "{calendar}",
+  "notification.calendar_change_overwritten.title": "{calendar}",
   "calendarChange.added.timed": "Nová událost {event}, {day} {time}",
   "calendarChange.added.timedByPerson": "{person} přidal(a) {event}, {day} {time}",
   "calendarChange.added.allDay": "Nová událost {event}, {day}",
@@ -73,5 +74,6 @@
   "calendarChange.weekday.thu": "čt",
   "calendarChange.weekday.fri": "pá",
   "calendarChange.weekday.sat": "so",
-  "calendarChange.weekday.sun": "ne"
+  "calendarChange.weekday.sun": "ne",
+  "calendarChange.overwritten": "Vaši změnu události {event} přepsala změna provedená jinde"
 }

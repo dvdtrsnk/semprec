@@ -53,6 +53,7 @@
   "notification.calendar_event_added.title": "{calendar}",
   "notification.calendar_event_changed.title": "{calendar}",
   "notification.calendar_event_cancelled.title": "{calendar}",
+  "notification.calendar_change_overwritten.title": "{calendar}",
   "calendarChange.added.timed": "New event {event}, {day} {time}",
   "calendarChange.added.timedByPerson": "{person} added {event}, {day} {time}",
   "calendarChange.added.allDay": "New event {event}, {day}",
@@ -73,5 +74,6 @@
   "calendarChange.weekday.thu": "Thu",
   "calendarChange.weekday.fri": "Fri",
   "calendarChange.weekday.sat": "Sat",
-  "calendarChange.weekday.sun": "Sun"
+  "calendarChange.weekday.sun": "Sun",
+  "calendarChange.overwritten": "Your change to {event} was overwritten by a change made elsewhere"
 }

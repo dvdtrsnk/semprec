@@ -5,9 +5,10 @@ import { runInTenant } from "@semprec/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
-import type { RemoteEvent } from "../calendar/sync/adapter.js";
+import { CalendarSyncWriteUnsupportedError, type RemoteEvent } from "../calendar/sync/adapter.js";
 import { notifyCalendarChanges } from "../calendar/sync/calendarChangeNotifications.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
+import { handleCalendarEventPushTask } from "../calendar/sync/eventPushJob.js";
 import { resolveCalendarSyncIds, type CalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -321,6 +322,13 @@ describe("notifications about others' changes in synced calendars", () => {
     const dinner = await syncedEvent("dinner");
     const { eventsDatabaseId } = await ids();
     await patchAsUser(eventsDatabaseId, dinner.event_item_id, { name: "Family dinner", place: "Home" });
+    // The push cannot reach the provider, so the user makes the same change there.
+    fake.failNextWrite = new CalendarSyncWriteUnsupportedError("not representable");
+    expect(
+      await runInTenant(tenant, () =>
+        handleCalendarEventPushTask(runtime, { eventItemId: dinner.event_item_id }, { adapters: fake.registry() }),
+      ),
+    ).toEqual({ kind: "failed", code: "unsupported" });
     fake.putEvent(
       "family",
       remoteEvent("dinner", {

@@ -9,6 +9,7 @@ import { logger } from "../../../logger.js";
 import { shiftDays } from "../../../recurrenceExpansion.js";
 import {
   CalendarSyncProviderError,
+  CalendarSyncWriteUnsupportedError,
   type CalendarChanges,
   type CalendarSyncAccount,
   type CalendarSyncAdapter,
@@ -73,6 +74,11 @@ const eventsPageSchema = z.object({
 });
 
 const calendarSchema = z.object({ timeZone: z.string().optional() });
+
+const calendarListEntrySchema = z.object({
+  timeZone: z.string().optional(),
+  defaultReminders: z.array(googleReminderSchema).optional(),
+});
 
 /** Roles that see the calendar's events but cannot change them. */
 const READ_ONLY_ROLES = new Set(["reader", "freeBusyReader"]);
@@ -211,9 +217,12 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
   }
 
   async putEvent(calendar: RemoteCalendar, event: PutRemoteEventInput, signal: AbortSignal): Promise<RemoteEventRef> {
-    const { ref, fields } = event;
+    const { fields } = event;
+    let ref = event.ref;
     if (ref === null && fields.recurrenceId !== null) {
-      throw new Error("An override can only be written to an instance Google already has");
+      // A new override changes an instance Google already has: the series' instance at the original start.
+      if (!event.seriesRef) throw new Error("An override can only be written to an instance Google already has");
+      ref = await this.instanceAt(calendar, event.seriesRef.remoteId, fields, signal);
     }
     // An all-day body names days only, so its zone is never read. A timed Event without a zone of its own is written
     // in its Google calendar's zone, as the adapter does not know the tenant's.
@@ -243,6 +252,92 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
           );
     const written = parseGoogleBody(googleEventSchema, response);
     return { remoteId: written.id, href: null, etag: written.etag ?? null };
+  }
+
+  /** A cancelled event, or one Google no longer has, is `null`; an override is read with its series' zone. */
+  async getEvent(
+    calendar: RemoteCalendar,
+    ref: RemoteEventRef,
+    options: { window: CalendarSyncWindow; signal: AbortSignal },
+  ): Promise<RemoteEvent | null> {
+    const { window, signal } = options;
+    const event = await this.readEvent(calendar, ref.remoteId, signal);
+    if (event === null || isCancelled(event)) return null;
+    const context = await this.calendarContext(calendar, signal);
+    if (event.recurringEventId === undefined) {
+      const cancelled =
+        event.recurrence === undefined ? [] : await this.cancelledInstances(calendar, event.id, window, signal);
+      return this.masterEvent(event, context, cancelled, window)?.event ?? null;
+    }
+    const master = await this.readEvent(calendar, event.recurringEventId, signal);
+    const series = master === null ? null : this.masterEvent(master, context, [], window)?.series;
+    return this.overrideEvent(event, context, series ?? null);
+  }
+
+  /** Google's own move: the event keeps its id and series in the other calendar. */
+  async moveEvent(
+    from: RemoteCalendar,
+    to: RemoteCalendar,
+    ref: RemoteEventRef,
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
+    const { body } = await this.http.request(
+      {
+        method: "POST",
+        path: `${calendarPath(from)}/events/${encodeURIComponent(ref.remoteId)}/move`,
+        query: new URLSearchParams({ destination: to.remoteId, sendUpdates: "none" }),
+      },
+      signal,
+    );
+    const moved = parseGoogleBody(googleEventSchema, body);
+    return { remoteId: moved.id, href: null, etag: moved.etag ?? null };
+  }
+
+  /**
+   * The instance of the series whose original start is the override's `recurrenceId`, read around that day; an
+   * occurrence Google does not have (cancelled, or outside the rule) cannot take an override.
+   */
+  private async instanceAt(
+    calendar: RemoteCalendar,
+    seriesId: string,
+    fields: PutRemoteEventInput["fields"],
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
+    const recurrenceId = fields.recurrenceId ?? "";
+    const day = recurrenceId.slice(0, 10);
+    const series = { zone: fields.timeZone, allDay: !recurrenceId.includes("T") };
+    const query = new URLSearchParams({
+      maxResults: String(EVENTS_PAGE_SIZE),
+      maxAttendees: "1",
+      ...windowBounds({ start: day, end: day }),
+    });
+    const { body } = await this.http.request(
+      { method: "GET", path: `${calendarPath(calendar)}/events/${encodeURIComponent(seriesId)}/instances`, query },
+      signal,
+    );
+    const instance = (parseGoogleBody(eventsPageSchema, body).items ?? []).find(
+      (item) =>
+        !isCancelled(item) &&
+        item.originalStartTime !== undefined &&
+        googleLocalStart(item.originalStartTime, series) === recurrenceId,
+    );
+    if (instance === undefined) {
+      throw new CalendarSyncWriteUnsupportedError("The Google series has no occurrence at the override's start");
+    }
+    return { remoteId: instance.id, href: null, etag: instance.etag ?? null };
+  }
+
+  /** The calendar's zone and the signed-in user's default reminders, as an events listing reports them. */
+  private async calendarContext(calendar: RemoteCalendar, signal: AbortSignal): Promise<GoogleCalendarContext> {
+    const { body } = await this.http.request(
+      {
+        method: "GET",
+        path: `/users/me/calendarList/${encodeURIComponent(calendar.remoteId)}`,
+      },
+      signal,
+    );
+    const entry = parseGoogleBody(calendarListEntrySchema, body);
+    return { zone: validZone(entry.timeZone), defaultReminders: entry.defaultReminders ?? [] };
   }
 
   /** An event Google no longer has (404, or 410 for one already deleted) counts as deleted. */
@@ -353,7 +448,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     for (const masterId of touchedSeries) {
       const listed = listing.events.get(masterId);
       const master =
-        listed !== undefined && !isCancelled(listed) ? listed : await this.getEvent(calendar, masterId, signal);
+        listed !== undefined && !isCancelled(listed) ? listed : await this.readEvent(calendar, masterId, signal);
       if (master === null || isCancelled(master) || master.recurringEventId !== undefined) continue;
       const cancelled = await this.cancelledInstances(calendar, masterId, window, signal);
       const mapped = this.masterEvent(master, listing.context, cancelled, window);
@@ -372,7 +467,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     return { upserts: [...upserts.values()], deletions };
   }
 
-  private async getEvent(calendar: RemoteCalendar, eventId: string, signal: AbortSignal): Promise<GoogleEvent | null> {
+  private async readEvent(calendar: RemoteCalendar, eventId: string, signal: AbortSignal): Promise<GoogleEvent | null> {
     const { status, body } = await this.http.request(
       {
         method: "GET",

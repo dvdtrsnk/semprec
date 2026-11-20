@@ -38,6 +38,7 @@ describe("notification kind policy", () => {
     const pushed = NOTIFICATION_KINDS.filter((kind) => policyForKind(kind).push).sort();
     expect(pushed).toEqual([
       "approval_pending",
+      "calendar_change_overwritten",
       "calendar_event_added",
       "calendar_event_cancelled",
       "calendar_event_changed",
@@ -54,6 +55,7 @@ describe("notification kind policy", () => {
       calendar_event_added: "calendarChanges",
       calendar_event_changed: "calendarChanges",
       calendar_event_cancelled: "calendarChanges",
+      calendar_change_overwritten: "calendarChanges",
       mail_sync_error: "problems/critical",
       mail_sync_stalled: "problems/critical",
       backup_restore_failed: "problems/critical",

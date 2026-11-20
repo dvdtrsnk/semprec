@@ -116,6 +116,16 @@ Reference implementation: project agent guidance drift
 - The declared sync owner lists rows where desired ≠ current, performs every provider write, and sets
   current only after all succeed. Provider observations update current but never overwrite a
   differing desired value. The gap is the durable retry queue.
+- Account calendar Events record a user's or agent's change as a pending row of
+  `calendar_event_push_state` (a revision every change raises) in the Event write's transaction, which
+  holds the Event's row lock, and queue `calendarEventPush` in the same transaction
+  (`data/calendar/sync/eventPushHooks.ts`). The job calls the provider with no transaction open and
+  stores each result in its own transaction under the account's calendar sync guard, the Event's
+  account calendar `FOR SHARE` and its row; it sets the status only while the revision it pushed is
+  still current. A sync pass leaves an Event with a pending push unwritten (checked under the Event's
+  row lock) and re-queues the push, which merges the provider's change per field against the last
+  base, the provider winning a field changed on both sides
+  (`data/calendar/sync/eventPushJob.ts`).
 
 ## Exactly-once approved operations
 

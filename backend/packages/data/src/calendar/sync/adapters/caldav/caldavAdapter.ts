@@ -20,6 +20,7 @@ import {
   createResource,
   deleteResource,
   discoverCalendarHome,
+  fetchResource,
   fetchResources,
   invalidResponse,
   listCalendarCollections,
@@ -124,12 +125,6 @@ async function fetchChanges(
   return fullFetch(session, url, window);
 }
 
-/** The resource as the server has it now, `null` when it is gone. */
-async function currentResource(session: CalDavSession, calendar: URL, href: URL): Promise<CalendarResourceText | null> {
-  const [resource] = await fetchResources(session, calendar, [href]);
-  return resource ?? null;
-}
-
 function edited<T>(edit: () => T): T {
   try {
     return edit();
@@ -165,9 +160,11 @@ export function createCalDavAdapter(
     fetchChanges: (calendar, cursor, { window, signal }) =>
       session(signal, (s) => fetchChanges(s, calendar, cursor, window)),
 
-    putEvent: (calendar, { ref, fields, icalUid }, signal) =>
+    putEvent: (calendar, { ref: eventRef, fields, icalUid, seriesRef }, signal) =>
       session(signal, async (s) => {
         const url = calendarUrl(calendar);
+        // A new override is written into its series' resource, which then holds it as one more VEVENT.
+        const ref = eventRef ?? (fields.recurrenceId !== null ? (seriesRef ?? null) : null);
         if (ref === null) {
           if (fields.recurrenceId !== null) {
             throw new Error("An override is written into its series' resource, which needs the series' address");
@@ -180,7 +177,7 @@ export function createCalDavAdapter(
           return { remoteId: uid, href: href.href, etag: outcome.etag };
         }
         const href = eventHref(ref);
-        const current = await currentResource(s, url, href);
+        const current = await fetchResource(s, href);
         if (current === null || (ref.etag !== null && current.etag !== ref.etag)) {
           throw new CalendarSyncEventConflictError();
         }
@@ -190,7 +187,16 @@ export function createCalDavAdapter(
         return { remoteId, href: href.href, etag: outcome.etag };
       }),
 
-    deleteEvent: (calendar, ref, signal) =>
+    getEvent: (_calendar, ref, { signal }) =>
+      session(signal, async (s) => {
+        const current = await fetchResource(s, eventHref(ref));
+        if (current === null) return null;
+        const parsed = parseCalendarResource(current.text, { href: current.href.href, etag: current.etag });
+        if (parsed === null) throw invalidResponse("The CalDAV resource is unreadable");
+        return parsed.events.find((event) => event.remoteId === ref.remoteId) ?? null;
+      }),
+
+    deleteEvent: (_calendar, ref, signal) =>
       session(signal, async (s) => {
         const href = eventHref(ref);
         const occurrence = parseOverrideRemoteId(ref.remoteId);
@@ -200,7 +206,7 @@ export function createCalDavAdapter(
           return;
         }
         // An override lives in its series' resource: the occurrence is cancelled there, not the resource deleted.
-        const current = await currentResource(s, calendarUrl(calendar), href);
+        const current = await fetchResource(s, href);
         if (current === null) return;
         if (ref.etag !== null && current.etag !== ref.etag) throw new CalendarSyncEventConflictError();
         const text = edited(() => removeOccurrence(current.text, occurrence[1]));

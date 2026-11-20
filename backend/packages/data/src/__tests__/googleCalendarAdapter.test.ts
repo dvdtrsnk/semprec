@@ -695,6 +695,84 @@ describe("Google Calendar adapter", () => {
       expect(google.requests[0]?.body).not.toHaveProperty("recurrence");
     });
 
+    it("a new override patches the series' instance at its original start", async () => {
+      google.on("GET", `/calendars/${PRIMARY}/events/standup/instances`, () => ({
+        status: 200,
+        body: {
+          items: [
+            {
+              id: "standup_20261125T140000Z",
+              etag: '"o1"',
+              status: "confirmed",
+              recurringEventId: "standup",
+              originalStartTime: { dateTime: "2026-11-25T09:00:00-05:00", timeZone: "America/New_York" },
+              start: { dateTime: "2026-11-25T09:00:00-05:00", timeZone: "America/New_York" },
+              end: { dateTime: "2026-11-25T09:30:00-05:00", timeZone: "America/New_York" },
+            },
+          ],
+        },
+      }));
+      google.on("PATCH", `/calendars/${PRIMARY}/events/standup_20261125T140000Z`, () => ({
+        status: 200,
+        body: { id: "standup_20261125T140000Z", etag: '"o2"' },
+      }));
+      const run = adapterIn(await createGoogleAccount(GRANT));
+      const ref = await run((adapter) =>
+        adapter.putEvent(
+          calendar,
+          {
+            ref: null,
+            fields: { ...fields, recurrenceRule: null, exceptionDates: null, recurrenceId: "2026-11-25T09:00" },
+            seriesRef: { remoteId: "standup", href: null, etag: '"e-1"' },
+          },
+          signal(),
+        ),
+      );
+      expect(ref).toEqual({ remoteId: "standup_20261125T140000Z", href: null, etag: '"o2"' });
+      expect(google.requests.map((request) => `${request.method} ${request.headers.get("if-match")}`)).toEqual([
+        "GET null",
+        'PATCH "o1"',
+      ]);
+    });
+
+    it("moves an event with Google's move, and reads one event back", async () => {
+      google.on("POST", `/calendars/${PRIMARY}/events/lateshow/move`, () => ({
+        status: 200,
+        body: { id: "lateshow", etag: '"moved"' },
+      }));
+      google.on("GET", `/users/me/calendarList/${HOLIDAYS}`, () => ({
+        status: 200,
+        body: { timeZone: "Europe/Prague", defaultReminders: [{ method: "popup", minutes: 10 }] },
+      }));
+      google.on("GET", `/calendars/${HOLIDAYS}/events/lateshow`, () => ({
+        status: 200,
+        body: {
+          id: "lateshow",
+          etag: '"moved"',
+          status: "confirmed",
+          summary: "Late show",
+          start: { dateTime: "2026-11-21T22:00:00+01:00", timeZone: "Europe/Prague" },
+          end: { dateTime: "2026-11-22T00:00:00+01:00", timeZone: "Europe/Prague" },
+        },
+      }));
+      google.on("GET", `/calendars/${HOLIDAYS}/events/gone`, () => ({ status: 404 }));
+      const run = adapterIn(await createGoogleAccount(GRANT));
+      const reader = { ...calendar, remoteId: HOLIDAYS };
+      const moved = await run((adapter) =>
+        adapter.moveEvent(calendar, reader, { remoteId: "lateshow", href: null, etag: '"e-late-1"' }, signal()),
+      );
+      expect(moved).toEqual({ remoteId: "lateshow", href: null, etag: '"moved"' });
+      expect(google.requests[0]?.query.get("destination")).toBe(HOLIDAYS);
+      const options = { window: { start: "2026-11-01", end: "2026-12-31" }, signal: signal() };
+      expect(await run((adapter) => adapter.getEvent(reader, moved, options))).toMatchObject({
+        remoteId: "lateshow",
+        fields: { name: "Late show", timeFrom: "22:00", timeTo: "24:00", timeZone: "Europe/Prague", alertMinutes: 10 },
+      });
+      expect(
+        await run((adapter) => adapter.getEvent(reader, { remoteId: "gone", href: null, etag: null }, options)),
+      ).toBeNull();
+    });
+
     it("a delete is conditional on the etag, an event already gone counts as deleted, and a 412 is a conflict", async () => {
       const replies = [{ status: 204 }, { status: 410 }, { status: 412 }];
       google.on("DELETE", `/calendars/${PRIMARY}/events/lateshow`, () => replies.shift());
