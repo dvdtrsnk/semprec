@@ -125,14 +125,24 @@ struct NoteDropLine: View {
     let inset: CGFloat
     /// The level the dropped blocks take, which the line starts at.
     let indent: Int
+    /// A drop inside a toggle starts the line with a small ring.
+    let insideToggle: Bool
 
     var body: some View {
-        Capsule()
-            .fill(Theme.Colors.accent)
-            .frame(height: 3)
-            .padding(.leading, inset + CGFloat(indent) * NoteBlockStyle.indentWidth)
-            .padding(.trailing, inset)
-            .offset(y: top - 1.5)
+        HStack(spacing: 0) {
+            if insideToggle {
+                Circle()
+                    .strokeBorder(Theme.Colors.accent, lineWidth: 2.5)
+                    .frame(width: 10, height: 10)
+            }
+            Capsule()
+                .fill(Theme.Colors.accent)
+                .frame(height: 3)
+        }
+        .frame(height: 10)
+        .padding(.leading, inset + CGFloat(indent) * NoteBlockStyle.indentWidth)
+        .padding(.trailing, inset)
+        .offset(y: top - 5)
             .animation(.snappy(duration: 0.2), value: top)
             .animation(.snappy(duration: 0.2), value: indent)
             .allowsHitTesting(false)

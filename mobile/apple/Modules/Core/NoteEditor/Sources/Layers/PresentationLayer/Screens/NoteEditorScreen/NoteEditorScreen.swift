@@ -39,11 +39,11 @@ struct NoteEditorScreen: View {
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
             .modifier(NotePageTitle(title: viewModel.variant == .full ? state.title : nil))
             .sensoryFeedback(.success, trigger: confirmations)
-            .haptic(.standard, trigger: interaction.swipe?.step)
-            .haptic(.standard, trigger: interaction.menu?.highlighted)
+            .sensoryFeedback(.selection, trigger: interaction.swipe?.step)
+            .sensoryFeedback(.selection, trigger: interaction.menu?.highlighted)
             .sensoryFeedback(.selection, trigger: interaction.drag.map { [$0.target, $0.indent] })
             .sensoryFeedback(trigger: NoteSelectionHaptic(interaction)) { old, new in old.feedback(to: new) }
-            .haptic(.standard, trigger: interaction.holds)
+            .sensoryFeedback(.impact(flexibility: .soft), trigger: interaction.holds)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(NoteEditorIdentifiers.editor)
             .task { await viewModel.observe() }
@@ -168,7 +168,8 @@ private extension NoteEditorScreen {
                     block,
                     by: $0,
                     at: $1,
-                    editing: viewModel.editingBlockId == block.id
+                    editing: viewModel.editingBlockId == block.id,
+                    indentFloor: NoteFolding.indentFloor(of: block.id, in: state.blocks)
                 )
             },
             onReleased: { perform(interaction.released(block)) },
@@ -225,7 +226,8 @@ private extension NoteEditorScreen {
             NoteDropLine(
                 top: dropLineY(drag),
                 inset: viewModel.variant == .full ? Theme.Spacing.medium : 0,
-                indent: drag.indent
+                indent: drag.indent,
+                insideToggle: drag.insideToggle
             )
             NoteDragPreview(block: first, count: drag.blockIds.count, width: interaction.visible.width)
                 .offset(y: drag.location.y - (interaction.rowFrames[first.id]?.height ?? 44) / 2)
@@ -286,7 +288,8 @@ private extension NoteEditorScreen {
         if case .toggleDone(let blockId) = edit, state.blocks.first(where: { $0.id == blockId })?.done == false {
             confirmations += 1
         }
-        viewModel.edit(withChildren(edit))
+        guard let edit = NoteFolding.applying(edit, in: state.blocks) else { return }
+        viewModel.edit(edit)
         switch edit {
         case .duplicate, .delete, .makeSubpage, .move: confirmations += 1
         default: break
@@ -319,21 +322,6 @@ private extension NoteEditorScreen {
             edit(.makeSubpage(blockId: id))
         } else {
             edit(.setType(blockIds: ids, type: type, toggle: toggle))
-        }
-    }
-
-    /// The edit applied to the children of the toggles it changes too: a toggle indents, moves, duplicates and goes
-    /// away with what it holds.
-    func withChildren(_ edit: NoteEditorBlockEdit) -> NoteEditorBlockEdit {
-        let blocks = state.blocks
-        return switch edit {
-        case .shiftIndent(let ids, let delta):
-            .shiftIndent(blockIds: NoteFolding.withChildren(ids, in: blocks), delta: delta)
-        case .move(let ids, let target, let delta):
-            .move(blockIds: NoteFolding.withChildren(ids, in: blocks), targetIndex: target, indentDelta: delta)
-        case .duplicate(let ids): .duplicate(blockIds: NoteFolding.withChildren(ids, in: blocks))
-        case .delete(let ids): .delete(blockIds: NoteFolding.withChildren(ids, in: blocks))
-        default: edit
         }
     }
 

@@ -53,6 +53,33 @@ final class NoteFoldingTests: XCTestCase {
         XCTAssertTrue(NoteFolding.isEmpty(at: 0, in: [NoteEditorBlock(id: "t", type: .toggle)]))
     }
 
+    func testABlockInsideAToggleCannotBeOutdentedOutOfIt() {
+        XCTAssertEqual(NoteFolding.indentFloor(of: "t1", in: blocks), 1)
+        XCTAssertEqual(NoteFolding.indentFloor(of: "t3", in: blocks), 2)
+        XCTAssertEqual(NoteFolding.indentFloor(of: "after", in: blocks), 0)
+        XCTAssertNil(NoteFolding.applying(.shiftIndent(blockIds: ["t1"], delta: -1), in: blocks))
+        let list = [
+            NoteEditorBlock(id: "b", type: .bullet),
+            NoteEditorBlock(id: "b1", type: .bullet, indent: 1),
+            NoteEditorBlock(id: "t", type: .toggle),
+            NoteEditorBlock(id: "c", type: .text, indent: 1)
+        ]
+        XCTAssertEqual(
+            NoteFolding.applying(.shiftIndent(blockIds: ["b1", "c"], delta: -1), in: list),
+            .shiftIndent(blockIds: ["b1"], delta: -1)
+        )
+        XCTAssertEqual(
+            NoteFolding.applying(.shiftIndent(blockIds: ["t2"], delta: 1), in: blocks),
+            .shiftIndent(blockIds: ["t2", "t3"], delta: 1)
+        )
+    }
+
+    func testOnlyAPlaceUnderAToggleIsInsideIt() {
+        XCTAssertTrue(NoteFolding.isInsideToggle(level: 1, before: 4, in: blocks, skipping: []))
+        XCTAssertFalse(NoteFolding.isInsideToggle(level: 0, before: 4, in: blocks, skipping: []))
+        XCTAssertFalse(NoteFolding.isInsideToggle(level: 1, before: 10, in: blocks, skipping: []))
+    }
+
     func testAToggleHeadingOptionSetsTheHeadingWithItsToggle() {
         let option = NoteMenuKind.style.options.first { $0.type == .heading1 && $0.toggle }
         XCTAssertEqual(

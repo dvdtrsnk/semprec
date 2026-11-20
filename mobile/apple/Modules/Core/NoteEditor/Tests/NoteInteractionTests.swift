@@ -213,7 +213,7 @@ final class NoteInteractionTests: XCTestCase {
         )
     }
 
-    func testSelectionModeTapsLightlyOnStartAndTicksOnEachChange() {
+    func testSelectionModeTicksOnEachChangeAfterItStarted() {
         let interaction = interaction()
         let idle = NoteSelectionHaptic(interaction)
         interaction.startSelecting(with: "a")
@@ -221,7 +221,7 @@ final class NoteInteractionTests: XCTestCase {
         interaction.toggle("c")
         let changed = NoteSelectionHaptic(interaction)
         interaction.stopSelecting()
-        XCTAssertEqual(idle.feedback(to: started), .impact(weight: .light))
+        XCTAssertNil(idle.feedback(to: started))
         XCTAssertEqual(started.feedback(to: changed), .selection)
         XCTAssertNil(changed.feedback(to: NoteSelectionHaptic(interaction)))
     }

@@ -10,6 +10,13 @@ struct NoteSwipeState: Equatable {
     var translation: CGFloat
     var step: NoteSwipeStep?
     var frozen = false
+    /// The least indent the block may be outdented to (`NoteFolding.indentFloor`).
+    var indentFloor = 0
+
+    /// Whether the step reached can apply to `block`.
+    func isValid(for block: NoteEditorBlock) -> Bool {
+        step?.isValid(for: block, indentFloor: indentFloor) ?? false
+    }
 }
 
 /// A swipe menu next to the block `row`: `below` it or above it, its first option nearest the block. While the finger
@@ -35,6 +42,8 @@ struct NoteDragState: Equatable {
     var target: Int
     /// The level the first dragged block takes where it is dropped; the others keep their levels under it.
     var indent: Int
+    /// Whether that place is inside a toggle, which the drop line shows.
+    var insideToggle = false
     /// Where along the row the drag started; moving the finger sideways from there picks a level where more fit.
     let startX: CGFloat
 }
@@ -88,7 +97,8 @@ final class NoteInteraction: ObservableObject {
         _ block: NoteEditorBlock,
         by translation: CGSize,
         at location: CGPoint,
-        editing: Bool = false
+        editing: Bool = false,
+        indentFloor: Int = 0
     ) {
         guard held == nil else { return }
         if selecting {
@@ -106,12 +116,17 @@ final class NoteInteraction: ObservableObject {
             height: min(center + Self.band, blockFrame.maxY) - max(center - Self.band, blockFrame.minY)
         )
         let offRow = location.y > row.maxY + Self.offRow || location.y < row.minY - Self.offRow
-        if offRow, let swipe, let kind = swipe.step?.menu, swipe.step?.isValid(for: block) == true {
+        if offRow, let swipe, let kind = swipe.step?.menu, swipe.isValid(for: block) {
             choose(from: kind, for: block.id, row: row, at: location)
         } else {
             menu = menu?.pinned == true ? menu : nil
             let step = NoteSwipeStep.reached(translation.width, editing: editing)
-            swipe = NoteSwipeState(blockId: block.id, translation: translation.width, step: step)
+            swipe = NoteSwipeState(
+                blockId: block.id,
+                translation: translation.width,
+                step: step,
+                indentFloor: indentFloor
+            )
         }
     }
 
@@ -129,7 +144,7 @@ final class NoteInteraction: ObservableObject {
             let option = open.kind.options.first { $0.id == open.highlighted }
             return option?.edits(for: block) ?? []
         }
-        guard let step = swipe?.step, step.isValid(for: block) else { return [] }
+        guard let swipe, let step = swipe.step, swipe.isValid(for: block) else { return [] }
         switch step {
         case .outdent: return [.shiftIndent(blockIds: [block.id], delta: -1)]
         case .indent: return [.shiftIndent(blockIds: [block.id], delta: 1)]
@@ -240,14 +255,16 @@ final class NoteInteraction: ObservableObject {
             in: blocks
         )
         let target = target(at: location, moving: ids, in: blocks)
+        let start = blocks.first { ids.contains($0.id) }
         let startX = drag?.startX ?? holdStart?.x ?? location.x
-        let original = blocks.first { ids.contains($0.id) }?.indent ?? 0
-        let preferred = original + Int(((location.x - startX) / NoteBlockStyle.indentWidth).rounded())
+        let preferred = (start?.indent ?? 0) + Int(((location.x - startX) / NoteBlockStyle.indentWidth).rounded())
+        let indent = level(preferred, at: target, moving: ids, in: blocks)
         drag = NoteDragState(
             blockIds: ids,
             location: location,
             target: target,
-            indent: level(preferred, at: target, moving: ids, in: blocks),
+            indent: indent,
+            insideToggle: NoteFolding.isInsideToggle(level: indent, before: target, in: blocks, skipping: ids),
             startX: startX
         )
     }

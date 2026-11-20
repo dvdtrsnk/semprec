@@ -151,7 +151,7 @@ private extension NoteBlockSlot {
 
     @ViewBuilder var tray: some View {
         if let swipe = presentation.swipe {
-            let valid = swipe.step?.isValid(for: block) ?? false
+            let valid = swipe.isValid(for: block)
             HStack(spacing: 6) {
                 if let step = swipe.step {
                     Image(systemName: step.systemImage)

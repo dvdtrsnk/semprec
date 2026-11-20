@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// What selection mode feels like: a light tap when it starts, and the selection tick when a block is selected or
-/// let go in it.
+/// What selection mode feels like: the selection tick when a block is selected or let go in it. Its start is felt
+/// already, as the hold or the swipe that starts it.
 struct NoteSelectionHaptic: Equatable {
 
     let selecting: Bool
@@ -14,7 +14,6 @@ struct NoteSelectionHaptic: Equatable {
     }
 
     func feedback(to next: Self) -> SensoryFeedback? {
-        if !selecting { return next.selecting ? .impact(weight: .light) : nil }
-        return next.selecting && next.selected != selected ? .selection : nil
+        selecting && next.selecting && next.selected != selected ? .selection : nil
     }
 }

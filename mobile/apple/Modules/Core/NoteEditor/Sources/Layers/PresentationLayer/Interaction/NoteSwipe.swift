@@ -30,9 +30,11 @@ enum NoteSwipeStep: Equatable {
     }
 
     /// Whether the step can do anything to `block`; one that cannot is shown grey and does nothing.
-    func isValid(for block: NoteEditorBlock) -> Bool {
+    /// Whether the step can apply to `block`, which cannot be outdented below `indentFloor`
+    /// (`NoteFolding.indentFloor`).
+    func isValid(for block: NoteEditorBlock, indentFloor: Int = 0) -> Bool {
         switch self {
-        case .outdent: block.indent > 0
+        case .outdent: block.indent > indentFloor
         case .indent: block.indent < 5
         case .listMenu, .styleMenu, .todo: block.type != .page
         case .select: true

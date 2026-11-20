@@ -4,24 +4,12 @@ import SwiftUI
 /// A short, soft pulse: a little longer than the system's tap, so it feels as strong without its sharp edge.
 public enum HapticPulse: Sendable {
 
-    /// A step reached, an option or a day picked, a block lifted.
+    /// A day switched to, an object armed to drop.
     case standard
-    /// A move from place to place while dragging, felt often in a row.
-    case gentle
 
-    var intensity: Float {
-        switch self {
-        case .standard: 0.6
-        case .gentle: 0.4
-        }
-    }
+    var intensity: Float { 0.45 }
 
-    var sharpness: Float {
-        switch self {
-        case .standard: 0.3
-        case .gentle: 0.2
-        }
-    }
+    var sharpness: Float { 0.15 }
 
     /// Seconds; the system's tap lasts about a hundredth of a second.
     var duration: TimeInterval { 0.035 }
