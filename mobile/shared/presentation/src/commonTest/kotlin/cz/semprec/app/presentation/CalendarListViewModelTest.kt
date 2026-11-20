@@ -131,7 +131,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `an account calendar is renamed and recoloured here, not deleted`() = runTest(dispatcher) {
+    @Test fun `an account calendar is renamed and recoloured here and not deleted`() = runTest(dispatcher) {
         catalog.calendars += accountCalendar("g1", "m1", color = "#FF3B30")
         val vm = loaded()
         act(vm, CalendarListAction.Change.Rename("g1", "Rodina"))

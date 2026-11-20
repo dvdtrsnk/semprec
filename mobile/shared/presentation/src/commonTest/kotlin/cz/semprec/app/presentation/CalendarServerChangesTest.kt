@@ -58,7 +58,7 @@ class CalendarServerChangesTest : MainDispatcherTest() {
         assertEquals(3, windowReads())
     }
 
-    @Test fun `opening the calendar asks once a minute for the accounts to sync, and server changes never do`() =
+    @Test fun `opening the calendar asks once a minute for the accounts to sync and server changes never do`() =
         runTest(dispatcher) {
             val accounts = ScriptedInternetAccountRepository(
                 list = MailCall(mailContent(listOf(internetAccount("m1", calendars = true), internetAccount("m2")))),

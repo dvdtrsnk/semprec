@@ -248,7 +248,7 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
         second.close()
     }
 
-    @Test fun `switching calendars on writes it, shows it pending, asks for notifications and reads the status`() =
+    @Test fun `switching calendars on writes it and shows it pending then asks for notifications and reads the status`() =
         runTest(dispatcher) {
             val accounts = ScriptedInternetAccountRepository(
                 one = MailCall(
@@ -314,7 +314,7 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a switch the server refuses, as mail off while the mailbox syncs, is put back and says so`() =
+    @Test fun `a switch the server refuses such as mail off while the mailbox syncs is put back and says so`() =
         runTest(dispatcher) {
             val accounts = ScriptedInternetAccountRepository(
                 services = MailCall(mailFailure(FailureKind.REJECTED), crashes()),
