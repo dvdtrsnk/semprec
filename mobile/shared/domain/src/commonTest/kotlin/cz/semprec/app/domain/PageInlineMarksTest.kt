@@ -41,7 +41,11 @@ class PageInlineMarksTest {
 
     @Test fun `an unknown color key inside a known one clears that color as the web reads it`() {
         assertEquals(
-            listOf(InlineRun("a", color = InlineColor.RED), InlineRun("b"), InlineRun("c", highlight = InlineColor.BLUE)),
+            listOf(
+                InlineRun("a", color = InlineColor.RED),
+                InlineRun("b"),
+                InlineRun("c", highlight = InlineColor.BLUE),
+            ),
             PageInlineParser.parse(
                 "<span data-color=\"red\">a<span data-color=\"teal\">b</span></span>" +
                     "<mark data-color=\"blue\">c</mark>",
