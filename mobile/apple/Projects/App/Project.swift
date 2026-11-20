@@ -30,7 +30,10 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
-                "UIBackgroundModes": ["audio"],
+                // `remote-notification` lets a silent push wake the app to read its reminders again.
+                "UIBackgroundModes": ["audio", "remote-notification"],
+                // The APNs environment the device token is registered for, by build configuration.
+                "SemprecApnsEnvironment": "$(SEMPREC_APNS_ENVIRONMENT)",
                 "UILaunchScreen": [:],
                 "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
@@ -68,9 +71,24 @@ let project = Project(
                 .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),
                 .external(name: "NavigatorUI"),
             ],
+            // A Debug build is signed for the APNs sandbox, a Release build (App Store, TestFlight, Ad Hoc) for
+            // production; `aps-environment` of the iOS entitlements and `SemprecApnsEnvironment` follow it.
             settings: .settings(
                 base: SemprecProject.kotlinFrameworkScriptSettings
-                    .merging(["CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": "Entitlements/\(app).entitlements"]) { _, new in new }
+                    .merging([
+                        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": "Entitlements/\(app).entitlements",
+                        "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]": "Entitlements/\(app)-iOS.entitlements",
+                    ]) { _, new in new },
+                configurations: [
+                    .debug(
+                        name: .debug,
+                        settings: ["SEMPREC_APS_ENVIRONMENT": "development", "SEMPREC_APNS_ENVIRONMENT": "sandbox"]
+                    ),
+                    .release(
+                        name: .release,
+                        settings: ["SEMPREC_APS_ENVIRONMENT": "production", "SEMPREC_APNS_ENVIRONMENT": "production"]
+                    ),
+                ]
             )
         ),
         // The app's tests drive its NavigatorUI stacks directly.

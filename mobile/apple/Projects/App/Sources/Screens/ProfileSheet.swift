@@ -9,6 +9,7 @@ struct ProfileSheet: View {
     // MARK: - Dependencies
     private let models: any ScreenModelFactory
     private let navigation: NavigationContext
+    private let notifications: AppNotifications?
 
     // MARK: - State
     @StateObject private var path = AccountPath()
@@ -16,21 +17,25 @@ struct ProfileSheet: View {
     private var dismiss
 
     // MARK: - Init
-    init(models: any ScreenModelFactory, navigation: NavigationContext) {
+    init(models: any ScreenModelFactory, navigation: NavigationContext, notifications: AppNotifications?) {
         self.models = models
         self.navigation = navigation
+        self.notifications = notifications
     }
 
     // MARK: - Body
     var body: some View {
+        let router = AppAccountRouter(
+            path: path,
+            context: navigation,
+            dismissSheet: { dismiss() },
+            requestPermission: { [notifications] in Task { await notifications?.requestPermission() } }
+        )
         NavigationStack(path: $path.pages) {
-            AccountScreenFactory.profile(
-                makeModel: { [models] in models.makeProfile() },
-                router: AppAccountRouter(path: path, context: navigation, dismissSheet: { dismiss() })
-            )
-            .navigationDestination(for: AccountPage.self) { [models] page in
-                Self.destination(page, models)
-            }
+            AccountScreenFactory.profile(makeModel: { [models] in models.makeProfile() }, router: router)
+                .navigationDestination(for: AccountPage.self) { [models] page in
+                    Self.destination(page, models, router: router)
+                }
         }
     }
 }
@@ -39,12 +44,16 @@ struct ProfileSheet: View {
 extension ProfileSheet {
 
     @ViewBuilder
-    static func destination(_ page: AccountPage, _ models: any ScreenModelFactory) -> some View {
+    static func destination(
+        _ page: AccountPage,
+        _ models: any ScreenModelFactory,
+        router: AppAccountRouter
+    ) -> some View {
         switch page {
         case .devices:
             AccountScreenFactory.devices { models.makeDevices() }
         case .notifications:
-            AccountScreenFactory.notificationSettings { models.makeNotificationSettings() }
+            AccountScreenFactory.notificationSettings(makeModel: { models.makeNotificationSettings() }, router: router)
         case .aiUsage:
             AccountScreenFactory.aiUsage { models.makeAiUsage() }
         case .trash:

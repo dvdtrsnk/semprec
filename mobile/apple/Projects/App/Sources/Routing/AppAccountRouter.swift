@@ -10,13 +10,21 @@ final class AppAccountRouter {
     private let path: AccountPath
     private let context: NavigationContext
     private let dismissSheet: @MainActor () -> Void
+    private let requestPermission: @MainActor () -> Void
 
     // MARK: - Init
-    /// `dismissSheet` closes the profile sheet, which the Overview tab presented.
-    init(path: AccountPath, context: NavigationContext, dismissSheet: @escaping @MainActor () -> Void) {
+    /// `dismissSheet` closes the profile sheet, which the Overview tab presented; `requestPermission` asks for the
+    /// permission to notify.
+    init(
+        path: AccountPath,
+        context: NavigationContext,
+        dismissSheet: @escaping @MainActor () -> Void,
+        requestPermission: @escaping @MainActor () -> Void
+    ) {
         self.path = path
         self.context = context
         self.dismissSheet = dismissSheet
+        self.requestPermission = requestPermission
     }
 }
 
@@ -38,5 +46,9 @@ extension AppAccountRouter: AccountRouting {
         }
         guard path.pages.last != page else { return }
         path.pages.append(page)
+    }
+
+    func requestNotificationPermission() {
+        requestPermission()
     }
 }

@@ -337,6 +337,34 @@ the push goes through, until that entry is popped. An effect raised while a
 screen is not observing (for example while the detail covers Home) waits in the
 bridge's `EffectQueue` and is routed once when the screen observes again.
 
+## Notifications
+
+What the device does with notifications is decided by `DeviceNotifications`
+(`shared/presentation`), which `DevicePushSDK` (`shared/umbrella`) builds once per
+process over `HttpPushRepository` (`shared/data`: `POST /api/push-subscriptions`,
+`POST /api/push-subscriptions/:id/revoke`, `GET /api/calendar/reminders`,
+`GET /api/badge-counts`). On Apple, CoreKit's `SharedDeviceNotifications` is its
+`DeviceNotificationService`, and the app's `AppNotifications` (one per process,
+`AppNotifications.shared`) carries its answers to the system:
+
+- Permission: turning a notification on in the notification settings emits
+  `NotificationSettingsEffect.RequestPermission`, which `AppAccountRouter` hands to
+  `AppNotifications.requestPermission()`; the system asks the person only once.
+- Registration: whenever a signed-in scene shows its tabs and notifications are
+  allowed, iOS asks APNs for the token (`AppDelegate`), and the token is registered
+  for the build's environment; the subscription id is kept in the user defaults
+  (`DefaultsPushSubscriptionStorage`). Signing out revokes it with the session it
+  ends, before the logout (`HttpAuthRepository`'s `endingSession`), and removes the
+  scheduled reminders and the badge.
+- Reminders: the next 48 hours of `GET /api/calendar/reminders` (none while the
+  `reminders` switch is off) replace the scheduled local notifications whose
+  identifier starts with `reminder.`, on sign-in and on the silent push
+  `kind: remindersResync`. The badge is the sum of the counts whose badge switch is on.
+- Taps: `invitation_id` opens the invitations sheet, `event_id` the event's
+  Podrobnosti sheet, `task_id` (a task's reminder) the task's, all over the Calendar
+  stack. The target waits in `AppNotifications` until a signed-in scene takes it,
+  and `NavigationContext.whenShown(_:route:)` waits for the Calendar stack to register.
+
 ## Copy and localization
 
 Shared state carries typed values only (phases, `FailureKind`, ordinals and ids),
@@ -464,7 +492,8 @@ platforms differ:
 | `apple/Projects/App/Tests/Support/SceneWindow.swift` | one of the two test files with an `#if os(...)`, the window helper of the app's tests: it hosts a view in an `NSWindow` of a fixed 480 by 640 points on macOS (`NSHostingController.sizingOptions = []`, because a tab view sized to its content collapses the window to no width) and in a `UIWindow` of the app's `UIWindowScene` on iOS, with AppKit and UIKit types reached through `import SwiftUI` only, and reads what the window shows: `stackTitle`, `presentsSheet`, on iOS `sheetTitle`, on macOS `clickRow(_:atFraction:)` and `listRowCount` |
 | `apple/Projects/App/Tests/AppSceneNavigationTests.swift` | the other test file with an `#if os(...)`: on iOS it also checks the About sheet's title, which a macOS sheet window does not show, and on macOS it clicks a row at 85 % of its width, where only a whole-row button reacts |
 | `apple/Tuist/ProjectDescriptionHelpers/SemprecProject.swift` | `TEST_HOST` is `Semprec.app/Semprec` on iOS and, through `TEST_HOST[sdk=macosx*]`, `Semprec.app/Contents/MacOS/Semprec` on macOS |
-| `apple/Projects/App/Project.swift` | `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` applies `apple/Projects/App/Entitlements/Semprec.entitlements` (the App Sandbox only) to the macOS app; macOS ignores the plist's UIKit keys. The XCUITest target `SemprecUITests` builds for iPhone and iPad only, and its scheme runs on an iOS simulator only, because macOS XCUITest needs the Accessibility permission |
+| `apple/Projects/App/Project.swift` | `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` applies `apple/Projects/App/Entitlements/Semprec.entitlements` (the App Sandbox) to the macOS app, and `CODE_SIGN_ENTITLEMENTS[sdk=iphone*]` applies `Semprec-iOS.entitlements` (`aps-environment`: `development` in Debug, `production` in Release, from `SEMPREC_APS_ENVIRONMENT`) to the iOS app; `SemprecApnsEnvironment` in the plist (`sandbox` or `production`) is the environment the device token is registered for. macOS ignores the plist's UIKit keys, `remote-notification` of `UIBackgroundModes` among them. The XCUITest target `SemprecUITests` builds for iPhone and iPad only, and its scheme runs on an iOS simulator only, because macOS XCUITest needs the Accessibility permission |
+| `apple/Projects/App/Sources/SemprecApp.swift`, `apple/Projects/App/Sources/Notifications/AppDelegate.swift` | the app's one `#if os(iOS)` outside DesignSystem and the tests: only iOS registers for remote notifications, and an iOS app receives its APNs token and its silent pushes only through an application delegate, which `SemprecApp` adopts with `UIApplicationDelegateAdaptor`. `AppDelegate` reaches the UIKit types through `import SwiftUI`, imports no UIKit and hands everything to `AppNotifications`. On macOS the app registers no push token; local reminders, the badge and notification taps (`NotificationCenterDelegate`) work on both |
 | `scripts/kmp-framework` | `SDK_NAME` selects the Kotlin target (`iphoneos`: `IosArm64`, `iphonesimulator`: `IosSimulatorArm64`, `macosx`: `MacosArm64`) and the embed folder (`.app/Frameworks` or `.app/Contents/Frameworks`) |
 | `build-logic/src/main/kotlin/semprec.kmp.gradle.kts` | the `macosArm64` target is built for `macosMinimum`, the iOS targets for `iosMinimum` |
 

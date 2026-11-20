@@ -18,6 +18,8 @@ final class AppComposition: ObservableObject {
     let collectionsRouter: AppCollectionsRouter
     let calendarRouter: AppCalendarRouter
     let journalRouter: AppJournalRouter
+    /// The notifications of the process, which every scene shares; nil in tests that leave the system alone.
+    let notifications: AppNotifications?
     /// The Semp chat and its bubble: whether the chat is open, what it shows, and where the bubble can pick up objects.
     let sempChat = SempChatPresenter()
     let dropTargets = DropTargetRegistry()
@@ -26,13 +28,14 @@ final class AppComposition: ObservableObject {
 
     // MARK: - Init
     convenience init() {
-        self.init(models: SceneContainer().screenModelFactory()())
+        self.init(models: SceneContainer().screenModelFactory()(), notifications: .shared)
     }
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.
-    init(models: any ScreenModelFactory) {
+    init(models: any ScreenModelFactory, notifications: AppNotifications? = nil) {
         let navigation = NavigationContext()
         self.models = models
+        self.notifications = notifications
         self.navigation = navigation
         overviewRouter = AppOverviewRouter(context: navigation)
         collectionsRouter = AppCollectionsRouter(context: navigation, tab: .overview)
@@ -56,6 +59,18 @@ final class AppComposition: ObservableObject {
         tab: { [weak self] in self?.currentTab ?? .overview },
         insideChat: true
     )
+
+    // MARK: - Notifications
+    /// Sends when a tapped notification waits for a scene, and once when a scene subscribes.
+    var notificationArrivals: AnyPublisher<Void, Never> {
+        notifications?.targetArrivals.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()
+    }
+
+    /// Opens what the tapped notification waiting for a scene leads to, if one waits and this scene takes it.
+    func openTappedNotification() {
+        guard let target = notifications?.takeTarget() else { return }
+        navigation.open(target)
+    }
 
     // MARK: - Routers
     /// The router of an Inbox that sits on the stack of `tab`; what a decision created opens over that stack.

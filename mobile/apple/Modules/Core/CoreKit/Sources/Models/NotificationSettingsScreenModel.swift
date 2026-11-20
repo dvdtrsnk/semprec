@@ -101,10 +101,16 @@ public enum NotificationSettingsAction: Equatable, Sendable {
     case dismissFailure
 }
 
-/// The notification settings have no effects: a change is a state change.
+/// What the notification settings ask the app for.
+public enum NotificationSettingsEffect: Equatable, Sendable {
+
+    /// The person turned a notification on; the app asks for the permission to notify unless it was answered.
+    case requestPermission
+}
+
 public typealias NotificationSettingsScreenModel =
-    ScreenModel<NotificationSettingsState, NotificationSettingsAction, Never>
+    ScreenModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>
 
 /// Notification settings model for previews and tests; it never starts the Kotlin runtime.
 public typealias ScriptedNotificationSettingsScreenModel =
-    ScriptedScreenModel<NotificationSettingsState, NotificationSettingsAction, Never>
+    ScriptedScreenModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>

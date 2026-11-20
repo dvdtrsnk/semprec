@@ -154,7 +154,8 @@ private extension NotificationSettingsScreen {
             viewModel: NotificationSettingsViewModel(
                 model: ScriptedNotificationSettingsScreenModel(
                     state: NotificationSettingsState(phase: .content, choices: NotificationChoices())
-                )
+                ),
+                router: PreviewAccountRouter()
             )
         )
     }

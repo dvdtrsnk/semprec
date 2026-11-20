@@ -8,11 +8,13 @@ final class SharedNotificationSettingsScreenModel {
     // MARK: - Dependencies
     /// Internal so that CoreKitTests can see what an action did to the Kotlin ViewModel's state.
     let viewModel: SharedSDK.NotificationSettingsViewModel
+    private let effectQueue: EffectQueue<NotificationSettingsEffect>
     let lease: SharedViewModelLease
 
     // MARK: - Init
     init(_ viewModel: SharedSDK.NotificationSettingsViewModel) {
         self.viewModel = viewModel
+        effectQueue = EffectQueue(collecting: viewModel.effects, Self.effect)
         lease = SharedViewModelLease { viewModel.close() }
     }
 
@@ -30,9 +32,8 @@ extension SharedNotificationSettingsScreenModel: ScreenModel {
         relay(viewModel.state, buffering: .bufferingNewest(1), Self.state)
     }
 
-    /// The Kotlin ViewModel's effect type is `Nothing`, so the stream has no elements.
-    func effects() -> AsyncStream<Never> {
-        AsyncStream { $0.finish() }
+    func effects() -> AsyncStream<NotificationSettingsEffect> {
+        effectQueue.stream()
     }
 
     func send(_ action: NotificationSettingsAction) {
@@ -100,6 +101,12 @@ extension SharedNotificationSettingsScreenModel {
         case .badgeApprovals: .badgeApprovals
         case .badgeInvites: .badgeInvites
         case .badgeInbox: .badgeInbox
+        }
+    }
+
+    static func effect(_ effect: any SharedSDK.NotificationSettingsEffect) -> NotificationSettingsEffect {
+        switch onEnum(of: effect) {
+        case .requestPermission: .requestPermission
         }
     }
 

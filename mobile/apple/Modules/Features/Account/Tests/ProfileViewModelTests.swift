@@ -81,9 +81,14 @@ final class RouterSpy: AccountRouting {
 
     // MARK: - Properties
     private(set) var pages: [AccountPage] = []
+    private(set) var permissionRequests = 0
 
     // MARK: - Protocol conformance
     func show(_ page: AccountPage) {
         pages.append(page)
+    }
+
+    func requestNotificationPermission() {
+        permissionRequests += 1
     }
 }

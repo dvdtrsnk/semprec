@@ -5,9 +5,10 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Types
-    /// Where the session of the signed-in person is kept.
+    /// Where the session of the signed-in person and the id of this device's push subscription are kept.
     public enum SessionStore: Sendable {
-        /// The Keychain of the device, so the person stays signed in across launches.
+        /// The Keychain of the device, so the person stays signed in across launches; the subscription id lives in the
+        /// user defaults.
         case keychain
         /// The memory of this process only. Tests use it, so that a session another build stored on the same device
         /// never reaches them.
@@ -23,11 +24,16 @@ public final class SharedScreenModelFactory {
         case .keychain: KeychainSessionStorage()
         case .memory: SharedSDK.InMemorySessionStorage()
         }
+        let subscriptions: any SharedSDK.PushSubscriptionStorage = switch sessionStore {
+        case .keychain: DefaultsPushSubscriptionStorage()
+        case .memory: SharedSDK.InMemoryPushSubscriptionStorage()
+        }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
             recorder: DeviceAudioRecorder(),
-            player: DeviceAudioPlayer()
+            player: DeviceAudioPlayer(),
+            pushSubscriptions: subscriptions
         )
     }
 }

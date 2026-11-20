@@ -71,7 +71,7 @@ final class AreasAndAccountNavigationTests: XCTestCase {
     @MainActor
     func testARowOfTheProfileAppendsItsPageToTheSheetsOwnStackOnce() {
         let path = AccountPath()
-        let router = AppAccountRouter(path: path, context: NavigationContext(), dismissSheet: {})
+        let router = AppAccountRouter(path: path, context: NavigationContext(), dismissSheet: {}, requestPermission: {})
         router.show(.devices)
         router.show(.devices)
         router.show(.trash)
@@ -87,7 +87,12 @@ final class AreasAndAccountNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         let path = AccountPath()
         var dismissals = 0
-        let router = AppAccountRouter(path: path, context: context, dismissSheet: { dismissals += 1 })
+        let router = AppAccountRouter(
+            path: path,
+            context: context,
+            dismissSheet: { dismissals += 1 },
+            requestPermission: {}
+        )
         router.show(.mailAccounts)
         XCTAssertEqual(dismissals, 1)
         XCTAssertEqual(overview.pushed, [.mailAccounts(tab: .overview)])
@@ -101,7 +106,12 @@ final class AreasAndAccountNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         let path = AccountPath()
         var dismissals = 0
-        let router = AppAccountRouter(path: path, context: context, dismissSheet: { dismissals += 1 })
+        let router = AppAccountRouter(
+            path: path,
+            context: context,
+            dismissSheet: { dismissals += 1 },
+            requestPermission: {}
+        )
         router.show(.sempStatus)
         XCTAssertEqual(dismissals, 1)
         XCTAssertEqual(overview.pushed, [.sempStatus])

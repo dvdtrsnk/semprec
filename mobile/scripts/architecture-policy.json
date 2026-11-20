@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
+    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -97,7 +97,9 @@
         "pending.message",
         "pending.finance",
         "pending.searchResult",
-        "semp.grabber.label"
+        "semp.grabber.label",
+        "reminder.event.body",
+        "reminder.task.body"
       ],
       "androidUntranslatable": ["app_name"]
     },

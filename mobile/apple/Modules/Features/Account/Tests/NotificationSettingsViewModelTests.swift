@@ -9,7 +9,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
     @MainActor
     func testStartsFromTheCurrentStateAndRepublishesChanges() async throws {
         let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
-        let viewModel = NotificationSettingsViewModel(model: model)
+        let viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         XCTAssertEqual(viewModel.state.phase, .loading)
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
@@ -22,7 +22,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
     @MainActor
     func testIntentsAreForwardedToTheModel() {
         let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
-        let viewModel = NotificationSettingsViewModel(model: model)
+        let viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         viewModel.retry()
         viewModel.set(.badgeInbox, enabled: true)
         viewModel.setProblemsLevel(.all)
@@ -34,13 +34,27 @@ final class NotificationSettingsViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAPermissionRequestReachesTheRouterOnceAlsoWhenRaisedBeforeObservation() async throws {
+        let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
+        let router = RouterSpy()
+        let viewModel = NotificationSettingsViewModel(model: model, router: router)
+        model.emit(.requestPermission)
+        let observer = Task { await viewModel.observe() }
+        defer { observer.cancel() }
+        try await eventually { router.permissionRequests == 1 }
+        model.emit(.requestPermission)
+        try await eventually { router.permissionRequests == 2 }
+        XCTAssertEqual(router.pages, [])
+    }
+
+    @MainActor
     func testReleasingTheViewModelReleasesItsModel() {
         weak var weakModel: ScriptedNotificationSettingsScreenModel?
         var viewModel: NotificationSettingsViewModel?
         do {
             let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
             weakModel = model
-            viewModel = NotificationSettingsViewModel(model: model)
+            viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         }
         XCTAssertNotNil(weakModel)
         viewModel = nil

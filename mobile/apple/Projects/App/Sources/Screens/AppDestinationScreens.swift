@@ -133,7 +133,11 @@ struct ShellDestination: View {
         case .pending(let title):
             PendingScreen(title: title)
         case .profile:
-            ProfileSheet(models: composition.models, navigation: composition.navigation)
+            ProfileSheet(
+                models: composition.models,
+                navigation: composition.navigation,
+                notifications: composition.notifications
+            )
         case .sempProjectAgent(let projectId):
             SempScreenFactory.projectAgent(
                 makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },

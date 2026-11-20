@@ -42,6 +42,7 @@ struct AppScene: View {
             Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
         } signedOut: {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
+                .task { await composition.notifications?.signedOut() }
         }
     }
 }
@@ -81,6 +82,9 @@ private extension AppScene {
         .onAppear { composition.currentTab = selectedTab.wrappedValue }
         .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }
         .onReceive(composition.navigation.tabRequests) { tab in selectedTab.wrappedValue = tab }
+        // Signed in: this device registers for pushes and schedules its reminders, and a tapped notification opens.
+        .task { await composition.notifications?.refresh() }
+        .onReceive(composition.notificationArrivals) { composition.openTappedNotification() }
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its

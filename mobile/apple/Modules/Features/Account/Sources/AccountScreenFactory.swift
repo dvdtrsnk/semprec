@@ -24,9 +24,10 @@ public enum AccountScreenFactory {
     }
 
     public static func notificationSettings(
-        makeModel: @escaping @MainActor () -> any NotificationSettingsScreenModel
+        makeModel: @escaping @MainActor () -> any NotificationSettingsScreenModel,
+        router: any AccountRouting
     ) -> some View {
-        NotificationSettingsScreen(viewModel: NotificationSettingsViewModel(model: makeModel()))
+        NotificationSettingsScreen(viewModel: NotificationSettingsViewModel(model: makeModel(), router: router))
     }
 
     public static func aiUsage(makeModel: @escaping @MainActor () -> any AiUsageScreenModel) -> some View {

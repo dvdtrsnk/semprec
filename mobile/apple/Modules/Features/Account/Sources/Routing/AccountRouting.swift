@@ -6,6 +6,9 @@ public protocol AccountRouting: AnyObject {
 
     /// The person opened a row of the profile.
     func show(_ page: AccountPage)
+
+    /// The person turned a notification on: the app asks for the permission to notify, unless it was answered.
+    func requestNotificationPermission()
 }
 
 /// A router for previews: it opens nothing.
@@ -14,4 +17,6 @@ final class PreviewAccountRouter: AccountRouting {
 
     // MARK: - Protocol conformance
     func show(_ page: AccountPage) {}
+
+    func requestNotificationPermission() {}
 }
