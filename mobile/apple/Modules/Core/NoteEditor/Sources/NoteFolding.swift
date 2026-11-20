@@ -1,8 +1,7 @@
 import CoreKit
 
-/// Which blocks closed toggles hide. A toggle hides the blocks after it that are indented deeper. A toggle heading
-/// hides the blocks after it up to the next heading of its level or a higher one, or the first block indented less
-/// than it. Which toggles are closed is kept on the device only.
+/// Which blocks closed toggles hide: a toggle or a toggle heading hides its children, the blocks right after it that
+/// are indented deeper. Which toggles are closed is kept on the device only.
 enum NoteFolding {
 
     /// Whether `block` folds what is under it.
@@ -39,17 +38,6 @@ enum NoteFolding {
     }
 
     private static func hides(_ toggle: NoteEditorBlock, _ block: NoteEditorBlock) -> Bool {
-        guard let level = level(toggle.type) else { return block.indent > toggle.indent }
-        if block.indent < toggle.indent { return false }
-        return self.level(block.type).map { $0 > level } ?? true
-    }
-
-    private static func level(_ type: NoteEditorBlockType) -> Int? {
-        switch type {
-        case .heading1: 1
-        case .heading2: 2
-        case .heading3: 3
-        default: nil
-        }
+        block.indent > toggle.indent
     }
 }

@@ -12,9 +12,9 @@ final class NoteFoldingTests: XCTestCase {
         NoteEditorBlock(id: "t3", type: .bullet, indent: 2),
         NoteEditorBlock(id: "after", type: .text),
         NoteEditorBlock(id: "h", type: .heading2, toggle: true),
-        NoteEditorBlock(id: "h1", type: .text),
-        NoteEditorBlock(id: "h2", type: .heading3),
-        NoteEditorBlock(id: "next", type: .heading2),
+        NoteEditorBlock(id: "h1", type: .text, indent: 1),
+        NoteEditorBlock(id: "h2", type: .heading3, indent: 1),
+        NoteEditorBlock(id: "next", type: .text),
         NoteEditorBlock(id: "plain", type: .heading1),
         NoteEditorBlock(id: "p1", type: .text)
     ]
@@ -28,12 +28,12 @@ final class NoteFoldingTests: XCTestCase {
         XCTAssertEqual(visible(["t2"]), ["t", "t1", "t2", "after", "h", "h1", "h2", "next", "plain", "p1"])
     }
 
-    func testAClosedToggleHeadingHidesUpToTheNextHeadingOfItsLevel() {
+    func testAClosedToggleHeadingHidesWhatIsIndentedUnderIt() {
         XCTAssertEqual(visible(["h"]), ["t", "t1", "t2", "t3", "after", "h", "next", "plain", "p1"])
     }
 
     func testOnlyAToggleFolds() {
-        XCTAssertEqual(visible(["plain", "after"]), blocks.map(\.id))
+        XCTAssertEqual(visible(["plain", "after", "h1"]), blocks.map(\.id))
     }
 
     func testRevealingABlockOpensEveryToggleOverIt() {
