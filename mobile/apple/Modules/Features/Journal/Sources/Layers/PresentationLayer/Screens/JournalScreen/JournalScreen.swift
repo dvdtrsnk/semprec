@@ -78,7 +78,10 @@ private extension JournalScreen {
     var titleRow: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.medium) {
             Spacer(minLength: 0)
-            Button(action: viewModel.goToday) {
+            Button {
+                axisMotion.centerRequests += 1
+                viewModel.goToday()
+            } label: {
                 Text("journal.today", bundle: .module)
                     .font(.headline)
                     .padding(.horizontal, 22)

@@ -26,22 +26,33 @@ struct JournalAxisView: View {
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: Self.rowSpacing) {
-            ForEach(shown) { row in
+        // Every part holds every row and folds away the ones it does not show, so a row is never made anew when the
+        // selected level moves it to another part: it is already where the others are.
+        VStack(spacing: 0) {
+            ForEach(rows) { row in
+                let isShown = shown.contains { $0.kind == row.kind }
                 JournalAxisRowView(
                     row: row,
                     track: JournalAxisTrack(row: row),
                     cursor: currentCursor,
                     motion: $motion,
-                    onSelect: onSelect,
+                    onSelect: select,
                     onRest: settle
                 )
                 .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
+                .padding(.vertical, isShown ? Self.rowSpacing / 2 : 0)
+                .frame(height: isShown ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(isShown ? 1 : 0)
+                .allowsHitTesting(isShown)
+                .accessibilityHidden(!isShown)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
-        .onChange(of: selectionStart) { _, _ in follow(animated: true) }
+        .onChange(of: selectionStart) { _, _ in center() }
+        .onChange(of: selectionKind) { _, _ in center() }
+        .onChange(of: motion.centerRequests) { _, _ in center() }
         .onChange(of: rows) { _, _ in returnIfOutside() }
     }
 
@@ -69,18 +80,22 @@ struct JournalAxisMotion: Equatable {
     /// Whether the rows move to the next cursor with the system's scroll animation: only for a jump the person asked
     /// for, such as a tap on a period or Today.
     var animated = false
+    /// Counts the requests to scroll the selected period back to the middle, such as Today on today.
+    var centerRequests = 0
 }
 
 // MARK: - Movement
 private extension JournalAxisView {
 
-    /// Brings the selected period into the middle, unless the axis already shows it there.
-    func follow(animated: Bool) {
-        guard let first = JournalAxisTrack.epochDay(selectionStart) else { return }
-        let span = rows.first(where: { $0.kind == selectionKind })
-            .flatMap { JournalAxisTrack(row: $0).span(startingAt: first) } ?? 1
-        if let cursor = motion.cursor, cursor >= first, cursor < first + span { return }
-        jump(to: anchor, animated: animated)
+    /// Scrolls every row so that the selected period is in the middle of the screen.
+    func center() {
+        jump(to: anchor, animated: true)
+    }
+
+    /// A tap selects the period; one on the period already selected scrolls it back to the middle.
+    func select(_ cell: JournalAxisCell) {
+        if cell.current { center() }
+        onSelect(cell)
     }
 
     /// The windows moved back to the selection (the person asked for it again, or for today): when the cursor is no
@@ -225,6 +240,8 @@ private struct JournalAxisRowView: View {
                         .accessibilityIdentifier(cell.identifier)
                 }
             }
+            // Its exact width up front, so a scroll to a far period is not cut short by a lazy estimate of it.
+            .frame(width: CGFloat(row.cells.count) * row.kind.width, alignment: .leading)
             .padding(.horizontal, width / 2)
         }
         .scrollIndicators(.hidden)
@@ -255,6 +272,12 @@ private struct JournalAxisRowView: View {
             place(animated: motion.animated)
         }
         .onChange(of: row) { _, _ in place(animated: false) }
+        // The row takes its place once it is laid out.
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.width }, action: { _, _ in
+            guard motion.driver != row.kind else { return }
+            place(animated: false)
+        })
+
         .mask {
             LinearGradient(
                 stops: [
