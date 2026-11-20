@@ -7,6 +7,17 @@ struct JournalBackground: View {
 
     // MARK: - Body
     var body: some View {
+        JournalBackgroundPattern()
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+    }
+}
+
+/// The gradient and grain of the diary's page in whatever frame it is given; the page fills the screen with it.
+struct JournalBackgroundPattern: View {
+
+    // MARK: - Body
+    var body: some View {
         MeshGradient(
             width: 3,
             height: 4,
@@ -19,8 +30,6 @@ struct JournalBackground: View {
             colors: Self.colors
         )
         .overlay { JournalGrain().allowsHitTesting(false) }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
     }
 
     /// Three columns, from the top row to the bottom one.
@@ -88,4 +97,37 @@ enum JournalColors {
     static let gold = Color(light: 0xB08D45, dark: 0xD6B36B)
     /// The cards on the diary's page: near white over the gradient, a raised grey in dark appearance.
     static let card = Color(light: 0xFDFDFC, dark: 0x1C1D20)
+}
+
+/// The band at the top of the screen behind the axis row that stays there: the page's own pattern at that place,
+/// blurred and fading out below the row, so the page scrolling under it does not show through the row's text.
+struct JournalTopBand: View {
+
+    // MARK: - Dependencies
+    /// The size of the whole page, which the pattern is laid out in so that the band matches the page behind it.
+    let pageSize: CGSize
+    /// How far down from the top of the screen the band is solid.
+    let solidHeight: CGFloat
+
+    // MARK: - Body
+    var body: some View {
+        JournalBackgroundPattern()
+            .frame(width: pageSize.width + Self.blur * 4, height: pageSize.height)
+            .blur(radius: Self.blur)
+            .frame(width: pageSize.width, height: solidHeight + Self.fade, alignment: .top)
+            .clipped()
+            .mask {
+                VStack(spacing: 0) {
+                    Color.black.frame(height: solidHeight)
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: Self.fade)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    /// How far below the solid part the band fades out.
+    static let fade: CGFloat = 28
+    private static let blur: CGFloat = 10
 }

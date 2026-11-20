@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
-/// One period on the axis as a glass capsule, as in the design: the selection tinted in the deep accent, the periods
-/// that contain it in gold, weekends greyed and today in the accent colour.
+/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the periods that contain it in
+/// gold, weekends greyed and today in the accent colour.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -24,20 +24,12 @@ struct JournalAxisCellLabel: View {
             .contentShape(.capsule)
     }
 
-    /// Each period is its own capsule of liquid glass: clear for most, tinted in the accent for the selection.
+    /// Only the selected period sits on a capsule of liquid glass tinted in the accent; the others are bare text.
     @ViewBuilder private var pill: some View {
         if cell.current {
             Color.clear
                 .glassEffect(.regular.tint(Theme.Colors.appAccent.opacity(0.85)), in: .capsule)
                 .shadow(color: Theme.Colors.appAccent.opacity(0.3), radius: 6, y: 3)
-        } else {
-            Color.clear
-                .glassEffect(.regular, in: .capsule)
-                .overlay {
-                    if isToday {
-                        Capsule().strokeBorder(Theme.Colors.appAccent, lineWidth: 1.5)
-                    }
-                }
         }
     }
 

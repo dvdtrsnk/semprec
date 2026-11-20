@@ -25,6 +25,11 @@ struct JournalScreen: View {
     /// is at least so tall that it scrolls far enough for the selected row to reach the top.
     @State private var aboveHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    /// The size of the whole page, the top of its safe area and the frame of the selected axis row, on screen: the
+    /// band behind that row shows as the row comes up to the top.
+    @State private var pageSize: CGSize = .zero
+    @State private var safeTop: CGFloat = 0
+    @State private var pinnedFrame: CGRect = .zero
 
     // MARK: - Init
     init(
@@ -40,7 +45,14 @@ struct JournalScreen: View {
     // MARK: - Body
     var body: some View {
         content
-            .background { JournalBackground() }
+            .background {
+                JournalBackground()
+                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageSize = $0 })
+            }
+            .background {
+                Color.clear
+                    .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { safeTop = $0 })
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(JournalIdentifiers.screen)
             .navigationTitle(Text("journal.title", bundle: .module))
@@ -108,6 +120,12 @@ private extension JournalScreen {
     var pinnedRow: some View {
         axis(axisLevels.selected)
             .padding(.vertical, Self.axisRowSpacing)
+            .background(alignment: .top) {
+                JournalTopBand(pageSize: pageSize, solidHeight: pinnedFrame.maxY)
+                    .offset(y: -pinnedFrame.minY)
+                    .opacity(bandOpacity)
+            }
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }, action: { pinnedFrame = $0 })
     }
 
     @ViewBuilder var content: some View {
@@ -148,6 +166,14 @@ private extension JournalScreen {
                 action: { _, height in viewportHeight = height }
             )
         }
+    }
+
+    /// The band behind the selected row comes in over the last row's height before the row reaches the top, so the
+    /// rows passing above it go under the band and the page never shows through the row once it stays there.
+    var bandOpacity: Double {
+        guard pinnedFrame.height > 0 else { return 0 }
+        let distance = pinnedFrame.minY - safeTop
+        return min(max(1 - distance / pinnedFrame.height, 0), 1)
     }
 
     /// The cards of the selected period.
