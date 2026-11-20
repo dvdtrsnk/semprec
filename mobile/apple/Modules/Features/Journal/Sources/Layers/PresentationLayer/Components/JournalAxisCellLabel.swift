@@ -3,6 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
+/// One period on the axis as a glass capsule, as in the design: the selection tinted in the deep accent, the periods
+/// that contain it in gold, weekends greyed and today in the accent colour.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -10,33 +12,49 @@ struct JournalAxisCellLabel: View {
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 0) {
-            if cell.kind == .day {
-                Text(JournalDates.weekdayShort(cell.weekday)).font(.caption2).foregroundStyle(subColor)
-            }
-            Text(cell.title).font(font).fontWeight(emphasized ? .bold : .medium).foregroundStyle(color)
-        }
-        .frame(width: cell.kind.width - 4, height: cell.kind.height - 4)
-        .background(cell.current ? fill : .clear, in: .rect(cornerRadius: 10))
-        .overlay {
-            if cell.onPath && !cell.current {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(cell.today ? Theme.Colors.accent : ring, lineWidth: 1.5)
-            }
-        }
-        .padding(2)
-        .contentShape(.rect)
+        Text(cell.title)
+            .font(font)
+            .fontWeight(emphasized ? .bold : .semibold)
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(width: cell.kind.width - Self.gap, height: cell.kind.height - Self.gap)
+            .background { pill }
+            .padding(Self.gap / 2)
+            .contentShape(.capsule)
     }
 
-    private var emphasized: Bool { cell.current || cell.today }
+    /// Each period is its own capsule of liquid glass: clear for most, tinted in the accent for the selection.
+    @ViewBuilder private var pill: some View {
+        if cell.current {
+            Color.clear
+                .glassEffect(.regular.tint(Theme.Colors.appAccent.opacity(0.85)), in: .capsule)
+                .shadow(color: Theme.Colors.appAccent.opacity(0.3), radius: 6, y: 3)
+        } else {
+            Color.clear
+                .glassEffect(.regular, in: .capsule)
+                .overlay {
+                    if isToday {
+                        Capsule().strokeBorder(Theme.Colors.appAccent, lineWidth: 1.5)
+                    }
+                }
+        }
+    }
+
+    private var emphasized: Bool { cell.current || isToday || cell.onPath }
     private var weekend: Bool { cell.kind == .day && cell.weekday > 5 }
+    /// Only the day itself marks today; a longer period is marked only on the path of the selection, in gold.
+    private var isToday: Bool { cell.today && cell.kind == .day }
     private var color: Color {
-        if cell.today { return Theme.Colors.accent }
+        if cell.current { return .white }
+        if isToday { return Theme.Colors.appAccent }
+        if cell.onPath { return JournalColors.gold }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
-    private var subColor: Color { cell.today ? Theme.Colors.accent : Theme.Colors.secondaryText }
-    private var fill: Color { cell.today ? Theme.Colors.accent.opacity(0.15) : Color.secondary.opacity(0.15) }
-    private var ring: Color { Color.secondary.opacity(0.5) }
-    private var font: Font { cell.kind == .year ? .body : .subheadline }
+    private var font: Font { cell.kind == .year ? .title3 : .subheadline }
+
+    /// The space between two neighbouring pills.
+    private static let gap: CGFloat = 6
 }
 
 // MARK: - Labels
@@ -48,7 +66,7 @@ extension JournalAxisCell {
         case .year: String(year)
         case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
         case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
-        case .day, .week: String(format: "%02d", day)
+        case .day, .week: "\(JournalDates.weekdayShort(weekday)) \(day)"
         }
     }
 
@@ -83,16 +101,16 @@ extension JournalPeriodKind {
         switch self {
         case .year: 92
         case .quarter: 74
-        case .month: 62
-        case .week, .day: 38
+        case .month: 64
+        case .week, .day: 62
         }
     }
 
     var height: CGFloat {
         switch self {
-        case .year: 34
-        case .quarter, .month, .week: 28
-        case .day: 42
+        case .year: 38
+        case .quarter, .month, .week: 32
+        case .day: 36
         }
     }
 

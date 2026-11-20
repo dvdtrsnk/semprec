@@ -33,6 +33,11 @@ enum JournalDates {
         format(key, template: "EEEEdMMMM")
     }
 
+    /// The short heading of a day at the top of the diary: `Pátek 20.`, `Friday 20`.
+    static func dayHeading(_ key: String) -> String {
+        format(key, template: "EEEEd")
+    }
+
     /// `Říjen 2026`.
     static func monthTitle(_ key: String) -> String {
         format(key, template: "LLLLy")

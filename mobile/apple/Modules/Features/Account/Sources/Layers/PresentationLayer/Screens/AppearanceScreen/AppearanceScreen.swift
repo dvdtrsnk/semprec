@@ -1,15 +1,13 @@
 import DesignSystem
 import SwiftUI
 
-/// The look of the app on this device: light, dark or the system's, shown as three small phones, and the accent
-/// colour of its controls. Both are kept on the device and apply at once.
+/// The look of the app on this device: light, dark or the system's, shown as three small phones. The choice is kept
+/// on the device and applies at once.
 struct AppearanceScreen: View {
 
     // MARK: - State
     @AppStorage(AppAppearanceKeys.colorScheme)
     private var scheme = AppColorScheme.system
-    @AppStorage(AppAppearanceKeys.accent)
-    private var accent = AppAccent.blue
 
     // MARK: - Body
     var body: some View {
@@ -20,18 +18,6 @@ struct AppearanceScreen: View {
                 }
                 .padding(Theme.Spacing.medium)
                 .background(Theme.Colors.card, in: .rect(cornerRadius: 22))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("appearance.accent", bundle: .module).font(.title3.weight(.semibold))
-                    Text("appearance.accent.detail", bundle: .module)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                }
-                .padding(.horizontal, 4)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 14) {
-                    ForEach(AppAccent.allCases, id: \.self) { option in accentOption(option) }
-                }
-                .padding(Theme.Spacing.medium)
-                .background(Theme.Colors.card, in: .rect(cornerRadius: 22))
             }
             .padding(Theme.Spacing.medium)
         }
@@ -39,7 +25,6 @@ struct AppearanceScreen: View {
         .navigationTitle(Text("appearance.title", bundle: .module))
         .inlineNavigationTitle()
         .sensoryFeedback(.selection, trigger: scheme)
-        .sensoryFeedback(.selection, trigger: accent)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccountIdentifiers.appearance)
     }
@@ -52,34 +37,19 @@ private extension AppearanceScreen {
         let isSelected = option == scheme
         return Button { scheme = option } label: {
             VStack(spacing: Theme.Spacing.small) {
-                AppearancePhone(scheme: option, accent: accent.color)
+                AppearancePhone(scheme: option, accent: Theme.Colors.appAccent)
                     .padding(4)
                     .overlay(
                         RoundedRectangle(cornerRadius: 20)
-                            .strokeBorder(isSelected ? accent.color : .clear, lineWidth: 2.5)
+                            .strokeBorder(isSelected ? Theme.Colors.appAccent : .clear, lineWidth: 2.5)
                     )
                 Text(schemeTitle(option), bundle: .module)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(isSelected ? accent.color : .primary)
+                    .foregroundStyle(isSelected ? Theme.Colors.appAccent : .primary)
             }
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    func accentOption(_ option: AppAccent) -> some View {
-        let isSelected = option == accent
-        return Button { accent = option } label: {
-            Circle()
-                .fill(option.color)
-                .padding(isSelected ? 5 : 0)
-                .overlay(Circle().strokeBorder(isSelected ? option.color : .clear, lineWidth: 2.5))
-                .aspectRatio(1, contentMode: .fit)
-                .frame(maxWidth: 52)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(accentTitle(option), bundle: .module))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -88,21 +58,6 @@ private extension AppearanceScreen {
         case .system: "appearance.scheme.system"
         case .light: "appearance.scheme.light"
         case .dark: "appearance.scheme.dark"
-        }
-    }
-
-    func accentTitle(_ option: AppAccent) -> LocalizedStringKey {
-        switch option {
-        case .blue: "appearance.accent.blue"
-        case .cyan: "appearance.accent.cyan"
-        case .teal: "appearance.accent.teal"
-        case .mint: "appearance.accent.mint"
-        case .yellow: "appearance.accent.yellow"
-        case .orange: "appearance.accent.orange"
-        case .pink: "appearance.accent.pink"
-        case .purple: "appearance.accent.purple"
-        case .indigo: "appearance.accent.indigo"
-        case .gray: "appearance.accent.gray"
         }
     }
 }

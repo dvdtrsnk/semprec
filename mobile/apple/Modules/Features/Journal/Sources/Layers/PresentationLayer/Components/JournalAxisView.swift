@@ -5,38 +5,42 @@ import SwiftUI
 /// The time axis of the diary: a row of years, quarters, months and days that move together. All rows show the same
 /// moment in their middle, each at its own scale, so a day sits under its month, the month under its quarter and the
 /// quarter under its year. Dragging any row moves the moment, and every row with it; a tap selects a period. The
-/// selection and the periods that contain it are marked, today is in the accent colour. As the page below scrolls by
-/// `scrolled` points, the rows above and below the selected level fold away step by step, as in the design: the whole
-/// fold takes as many points as those rows are tall, and the row of the selected level stays. The rows hold a window of
+/// selection and the periods that contain it are marked, today is in the accent colour. The rows hold a window of
 /// periods around the selection; a drag that ends near the edge of the days asks for the windows around the day it
-/// reached (`onMove`).
+/// reached (`onMove`). The diary may show the rows apart, each part its own view over all `rows`: the parts share one
+/// `motion`, so they still move together.
 struct JournalAxisView: View {
 
     // MARK: - Dependencies
     let rows: [JournalAxisRow]
+    /// The rows this part of the axis shows.
+    let shown: [JournalAxisRow]
     let selectionStart: String
     let selectionKind: JournalPeriodKind
-    let scrolled: CGFloat
     let onSelect: (JournalAxisCell) -> Void
     let onMove: (String) -> Void
 
     // MARK: - State
-    /// The moment in the middle of every row, in days since 1970 (a fraction is a part of the day).
-    @State private var cursor: Double?
-    /// The cursor when the running drag began.
-    @State private var dragOrigin: Double?
-    /// True from the start of a drag until just after it ended: the cell under the finger moved with it, so lifting
-    /// the finger must not count as a tap on that cell.
-    @State private var dragged = false
+    /// Where the axis stands and how it is being dragged, shared by every part of the axis.
+    @Binding var motion: JournalAxisMotion
+
+    private var cursor: Double? {
+        get { motion.cursor }
+        nonmutating set { motion.cursor = newValue }
+    }
+    private var dragOrigin: Double? {
+        get { motion.dragOrigin }
+        nonmutating set { motion.dragOrigin = newValue }
+    }
+    private var dragged: Bool {
+        get { motion.dragged }
+        nonmutating set { motion.dragged = newValue }
+    }
 
     // MARK: - Body
     var body: some View {
-        let levels = split
-        let fold = foldProgress(upper: levels.upper, lower: levels.lower)
         VStack(spacing: Self.rowSpacing) {
-            folding(levels.upper, progress: fold)
-            ForEach(levels.pinned) { row in rowView(row) }
-            folding(levels.lower, progress: fold)
+            ForEach(shown) { row in rowView(row) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
@@ -60,45 +64,6 @@ struct JournalAxisView: View {
         .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
     }
 
-    /// The rows of a group that folds away: their height shrinks from the top and they fade, while the part still
-    /// shown keeps its place above the selected row.
-    @ViewBuilder
-    private func folding(_ group: [JournalAxisRow], progress: CGFloat) -> some View {
-        if !group.isEmpty {
-            let full = Self.height(of: group)
-            VStack(spacing: Self.rowSpacing) {
-                ForEach(group) { row in rowView(row) }
-            }
-            .frame(height: full * (1 - progress), alignment: .bottom)
-            .clipped()
-            .opacity(1 - progress)
-            .accessibilityHidden(progress >= 1)
-        }
-    }
-
-    /// The rows above the selected level, its own row and the rows below it.
-    private var split: (upper: [JournalAxisRow], pinned: [JournalAxisRow], lower: [JournalAxisRow]) {
-        guard let index = rows.firstIndex(where: { $0.kind == selectionKind }) else { return ([], rows, []) }
-        return (Array(rows[..<index]), [rows[index]], Array(rows[(index + 1)...]))
-    }
-
-    /// How far the folding rows are gone, 0 to 1: the fold takes as many points of scrolling as they are tall.
-    private func foldProgress(upper: [JournalAxisRow], lower: [JournalAxisRow]) -> CGFloat {
-        let total = Self.height(of: upper) + Self.height(of: lower)
-        guard total > 0 else { return 0 }
-        return min(max(scrolled / total, 0), 1)
-    }
-
-    /// How tall the rows that fold away are: every row but the one of the `selected` level.
-    static func foldingHeight(of rows: [JournalAxisRow], selected: JournalPeriodKind) -> CGFloat {
-        height(of: rows.filter { $0.kind != selected })
-    }
-
-    /// How tall `group`'s rows are with the space between them; for every row of the axis, how tall the whole axis is.
-    static func height(of group: [JournalAxisRow]) -> CGFloat {
-        group.reduce(0) { $0 + $1.kind.height + rowSpacing }
-    }
-
     private var currentCursor: Double {
         cursor ?? anchor
     }
@@ -110,6 +75,19 @@ struct JournalAxisView: View {
               let span = JournalAxisTrack(row: row).span(startingAt: start) else { return start + 0.5 }
         return start + min(Self.longPeriodAnchor, span / 2)
     }
+}
+
+// MARK: - Motion
+/// Where the axis stands and how it is being dragged.
+struct JournalAxisMotion: Equatable {
+
+    /// The moment in the middle of every row, in days since 1970 (a fraction is a part of the day).
+    var cursor: Double?
+    /// The cursor when the running drag began.
+    var dragOrigin: Double?
+    /// True from the start of a drag until just after it ended: the cell under the finger moved with it, so lifting
+    /// the finger must not count as a tap on that cell.
+    var dragged = false
 }
 
 // MARK: - Movement
