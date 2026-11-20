@@ -19,9 +19,10 @@ struct NoteSwipeState: Equatable {
     }
 }
 
-/// A swipe menu next to the block `row`: `below` it or above it, its first option nearest the block. While the finger
-/// is down the option as far from the block as the finger is gets highlighted; a menu left open after the finger lifted
-/// (`pinned`) waits for a tap.
+/// A swipe menu next to the block `row`: `below` it or above it, its first option nearest the block, or, where it fits
+/// on neither side, in the middle of the screen at `centeredTop`. While the finger is down the option as far from the
+/// block as the finger is (or, in the middle, the option under the finger) gets highlighted; a menu left open after
+/// the finger lifted (`pinned`) waits for a tap.
 struct NoteMenuState: Equatable {
 
     let blockId: String
@@ -30,6 +31,7 @@ struct NoteMenuState: Equatable {
     /// Where across the space the finger was when the menu opened.
     let left: CGFloat
     let below: Bool
+    var centeredTop: CGFloat?
     var highlighted: Int?
     var pinned = false
 }
@@ -155,12 +157,14 @@ final class NoteInteraction: ObservableObject {
         case .listMenu, .styleMenu:
             let row = rowFrames[block.id] ?? .zero
             menu = step.menu.map { kind in
-                NoteMenuState(
+                let place = placement(of: kind, row: row, preferringBelow: true)
+                return NoteMenuState(
                     blockId: block.id,
                     kind: kind,
                     row: row,
                     left: row.minX,
-                    below: fits(kind, below: true, row: row),
+                    below: place.below,
+                    centeredTop: place.centeredTop,
                     pinned: true
                 )
             }
@@ -321,17 +325,32 @@ private extension NoteInteraction {
         swipe?.frozen = true
         let downward = location.y > row.maxY
         let open = menu?.pinned == false ? menu : nil
-        let below = open?.below ?? (fits(kind, below: downward, row: row) ? downward : !downward)
-        let distance = downward ? location.y - row.maxY : row.minY - location.y
+        let place = open.map { (below: $0.below, centeredTop: $0.centeredTop) }
+            ?? placement(of: kind, row: row, preferringBelow: downward)
+        let distance = if let top = place.centeredTop {
+            location.y - top
+        } else {
+            downward ? location.y - row.maxY : row.minY - location.y
+        }
         let index = Int((distance / Self.optionHeight).rounded(.down))
         menu = NoteMenuState(
             blockId: blockId,
             kind: kind,
             row: row,
             left: open?.left ?? location.x,
-            below: below,
+            below: place.below,
+            centeredTop: place.centeredTop,
             highlighted: kind.options.indices.contains(index) ? kind.options[index].id : nil
         )
+    }
+
+    /// Where a menu next to `row` goes: on the preferred side, on the other one when it does not fit there, and in
+    /// the middle of the screen, its options top down, when it fits on neither.
+    func placement(of kind: NoteMenuKind, row: CGRect, preferringBelow: Bool) -> (below: Bool, centeredTop: CGFloat?) {
+        if fits(kind, below: preferringBelow, row: row) { return (preferringBelow, nil) }
+        if fits(kind, below: !preferringBelow, row: row) { return (!preferringBelow, nil) }
+        let height = CGFloat(kind.options.count) * Self.optionHeight
+        return (true, max(visible.minY, visible.midY - height / 2))
     }
 
     func fits(_ kind: NoteMenuKind, below: Bool, row: CGRect) -> Bool {

@@ -89,7 +89,7 @@ final class NoteInteractionTests: XCTestCase {
 
     func testAMenuWithoutRoomOnTheFingersSideOpensOnTheOtherSideMirrored() {
         let interaction = interaction()
-        interaction.visible = CGRect(x: 0, y: 0, width: 300, height: 200)
+        interaction.visible = CGRect(x: 0, y: -200, width: 300, height: 400)
         drag(interaction, blocks[2], 120, 0, at: 100)
         drag(interaction, blocks[2], 120, 88, at: 188)
         XCTAssertEqual(interaction.menu?.below, false)
@@ -224,6 +224,22 @@ final class NoteInteractionTests: XCTestCase {
         XCTAssertNil(idle.feedback(to: started))
         XCTAssertEqual(started.feedback(to: changed), .selection)
         XCTAssertNil(changed.feedback(to: NoteSelectionHaptic(interaction)))
+    }
+
+    func testAMenuThatFitsOnNeitherSideOfItsBlockStandsInTheMiddle() {
+        let roomy = interaction()
+        roomy.visible = CGRect(x: 0, y: 0, width: 300, height: 1000)
+        drag(roomy, blocks[2], 200, 0, at: 100)
+        _ = roomy.released(blocks[2])
+        XCTAssertEqual(roomy.menu?.below, true)
+        XCTAssertNil(roomy.menu?.centeredTop)
+
+        let cramped = interaction()
+        cramped.visible = CGRect(x: 0, y: 0, width: 300, height: 300)
+        drag(cramped, blocks[2], 200, 0, at: 100)
+        _ = cramped.released(blocks[2])
+        let height = CGFloat(NoteMenuKind.style.options.count) * NoteInteraction.optionHeight
+        XCTAssertEqual(cramped.menu?.centeredTop, max(0, 150 - height / 2))
     }
 
     func testAMenuLeftWithoutAChoiceStaysOpenForATap() {

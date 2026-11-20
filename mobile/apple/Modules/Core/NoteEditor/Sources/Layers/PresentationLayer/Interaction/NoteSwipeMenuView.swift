@@ -37,7 +37,7 @@ private extension NoteSwipeMenuView {
 
     var height: CGFloat { CGFloat(menu.kind.options.count) * NoteInteraction.optionHeight }
 
-    var top: CGFloat { menu.below ? menu.row.maxY : menu.row.minY - height }
+    var top: CGFloat { menu.centeredTop ?? (menu.below ? menu.row.maxY : menu.row.minY - height) }
 
     var left: CGFloat {
         min(max(menu.left - 60, Theme.Spacing.small), max(width - Self.menuWidth - Theme.Spacing.small, 0))

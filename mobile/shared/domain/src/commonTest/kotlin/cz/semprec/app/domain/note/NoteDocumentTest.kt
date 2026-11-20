@@ -65,4 +65,23 @@ class NoteDocumentTest {
         )
         assertEquals(expected, NoteMarkers.of(blocks))
     }
+
+    @Test fun `lists inside a toggle count from the toggle's children and nested toggles start again`() {
+        val blocks = listOf(
+            block("t", "Plan", PageBlockType.TOGGLE),
+            block("n1", "a", PageBlockType.NUMBER, indent = 1),
+            block("n2", "b", PageBlockType.NUMBER, indent = 2),
+            block("n3", "c", PageBlockType.NUMBER, indent = 1),
+            block("b1", "d", PageBlockType.BULLET, indent = 1),
+            block("inner", "More", PageBlockType.TOGGLE, indent = 1),
+            block("n4", "e", PageBlockType.NUMBER, indent = 2),
+            block("b2", "f", PageBlockType.BULLET, indent = 3),
+            block("out", "g", PageBlockType.NUMBER),
+        )
+        val expected = listOf(
+            null, NoteMarker.Number("1."), NoteMarker.Number("1.1."), NoteMarker.Number("2."), NoteMarker.Bullet(0),
+            null, NoteMarker.Number("1."), NoteMarker.Bullet(1), NoteMarker.Number("1."),
+        )
+        assertEquals(expected, NoteMarkers.of(blocks))
+    }
 }

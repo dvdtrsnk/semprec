@@ -13,6 +13,8 @@ public final class NoteEditorFocus: ObservableObject {
     @Published public internal(set) var isSelecting = false
     /// Set while part of the edited block's text is selected: what the format bar shows and does.
     @Published var formatting: NoteFormatting?
+    /// Set while the note's blocks are selected: what the selection panel shows and does.
+    @Published var selection: NoteSelectionActions?
     /// Counted up by `end()`; the editor ends editing and selecting on each change.
     @Published private(set) var endRequests = 0
 
@@ -41,20 +43,32 @@ struct NoteFormatting {
 // MARK: - Format bar
 extension View {
 
-    /// The format bar of `focus`'s note, right above the keyboard, while part of a block's text is selected. A
-    /// screen around a note puts it on its whole content, so the bar spans the screen's width.
+    /// The format bar of `focus`'s note, right above the keyboard, while part of a block's text is selected, and its
+    /// selection panel, in place of the tab bar, while its blocks are selected. A screen around a note puts it on its
+    /// whole content, so the bar and the panel span the screen's width.
     public func noteFormatBar(_ focus: NoteEditorFocus) -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) { NoteFocusFormatBar(focus: focus) }
+        modifier(NoteFocusBars(focus: focus))
     }
 }
 
-/// Shows the format bar while `focus` has a selection to format.
-private struct NoteFocusFormatBar: View {
+/// Shows the format bar while `focus` has a selection to format, and the selection panel, with the tab bar hidden,
+/// while its blocks are selected.
+private struct NoteFocusBars: ViewModifier {
 
     @ObservedObject var focus: NoteEditorFocus
 
-    var body: some View {
-        if let formatting = focus.formatting {
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom, spacing: 0) { bar }
+            .tabBarHidden(focus.selection != nil)
+            .animation(.snappy(duration: 0.25), value: focus.selection == nil)
+    }
+
+    @ViewBuilder var bar: some View {
+        if let selection = focus.selection {
+            NoteSelectionPanel(actions: selection)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let formatting = focus.formatting {
             NoteFormatBar(
                 selection: formatting.selection,
                 onTyping: formatting.apply,

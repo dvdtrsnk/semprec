@@ -34,7 +34,6 @@ struct NoteEditorScreen: View {
     var body: some View {
         content
             .modifier(NoteOwnFormatBar(focus: givenFocus == nil ? ownFocus : nil))
-            .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(isPresented: styledBinding) { styleList }
             .modifier(NoteLinkDialog(draft: $link) { address in saveLink(address) })
             .modifier(NotePageTitle(title: viewModel.variant == .full ? state.title : nil))
@@ -57,7 +56,13 @@ struct NoteEditorScreen: View {
                 focus.isEditing = id != nil
                 reveal(id)
             }
-            .onChange(of: interaction.selecting) { _, selecting in focus.isSelecting = selecting }
+            .onChange(of: interaction.selecting) { _, selecting in
+                focus.isSelecting = selecting
+                // Selecting blocks ends typing: the note is either written in or worked on as blocks.
+                if selecting { viewModel.endEditing() }
+            }
+            .onChange(of: selectionKey, initial: true) { focus.selection = selectionActions }
+            .onDisappear { focus.selection = nil }
             .onChange(of: formattable) { _, selection in
                 focus.formatting = selection.map { selection in
                     NoteFormatting(
@@ -252,17 +257,20 @@ private extension NoteEditorScreen {
             .accessibilityIdentifier(NoteEditorIdentifiers.tapBelow)
     }
 
-    @ViewBuilder var selectionBar: some View {
-        if interaction.selecting {
-            NoteSelectionBar(
-                count: interaction.selected.count,
-                allSelected: interaction.selected.count == state.blocks.count,
-                onSelectAll: { interaction.selectAll(state.blocks) },
-                onStyle: { styledIds = interaction.selectedIds(in: state.blocks) },
-                onEdit: { bulk in bulkEdit(bulk) },
-                onDone: { interaction.stopSelecting() }
-            )
-        }
+    /// What the selection panel shows changes with these.
+    var selectionKey: [Int] {
+        [interaction.selecting ? 1 : 0, interaction.selected.count, state.blocks.count]
+    }
+
+    var selectionActions: NoteSelectionActions? {
+        guard interaction.selecting else { return nil }
+        return NoteSelectionActions(
+            count: interaction.selected.count,
+            allSelected: interaction.selected.count == state.blocks.count,
+            selectAll: { interaction.selectAll(viewModel.state.blocks) },
+            style: { styledIds = interaction.selectedIds(in: viewModel.state.blocks) },
+            edit: { bulk in bulkEdit(bulk) }
+        )
     }
 
     var styledBinding: Binding<Bool> {

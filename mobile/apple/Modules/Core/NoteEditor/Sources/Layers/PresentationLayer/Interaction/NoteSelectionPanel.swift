@@ -2,52 +2,68 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The bar of selection mode: select all or none, how many blocks are selected, and what can be done with them.
-struct NoteSelectionBar: View {
+/// The panel of selection mode, in Liquid Glass where the tab bar was: how many blocks are selected, select all or
+/// none, and what can be done with them in a row that scrolls sideways when it does not fit.
+struct NoteSelectionPanel: View {
 
     // MARK: - Dependencies
-    let count: Int
-    let allSelected: Bool
-    let onSelectAll: () -> Void
-    let onStyle: () -> Void
-    let onEdit: (NoteBulkEdit) -> Void
-    let onDone: () -> Void
+    let actions: NoteSelectionActions
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Theme.Spacing.small) {
             HStack {
-                Button(action: onSelectAll) {
-                    Text(allSelected ? "noteEditor.selection.none" : "noteEditor.selection.all", bundle: .module)
-                }
-                Spacer()
-                Text(String(format: String(localized: "noteEditor.selection.count", bundle: .module), count))
+                Text(String(format: String(localized: "noteEditor.selection.count", bundle: .module), actions.count))
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Button(action: onDone) { Text("noteEditor.done", bundle: .module).bold() }
+                Button(action: actions.selectAll) {
+                    Text(selectAllTitle, bundle: .module).font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.Colors.accent)
             }
-            HStack {
-                tool("noteEditor.bar.style", "paragraphsign", action: onStyle)
-                tool("noteEditor.bar.outdent", "decrease.indent") { onEdit(.outdent) }
-                tool("noteEditor.bar.indent", "increase.indent") { onEdit(.indent) }
-                tool("noteEditor.menu.duplicate", "plus.square.on.square") { onEdit(.duplicate) }
-                tool("noteEditor.menu.delete", "trash", role: .destructive) { onEdit(.delete) }
+            .padding(.horizontal, Theme.Spacing.medium)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    tool("noteEditor.bar.style", "paragraphsign", action: actions.style)
+                    ForEach(NoteBulkEdit.allCases, id: \.self) { bulk in
+                        tool(bulk.title, bulk.systemImage, role: bulk == .delete ? .destructive : nil) {
+                            actions.edit(bulk)
+                        }
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.small)
             }
-            .disabled(count < 1)
+            .disabled(actions.count < 1)
         }
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 28))
         .padding(.horizontal, Theme.Spacing.medium)
-        .padding(.vertical, Theme.Spacing.small)
-        .background(.bar)
+        .padding(.bottom, Theme.Spacing.small)
+        .hidesFloatingControls()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(NoteEditorIdentifiers.selectionBar)
     }
 }
 
-/// What the selection bar does to the selected blocks.
-enum NoteBulkEdit: Equatable {
+/// What the selection panel shows and does; the note's editor keeps it current while its blocks are selected.
+struct NoteSelectionActions {
+
+    let count: Int
+    let allSelected: Bool
+    let selectAll: @MainActor () -> Void
+    let style: @MainActor () -> Void
+    let edit: @MainActor (NoteBulkEdit) -> Void
+}
+
+/// What the selection panel does to the selected blocks.
+enum NoteBulkEdit: Equatable, CaseIterable {
 
     case outdent
     case indent
+    case bullets
+    case numbers
+    case todos
     case duplicate
     case delete
 
@@ -55,14 +71,45 @@ enum NoteBulkEdit: Equatable {
         switch self {
         case .outdent: .shiftIndent(blockIds: ids, delta: -1)
         case .indent: .shiftIndent(blockIds: ids, delta: 1)
+        case .bullets: .toggleType(blockIds: ids, type: .bullet)
+        case .numbers: .toggleType(blockIds: ids, type: .number)
+        case .todos: .toggleType(blockIds: ids, type: .todo)
         case .duplicate: .duplicate(blockIds: ids)
         case .delete: .delete(blockIds: ids)
+        }
+    }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .outdent: "noteEditor.bar.outdent"
+        case .indent: "noteEditor.bar.indent"
+        case .bullets: "noteEditor.menu.list.bullet"
+        case .numbers: "noteEditor.menu.list.number"
+        case .todos: "noteEditor.type.todo"
+        case .duplicate: "noteEditor.menu.duplicate"
+        case .delete: "noteEditor.menu.delete"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .outdent: "decrease.indent"
+        case .indent: "increase.indent"
+        case .bullets: "list.bullet"
+        case .numbers: "list.number"
+        case .todos: "checklist"
+        case .duplicate: "plus.square.on.square"
+        case .delete: "trash"
         }
     }
 }
 
 // MARK: - Subviews
-private extension NoteSelectionBar {
+private extension NoteSelectionPanel {
+
+    var selectAllTitle: LocalizedStringKey {
+        actions.allSelected ? "noteEditor.selection.none" : "noteEditor.selection.all"
+    }
 
     func tool(
         _ title: LocalizedStringKey,
@@ -71,11 +118,18 @@ private extension NoteSelectionBar {
         action: @escaping () -> Void
     ) -> some View {
         Button(role: role, action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: systemImage).font(.body.weight(.medium))
-                Text(title, bundle: .module).font(.caption2)
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .frame(height: 26)
+                Text(title, bundle: .module)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(minWidth: 72, minHeight: 52)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(role == .destructive ? Theme.Colors.destructive : .primary)
