@@ -34,7 +34,7 @@ struct TasksScreen: View {
             .navigationTitle(Text("tasks.title", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .primaryAction) { hideDoneButton }
+                PlainToolbarItem(placement: .primaryAction) { hideDoneButton }
             }
             .sheet(isPresented: $filterOpen) {
                 TasksFilterSheet(state: viewModel.state, send: viewModel.send)

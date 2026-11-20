@@ -42,7 +42,7 @@ struct JournalScreen: View {
             .navigationTitle(Text("journal.title", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     if noteFocus.isActive {
                         NoteFocusDoneButton(focus: noteFocus)
                     } else {

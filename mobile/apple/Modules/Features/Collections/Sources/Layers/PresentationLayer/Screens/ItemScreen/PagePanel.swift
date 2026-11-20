@@ -62,7 +62,7 @@ private extension PagePanel {
                 .navigationTitle(Text("page.editor.title", bundle: .module))
                 .inlineNavigationTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button { isEditing = false } label: { Text("page.cancel", bundle: .module) }
                     }
                     ToolbarItem(placement: .confirmationAction) {

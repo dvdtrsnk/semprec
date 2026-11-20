@@ -31,7 +31,7 @@ struct RecordingsScreen: View {
             .navigationTitle(Text("recordings.title", bundle: .module))
             .navigationBarBackButtonHidden(recorder.state.busy)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     Button { importing = true } label: { Image(systemName: "square.and.arrow.up") }
                         .disabled(recorder.state.phase != .idle)
                         .accessibilityLabel(Text("recordings.import", bundle: .module))

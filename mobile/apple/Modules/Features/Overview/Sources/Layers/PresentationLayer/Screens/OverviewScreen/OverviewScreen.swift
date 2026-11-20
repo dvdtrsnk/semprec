@@ -40,7 +40,7 @@ struct OverviewScreen: View {
             .toolbar {
                 #if os(iOS)
                     if !isSearching {
-                        ToolbarItemGroup(placement: .primaryAction) { searchButton; profileButton }
+                        PlainToolbarItemGroup(placement: .primaryAction) { searchButton; profileButton }
                     }
                 #endif
             }

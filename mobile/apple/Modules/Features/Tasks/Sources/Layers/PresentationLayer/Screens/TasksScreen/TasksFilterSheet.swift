@@ -59,7 +59,7 @@ struct TasksFilterSheet: View {
             .navigationTitle(Text("tasks.filter.title", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button { send(.clearFilters) } label: { Text("tasks.filter.clear", bundle: .module) }
                         .disabled(!state.filterActive)
                 }

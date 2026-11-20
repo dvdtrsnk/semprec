@@ -25,7 +25,7 @@ struct InboxScreen: View {
             .navigationSubtitle(subtitle)
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     if noteFocus.isActive { NoteFocusDoneButton(focus: noteFocus) } else { undoButton }
                 }
             }

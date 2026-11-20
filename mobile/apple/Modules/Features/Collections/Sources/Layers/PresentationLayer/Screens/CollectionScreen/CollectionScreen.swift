@@ -135,11 +135,11 @@ private extension CollectionScreen {
     @ToolbarContentBuilder
     func toolbar(_ state: CollectionState) -> some ToolbarContent {
         if state.header != nil || !state.quickFilters.isEmpty {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 CollectionFilterMenu(state: state, send: viewModel.send)
             }
         }
-        ToolbarItem(placement: .primaryAction) {
+        PlainToolbarItem(placement: .primaryAction) {
             Menu {
                 if state.layouts.count > 1 {
                     Picker(selection: layoutBinding(state)) {
@@ -166,7 +166,7 @@ private extension CollectionScreen {
             .accessibilityIdentifier(CollectionsIdentifiers.layoutMenu)
         }
         if state.canCreate || state.canUpload {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 addButton(state)
             }
         }

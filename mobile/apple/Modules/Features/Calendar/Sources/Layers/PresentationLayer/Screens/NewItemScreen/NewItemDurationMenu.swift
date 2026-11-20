@@ -108,7 +108,7 @@ struct NewItemDurationSheet: View {
             .navigationTitle(Text(title, tableName: "Sheets", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
                         Label { Text("newItem.cancel", tableName: "Sheets", bundle: .module) } icon: {
                             Image(systemName: "xmark")

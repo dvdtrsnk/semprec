@@ -34,7 +34,7 @@ struct NewItemSheet: View {
             .navigationTitle(title)
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button(role: .close) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {

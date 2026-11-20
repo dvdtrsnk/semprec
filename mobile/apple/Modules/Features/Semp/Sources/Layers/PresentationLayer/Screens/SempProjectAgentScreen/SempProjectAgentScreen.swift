@@ -19,7 +19,7 @@ struct SempProjectAgentScreen: View {
         content
             .navigationTitle(Text("semp.agent.title", bundle: .module))
             .inlineNavigationTitle()
-            .toolbar { ToolbarItem(placement: .primaryAction) { saveLabel } }
+            .toolbar { PlainToolbarItem(placement: .primaryAction) { saveLabel } }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(SempIdentifiers.projectAgent)
             .alert(

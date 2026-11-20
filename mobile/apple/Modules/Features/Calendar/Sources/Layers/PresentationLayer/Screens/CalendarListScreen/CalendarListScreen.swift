@@ -131,7 +131,7 @@ private extension CalendarListScreen {
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         if detail == nil {
-            ToolbarItem(placement: .navigation) {
+            PlainToolbarItem(placement: .navigation) {
                 toggleAllButton
             }
             ToolbarItem(placement: .confirmationAction) {
@@ -139,7 +139,7 @@ private extension CalendarListScreen {
                     .accessibilityIdentifier(CalendarSheetIdentifiers.calendarsDone)
             }
         } else {
-            ToolbarItem(placement: .navigation) {
+            PlainToolbarItem(placement: .navigation) {
                 Button { send(.closeDetail) } label: {
                     Label {
                         Text("calendars.detail.back", tableName: "Sheets", bundle: .module)

@@ -56,7 +56,7 @@ struct ItemDetailsScreen: View {
                 .navigationTitle(Text("details.title", bundle: .module))
                 .inlineNavigationTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    PlainToolbarItem(placement: .cancellationAction) {
                         Button { dismiss() } label: { Image(systemName: "xmark") }
                             .accessibilityLabel(Text("details.close", bundle: .module))
                             .accessibilityIdentifier(TasksIdentifiers.detailsClose)

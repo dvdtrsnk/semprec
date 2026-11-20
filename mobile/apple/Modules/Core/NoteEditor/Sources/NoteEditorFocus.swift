@@ -78,6 +78,7 @@ public struct NoteFocusDoneButton: View {
     public var body: some View {
         Button { focus.end() } label: { Image(systemName: "checkmark") }
             .buttonStyle(.glassProminent)
+            .accentTint()
             .accessibilityLabel(Text("noteEditor.done", bundle: .module))
             .accessibilityIdentifier(NoteEditorIdentifiers.focusDone)
     }

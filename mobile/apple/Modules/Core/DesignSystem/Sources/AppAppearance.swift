@@ -65,6 +65,26 @@ extension View {
     }
 }
 
+// MARK: - Accent
+extension View {
+
+    /// The accent colour chosen on this device, for a control that keeps it inside something drawn in the label
+    /// colour, such as the check that ends a focus in a toolbar.
+    public func accentTint() -> some View {
+        modifier(AccentTintModifier())
+    }
+}
+
+private struct AccentTintModifier: ViewModifier {
+
+    @AppStorage(AppAppearanceKeys.accent)
+    private var accent = AppAccent.blue
+
+    func body(content: Content) -> some View {
+        content.tint(accent.color)
+    }
+}
+
 private struct AppAppearanceModifier: ViewModifier {
 
     @AppStorage(AppAppearanceKeys.colorScheme)

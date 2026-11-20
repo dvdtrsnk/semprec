@@ -34,7 +34,7 @@ struct ProjectContent: View {
             RelatedSection(related: state.related, send: send)
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 Button { isShowingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel(Text("project.settings", bundle: .module))
                     .accessibilityIdentifier(CollectionsIdentifiers.projectSettings)
