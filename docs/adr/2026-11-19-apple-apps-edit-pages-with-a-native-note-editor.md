@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-19
-area: [mobile, apple, shared]
+area: [mobile]
 supersedes: []
 superseded-by: null
 ---
