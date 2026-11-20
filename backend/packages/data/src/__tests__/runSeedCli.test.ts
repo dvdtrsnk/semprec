@@ -62,7 +62,7 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
       {
         tenantId: getTenantZeroId(),
         outcome: "already-provisioned",
-        reconcile: { createdProperties: 0, createdRelationDefinitions: 0, conflicts: [] },
+        reconcile: { createdProperties: 0, createdRelationDefinitions: 0, appendedOptions: [], conflicts: [] },
       },
     ]);
 
@@ -109,7 +109,7 @@ describe("runSeed (issue #644, per tenant since #1005)", () => {
       [getTenantZeroId(), b]
         .flatMap((tenantId) => [
           `seed: tenant ${tenantId} already seeded`,
-          `seed: tenant ${tenantId} reconcile created 0 properties, 0 relation definitions`,
+          `seed: tenant ${tenantId} reconcile created 0 properties, 0 relation definitions, appended 0 select options`,
         ])
         .sort(),
     );

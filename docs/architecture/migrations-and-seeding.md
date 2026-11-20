@@ -33,7 +33,7 @@ From the first production release on, the schema is a history and these rules ap
   release, because a deploy migrates while the previous release still serves and a rollback
   never unwinds schema. Allowed in one release: new table, new index, nullable column or column
   with a default, widening a type, relaxing a constraint. A drop, rename, narrowing type change,
-  `SET NOT NULL` or new required column without a default is a later *contract* step, after no
+  `SET NOT NULL` or new required column without a default is a later _contract_ step, after no
   running release uses the old shape. A rename takes three releases: add and dual-write, read
   the new column, drop the old one.
 - **Mechanical check.** `findIncompatibleStatements`
@@ -154,16 +154,24 @@ production data) is brought up to the current seed's definitions by an additive 
   a definition's config (database, property, relation definition) is mapped to the tenant's.
 - Additive only: a property the tenant lacks is created with the reference's key, name, type,
   owner, owner process, lock, initial position and config; a relation definition is created only
-  when all of its sides are missing, with both sides and its cardinality. Nothing existing is
-  changed or removed, no item value is written, and a missing system database is not created.
-- A difference is reported with a fixed tag and keys only (`missingDatabase`, `type`, `owner`,
-  `config`, `relation`, `unmappable`) and left as it is. `runSeedCli.js --strict` exits non-zero
-  when any tenant reports one; without the flag the run succeeds.
+  when all of its sides are missing, with both sides and its cardinality. No item value is
+  written, nothing is removed, and a missing system database is not created.
+- The one change to an existing definition: a system `select` or `multi_select` property of the
+  same type gets the reference's options it lacks (matched by option key) appended after its own
+  options, each with the reference's option definition. This happens only when the rest of the
+  config and every option both have are equal; the order of the tenant's options, and options the
+  reference does not define, are kept, and no existing option is changed. The run logs the
+  appended option keys per property.
+- Any other difference is reported with a fixed tag and keys only (`missingDatabase`, `type`,
+  `owner`, `config`, `relation`, `unmappable`) and left as it is. A select property keeping options
+  the reference does not define is reported as `config` too (after its missing options were
+  appended); a difference in option order alone is not reported. `runSeedCli.js --strict` exits
+  non-zero when any tenant reports a difference; without the flag the run succeeds.
 - One transaction per tenant, under the per-tenant seed lock, then
   `LOCK TABLE properties IN EXCLUSIVE MODE` (as the seed takes it before writing into locked
   schemas). A failing tenant rolls back alone and is named in the run's `AggregateError`.
-- A definition change that is not additive (a new select option, another type or owner) still
-  needs a forward-only migration or data cutover.
+- A definition change that is not additive (another type or owner, a changed or removed select
+  option, any other config change) still needs a forward-only migration or data cutover.
 
 ### Defaults a user may delete
 

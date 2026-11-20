@@ -2,13 +2,15 @@ import "../domainWriteHooks.js";
 import { runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { applyCalendarSync } from "../calendar/sync/calendarSyncApply.js";
+import { resolveCalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createPool, withTransaction } from "../db/pool.js";
-import { runSeed, seedExitCode, type SeedResult } from "../db/runSeed.js";
+import { formatSeedLines, runSeed, seedExitCode, type SeedResult } from "../db/runSeed.js";
 import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
-import type { SeedConflict } from "../seed/seedReconcile.js";
+import type { SeedAppendedOptions, SeedConflict } from "../seed/seedReconcile.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -25,6 +27,10 @@ const OLDER_SEED_GAP: ReadonlyArray<readonly [string, readonly string[]]> = [
 const GAP_PROPERTIES = OLDER_SEED_GAP.reduce((sum, [, keys]) => sum + keys.length, 0);
 /** `mailboxes.calendars`/`calendars.account` and `calendars.subscribedEvents`/`subscribedEvents.calendar`. */
 const GAP_RELATIONS = 2;
+/** The `calendars.kind` options of v0.1.12; the current seed appends `account`. */
+const OLDER_CALENDAR_KINDS = '{"options":[{"key":"own"},{"key":"system"},{"key":"subscription"}]}';
+const CURRENT_CALENDAR_KINDS = '{"options":[{"key":"own"},{"key":"system"},{"key":"subscription"},{"key":"account"}]}';
+const APPENDED_ACCOUNT_KIND: SeedAppendedOptions = { database: CALENDARS_MODULE_ID, key: "kind", options: ["account"] };
 
 interface DefinitionRow {
   id: string;
@@ -108,6 +114,25 @@ async function itemRows(tenantId: string): Promise<unknown[]> {
   return rows.map((entry) => entry.row);
 }
 
+/** Raw SQL: no API may change the config of a locked system property; sets the carried `calendars.kind` config. */
+async function setCalendarKindConfig(tenantId: string, config: string): Promise<void> {
+  const result = await adminPool.query(
+    `UPDATE properties p SET config = $3::jsonb FROM databases d
+      WHERE d.id = p.database_id AND p.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'kind'`,
+    [tenantId, CALENDARS_MODULE_ID, config],
+  );
+  expect(result.rowCount).toBe(1);
+}
+
+async function calendarKindOptions(tenantId: string): Promise<unknown> {
+  const { rows } = await adminPool.query<{ options: unknown }>(
+    `SELECT p.config->'options' AS options FROM properties p JOIN databases d ON d.id = p.database_id
+      WHERE p.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'kind'`,
+    [tenantId, CALENDARS_MODULE_ID],
+  );
+  return rows[0]?.options;
+}
+
 /** Raw SQL: no API removes a property of a locked system database, which is exactly what an older seed looks like. */
 async function removeOlderSeedGap(tenantId: string): Promise<void> {
   for (const [moduleId, keys] of OLDER_SEED_GAP) {
@@ -118,6 +143,44 @@ async function removeOlderSeedGap(tenantId: string): Promise<void> {
     );
     expect(result.rowCount).toBe(keys.length);
   }
+  await setCalendarKindConfig(tenantId, OLDER_CALENDAR_KINDS);
+}
+
+/** One calendar sync apply of a new account with Calendars on that lists one remote calendar. */
+async function syncOneAccountCalendar(tenantId: string): Promise<void> {
+  await runInTenant(tenantId, () =>
+    withTransaction(pool, async (client) => {
+      const ids = await resolveCalendarSyncIds(client);
+      if (!ids) throw new Error("No calendar databases");
+      const account = await createItemWithClient(client, {
+        databaseId: ids.mailboxesDatabaseId,
+        properties: { name: "Work account", provider: "generic", calendarsEnabled: true },
+      });
+      const result = await applyCalendarSync(client, {
+        accountItemId: account.id,
+        ids,
+        tracked: [],
+        fetched: [
+          {
+            calendar: { remoteId: "work", url: null, name: "Work", color: null, readOnly: false, ctag: null },
+            changes: { full: true, upserts: [], deletions: [], nextSyncState: { syncToken: null, ctag: null } },
+          },
+        ],
+        window: { start: "2026-01-01", end: "2027-12-31" },
+        guardWaitMs: 5_000,
+      });
+      expect(result.kind).toBe("applied");
+    }),
+  );
+}
+
+async function accountCalendarCount(tenantId: string): Promise<number> {
+  const { rows } = await adminPool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM items i JOIN databases d ON d.id = i.database_id
+      WHERE i.tenant_id = $1 AND d.owner_module_id = $2 AND i.properties->>'kind' = 'account'`,
+    [tenantId, CALENDARS_MODULE_ID],
+  );
+  return rows[0]?.count ?? 0;
 }
 
 /** Items with values in the databases the reconcile adds to, written through the choke point. */
@@ -191,15 +254,26 @@ describe("seed reconcile of already seeded tenants", () => {
     expect(resultFor(results, older)).toEqual({
       tenantId: older,
       outcome: "already-provisioned",
-      reconcile: { createdProperties: GAP_PROPERTIES, createdRelationDefinitions: GAP_RELATIONS, conflicts: [] },
+      reconcile: {
+        createdProperties: GAP_PROPERTIES,
+        createdRelationDefinitions: GAP_RELATIONS,
+        appendedOptions: [APPENDED_ACCOUNT_KIND],
+        conflicts: [],
+      },
     });
     expect(resultFor(results, getTenantZeroId()).reconcile).toEqual({
       createdProperties: 0,
       createdRelationDefinitions: 0,
+      appendedOptions: [],
       conflicts: [],
     });
     expect(await systemDefinitions(older)).toEqual(await systemDefinitions(fresh));
     expect(await itemRows(older)).toEqual(itemsBefore);
+    expect(formatSeedLines(resultFor(results, older))).toEqual([
+      `seed: tenant ${older} already seeded`,
+      `seed: tenant ${older} reconcile created ${GAP_PROPERTIES} properties, ${GAP_RELATIONS} relation definitions, appended 1 select options`,
+      `seed: tenant ${older} appended options ${CALENDARS_MODULE_ID}.kind account`,
+    ]);
     expect(seedExitCode(results, true)).toBe(0);
   });
 
@@ -213,9 +287,58 @@ describe("seed reconcile of already seeded tenants", () => {
     expect(resultFor(results, older).reconcile).toEqual({
       createdProperties: 0,
       createdRelationDefinitions: 0,
+      appendedOptions: [],
       conflicts: [],
     });
     expect(await definitionRows(older)).toEqual(before);
+  });
+
+  it("appends the `account` kind to a carried `calendars.kind`, after which the calendar sync creates an account calendar", async () => {
+    const tenantId = await createTestTenant(adminPool);
+    await runSeed(pool);
+    await setCalendarKindConfig(tenantId, OLDER_CALENDAR_KINDS);
+
+    const results = await runSeed(pool);
+
+    expect(resultFor(results, tenantId).reconcile?.appendedOptions).toEqual([APPENDED_ACCOUNT_KIND]);
+    expect(await calendarKindOptions(tenantId)).toEqual([
+      { key: "own" },
+      { key: "system" },
+      { key: "subscription" },
+      { key: "account" },
+    ]);
+    await syncOneAccountCalendar(tenantId);
+    expect(await accountCalendarCount(tenantId)).toBe(1);
+  });
+
+  it("appends the missing options after the tenant's own, keeps an option the seed lacks and reports it", async () => {
+    const older = await olderSeededTenant();
+    await setCalendarKindConfig(
+      older,
+      '{"options":[{"key":"subscription"},{"key":"legacy","label":"Legacy"},{"key":"own"},{"key":"system"}]}',
+    );
+
+    const results = await runSeed(pool);
+
+    expect(resultFor(results, older).reconcile).toEqual({
+      createdProperties: GAP_PROPERTIES,
+      createdRelationDefinitions: GAP_RELATIONS,
+      appendedOptions: [APPENDED_ACCOUNT_KIND],
+      conflicts: [{ tag: "config", database: CALENDARS_MODULE_ID, key: "kind" }],
+    });
+    const options = [
+      { key: "subscription" },
+      { key: "legacy", label: "Legacy" },
+      { key: "own" },
+      { key: "system" },
+      { key: "account" },
+    ];
+    expect(await calendarKindOptions(older)).toEqual(options);
+
+    const again = await runSeed(pool);
+
+    expect(resultFor(again, older).reconcile?.appendedOptions).toEqual([]);
+    expect(await calendarKindOptions(older)).toEqual(options);
   });
 
   /** Raw SQL: these are carried definitions no API may produce on a locked system database. */
@@ -236,7 +359,16 @@ describe("seed reconcile of already seeded tenants", () => {
     },
     {
       name: "another config",
-      sql: `UPDATE properties p SET config = '{"options":[{"key":"own"}]}'::jsonb FROM databases d
+      sql: `UPDATE properties p SET config = config || '{"default":"own"}'::jsonb FROM databases d
+             WHERE d.id = p.database_id AND p.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'kind'`,
+      params: [CALENDARS_MODULE_ID],
+      conflict: { tag: "config", database: CALENDARS_MODULE_ID, key: "kind" },
+    },
+    {
+      name: "another label of an existing select option besides a missing one",
+      sql: `UPDATE properties p
+               SET config = '{"options":[{"key":"own","label":"Mine"},{"key":"system"},{"key":"subscription"}]}'::jsonb
+              FROM databases d
              WHERE d.id = p.database_id AND p.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'kind'`,
       params: [CALENDARS_MODULE_ID],
       conflict: { tag: "config", database: CALENDARS_MODULE_ID, key: "kind" },
@@ -251,6 +383,7 @@ describe("seed reconcile of already seeded tenants", () => {
     },
   ])("reports a carried definition with $name, leaves it unchanged and fails only with --strict", async (row) => {
     const older = await olderSeededTenant();
+    await setCalendarKindConfig(older, CURRENT_CALENDAR_KINDS);
     const changed = await adminPool.query(row.sql, [older, ...row.params]);
     expect(changed.rowCount).toBe(1);
     const before = await definitionRows(older);
@@ -260,6 +393,7 @@ describe("seed reconcile of already seeded tenants", () => {
     expect(resultFor(results, older).reconcile).toEqual({
       createdProperties: GAP_PROPERTIES,
       createdRelationDefinitions: GAP_RELATIONS,
+      appendedOptions: [],
       conflicts: [row.conflict],
     });
     const after = await definitionRows(older);

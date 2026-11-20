@@ -67,10 +67,14 @@ export function formatSeedLines(result: SeedResult): string[] {
   if (result.outcome === "created") return [`${prefix} created system databases`];
   const lines = [`${prefix} already seeded`];
   if (result.reconcile) {
-    const { createdProperties, createdRelationDefinitions, conflicts } = result.reconcile;
+    const { createdProperties, createdRelationDefinitions, appendedOptions, conflicts } = result.reconcile;
+    const optionCount = appendedOptions.reduce((sum, appended) => sum + appended.options.length, 0);
     lines.push(
-      `${prefix} reconcile created ${createdProperties} properties, ${createdRelationDefinitions} relation definitions`,
+      `${prefix} reconcile created ${createdProperties} properties, ${createdRelationDefinitions} relation definitions, appended ${optionCount} select options`,
     );
+    for (const appended of appendedOptions) {
+      lines.push(`${prefix} appended options ${appended.database}.${appended.key} ${appended.options.join(",")}`);
+    }
     for (const conflict of conflicts) {
       lines.push(
         `${prefix} conflict ${conflict.tag} ${conflict.database}${conflict.key === null ? "" : `.${conflict.key}`}`,

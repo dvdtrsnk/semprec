@@ -6,9 +6,8 @@ procedure is run by the owner. Nothing in it has been run against production. Ev
 production below is an expectation the owner confirms before the window, not an observed fact.
 
 **Status: NO-GO.** The owner has not given a go (see [Go/no-go](#gono-go)). Against a database
-built by v0.1.12 the dry run reports no seed delta once the develop seed has reconciled the carried
-tenant, and one carried definition that differs from develop's (`calendars.kind`, see
-[What is lost](#what-is-lost-or-must-be-redone)).
+built by v0.1.12 the dry run reports no seed delta and no differing definition once the develop
+seed has reconciled the carried tenant (see [What is lost](#what-is-lost-or-must-be-redone)).
 
 ## Production facts to verify
 
@@ -71,7 +70,8 @@ does:
 5. Check every foreign key for rows naming a missing parent, run the develop seed and
    `verifyTenancyCli`. Each carried tenant answers `already seeded`; the seed then reconciles it:
    it creates the system properties and relation definitions the develop seed defines and the
-   tenant lacks, and reports existing definitions that differ, without changing them
+   tenant lacks, appends to existing system select properties the options the develop seed defines
+   and they lack, and reports existing definitions that otherwise differ, without changing them
    ([reconcile](../architecture/migrations-and-seeding.md#reconcile-of-already-seeded-tenants)).
 6. Report items per database (live/trashed) before and after, rows per carried table before and
    after the load, the rows the seed added, and the seed delta after the seed: system databases
@@ -90,26 +90,28 @@ touch.
 
 ### What is lost or must be redone
 
-| Not carried                                                                    | Why                                                                 | Consequence                                                                                            |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `external_credentials`                                                         | excluded by the tenant export; the owner decided not to carry them  | every mail account signs in again (see [Reconnect](#reconnect-mail-accounts))                          |
-| `tenant_keys`                                                                  | excluded by the export, and its data is not in the main backup dump | a new tenant key is made when the first credential is sealed again                                     |
-| `tenant_exports`                                                               | excluded by the export                                              | the in-app list of earlier exports is empty; their zip files stay in the files directory, unreferenced |
-| `mail_oauth_states`, `idempotent_responses`                                    | excluded by the export; short-lived                                 | an OAuth sign-in in flight during the window must be started again                                     |
-| `sessions`, `login_attempts`, `password_reset_tokens`                          | auth state of the old release                                       | every user signs in again; an unused reset link stops working                                          |
-| `process_heartbeats`, `schema_migrations`                                      | belong to the old processes and the old migration ledger            | none                                                                                                   |
-| `module_migrations`, `module_migration_progress`                               | v0.1.x module data-migration machinery; develop has no such tables  | none expected; the dry run prints their row counts                                                     |
-| the `graphile_worker` schema (queued jobs)                                     | develop installs its own queue schema                               | queued jobs (sync passes, reminders, exports) are not run; the dry run prints how many were queued     |
-| **differing definitions**: carried system properties develop defines otherwise | the seed's reconcile only adds what is missing; it changes nothing  | the features that need the develop definition do not work on carried data (below)                      |
+| Not carried                                                                    | Why                                                                                               | Consequence                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `external_credentials`                                                         | excluded by the tenant export; the owner decided not to carry them                                | every mail account signs in again (see [Reconnect](#reconnect-mail-accounts))                          |
+| `tenant_keys`                                                                  | excluded by the export, and its data is not in the main backup dump                               | a new tenant key is made when the first credential is sealed again                                     |
+| `tenant_exports`                                                               | excluded by the export                                                                            | the in-app list of earlier exports is empty; their zip files stay in the files directory, unreferenced |
+| `mail_oauth_states`, `idempotent_responses`                                    | excluded by the export; short-lived                                                               | an OAuth sign-in in flight during the window must be started again                                     |
+| `sessions`, `login_attempts`, `password_reset_tokens`                          | auth state of the old release                                                                     | every user signs in again; an unused reset link stops working                                          |
+| `process_heartbeats`, `schema_migrations`                                      | belong to the old processes and the old migration ledger                                          | none                                                                                                   |
+| `module_migrations`, `module_migration_progress`                               | v0.1.x module data-migration machinery; develop has no such tables                                | none expected; the dry run prints their row counts                                                     |
+| the `graphile_worker` schema (queued jobs)                                     | develop installs its own queue schema                                                             | queued jobs (sync passes, reminders, exports) are not run; the dry run prints how many were queued     |
+| **differing definitions**: carried system properties develop defines otherwise | the seed's reconcile only adds what is missing (properties, relation definitions, select options) | the features that need the develop definition do not work on carried data (below)                      |
 
 The develop seed adds what an older seed lacks. On a database built by `v0.1.12`, against this
-branch's build, the dry run's seed reconciled the carried tenant with 11 properties and 1 relation
-definition, after which the seed delta is empty:
+branch's build, the dry run's seed reconciled the carried tenant with 11 properties, 1 relation
+definition and 1 select option, after which the seed delta is empty:
 
 - `mailboxes`: `mailEnabled` (checkbox), `calendarsEnabled` (checkbox), `calendars` (relation);
 - `calendars`: `account` (relation, the other side of `mailboxes.calendars`), `readOnly`
   (checkbox), `remoteColor` (color), `remoteName` (text);
-- `events`: `exceptionDates` (json), `recurrenceId` (text), `recurrenceRule` (text), `timeZone` (text).
+- `events`: `exceptionDates` (json), `recurrenceId` (text), `recurrenceRule` (text), `timeZone` (text);
+- the option `account` of `calendars.kind`, which v0.1.12 seeded with `own`, `system` and
+  `subscription`; it is appended after them.
 
 Carried items keep their values; a missing value reads as the seed default (`mailEnabled` on,
 `calendarsEnabled` off, the new Calendar and Event fields empty).
@@ -117,12 +119,9 @@ Carried items keep their values; a missing value reads as the seed default (`mai
 Of the seed-delta options (1. an additive reconcile, 2. accept the delta, 3. reseed), option 1 was
 taken; it is the reconcile above.
 
-The same run reports one carried definition that differs from develop's and is left unchanged:
-`calendars.kind` (config). v0.1.12 seeded its options `own`, `system`, `subscription`; develop adds
-`account`, and an item write with an option the property does not list is refused. Calendar sync of
-an internet account writes `kind: account`, so it fails on carried data until the option exists.
-**This blocks the go** until the owner decides how the option is added (it is a change of an
-existing definition, which the reconcile does not make).
+The same run reports no carried definition that differs from develop's. On the carried database
+the calendar sync of the develop build created a Calendars item with `kind: account` for a new
+internet account.
 
 Every system definition `develop` adds or changes before the cutover changes this list. Rerun the
 dry run with the build of the exact release commit.
@@ -212,7 +211,8 @@ Read the report. A run is good when:
 - the excluded and dropped rows are the ones in [What is lost](#what-is-lost-or-must-be-redone),
   and the number of sealed credentials matches the accounts to reconnect;
 - `reconcile created …` lists what the seed added to each carried tenant, and
-  `rows the develop seed added` matches it (`properties`, `relation_definitions`);
+  `rows the develop seed added` matches it (`properties`, `relation_definitions`); the
+  `appended options …` lines name the select options it appended (they change no row count);
 - the seed delta is empty, or is exactly what the owner accepted;
 - every line under `existing definitions that differ from the develop seed` is resolved or
   accepted.
@@ -354,6 +354,15 @@ used.
   with equal live/trashed counts, `tenancy: verified`, no seed delta, `calendars.kind` under the
   differing definitions, and exited 0. On the kept `_dst` database a second seed run created
   nothing, and `runSeedCli.js --strict` exited 1 on the `calendars.kind` conflict.
+- With the select-option append: a new dump of the same shape (a `v0.1.12` database filled through
+  its choke point with a user, a project, three tasks, a person, a mailbox and an event). The run
+  printed `reconcile created 11 properties, 1 relation definitions, appended 1 select options` and
+  `appended options calendars.kind account`, no differing definition, 72 carried tables with equal
+  counts after the load, `properties 303 -> 314` and `relation_definitions 54 -> 55` as rows the
+  seed added, 28 databases with equal live/trashed counts, `tenancy: verified`, no seed delta, and
+  exited 0. On the kept `_dst` database `calendars.kind` listed `own`, `system`, `subscription`,
+  `account`; the develop calendar sync apply created a Calendars item with `kind: account` for a new
+  account with Calendars on, and a second seed run with `--strict` appended nothing and exited 0.
 - A develop-shaped dump of the same content: in-place migrations ran but the probe reported a column
   the baseline gained since (`mail_account_server_settings.caldav_url`); the carry passed (exit 0).
 - Refusals, each exiting 2 before touching a database: names that do not match the scratch pattern,
