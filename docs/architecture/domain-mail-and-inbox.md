@@ -14,6 +14,34 @@ described elsewhere and only referenced here:
 
 ## Mailboxes and connections
 
+### Internet accounts and service switches
+
+- A Mailboxes item is an internet account (label "Internet accounts"; the key `mailboxes` and the
+  `/api/mail/mailboxes*` routes stay). Its user-owned checkboxes `mailEnabled` and `calendarsEnabled` are the
+  service switches. Unset reads as the default, Mail on and Calendars off (`isMailEnabled`,
+  `areCalendarsEnabled` in `mail/mailboxServiceHooks.ts`); the connect flows write both explicitly. Both
+  appear in the `GET /api/mail/mailboxes` and `/:id` rows. Both services may be off; the account keeps its
+  sign-in until it is removed. `calendarsEnabled` has no effect in the mail module.
+- `mail_account_sync_state.sync_paused_at` is what the mail lifecycle reads: set, the account has Mail off.
+  The sync pass (prologue and again under the guard), the sweep (`listAccountsDueForSync`), live-sync
+  discovery and the mail-sync heartbeat expectation skip a paused account; `sendDraftEmail` refuses it.
+- Switching (`mailboxServiceItemUpdatePreLockHook`, `mailboxServiceItemUpdateHook`): a write that patches
+  `mailEnabled` takes the mailbox sync guard (≤ 15 s, else 409 `mailbox_sync_busy`) and then the sync state row
+  `FOR UPDATE` before the update locks the Mailboxes item, the order of a removal. The update hook decides by
+  the locked row, so a repeated write changes nothing.
+  - Off (`pauseMailAccountSync`), in the write's transaction: set `sync_paused_at` (seeding a row for a
+    never-connected mailbox) and reset the account to never synced (Gmail history id, Graph delta link,
+    initial-sync mark, next expected activity and failure record cleared); delete the folder sync states;
+    resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the mail-off `mailboxRemoval` job. After
+    the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
+    (`semprec-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
+    a binding the next discovery pass unhosts the account. The item, credential, server settings, sync mode,
+    provider account and Gmail routing addresses and the Graph subscription id stay; the provider-side Gmail
+    watch and Graph subscription are not cancelled, their renewals stop with the lifecycle and they expire,
+    and a notification that still arrives only enqueues a pass that skips.
+  - On (`resumeMailAccountSync`): clear `sync_paused_at` and enqueue `mailAccountSync` in the same
+    transaction; discovery hosts the live sync again on its next pass. The mail downloads as for a new account.
+
 ### Server settings and outbound connections
 
 - IMAP/SMTP settings live in `mail_account_server_settings` (`mail/mailServerSettingsStore.ts`); the password
@@ -113,8 +141,8 @@ described elsewhere and only referenced here:
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
 - In a pass, `enterSyncPass` takes the guard as the first statement of the write transaction, then re-reads
-  the Mailboxes item and sync state row; a trashed/missing item or missing row ends the pass with no provider
-  call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
+  the Mailboxes item and sync state row; a trashed/missing item, a missing row or a paused row (Mail off) ends
+  the pass with no provider call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
   removal still holds it, the pass is skipped and records nothing (no failure, status, problem or
   notification); the sweep re-enqueues an account that is still due.
 - A pass with no stored credential fails with `MailReauthorizationRequiredError` when the `syncStatus` it read
@@ -129,7 +157,8 @@ described elsewhere and only referenced here:
   transactions.
 - Discovery takes no sync guard and never waits: for an account without a sync state row it seeds one only
   after `SELECT … FOR SHARE SKIP LOCKED` on the live Mailboxes item (`ensureMailAccountSyncStateOfLiveMailbox`).
-  A skipped account is left out of the pass silently.
+  A skipped account is left out of the pass silently, as is a paused one (Mail off); a hosted account left out
+  is stopped by the pass.
 - `restartAccount(mailboxItemId)` stops and re-hosts one entry, running in the root's captured async context
   inside `runAsSystem("mail:liveSync")`; the tenant comes from the recorded entry, never from the caller, and a
   caller in a tenant scope only reaches its own tenant's entries. The root must be created outside any scope.
@@ -262,7 +291,10 @@ described elsewhere and only referenced here:
 
 ### Sending
 
-- `sendDraftEmail` (`mail/send.ts`, `mail/mailDraftSend.ts`): claim transaction (locks item then row, refuses
+- `sendDraftEmail` (`mail/send.ts`, `mail/mailDraftSend.ts`): for a user, an account with Mail off is refused
+  with 409 `mail_disabled` ahead of the reauthorization, sender and Sent-folder checks, and again in the claim
+  transaction, which first reads the sync state row `FOR SHARE` (a switch that commits later waits for the
+  claim). An approved agent send refused this way ends as `callFailed` and sends nothing. Claim transaction (locks item then row, refuses
   trashed/sent, runs the optional `beforeClaim` guard, writes the `mail_message_meta` claim and threads the
   message) → provider send outside any transaction → finalization transaction (`sent_at`, move to Sent,
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
@@ -305,6 +337,12 @@ described elsewhere and only referenced here:
 - `mailboxRemoval` job (`mail/mailboxRemovalJob.ts`, lane `mailbox-removal:<tenant>`): chunks of ≤ 100 rows,
   Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
+- The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
+  account with Mail off: each chunk takes the mail-thread guard, the paused sync state row and the live
+  Mailboxes item `FOR SHARE`, trashes with `deletedAtExact` = `sync_paused_at`, and deletes each trashed
+  Email's meta row with a thread no other message names (`deleteMailMessageMetaOfRemovedItem`: Threads item
+  trashed, `mail_threads` row deleted), so a later sync ingests the mail anew. An account no longer paused, or
+  a trashed or gone mailbox, ends it. A trashed Email restored by hand comes back without meta row.
 - After commit `cleanUpRemovedMailbox` (`mail/mailboxRemovalProviderCleanup.ts`) runs awaited, best effort, from
   in-memory values: `liveSyncStop` → Gmail watch stop / Graph subscription delete → Google token revocation.
   Provider follows the sync mode, not `provider`. Google calls happen only when `getGmailAccountUse` says the
@@ -438,6 +476,9 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 
 - Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
+- Mail switch: mailbox sync guard → sync state row → Mailboxes item. Mail-off chunk: mail-thread guard → sync
+  state row (share) → Mailboxes item (share) → member rows.
+- Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.
 - Inbox: source item → attachment row; source → blob; card holders never wait for the source and source

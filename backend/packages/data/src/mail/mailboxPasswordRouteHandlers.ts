@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { NEW_MAILBOX_SERVICE_SWITCHES } from "./mailboxServiceHooks.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -168,7 +169,10 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
   }
   const created = await createItemWithClient(
     client,
-    { databaseId: mailboxesDatabaseId, properties: { name: mailbox.name, provider: request.provider } },
+    {
+      databaseId: mailboxesDatabaseId,
+      properties: { name: mailbox.name, provider: request.provider, ...NEW_MAILBOX_SERVICE_SWITCHES },
+    },
     { actingUserId: mailbox.userId, writer: { writerKind: "user" } },
   );
   await writeMailboxAddresses(client, { mailboxesDatabaseId, mailboxItemId: created.id, address: request.address });

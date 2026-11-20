@@ -268,6 +268,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "audioKindForDuration",
   "backfillRollup",
   "beginTenantDeletion",
+  "bindMailboxServiceLiveSyncStop",
   "bootstrapFirstAccount",
   "buildAgentRunStepPage",
   "buildDestructiveApprovalDescription",

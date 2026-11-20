@@ -1532,6 +1532,7 @@ CREATE TABLE public.mail_account_sync_state (
     initial_sync_completed_at timestamp with time zone,
     last_failure_kind text,
     provider_account_address text,
+    sync_paused_at timestamp with time zone,
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );

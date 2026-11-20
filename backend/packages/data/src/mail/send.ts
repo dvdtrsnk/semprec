@@ -21,7 +21,11 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
-import { getMailAccountSyncState, defaultSyncModeForProvider } from "./mailAccountSyncStateStore.js";
+import {
+  getMailAccountSyncState,
+  defaultSyncModeForProvider,
+  lockMailAccountSyncPaused,
+} from "./mailAccountSyncStateStore.js";
 import { resolveThreadId } from "./threading.js";
 import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
@@ -72,6 +76,14 @@ export class MailboxNeedsReauthorizationError extends ChokePointError {
       mailboxId: mailboxItemId,
     });
     this.name = "MailboxNeedsReauthorizationError";
+  }
+}
+
+/** Raised before the claim: the account's Mail is switched off. The draft is untouched. 409 `mail_disabled`. */
+export class MailDisabledError extends ChokePointError {
+  constructor(mailboxItemId: string) {
+    super(409, "mail_disabled", "Mail is switched off for this account", { mailboxId: mailboxItemId });
+    this.name = "MailDisabledError";
   }
 }
 
@@ -164,12 +176,15 @@ async function unlinkFromFoldersWithSpecialPurpose(
 /**
  * `email.send`. The actor is checked first: an `ai_agent` never sends, and its call creates and returns
  * an approval request read from the stored draft; the approval executor later calls again as `user`.
- * For a user, `needsReauthorization` and a missing Sent folder are refused before the claim.
+ * For a user, Mail switched off, `needsReauthorization` and a missing Sent folder are refused before the
+ * claim.
  *
- * The claim transaction locks the Emails item and then its `mail_drafts` row, refuses a trashed or sent
- * draft, runs `beforeClaim`, and writes the claim. While held, draft writers refuse the draft as sent,
- * so no edit or discard commits before finalization. After a successful send one transaction moves the
- * draft to Sent, links People, sets `sent_at`, announces the thread and retires outdated Semp drafts.
+ * The claim transaction reads the account's sync state row `FOR SHARE` and refuses Mail switched off (a
+ * switch that commits first is seen; one that comes later waits for the claim transaction), then locks the
+ * Emails item and its `mail_drafts` row, refuses a trashed or sent draft, runs `beforeClaim`, and writes the
+ * claim. While held, draft writers refuse the draft as sent, so no edit or discard commits before
+ * finalization. After a successful send one transaction moves the draft to Sent, links People, sets
+ * `sent_at`, announces the thread and retires outdated Semp drafts.
  * A failure before or during delivery undoes the claim so a genuine retry can still send.
  *
  * The claim is the `mail_message_meta` row written before the transport's `send`. Its `item_id` primary
@@ -201,13 +216,16 @@ export async function sendDraftEmail(
 ): Promise<SendEmailResult | ApprovalRequest> {
   if (input.actor.type === "ai_agent") return requestMailSendApproval(pool, input.draftItemId, input.actor);
 
-  const [draft, mailbox] = await withTransaction(pool, async (client) => [
+  const [draft, mailbox, initialSyncState] = await withTransaction(pool, async (client) => [
     await getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId),
     await getItemById(client, moduleIds.mailboxesDatabaseId, input.mailboxItemId),
+    await getMailAccountSyncState(client, input.mailboxItemId),
   ]);
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
   // `getItemById` does not filter `deleted_at`, so a removed mailbox is a row with `deletedAt` set.
   if (!mailbox || mailbox.deletedAt) throw new NotFoundError(`Mailbox ${input.mailboxItemId} not found`);
+  // Ahead of the checks below: with Mail off its Sent folder may already be gone.
+  if (initialSyncState?.syncPausedAt) throw new MailDisabledError(input.mailboxItemId);
   if (mailbox.properties.syncStatus === "needsReauthorization") {
     throw new MailboxNeedsReauthorizationError(input.mailboxItemId);
   }
@@ -248,6 +266,8 @@ export async function sendDraftEmail(
 
   try {
     await withTransaction(pool, async (client) => {
+      if (await lockMailAccountSyncPaused(client, input.mailboxItemId))
+        throw new MailDisabledError(input.mailboxItemId);
       // Draft writers lock the Emails item then its `mail_drafts` row; deciding under both locks sees any
       // discard or edit committed since the checks above, and later ones find the claim.
       const draftItem = await lockItemById(client, moduleIds.emailsDatabaseId, input.draftItemId);

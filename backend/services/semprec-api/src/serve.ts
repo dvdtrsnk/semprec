@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import {
   assertRuntimeRole,
+  bindMailboxServiceLiveSyncStop,
   createMailLiveSyncRoot,
   createPool,
   LocalFsBlobStorageWriter,
@@ -200,6 +201,10 @@ const mailLiveSync = createMailLiveSyncRoot(
 );
 // Bound before the server listens, so no request reaches the control without the root.
 mailLiveSyncControl.bind(mailLiveSync);
+// Switching an account's Mail off in this process stops its live sync after the commit.
+bindMailboxServiceLiveSyncStop((tenantId, mailboxItemId) =>
+  mailLiveSyncControl.control.stopMailbox(tenantId, mailboxItemId),
+);
 await mailLiveSync.start();
 
 // The one puller of the deployment's Gmail Pub/Sub subscription, started after the root and stopped

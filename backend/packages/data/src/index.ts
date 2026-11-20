@@ -312,6 +312,7 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { bindMailboxServiceLiveSyncStop } from "./mail/mailboxServiceHooks.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
 // The Gmail watch and Graph subscription owners, hosted by semprec-api.
 export {

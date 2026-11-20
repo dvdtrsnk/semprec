@@ -168,16 +168,17 @@ export async function handleSyncMailAccountTask(
     );
   };
   /**
-   * Takes the mailbox's sync guard, which a removal takes first, so no removal runs until this transaction ends, then
-   * re-reads the mailbox. `false` (trashed, gone, or no sync state row) means the pass does nothing. The generic trash
-   * takes no guard and can still happen during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws
+   * Takes the mailbox's sync guard, which a removal and the Mail switch take first, so neither runs until this
+   * transaction ends, then re-reads the mailbox. `false` (trashed, gone, no sync state row, or Mail switched off) means
+   * the pass does nothing. The generic trash takes no guard and can still happen during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws
    * `MailboxSyncBusyError`: another pass or a removal of this mailbox is running, and the pass is skipped.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
     await lockMailboxSync(client, payload.mailboxItemId, { maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS });
     const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId);
     if (!mailbox || mailbox.deletedAt) return false;
-    return (await getMailAccountSyncState(client, payload.mailboxItemId)) !== null;
+    const current = await getMailAccountSyncState(client, payload.mailboxItemId);
+    return current !== null && current.syncPausedAt === null;
   };
   try {
     // A short read-only transaction of its own: stable id lookups need no atomicity with the sync's writes. Read first
@@ -208,6 +209,11 @@ export async function handleSyncMailAccountTask(
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
     if (!state)
       throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
+    // Mail is switched off: nothing is read from the provider and nothing is recorded.
+    if (state.syncPausedAt !== null) {
+      logger.info({ mailboxItemId: payload.mailboxItemId }, "Mail sync skipped: Mail is switched off for the account");
+      return;
+    }
 
     // Uses `pool`, not a transaction: the access-log insert commits on its own, so a decrypt failure stays logged.
     // Inside the `try` so a credential failure is recorded like any sync failure and the mailbox does not stay `ok`.
@@ -323,7 +329,7 @@ export async function handleSyncMailAccountTask(
     if (!ran) {
       logger.info(
         { mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode },
-        "Mail sync skipped: the mailbox is in the trash or has no sync state",
+        "Mail sync skipped: the mailbox is in the trash, has no sync state or has Mail switched off",
       );
       return;
     }

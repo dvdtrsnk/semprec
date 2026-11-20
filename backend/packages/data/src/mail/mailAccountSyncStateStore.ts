@@ -40,6 +40,8 @@ export interface MailAccountSyncStateRow {
   failingSince: string | null;
   initialSyncCompletedAt: string | null;
   lastFailureKind: MailSyncFailureKind | null;
+  /** Set while the account's Mail is off; the sync pass, sweep, live-sync discovery and send skip or refuse it. */
+  syncPausedAt: string | null;
 }
 
 type MailAccountSyncStateDbRow = {
@@ -58,6 +60,7 @@ type MailAccountSyncStateDbRow = {
   failing_since: Date | null;
   initial_sync_completed_at: Date | null;
   last_failure_kind: string | null;
+  sync_paused_at: Date | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -80,11 +83,12 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
       row.last_failure_kind === null
         ? null
         : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
+    syncPausedAt: row.sync_paused_at?.toISOString() ?? null,
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -161,6 +165,59 @@ export async function lockMailAccountSyncState(
 export async function deleteMailAccountSyncState(client: Queryable, itemId: string): Promise<boolean> {
   const result = await client.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [itemId]);
   return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Pauses the account's mail sync and resets it to a never-synced account: the cursors, the initial-sync mark, the
+ * next expected activity and the failure record are cleared, so a resumed account syncs as a new one does and the
+ * stall check finds nothing overdue. The routing address, provider account address, sync mode and Graph
+ * subscription are kept. Seeds the row (with `syncMode`) when the account has none. `false` when it was paused already.
+ */
+export async function pauseMailAccountSync(client: Queryable, itemId: string, syncMode: SyncMode): Promise<boolean> {
+  const result = await client.query(
+    `INSERT INTO mail_account_sync_state (item_id, sync_mode, sync_paused_at) VALUES ($1, $2, now())
+     ON CONFLICT (item_id) DO UPDATE
+       SET sync_paused_at = now(), gmail_history_id = NULL, graph_delta_link = NULL, last_error = NULL,
+           next_expected_activity_at = NULL, failing_since = NULL, last_failure_kind = NULL,
+           initial_sync_completed_at = NULL
+     WHERE mail_account_sync_state.sync_paused_at IS NULL`,
+    [itemId, syncMode],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/** `false` when the account was not paused or has no row. */
+export async function resumeMailAccountSync(client: Queryable, itemId: string): Promise<boolean> {
+  const result = await client.query(
+    "UPDATE mail_account_sync_state SET sync_paused_at = NULL WHERE item_id = $1 AND sync_paused_at IS NOT NULL",
+    [itemId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Locks the account's row `FOR SHARE`, so the Mail switch waits for the caller's transaction, and answers whether
+ * Mail is switched off. `false` for an account without a row.
+ */
+export async function lockMailAccountSyncPaused(client: Queryable, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ paused: boolean }>(
+    "SELECT sync_paused_at IS NOT NULL AS paused FROM mail_account_sync_state WHERE item_id = $1 FOR SHARE",
+    [itemId],
+  );
+  return rows[0]?.paused ?? false;
+}
+
+/**
+ * Locks the paused account's row `FOR SHARE` and answers its pause time as six-digit UTC text (the trash epoch form
+ * `itemDeleteWithClient` takes); `null`, locking nothing, when the row is gone or not paused.
+ */
+export async function lockMailAccountSyncPause(client: Queryable, itemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ paused_at_exact: string }>(
+    `SELECT to_char(sync_paused_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS paused_at_exact
+       FROM mail_account_sync_state WHERE item_id = $1 AND sync_paused_at IS NOT NULL FOR SHARE`,
+    [itemId],
+  );
+  return rows[0]?.paused_at_exact ?? null;
 }
 
 export async function setSyncMode(client: Queryable, itemId: string, syncMode: SyncMode): Promise<void> {
@@ -526,9 +583,11 @@ export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Pro
     AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
 }
 
+/** A paused account is never due. */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
-    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE next_expected_activity_at IS NULL OR next_expected_activity_at <= now()`,
+    `SELECT ${COLUMNS} FROM mail_account_sync_state
+      WHERE sync_paused_at IS NULL AND (next_expected_activity_at IS NULL OR next_expected_activity_at <= now())`,
   );
   return rows.map(mapRow);
 }

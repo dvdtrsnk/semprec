@@ -264,14 +264,16 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
 }
 
 /**
- * Deletes the meta row of a permanently deleted Emails item, in the purge's transaction. When no other row names its
- * thread (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the
- * system writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key.
- * Unlike `deleteMailMessageMetaByItemId`, an already purged or unbound Threads item does not fail it.
+ * Deletes the meta row of an Emails item that leaves the mail for good: one permanently deleted (in the purge's
+ * transaction) or one trashed because its account's Mail was switched off. When no other row names its thread
+ * (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the system
+ * writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key. Unlike
+ * `deleteMailMessageMetaByItemId`, an item without a meta row and an already purged or unbound Threads item do not
+ * fail it.
  *
  * Takes the tenant's mail-thread mutation guard before its first statement on a mail table.
  */
-export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, itemId: string): Promise<void> {
+export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, itemId: string): Promise<void> {
   await lockMailThreadMutation(client);
   const deleted = await client.query<{ thread_id: string | null }>(
     `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,

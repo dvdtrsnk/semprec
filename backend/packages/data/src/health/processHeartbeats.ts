@@ -80,12 +80,15 @@ export function startProcessHeartbeat(
   };
 }
 
-/** Joins live Mailbox items: a soft-deleted Mailbox's sync-state row is never cleaned up and would alert forever. */
+/**
+ * Joins live Mailbox items: a soft-deleted Mailbox's sync-state row is never cleaned up and would alert forever. An
+ * account with Mail switched off is not hosted, so it has no heartbeat to expect.
+ */
 export async function getActiveMailSyncProcessNames(client: Queryable): Promise<string[]> {
   const result = await client.query<{ item_id: string }>(
     `SELECT s.item_id FROM mail_account_sync_state s
      JOIN items i ON i.id = s.item_id AND i.database_id = ANY($1::uuid[])
-     WHERE i.deleted_at IS NULL`,
+     WHERE i.deleted_at IS NULL AND s.sync_paused_at IS NULL`,
     [await visibleDatabaseIds(client)],
   );
   return result.rows.map((row) => mailSyncProcessName(row.item_id));

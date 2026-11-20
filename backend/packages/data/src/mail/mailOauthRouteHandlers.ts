@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { NEW_MAILBOX_SERVICE_SWITCHES } from "./mailboxServiceHooks.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
@@ -346,7 +347,11 @@ async function createConnectedMailbox(client: PoolClient, mailbox: NewMailbox): 
     client,
     {
       databaseId: mailboxesDatabaseId,
-      properties: { name: PROVIDER_SETTINGS[mailbox.provider].mailboxName, provider: mailbox.provider },
+      properties: {
+        name: PROVIDER_SETTINGS[mailbox.provider].mailboxName,
+        provider: mailbox.provider,
+        ...NEW_MAILBOX_SERVICE_SWITCHES,
+      },
     },
     { actingUserId: mailbox.userId, writer: { writerKind: "user" } },
   );

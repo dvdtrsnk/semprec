@@ -5,6 +5,7 @@ import { NotFoundError } from "../errors.js";
 import { defaultSyncModeForProvider, MAIL_SYNC_FAILURE_KINDS, SYNC_MODES } from "./mailAccountSyncStateStore.js";
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import { listAutonomousSendProjects } from "./mailAutonomousSendRouteHandlers.js";
+import { areCalendarsEnabled, isMailEnabled } from "./mailboxServiceHooks.js";
 import type { RouteParams } from "../customRoute.js";
 
 const mailboxRow = z.object({
@@ -57,6 +58,8 @@ async function readMailboxes(client: PoolClient, id: string | null) {
       provider,
       primaryAddress: addresses[0] ?? null,
       addresses,
+      mailEnabled: isMailEnabled(p),
+      calendarsEnabled: areCalendarsEnabled(p),
       syncMode,
       syncStatus,
       initialSyncInProgress: row.initial_sync_completed_at === null,

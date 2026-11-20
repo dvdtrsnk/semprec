@@ -543,8 +543,10 @@ describe("email module seed", () => {
       (await chokePoint.listProperties(await databaseIdFor(moduleId))).map((p) => p.key).sort();
     expect(await keysOf("mailboxes")).toEqual([
       "addresses",
+      "calendarsEnabled",
       "connectionLimit",
       "folders",
+      "mailEnabled",
       "name",
       "provider",
       "syncStatus",

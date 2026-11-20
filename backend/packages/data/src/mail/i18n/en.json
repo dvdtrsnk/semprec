@@ -1,5 +1,5 @@
 {
-  "database.mailboxes.name": "Mailboxes",
+  "database.mailboxes.name": "Internet accounts",
   "property.mailboxes.name.name": "Name",
   "property.mailboxes.provider.name": "Provider",
   "property.mailboxes.provider.option.gmail": "Gmail",
@@ -8,6 +8,8 @@
   "property.mailboxes.provider.option.generic": "Generic",
   "property.mailboxes.addresses.name": "Addresses",
   "property.mailboxes.connectionLimit.name": "Connection limit",
+  "property.mailboxes.mailEnabled.name": "Mail",
+  "property.mailboxes.calendarsEnabled.name": "Calendars",
   "property.mailboxes.syncStatus.name": "Sync status",
   "property.mailboxes.syncStatus.option.ok": "OK",
   "property.mailboxes.syncStatus.option.error": "Error",
