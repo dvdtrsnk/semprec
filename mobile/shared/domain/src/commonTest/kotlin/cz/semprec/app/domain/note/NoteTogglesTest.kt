@@ -44,4 +44,18 @@ class NoteTogglesTest {
         assertEquals(listOf("t:toggle:1:Plan", "n1:text:2:"), change.blocks.shape())
         assertEquals(NoteCaret("n1", 0), change.caret)
     }
+
+    @Test fun `a toggle at the deepest indent holds no children and its new blocks go after it`() {
+        val deepest = listOf(
+            block("t", "Plan", PageBlockType.TOGGLE, indent = NOTE_MAX_INDENT),
+            block("h", "Head", PageBlockType.H3, indent = NOTE_MAX_INDENT).copy(toggle = true),
+        )
+        val opened = NoteTyping.enter(deepest, NoteCaret("t", 2), TestIds().newId)
+        assertEquals(listOf("t:toggle:5:Pl", "n1:toggle:5:an", "h:h3:5:Head"), opened.blocks.shape())
+        val heading = NoteTyping.enter(deepest, NoteCaret("h", 4), TestIds().newId)
+        assertEquals(listOf("t:toggle:5:Plan", "h:h3:5:Head", "n1:text:5:"), heading.blocks.shape())
+        val child = NoteToggles.addChild(deepest, "t", TestIds().newId)
+        assertEquals(listOf("t:toggle:5:Plan", "n1:text:5:", "h:h3:5:Head"), child.blocks.shape())
+        assertEquals(NoteCaret("n1", 0), child.caret)
+    }
 }
