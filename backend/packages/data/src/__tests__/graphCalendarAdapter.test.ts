@@ -10,6 +10,7 @@ import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
 import {
   CalendarSyncConsentRequiredError,
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
   type CalendarSyncWindow,
@@ -33,7 +34,6 @@ import { resolveCalendarSyncIds, type CalendarSyncIds } from "../calendar/sync/c
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { ConflictError } from "../errors.js";
 import { ensureMailAccountSyncState, recordGrantedOauthScopes } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { MICROSOFT_TOKEN_URL } from "../mail/oauthTokenExchange.js";
@@ -122,7 +122,11 @@ function workRoutes(): Record<string, Route> {
 }
 
 function adapterOn(graph: FakeGraph): GraphCalendarAdapter {
-  return new GraphCalendarAdapter({ getAccessToken: async () => "graph-access", fetchImpl: graph.fetch });
+  return new GraphCalendarAdapter({
+    getAccessToken: async () => "graph-access",
+    tenantTimeZone: "Europe/Prague",
+    fetchImpl: graph.fetch,
+  });
 }
 
 const signal = () => AbortSignal.timeout(60_000);
@@ -184,7 +188,7 @@ describe("Microsoft Graph calendar adapter", () => {
           date: "2026-11-20",
           timeFrom: "14:00",
           timeTo: "15:30",
-          timeZone: "Europe/Budapest",
+          timeZone: "Europe/Prague",
           place: "Room 4",
           description: "Agenda attached",
           url: "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc",
@@ -204,7 +208,7 @@ describe("Microsoft Graph calendar adapter", () => {
           date: "2026-11-02",
           timeFrom: "09:00",
           timeTo: "09:15",
-          timeZone: "Europe/Budapest",
+          timeZone: "Europe/Prague",
           recurrenceRule: STANDUP_RULE,
           exceptionDates: ["2026-11-16T09:00", "2026-11-18T09:00"],
           place: "Room 2",
@@ -413,6 +417,16 @@ describe("Microsoft Graph calendar adapter", () => {
     });
 
     it.each([
+      ["Central Europe Standard Time", "Europe/Prague", "Europe/Prague"],
+      ["Central Europe Standard Time", "Europe/Vienna", "Europe/Budapest"],
+      ["W. Europe Standard Time", "Europe/Vienna", "Europe/Vienna"],
+      ["Eastern Standard Time", "Europe/Prague", "America/New_York"],
+      ["America/Chicago", "Europe/Prague", "America/Chicago"],
+    ])("reads %s for a tenant in %s as %s", (graphZone, tenantZone, iana) => {
+      expect(ianaZoneOfGraphZone(graphZone, tenantZone)).toBe(iana);
+    });
+
+    it.each([
       ["Europe/Prague", "Central Europe Standard Time"],
       ["Etc/GMT+2", "UTC-02"],
       ["Antarctica/Troll", "Antarctica/Troll"],
@@ -472,7 +486,24 @@ describe("Microsoft Graph calendar adapter", () => {
       expect(await adapter.putEvent(WORK, { ref, fields }, signal())).toMatchObject({ etag: 'W/"r2"' });
       expect(graph.graphRequests()[0]?.headers.get("if-match")).toBe('W/"r1"');
       status = 412;
-      await expect(adapter.putEvent(WORK, { ref, fields }, signal())).rejects.toBeInstanceOf(ConflictError);
+      await expect(adapter.putEvent(WORK, { ref, fields }, signal())).rejects.toBeInstanceOf(
+        CalendarSyncEventConflictError,
+      );
+    });
+
+    it("writes a timed Event without a zone of its own in the tenant's zone", async () => {
+      const graph = new FakeGraph({
+        "POST /me/calendars/AAMkCal-work/events": () => saved("AAMkEv-new", 'W/"n1"'),
+      });
+      await adapterOn(graph).putEvent(
+        WORK,
+        { ref: null, fields: remoteFields({ date: "2026-11-23", timeFrom: "10:00", timeTo: "11:00" }) },
+        signal(),
+      );
+      expect(graph.graphRequests()[0]?.body).toMatchObject({
+        start: { dateTime: "2026-11-23T10:00:00", timeZone: "Central Europe Standard Time" },
+        end: { dateTime: "2026-11-23T11:00:00", timeZone: "Central Europe Standard Time" },
+      });
     });
 
     it("writes a series with its recurrence and deletes the occurrences its exception dates name", async () => {
@@ -519,7 +550,6 @@ describe("Microsoft Graph calendar adapter", () => {
     });
 
     it.each([
-      ["a timed Event without a zone", remoteFields({ date: "2026-11-23", timeFrom: "10:00" }), null],
       [
         "a new override",
         remoteFields({
@@ -616,7 +646,11 @@ describe("Microsoft Graph calendar adapter", () => {
         if (code === "timeout") controller.abort();
         throw thrown;
       };
-      const adapter = new GraphCalendarAdapter({ getAccessToken: async () => "graph-access", fetchImpl: failing });
+      const adapter = new GraphCalendarAdapter({
+        getAccessToken: async () => "graph-access",
+        tenantTimeZone: "Europe/Prague",
+        fetchImpl: failing,
+      });
       await expect(adapter.listCalendars(controller.signal)).rejects.toMatchObject({ code });
     });
   });
@@ -737,7 +771,7 @@ describe("Microsoft Graph calendar sync pass", () => {
     expect(events.get("AAMkSeries-standup")?.properties).toMatchObject({
       recurrenceRule: STANDUP_RULE,
       exceptionDates: ["2026-11-16T09:00", "2026-11-18T09:00"],
-      timeZone: "Europe/Budapest",
+      timeZone: "Europe/Prague",
     });
     const master = await inTenant(async (client) => {
       const { rows } = await client.query<{ id: string }>(

@@ -85,9 +85,6 @@ export interface GoogleCalendarSyncRuntime {
   fetchImpl?: typeof fetch;
 }
 
-/** `putEvent` also takes the Event's stored iCalendar UID, which a new Google event is created with. */
-export type GooglePutRemoteEventInput = PutRemoteEventInput & { icalUid?: string | null };
-
 function calendarPath(calendar: RemoteCalendar): string {
   return `/calendars/${encodeURIComponent(calendar.remoteId)}`;
 }
@@ -213,11 +210,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     };
   }
 
-  async putEvent(
-    calendar: RemoteCalendar,
-    event: GooglePutRemoteEventInput,
-    signal: AbortSignal,
-  ): Promise<RemoteEventRef> {
+  async putEvent(calendar: RemoteCalendar, event: PutRemoteEventInput, signal: AbortSignal): Promise<RemoteEventRef> {
     const { ref, fields } = event;
     if (ref === null && fields.recurrenceId !== null) {
       throw new Error("An override can only be written to an instance Google already has");

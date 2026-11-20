@@ -13,7 +13,6 @@ import {
   type RemoteParticipant,
 } from "../../adapter.js";
 import {
-  GraphCalendarWriteUnsupportedError,
   graphRecurrenceOfRrule,
   graphRecurrenceSchema,
   rruleOfGraphRecurrence,
@@ -80,11 +79,11 @@ function instantOf(value: { dateTime: string; timeZone?: string | null | undefin
   return instant;
 }
 
-/** The zone an Event's times are stored in. */
-export function zoneOfGraphEvent(event: GraphEvent): string {
+/** The zone an Event's times are stored in; `preferredZone` (the tenant's) wins over an equivalent table entry. */
+export function zoneOfGraphEvent(event: GraphEvent, preferredZone?: string): string {
   return (
-    ianaZoneOfGraphZone(event.recurrence?.range.recurrenceTimeZone) ??
-    ianaZoneOfGraphZone(event.originalStartTimeZone) ??
+    ianaZoneOfGraphZone(event.recurrence?.range.recurrenceTimeZone, preferredZone) ??
+    ianaZoneOfGraphZone(event.originalStartTimeZone, preferredZone) ??
     FALLBACK_ZONE
   );
 }
@@ -242,15 +241,12 @@ export interface GraphEventBody {
 }
 
 /**
- * The Graph body of an Event's fields. A timed Event needs its zone (the tenant's zone is not known here); an
- * all-day one without a zone is written in UTC. `url` is not written: Graph sets an online meeting's link itself.
+ * The Graph body of an Event's fields. An Event without a zone of its own is written in `tenantZone`, the zone its
+ * times are wall clock in. `url` is not written: Graph sets an online meeting's link itself.
  */
-export function graphEventBodyOf(fields: RemoteEventFields): GraphEventBody {
+export function graphEventBodyOf(fields: RemoteEventFields, tenantZone: string): GraphEventBody {
   const allDay = fields.timeFrom === null;
-  if (!allDay && fields.timeZone === null) {
-    throw new GraphCalendarWriteUnsupportedError("A timed Event is written to Microsoft Graph with its zone only");
-  }
-  const zone = fields.timeZone ?? FALLBACK_ZONE;
+  const zone = fields.timeZone ?? tenantZone;
   const graphZone = graphZoneOfIanaZone(zone);
   const lastDay = fields.endDate ?? fields.date;
   let start: GraphEventBody["start"];

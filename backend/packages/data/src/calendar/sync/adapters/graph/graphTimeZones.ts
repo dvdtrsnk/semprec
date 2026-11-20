@@ -198,11 +198,16 @@ const IANA_TO_WINDOWS: ReadonlyMap<string, string> = (() => {
 /**
  * The IANA zone a Graph zone name stands for: a Windows id through the table, an IANA name as it is (`UTC` as
  * `Etc/UTC`), and `null` for anything else (`tzone://Microsoft/Custom`, "Customized Time Zone", an empty value).
+ * A Windows id that `preferredZone` (the tenant's) also maps to gives `preferredZone`: CLDR files the zones of one
+ * Windows id together because their rules agree, so a Prague tenant's "Central Europe Standard Time" is stored as
+ * `Europe/Prague` rather than `Europe/Budapest`.
  */
-export function ianaZoneOfGraphZone(name: string | null | undefined): string | null {
+export function ianaZoneOfGraphZone(name: string | null | undefined, preferredZone?: string): string | null {
   if (!name) return null;
   const mapped = WINDOWS_TO_IANA[name];
-  if (mapped !== undefined) return mapped;
+  if (mapped !== undefined) {
+    return preferredZone !== undefined && IANA_TO_WINDOWS.get(preferredZone) === name ? preferredZone : mapped;
+  }
   if (name === "tzone://Microsoft/Utc") return "Etc/UTC";
   // `IANAZone` takes only a zone name: luxon's own parser would also take `system` and fixed offsets.
   if (name.includes("/") && IANAZone.isValidZone(name)) return name;

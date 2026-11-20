@@ -1,9 +1,9 @@
 // Every request of the Graph calendar adapter: the bearer token, the pass's signal under a per-request deadline, a
 // cap on each response, Graph's throttling answers, and the mapping of statuses onto the calendar sync's errors.
 // Errors carry statuses only, never a URL, a token or provider text.
-import { ConflictError } from "../../../../errors.js";
 import {
   CalendarSyncConsentRequiredError,
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
 } from "../../adapter.js";
@@ -216,13 +216,8 @@ export class GraphCalendarHttp {
   private failureOf(status: number): Error {
     if (status === 401) return new CalendarSyncReauthorizationRequiredError("Microsoft Graph refused the access token");
     if (status === 403) return new CalendarSyncConsentRequiredError("Microsoft Graph refused calendar access");
-    if (status === 412) {
-      return new ConflictError(
-        "The Event changed at Microsoft since it was last synced",
-        undefined,
-        "calendar_remote_conflict",
-      );
-    }
+    if (status === 412)
+      return new CalendarSyncEventConflictError("The Event changed at Microsoft since it was last synced");
     if (status >= 500) return new CalendarSyncProviderError("providerUnavailable");
     return new GraphCalendarRequestError(status);
   }

@@ -132,14 +132,18 @@ interface SeriesChanges {
 
 export interface GraphCalendarAdapterOptions {
   getAccessToken: () => Promise<string>;
+  /** The tenant's zone: an Event without its own is written in it, and it names Windows zones it agrees with. */
+  tenantTimeZone: string;
   fetchImpl?: typeof fetch;
 }
 
 export class GraphCalendarAdapter implements CalendarSyncAdapter {
   private readonly http: GraphCalendarHttp;
+  private readonly tenantTimeZone: string;
 
   constructor(options: GraphCalendarAdapterOptions) {
     this.http = new GraphCalendarHttp(options.getAccessToken, options.fetchImpl ?? fetch);
+    this.tenantTimeZone = options.tenantTimeZone;
   }
 
   async listCalendars(signal: AbortSignal): Promise<RemoteCalendar[]> {
@@ -182,7 +186,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
 
   async putEvent(calendar: RemoteCalendar, event: PutRemoteEventInput, signal: AbortSignal): Promise<RemoteEventRef> {
     const { ref, fields } = event;
-    const body = graphEventBodyOf(fields);
+    const body = graphEventBodyOf(fields, this.tenantTimeZone);
     let saved: GraphEvent;
     if (ref !== null) {
       const response = await this.http.send(
@@ -363,7 +367,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     return round.singles.map((event) =>
       remoteEventOf(event, {
         seriesRemoteId: null,
-        zone: zoneOfGraphEvent(event),
+        zone: zoneOfGraphEvent(event, this.tenantTimeZone),
         recurrenceRule: null,
         exceptionDates: null,
         recurrenceId: null,
@@ -380,7 +384,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     if (masterResponse.status === 404) return { upserts: [], deletions: [seriesId] };
     const master = parseOrInvalid(graphEventSchema, masterResponse.json);
     if (master.isCancelled || master.type !== "seriesMaster") return { upserts: [], deletions: [seriesId] };
-    const zone = zoneOfGraphEvent(master);
+    const zone = zoneOfGraphEvent(master, this.tenantTimeZone);
     const allDay = master.isAllDay === true;
     const rule = rruleOfGraphMaster(master, zone);
 
@@ -445,7 +449,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
 
   /** Deletes the occurrences the exception dates name that still exist; `true` when any was deleted. */
   private async deleteExcludedOccurrences(master: GraphEvent, exceptionDates: string[], signal: AbortSignal) {
-    const zone = zoneOfGraphEvent(master);
+    const zone = zoneOfGraphEvent(master, this.tenantTimeZone);
     const allDay = master.isAllDay === true;
     const wanted = new Set(exceptionDates);
     const days = exceptionDates.map((value) => value.slice(0, 10)).sort();
@@ -511,5 +515,9 @@ export const createGraphCalendarSyncAdapter: CalendarSyncAdapterFactory = (accou
     });
     return kept.accessToken;
   };
-  return new GraphCalendarAdapter({ getAccessToken, ...(current.fetchImpl ? { fetchImpl: current.fetchImpl } : {}) });
+  return new GraphCalendarAdapter({
+    getAccessToken,
+    tenantTimeZone: account.tenantTimeZone,
+    ...(current.fetchImpl ? { fetchImpl: current.fetchImpl } : {}),
+  });
 };

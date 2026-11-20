@@ -7,13 +7,16 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
 import { logger as calendarLogger } from "../calendar/logger.js";
-import type { RemoteCalendar, RemoteEventFields } from "../calendar/sync/adapter.js";
+import {
+  CalendarSyncEventConflictError,
+  type RemoteCalendar,
+  type RemoteEventFields,
+} from "../calendar/sync/adapter.js";
 import {
   GoogleCalendarAdapter,
   setGoogleCalendarSyncRuntime,
   type GoogleCalendarSyncRuntime,
 } from "../calendar/sync/adapters/google/googleCalendarAdapter.js";
-import { GoogleCalendarEventConflictError } from "../calendar/sync/adapters/google/googleCalendarHttp.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import { resolveCalendarSyncIds, type CalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -669,7 +672,7 @@ describe("Google Calendar adapter", () => {
         run((adapter) =>
           adapter.putEvent(calendar, { ref: { remoteId: "standup", href: null, etag: '"e-1"' }, fields }, signal()),
         ),
-      ).rejects.toBeInstanceOf(GoogleCalendarEventConflictError);
+      ).rejects.toBeInstanceOf(CalendarSyncEventConflictError);
       expect(google.requests.map((request) => request.query.get("sendUpdates"))).toEqual(["none", "none"]);
     });
 
@@ -701,7 +704,7 @@ describe("Google Calendar adapter", () => {
       await run((adapter) => adapter.deleteEvent(calendar, ref, signal()));
       await run((adapter) => adapter.deleteEvent(calendar, ref, signal()));
       await expect(run((adapter) => adapter.deleteEvent(calendar, ref, signal()))).rejects.toBeInstanceOf(
-        GoogleCalendarEventConflictError,
+        CalendarSyncEventConflictError,
       );
       expect(google.requests.map((request) => request.headers.get("if-match"))).toEqual([
         '"e-late-1"',

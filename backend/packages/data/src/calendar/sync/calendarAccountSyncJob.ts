@@ -131,6 +131,7 @@ export async function handleCalendarAccountSyncTask(
       tracked: await listSyncedAccountCalendars(client, ids, accountItemId),
       serverSettings: await getMailServerSettings(client, accountItemId),
       window: syncWindow(zone, new Date()),
+      tenantTimeZone: zone,
     };
   });
   if (prologue === null) {
@@ -159,6 +160,7 @@ export async function handleCalendarAccountSyncTask(
         username: prologue.serverSettings.username,
         caldavUrl: prologue.serverSettings.caldavUrl,
       },
+      tenantTimeZone: prologue.tenantTimeZone,
     });
     const cursors = new Map(prologue.tracked.map((calendar) => [calendar.remoteId, calendar]));
     const fetched: FetchedCalendar[] = [];

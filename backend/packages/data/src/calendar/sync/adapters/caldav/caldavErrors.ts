@@ -1,14 +1,3 @@
-/**
- * A conditional write found the Event changed or gone at the provider (HTTP 412, or an ETag other than the one the
- * sync stored). Not a sync failure: the caller fetches the provider's version and decides again.
- */
-export class CalendarSyncEventConflictError extends Error {
-  constructor() {
-    super("The Event changed at the provider since it was last synced");
-    this.name = "CalendarSyncEventConflictError";
-  }
-}
-
 /** The CalDAV server refused the login at connect. */
 export class CalDavAuthFailedError extends Error {
   readonly code = "caldav_auth_failed";

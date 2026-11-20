@@ -4,6 +4,7 @@
 import { z } from "zod";
 import {
   CalendarSyncConsentRequiredError,
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
 } from "../../adapter.js";
@@ -25,14 +26,6 @@ const RATE_LIMIT_REASONS = new Set([
   "dailyLimitExceeded",
   "RATE_LIMIT_EXCEEDED",
 ]);
-
-/** The provider refused a conditional write: the Event changed at Google since `ref.etag` (HTTP 412). */
-export class GoogleCalendarEventConflictError extends Error {
-  constructor() {
-    super("Google Calendar refused the write: the Event changed since the stored etag");
-    this.name = "GoogleCalendarEventConflictError";
-  }
-}
 
 /** Keeps one access token for the adapter's lifetime; `invalidate` makes the next `get` refresh it. */
 export interface GoogleAccessTokenSource {
@@ -209,7 +202,9 @@ async function refusal(response: Response): Promise<Error> {
   const { status } = response;
   if (status === 412) {
     await discard(response);
-    return new GoogleCalendarEventConflictError();
+    return new CalendarSyncEventConflictError(
+      "Google Calendar refused the write: the Event changed since the stored etag",
+    );
   }
   const reasons = status === 403 || status === 429 ? await refusalReasons(response) : new Set<string>();
   if (status !== 403 && status !== 429) await discard(response);

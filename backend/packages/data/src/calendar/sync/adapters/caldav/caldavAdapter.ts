@@ -4,15 +4,16 @@
 import { randomUUID } from "node:crypto";
 import type { OutboundAddressPolicy } from "../../../../net/outboundAddressPolicy.js";
 import { logger } from "../../../logger.js";
-import type {
-  CalendarChanges,
-  CalendarSyncAccount,
-  CalendarSyncAdapter,
-  CalendarSyncCursor,
-  CalendarSyncWindow,
-  RemoteCalendar,
-  RemoteEvent,
-  RemoteEventRef,
+import {
+  CalendarSyncEventConflictError,
+  type CalendarChanges,
+  type CalendarSyncAccount,
+  type CalendarSyncAdapter,
+  type CalendarSyncCursor,
+  type CalendarSyncWindow,
+  type RemoteCalendar,
+  type RemoteEvent,
+  type RemoteEventRef,
 } from "../../adapter.js";
 import {
   collectionVersion,
@@ -27,7 +28,6 @@ import {
   syncChanges,
   type CalendarResourceText,
 } from "./caldavClient.js";
-import { CalendarSyncEventConflictError } from "./caldavErrors.js";
 import { withCalDavSession, type CalDavLogin, type CalDavSession } from "./caldavHttp.js";
 import {
   CalendarResourceUnreadableError,
@@ -165,15 +165,16 @@ export function createCalDavAdapter(
     fetchChanges: (calendar, cursor, { window, signal }) =>
       session(signal, (s) => fetchChanges(s, calendar, cursor, window)),
 
-    putEvent: (calendar, { ref, fields }, signal) =>
+    putEvent: (calendar, { ref, fields, icalUid }, signal) =>
       session(signal, async (s) => {
         const url = calendarUrl(calendar);
         if (ref === null) {
           if (fields.recurrenceId !== null) {
             throw new Error("An override is written into its series' resource, which needs the series' address");
           }
-          const uid = randomUUID();
-          const href = new URL(`${uid}.ics`, url);
+          // The resource's name is always generated: a UID may hold characters no path segment should.
+          const uid = icalUid || randomUUID();
+          const href = new URL(`${randomUUID()}.ics`, url);
           const outcome = await createResource(s, href, serializeNewResource(uid, fields));
           if (outcome.kind !== "written") throw new CalendarSyncEventConflictError();
           return { remoteId: uid, href: href.href, etag: outcome.etag };

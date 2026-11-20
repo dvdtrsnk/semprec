@@ -103,6 +103,11 @@ export interface RemoteEventRef {
 export interface PutRemoteEventInput {
   ref: RemoteEventRef | null;
   fields: RemoteEventFields;
+  /**
+   * The iCalendar UID a new Event is created with (Google `iCalUID`, the CalDAV resource's `UID`); ignored when `ref`
+   * is set and by providers that assign their own (Microsoft Graph).
+   */
+  icalUid?: string | null;
 }
 
 /**
@@ -117,7 +122,10 @@ export interface CalendarSyncAdapter {
     syncState: CalendarSyncCursor | null,
     options: { window: CalendarSyncWindow; signal: AbortSignal },
   ): Promise<CalendarChanges>;
-  /** Creates the Event, or replaces it when `ref` is set (conditional on `ref.etag` when the provider supports it). */
+  /**
+   * Creates the Event, or replaces it when `ref` is set (conditional on `ref.etag` when the provider supports it). A
+   * conditional write the provider refuses throws `CalendarSyncEventConflictError`.
+   */
   putEvent(calendar: RemoteCalendar, event: PutRemoteEventInput, signal: AbortSignal): Promise<RemoteEventRef>;
   deleteEvent(calendar: RemoteCalendar, event: RemoteEventRef, signal: AbortSignal): Promise<void>;
 }
@@ -131,6 +139,8 @@ export interface CalendarSyncAccount {
   credential: string;
   /** The login name and CalDAV address of a password account (`mail_account_server_settings`); `null` without a row. */
   serverSettings: { username: string; caldavUrl: string | null } | null;
+  /** The tenant's IANA zone, the zone of an Event without one of its own. */
+  tenantTimeZone: string;
 }
 
 export type CalendarSyncAdapterFactory = (account: CalendarSyncAccount) => CalendarSyncAdapter;
@@ -151,6 +161,17 @@ export class CalendarSyncConsentRequiredError extends Error {
   constructor(message = "The account's grant does not include calendar access") {
     super(message);
     this.name = "CalendarSyncConsentRequiredError";
+  }
+}
+
+/**
+ * A conditional write found the Event changed or gone at the provider (HTTP 412, or an ETag other than the one the
+ * sync stored). Not a sync failure: the caller fetches the provider's version and decides again.
+ */
+export class CalendarSyncEventConflictError extends Error {
+  constructor(message = "The Event changed at the provider since it was last synced") {
+    super(message);
+    this.name = "CalendarSyncEventConflictError";
   }
 }
 

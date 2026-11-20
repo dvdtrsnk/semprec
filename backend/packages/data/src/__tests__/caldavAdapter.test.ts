@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
 import {
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncReauthorizationRequiredError,
   type CalendarSyncAccount,
@@ -16,11 +17,7 @@ import {
 import { CALENDAR_SYNC_ADAPTERS } from "../calendar/sync/adapters/index.js";
 import { createCalDavAdapter } from "../calendar/sync/adapters/caldav/caldavAdapter.js";
 import { verifyCalDavServer } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
-import {
-  CalDavAuthFailedError,
-  CalDavServerUnreachableError,
-  CalendarSyncEventConflictError,
-} from "../calendar/sync/adapters/caldav/caldavErrors.js";
+import { CalDavAuthFailedError, CalDavServerUnreachableError } from "../calendar/sync/adapters/caldav/caldavErrors.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import { resolveCalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -189,6 +186,7 @@ function account(caldavUrl: string, overrides: Partial<CalendarSyncAccount> = {}
     primaryAddress: LOGIN.username,
     credential: LOGIN.password,
     serverSettings: { username: LOGIN.username, caldavUrl },
+    tenantTimeZone: "Europe/Prague",
     ...overrides,
   };
 }
@@ -422,10 +420,16 @@ describe("CalDAV adapter against a fake server", () => {
   it("creates a new zoned series with its own VTIMEZONE and an override that read back as written", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const created = await caldav.putEvent(work, { ref: null, fields: STANDUP_FIELDS }, signal());
-    expect(created.href).toBe(`${work.url}${created.remoteId}.ics`);
-    const file = `${created.remoteId}.ics`;
+    const created = await caldav.putEvent(
+      work,
+      { ref: null, fields: STANDUP_FIELDS, icalUid: "standup-0f4c@semprec" },
+      signal(),
+    );
+    expect(created.remoteId).toBe("standup-0f4c@semprec");
+    expect(created.href).toMatch(new RegExp(`^${work.url}[0-9a-f-]{36}\\.ics$`));
+    const file = created.href?.slice(work.url?.length ?? 0) ?? "";
     expect(server.resource("work", file)?.text).toContain("BEGIN:VTIMEZONE");
+    expect(server.resource("work", file)?.text).toContain("UID:standup-0f4c@semprec");
     const override = await caldav.putEvent(work, { ref: created, fields: LATE_STANDUP_FIELDS }, signal());
     expect(override.remoteId).toBe(JSON.stringify([created.remoteId, "2026-11-25T09:00"]));
 
@@ -462,7 +466,7 @@ describe("CalDAV adapter against a fake server", () => {
     await expect(caldav.putEvent(work, { ref: null, fields: lunch.fields }, signal())).rejects.toBeInstanceOf(
       CalendarSyncEventConflictError,
     );
-    expect(server.files("work")).toContain(`${created.remoteId}.ics`);
+    expect(server.files("work")).toContain(created.href?.slice(work.url?.length ?? 0));
     expect(server.files("work")).toHaveLength(4);
   });
 

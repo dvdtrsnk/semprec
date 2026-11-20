@@ -198,7 +198,10 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
 
 - **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window })` →
   `{ full, upserts, deletions, nextSyncState }`, `putEvent`, `deleteEvent`, each honouring the pass's deadline signal
-  (5 min for the whole pass). An adapter holds no database client; it does network and OAuth refreshes. The registry
+  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
+  `CalendarSyncEventConflictError` of every adapter; a new Event's `icalUid` becomes its Google `iCalUID` or CalDAV
+  `UID` (Graph assigns its own). The factory gets the account and the tenant's zone. An adapter holds no database
+  client; it does network and OAuth refreshes. The registry
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
   answer is the provider error `invalidResponse`.
@@ -231,10 +234,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   (daily), an expired link (410) and an incremental round with removals start a full round, because a removal names
   only an instance. Each series seen in a round is read by id with its instances: the master's pattern becomes the
   RRULE, a rule occurrence of the window without an instance or a cancelled one an exception date, an `exception`
-  instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`); an unknown one is `Etc/UTC`.
-  Writes: `PATCH /me/events/{id}` with `If-Match` (412 is a `ConflictError`, code `calendar_remote_conflict`), `POST
-  /me/calendars/{id}/events` with a `transactionId` derived from calendar and fields; RRULEs no Graph pattern
-  expresses, a timed Event without a zone and a new override are refused (`GraphCalendarWriteUnsupportedError`).
+  instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`), the tenant's zone when it
+  shares the Windows id (a Prague tenant reads "Central Europe Standard Time" as `Europe/Prague`); an unknown one is
+  `Etc/UTC`. Writes: `PATCH /me/events/{id}` with `If-Match` (412 is `CalendarSyncEventConflictError`), `POST
+  /me/calendars/{id}/events` with a `transactionId` derived from calendar and fields; an Event without its own zone is
+  written in the tenant's; RRULEs no Graph pattern expresses and a new override are refused
+  (`GraphCalendarWriteUnsupportedError`).
 - **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
   attempts, `api`). A short read transaction reads the account, its sync mode and grant, the tracked calendars (those
   with a `calendar_remote_state` row) and the window; an account that is gone, trashed, has Calendars off or whose
