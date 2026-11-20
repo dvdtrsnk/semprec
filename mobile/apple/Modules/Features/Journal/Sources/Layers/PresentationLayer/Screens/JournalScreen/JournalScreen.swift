@@ -30,6 +30,9 @@ struct JournalScreen: View {
     @State private var pageSize: CGSize = .zero
     @State private var safeTop: CGFloat = 0
     @State private var pinnedFrame: CGRect = .zero
+    /// How far the page is scrolled from its top, up to a screen's height: the gradient at the top of the page moves
+    /// with it and is gone beyond that.
+    @State private var scrolled: CGFloat = 0
 
     // MARK: - Init
     init(
@@ -46,7 +49,7 @@ struct JournalScreen: View {
     var body: some View {
         content
             .background {
-                JournalBackground()
+                JournalBackground(scrolled: scrolled)
                     .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageSize = $0 })
             }
             .background {
@@ -121,7 +124,7 @@ private extension JournalScreen {
         axis(axisLevels.selected)
             .padding(.vertical, Self.axisRowSpacing)
             .background(alignment: .top) {
-                JournalTopBand(pageSize: pageSize, solidHeight: pinnedFrame.maxY)
+                JournalTopBand(pageSize: pageSize, solidHeight: pinnedFrame.maxY, scrolled: scrolled)
                     .offset(y: -pinnedFrame.minY)
                     .opacity(bandOpacity)
             }
@@ -164,6 +167,11 @@ private extension JournalScreen {
                 for: CGFloat.self,
                 of: { $0.containerSize.height - $0.contentInsets.top - $0.contentInsets.bottom },
                 action: { _, height in viewportHeight = height }
+            )
+            .onScrollGeometryChange(
+                for: CGFloat.self,
+                of: { min(max($0.contentOffset.y + $0.contentInsets.top, 0), $0.containerSize.height) },
+                action: { _, offset in scrolled = offset }
             )
         }
     }

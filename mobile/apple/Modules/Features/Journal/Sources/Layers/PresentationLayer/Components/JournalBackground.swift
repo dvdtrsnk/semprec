@@ -2,22 +2,48 @@ import DesignSystem
 import SwiftUI
 
 /// The page behind the diary, as in the design: a soft blue haze at the top left and warm sand at the top right that
-/// fade into an off-white page, under a fine grain. In dark appearance the same shape in deep, muted tones.
+/// fade into an off-white page, under a fine grain. In dark appearance the same shape in deep, muted tones. The
+/// gradient belongs to the top of the page and scrolls away with it by `scrolled` points; below it the page's plain
+/// colour goes on for as long as the page does.
 struct JournalBackground: View {
+
+    // MARK: - Dependencies
+    let scrolled: CGFloat
 
     // MARK: - Body
     var body: some View {
-        JournalBackgroundPattern()
+        JournalBackgroundPattern(scrolled: scrolled)
             .ignoresSafeArea()
             .accessibilityHidden(true)
     }
 }
 
-/// The gradient and grain of the diary's page in whatever frame it is given; the page fills the screen with it.
+/// The diary's page in whatever frame it is given, scrolled by `scrolled` points: its plain colour, the gradient one
+/// frame tall at its top and the grain over both. The page fills the screen with it.
 struct JournalBackgroundPattern: View {
+
+    // MARK: - Dependencies
+    let scrolled: CGFloat
 
     // MARK: - Body
     var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                Self.page
+                gradient
+                    .frame(height: proxy.size.height)
+                    .offset(y: -max(scrolled, 0))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .clipped()
+        }
+        .overlay { JournalGrain().allowsHitTesting(false) }
+    }
+
+    /// The colour of the page below the gradient, the same as the gradient's bottom row.
+    private static let page = Color(light: 0xF9F8F5, dark: 0x0C0D0F)
+
+    private var gradient: some View {
         MeshGradient(
             width: 3,
             height: 4,
@@ -29,7 +55,6 @@ struct JournalBackgroundPattern: View {
             ],
             colors: Self.colors
         )
-        .overlay { JournalGrain().allowsHitTesting(false) }
     }
 
     /// Three columns, from the top row to the bottom one.
@@ -108,10 +133,12 @@ struct JournalTopBand: View {
     let pageSize: CGSize
     /// How far down from the top of the screen the band is solid.
     let solidHeight: CGFloat
+    /// How far the page is scrolled, so that the band shows the part of the page behind it.
+    let scrolled: CGFloat
 
     // MARK: - Body
     var body: some View {
-        JournalBackgroundPattern()
+        JournalBackgroundPattern(scrolled: scrolled)
             .frame(width: pageSize.width + Self.blur * 4, height: pageSize.height)
             .blur(radius: Self.blur)
             .frame(width: pageSize.width, height: solidHeight + Self.fade, alignment: .top)
