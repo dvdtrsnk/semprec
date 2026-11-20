@@ -50,6 +50,12 @@ import {
   isPageMarkdownPath,
 } from "./pageMarkdownHandler.js";
 import { createGraphWebhookRequestListener } from "./graphWebhookHandler.js";
+import {
+  createGoogleCalendarWebhookRequestListener,
+  createGraphCalendarWebhookRequestListener,
+  GOOGLE_CALENDAR_WEBHOOK_PATH,
+  GRAPH_CALENDAR_WEBHOOK_PATH,
+} from "./calendarWebhookHandlers.js";
 import { createMailOauthCallbackRequestListener, MAIL_OAUTH_CALLBACK_PATH } from "./mailOauthCallbackHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { createClientIpThrottle } from "./clientIpThrottle.js";
@@ -222,6 +228,8 @@ export async function createDispatcher(
   const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
+  const googleCalendarWebhookListener = createGoogleCalendarWebhookRequestListener(pool);
+  const graphCalendarWebhookListener = createGraphCalendarWebhookRequestListener(pool);
   const mailOauthCallbackListener = createMailOauthCallbackRequestListener(pool);
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
@@ -322,6 +330,14 @@ export async function createDispatcher(
     }
     if (pathname === "/api/mail/graph/webhook") {
       void graphWebhookListener(req, res);
+      return;
+    }
+    if (pathname === GOOGLE_CALENDAR_WEBHOOK_PATH) {
+      googleCalendarWebhookListener(req, res);
+      return;
+    }
+    if (pathname === GRAPH_CALENDAR_WEBHOOK_PATH) {
+      graphCalendarWebhookListener(req, res);
       return;
     }
     // The provider's redirect target, served without a session.

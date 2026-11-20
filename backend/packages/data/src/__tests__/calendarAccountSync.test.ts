@@ -542,7 +542,10 @@ describe("calendar sync of internet accounts", () => {
 
     await switchCalendars(accountId, false);
 
-    expect(await jobKeys(accountId)).toEqual([calendarAccountCleanupJobKey(accountId)]);
+    expect(await jobKeys(accountId)).toEqual([
+      calendarAccountCleanupJobKey(accountId),
+      `calendar-push-channels:${accountId}`,
+    ]);
     expect(await syncState(accountId)).toBeNull();
     expect((await remoteState()).calendars).toEqual([]);
     expect(await calendarStatus(accountId)).toBe("off");

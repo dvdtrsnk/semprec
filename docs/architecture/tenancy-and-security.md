@@ -103,7 +103,7 @@ The rules:
 ### Cross-tenant router functions
 
 - An external identifier that names a tenant before any tenant is known (a Graph subscription id, a
-  Gmail address), or an operator aggregate across tenants, goes through a `SECURITY DEFINER`
+  Gmail address, a calendar push channel id), or an operator aggregate across tenants, goes through a `SECURITY DEFINER`
   function owned by `semprec_router`. That role is `NOLOGIN BYPASSRLS` and holds column-level
   `SELECT` only on the columns its functions read.
 - A router function pins `search_path` (ending in `pg_temp`), revokes `EXECUTE` from `PUBLIC`,

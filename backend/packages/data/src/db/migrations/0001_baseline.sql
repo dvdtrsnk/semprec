@@ -211,6 +211,32 @@ ALTER FUNCTION public.route_gmail_address(email_address text) OWNER TO semprec_r
 REVOKE ALL ON FUNCTION public.route_gmail_address(email_address text) FROM PUBLIC;
 GRANT ALL ON FUNCTION public.route_gmail_address(email_address text) TO semprec_data;
 
+CREATE FUNCTION public.route_google_calendar_channel(channel_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'google' AND c.channel_id = route_google_calendar_channel.channel_id
+$$;
+
+ALTER FUNCTION public.route_google_calendar_channel(channel_id text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) TO semprec_data;
+
+CREATE FUNCTION public.route_graph_calendar_subscription(subscription_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'graph' AND c.channel_id = route_graph_calendar_subscription.subscription_id
+$$;
+
+ALTER FUNCTION public.route_graph_calendar_subscription(subscription_id text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) TO semprec_data;
+
 CREATE FUNCTION public.route_graph_subscription(subscription_id text) RETURNS uuid
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public', 'pg_temp'
@@ -953,6 +979,49 @@ ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_feed_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_push_channels
+-- ----------------------------------------------------------------------------------------------------
+
+-- The push channels of internet accounts' calendars at their provider: a Google Calendar `events.watch` channel per
+-- tracked calendar (`resource_id` is what stopping it takes), a Microsoft Graph subscription on `/me/events` per
+-- account. `secret` is the channel token or `clientState` the provider sends back with every notification, so the
+-- table is left out of the tenant export. Written by the calendar push maintenance and the account's removal.
+CREATE TABLE public.calendar_push_channels (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    provider text NOT NULL,
+    channel_id text NOT NULL,
+    account_item_id uuid NOT NULL,
+    calendar_item_id uuid,
+    resource_id text,
+    secret text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT calendar_push_channels_provider_check CHECK ((provider = ANY (ARRAY['google'::text, 'graph'::text]))),
+    CONSTRAINT calendar_push_channels_shape_check CHECK ((CASE WHEN (provider = 'google'::text) THEN ((calendar_item_id IS NOT NULL) AND (resource_id IS NOT NULL)) ELSE ((calendar_item_id IS NULL) AND (resource_id IS NULL)) END))
+);
+
+COMMENT ON TABLE public.calendar_push_channels IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_pkey PRIMARY KEY (tenant_id, provider, channel_id);
+
+CREATE INDEX calendar_push_channels_account_idx ON public.calendar_push_channels USING btree (tenant_id, account_item_id);
+
+CREATE INDEX calendar_push_channels_calendar_idx ON public.calendar_push_channels USING btree (tenant_id, calendar_item_id);
+
+-- For route_google_calendar_channel and route_graph_calendar_subscription, which look a channel up before any tenant
+-- is known.
+CREATE INDEX calendar_push_channels_channel_idx ON public.calendar_push_channels USING btree (provider, channel_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_push_channels TO semprec_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.calendar_push_channels TO semprec_router;
+
+GRANT SELECT(provider) ON TABLE public.calendar_push_channels TO semprec_router;
+
+GRANT SELECT(channel_id) ON TABLE public.calendar_push_channels TO semprec_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- calendar_remote_state
@@ -3186,6 +3255,9 @@ ALTER TABLE ONLY public.calendar_event_push_state
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.calendar_remote_state
     ADD CONSTRAINT calendar_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3621,6 +3693,12 @@ ALTER TABLE ONLY public.calendar_event_push_state
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.calendar_remote_state
     ADD CONSTRAINT calendar_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -3820,6 +3898,12 @@ ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.calendar_feed_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.calendar_feed_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_push_channels ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_push_channels AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_push_channels USING (true) WITH CHECK (true);
 
 ALTER TABLE public.calendar_remote_state ENABLE ROW LEVEL SECURITY;
 

@@ -197,24 +197,18 @@ export type GraphSubscriptionHostingDecision =
   { hosted: true; notificationUrl: string; client: OAuthClient } | { hosted: false; reason: string };
 
 /**
- * Graph accepts only a public HTTPS `notificationUrl`, so subscriptions are hosted when
- * `appBaseUrl` is an `https://` origin without a path (a trailing `/` is the root) and the Graph
- * OAuth client is configured.
+ * The origin of `appBaseUrl` when it is an `https://` origin without a path (a trailing `/` is the
+ * root), else `null`: the only base a provider's webhook `notificationUrl` is built on.
  */
-export function decideGraphSubscriptionHosting(
-  appBaseUrl: string,
-  client: OAuthClient | { missingEnv: string[] },
-): GraphSubscriptionHostingDecision {
-  if ("missingEnv" in client) return { hosted: false, reason: `missing ${client.missingEnv.join(", ")}` };
-  const notAnOrigin = { hosted: false, reason: "APP_BASE_URL is not an https:// origin without a path" } as const;
+export function publicHttpsOrigin(appBaseUrl: string): string | null {
   // Scheme, host, at most the root `/`: no path, query, fragment, user info, whitespace or
   // backslash (which URL parsing of an https URL turns into a path separator).
-  if (!/^https:\/\/[^/?#@\\\s]+\/?$/.test(appBaseUrl)) return notAnOrigin;
+  if (!/^https:\/\/[^/?#@\\\s]+\/?$/.test(appBaseUrl)) return null;
   let url: URL;
   try {
     url = new URL(appBaseUrl);
   } catch (error) {
-    if (error instanceof TypeError) return notAnOrigin;
+    if (error instanceof TypeError) return null;
     throw error;
   }
   // The parsed URL must be that origin and nothing else, so no component is dropped by taking
@@ -227,9 +221,24 @@ export function decideGraphSubscriptionHosting(
     url.search !== "" ||
     url.hash !== ""
   ) {
-    return notAnOrigin;
+    return null;
   }
-  return { hosted: true, notificationUrl: `${url.origin}${GRAPH_WEBHOOK_PATH}`, client };
+  return url.origin;
+}
+
+/**
+ * Graph accepts only a public HTTPS `notificationUrl`, so subscriptions are hosted when
+ * `appBaseUrl` is an `https://` origin without a path (`publicHttpsOrigin`) and the Graph OAuth
+ * client is configured.
+ */
+export function decideGraphSubscriptionHosting(
+  appBaseUrl: string,
+  client: OAuthClient | { missingEnv: string[] },
+): GraphSubscriptionHostingDecision {
+  if ("missingEnv" in client) return { hosted: false, reason: `missing ${client.missingEnv.join(", ")}` };
+  const origin = publicHttpsOrigin(appBaseUrl);
+  if (origin === null) return { hosted: false, reason: "APP_BASE_URL is not an https:// origin without a path" };
+  return { hosted: true, notificationUrl: `${origin}${GRAPH_WEBHOOK_PATH}`, client };
 }
 
 /**

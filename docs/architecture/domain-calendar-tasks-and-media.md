@@ -199,7 +199,8 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 ### Internet account calendar sync
 
 Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calendar_remote_state` and
-`event_remote_state` (`calendarSyncStore.ts` is their only writer) and the only writer as `CALENDAR_SYNC_WRITER`.
+`event_remote_state` (`calendarSyncStore.ts` is their only writer), of `calendar_push_channels`
+(`calendarPushChannelsStore.ts`) and the only writer as `CALENDAR_SYNC_WRITER`.
 
 - **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window })` →
   `{ full, upserts, deletions, nextSyncState }`, `putEvent` (a new override names its series' `seriesRef`),
@@ -314,7 +315,29 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
   last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued }`, 404 for another
   tenant's or an unknown id, 409 `calendars_disabled`) queues one at most every 60 s per account, decided by a
-  conditional upsert of `manual_sync_requested_at` under the account row's share lock.
+  conditional upsert of `manual_sync_requested_at` under the account row's share lock. CalDAV accounts (`imap`) have
+  no provider push: the sweep and the app's foreground call of that route are their only triggers.
+- **Push channels** (`calendarPushChannelsJob.ts`, task `calendarPushChannels`, key
+  `calendar-push-channels:<account>`, 3 attempts, `api`; sweep `calendarPushChannelsSweep` hourly).
+  `calendar_push_channels` holds a Google `events.watch` channel per tracked calendar of a `gmail_api` account (`googleChannels.ts`: a server
+  chosen UUID, a random 32-byte token, 7 days asked for) and one Graph subscription on `/me/events` per `graph_api`
+  account (`graphCalendarSubscriptions.ts`: `created,updated,deleted`, a random `clientState`, 4230 minutes). The
+  table is left out of the tenant export. A channel is wanted while Calendars is on, the grant covers calendars, the
+  last pass ended `ok` and the API queue's runtime (`setCalendarPushRuntime`) has the provider's webhook URL; each
+  provider call and its row write are their own step, with no transaction open across the call. Within a day of its
+  expiry a Google channel is replaced (the new one first, then the old one stopped) and a Graph subscription extended
+  (a 404 subscribes anew). Every unwanted channel, also an older duplicate, is stopped and its row deleted even when
+  the stop fails, since the provider ends it at its expiry. Switching Calendars off queues the account's maintenance;
+  removing the account deletes its rows in the removal transaction and stops them after the commit with the refresh
+  token read before the credential went, before the mail cleanup can revoke the Google grant.
+- **Webhooks** (`calendarWebhookHandlers.ts` in the API, `calendarPushNotifications.ts`). `POST
+  /api/calendar/google/webhook` and `POST /api/calendar/graph/webhook` are public. The channel id names the tenant
+  through `route_google_calendar_channel` / `route_graph_calendar_subscription` (an id in more than one tenant names
+  none); inside that tenant the stored secret is compared in constant time (against a dummy when nothing is stored)
+  and a match queues `calendar-account-sync:<account>`. They never fetch. Google: 200 when accepted (a `sync` message
+  queues nothing), the same empty 404 for an unknown channel, a wrong or missing token or a malformed id, 413 over
+  16 KiB. Graph: the `validationToken` handshake echoed as `text/plain` first, then 202 for every batch (at most 100
+  notifications, 256 KiB), rejected notifications logged and dropped.
 - **Off and removal** (`calendarAccountSyncLifecycle.ts`). Switching Calendars off (`mail/mailboxServiceHooks.ts`) or
   removing the account (`removeMailbox`) deletes the state row and every `calendar_remote_state` row of the account,
   resolves the problem as `sourceDeleted` and queues `calendarAccountCleanup` (key

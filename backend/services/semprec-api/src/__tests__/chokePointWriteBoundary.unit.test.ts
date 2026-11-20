@@ -206,6 +206,8 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "calendar cancellation impact": "packages/data/src/calendar/cancellationImpactRouteHandler.ts",
   "calendar invitation respond": "packages/data/src/calendar/invitationRouteHandlers.ts",
   "calendar account sync": "packages/data/src/calendar/sync/calendarAccountSyncJob.ts",
+  "Google Calendar webhook": "services/semprec-api/src/calendarWebhookHandlers.ts",
+  "Microsoft Graph calendar webhook": "services/semprec-api/src/calendarWebhookHandlers.ts",
   "calendar reminders": "packages/data/src/calendar/remindersFeedRouteHandler.ts",
   "event occurrence materialize": "packages/data/src/calendar/eventOccurrenceRouteHandlers.ts",
   "task occurrence materialize": "packages/data/src/tasks/taskOccurrenceRoutes.ts",

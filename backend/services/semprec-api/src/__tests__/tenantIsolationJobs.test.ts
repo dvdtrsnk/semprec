@@ -145,6 +145,17 @@ type Payload = Record<string, unknown>;
 /** The calendar sync's writer identity, which only it may use for account calendars. */
 const CALENDAR_SYNC = { writerKind: "system", systemProcess: "calendarSync" } as const;
 
+/** A Graph subscription row of the account; without a push runtime the maintenance only forgets it. */
+async function insertPushChannel(tenant: Tenant, accountItemId: string): Promise<void> {
+  await inTenant(tenant, () =>
+    pool.query(
+      `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, secret, expires_at)
+       VALUES ('graph', $1, $2, 'secret', now() + interval '1 day')`,
+      [randomUUID(), accountItemId],
+    ),
+  );
+}
+
 interface TenantTaskCase {
   tenancy: "tenant";
   seed(tenant: Tenant): Promise<Payload>;
@@ -1310,8 +1321,8 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       return { accountItemId: await createMailbox(tenant, { calendarsEnabled: true }) };
     },
-    // No calendar adapter exists for any sync mode yet.
-    expectedError: /^No calendar adapter configured for sync mode imap$/,
+    // The fixture mailbox has no server settings, so the CalDAV adapter refuses it after the tenant-scoped reads.
+    expectedError: /^Account <id> has no mail server settings$/,
     async expectDone(tenant, payload) {
       await expectRows(
         tenant,
@@ -1388,6 +1399,22 @@ const cases: Record<string, TaskCase> = {
         "SELECT status FROM calendar_event_push_state WHERE event_item_id = $1",
         [str(payload, "eventItemId")],
         [{ status: "sent" }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant);
+      await insertPushChannel(tenant, accountItemId);
+      return { accountItemId };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT channel_id FROM calendar_push_channels WHERE account_item_id = $1",
+        [str(payload, "accountItemId")],
+        [],
       );
     },
   },
@@ -1758,6 +1785,23 @@ const cases: Record<string, TaskCase> = {
           "SELECT status, last_error_code FROM calendar_account_sync_state WHERE account_item_id = $1",
           [accountItemId],
           [{ status: "error", last_error_code: "unexpected" }],
+        ),
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant);
+      await insertPushChannel(tenant, accountItemId);
+      // The sweep queues the account's maintenance, which forgets the channel of an account with Calendars off.
+      return marked([accountItemId], () =>
+        expectRows(
+          tenant,
+          "SELECT channel_id FROM calendar_push_channels WHERE account_item_id = $1",
+          [accountItemId],
+          [],
         ),
       );
     },

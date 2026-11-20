@@ -277,6 +277,8 @@ interface TenantFixture {
   pushDeviceToken: string;
   exportId: string;
   graphSubscriptionId: string;
+  googleCalendarChannelId: string;
+  graphCalendarSubscriptionId: string;
   /**
    * Every recorded id except `agentRunEventId`, plus every database the tenant can list (its seeded
    * system databases included).
@@ -1057,6 +1059,24 @@ async function seedTenant(): Promise<TenantFixture> {
       [mailboxItemId, graphSubscriptionId, `state-${randomUUID()}`],
     ),
   );
+  const googleCalendarChannelId = randomUUID();
+  const graphCalendarSubscriptionId = `graph-calendar-${randomUUID()}`;
+  const watchedCalendarItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "calendars"));
+  // Raw SQL: creating push channels is the calendar push maintenance's concern, which calls the providers.
+  await inTenantTransaction(tenantId, (client) =>
+    client.query(
+      `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, calendar_item_id, resource_id, secret, expires_at)
+       VALUES ('google', $1, $3, $4, 'resource', $5, now() + interval '1 day'),
+              ('graph', $2, $3, NULL, NULL, $5, now() + interval '1 day')`,
+      [
+        googleCalendarChannelId,
+        graphCalendarSubscriptionId,
+        mailboxItemId,
+        watchedCalendarItemId,
+        `secret-${randomUUID()}`,
+      ],
+    ),
+  );
 
   const listedDatabaseIds = readIdArray(await sendOk(member, GET("/api/databases?limit=200")), "databases");
 
@@ -1121,6 +1141,8 @@ async function seedTenant(): Promise<TenantFixture> {
     pushDeviceToken,
     exportId,
     graphSubscriptionId,
+    googleCalendarChannelId,
+    graphCalendarSubscriptionId,
     ids: [
       ...new Set([
         ...tenantRowIds,
@@ -1130,6 +1152,8 @@ async function seedTenant(): Promise<TenantFixture> {
         webSession.sessionId,
         pushSubscriptionId,
         graphSubscriptionId,
+        googleCalendarChannelId,
+        graphCalendarSubscriptionId,
       ]),
     ],
     tenantRowIds: [...new Set(tenantRowIds)],
@@ -2137,6 +2161,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "Microsoft Graph mail webhook": async () => {
     await expectForeignLikeRandom(null, [a.graphSubscriptionId], ([subscriptionId]) =>
       POST("/api/mail/graph/webhook", {
+        value: [{ subscriptionId, clientState: "not-the-client-state", changeType: "updated" }],
+      }),
+    );
+  },
+  "Google Calendar webhook": async () => {
+    const answer = await expectForeignLikeRandom(null, [a.googleCalendarChannelId], ([channelId = ""]) => ({
+      method: "POST",
+      path: "/api/calendar/google/webhook",
+      headers: {
+        "X-Goog-Channel-ID": channelId,
+        "X-Goog-Channel-Token": "not-the-token",
+        "X-Goog-Resource-State": "exists",
+      },
+    }));
+    expect(answer.status).toBe(404);
+  },
+  "Microsoft Graph calendar webhook": async () => {
+    await expectForeignLikeRandom(null, [a.graphCalendarSubscriptionId], ([subscriptionId]) =>
+      POST("/api/calendar/graph/webhook", {
         value: [{ subscriptionId, clientState: "not-the-client-state", changeType: "updated" }],
       }),
     );

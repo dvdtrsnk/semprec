@@ -1,11 +1,16 @@
 // Removes a mailbox in one transaction: the Mailboxes item goes to the trash, its credential and sync
 // rows are deleted, the job trashing its Emails and Folders is queued, and its calendar sync is stopped
-// (the cleanup of its calendars is queued). After the commit the mailbox is cleaned up at the provider
+// (the cleanup of its calendars is queued, its calendar push channels forgotten). After the commit the mailbox is cleaned up at the provider
 // from what the transaction read into memory.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { lockCalendarAccountSync } from "../calendar/sync/calendarAccountSyncGuard.js";
 import { stopCalendarAccountSync } from "../calendar/sync/calendarAccountSyncLifecycle.js";
+import {
+  stopRemovedAccountCalendarPush,
+  takeRemovedAccountCalendarPush,
+  type RemovedCalendarPushChannels,
+} from "../calendar/sync/calendarPushRemoval.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -67,7 +72,7 @@ async function removeMailboxWithClient(
   client: PoolClient,
   mailboxItemId: string,
   options: RemoveMailboxOptions,
-): Promise<MailboxRemovalCleanupInput | null> {
+): Promise<{ mail: MailboxRemovalCleanupInput; calendarPush: RemovedCalendarPushChannels | null } | null> {
   const mailboxes = await getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
   if (mailboxes === null) return null;
   const syncWaitMs = options.syncWaitMs ?? MAILBOX_REMOVAL_SYNC_WAIT_MS;
@@ -82,6 +87,7 @@ async function removeMailboxWithClient(
     syncState,
     actingUserId: options.actingUserId,
   });
+  const calendarPush = await takeRemovedAccountCalendarPush(client, mailboxItemId, options.actingUserId);
 
   await updateItemWithClient(
     client,
@@ -108,13 +114,13 @@ async function removeMailboxWithClient(
   // Queued in this transaction so the job exists only when the removal commits.
   await enqueueMailboxRemoval(client, mailboxItemId);
   await stopCalendarAccountSync(client, mailboxItemId);
-  return cleanup;
+  return { mail: cleanup, calendarPush };
 }
 
 /**
- * Any failure rolls back every write. After the commit the provider cleanup (live sync, Graph
- * subscription, Gmail watch and grant when no other mailbox records the account) is awaited but best
- * effort: a failed step is logged and the answer stays `true`.
+ * Any failure rolls back every write. After the commit the provider cleanup (the calendar push channels,
+ * live sync, Graph subscription, Gmail watch and grant when no other mailbox records the account) is
+ * awaited but best effort: a failed step is logged and the answer stays `true`.
  */
 export async function removeMailbox(
   pool: Pool,
@@ -123,7 +129,9 @@ export async function removeMailbox(
 ): Promise<boolean> {
   const cleanup = await withTransaction(pool, (client) => removeMailboxWithClient(client, mailboxItemId, options));
   if (cleanup === null) return false;
-  await cleanUpRemovedMailbox(cleanup, options.cleanupDependencies ?? {}, options.cleanupStepTimeoutMs);
+  // Before the mail cleanup, which may revoke the Google grant the channel stops need.
+  await stopRemovedAccountCalendarPush(cleanup.calendarPush, options.cleanupDependencies ?? {});
+  await cleanUpRemovedMailbox(cleanup.mail, options.cleanupDependencies ?? {}, options.cleanupStepTimeoutMs);
   return true;
 }
 

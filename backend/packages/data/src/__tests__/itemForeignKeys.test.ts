@@ -86,6 +86,28 @@ const KEYS: ItemKey[] = [
       c.query("INSERT INTO calendar_remote_state (calendar_item_id, remote_id) VALUES ($1, 'remote')", [id]),
   },
   {
+    table: "calendar_push_channels",
+    column: "account_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, secret, expires_at)
+         VALUES ('graph', $2, $1, 'secret', now())`,
+        [id, randomUUID()],
+      ),
+  },
+  {
+    table: "calendar_push_channels",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, calendar_item_id, resource_id, secret, expires_at)
+         VALUES ('google', $3, $2, $1, 'resource', 'secret', now())`,
+        [id, await other(), randomUUID()],
+      ),
+  },
+  {
     table: "event_remote_state",
     column: "event_item_id",
     behaviour: "cascade",

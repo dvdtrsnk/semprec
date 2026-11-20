@@ -100,7 +100,7 @@ describe("row-level security as the runtime roles", () => {
         ORDER BY relname`,
     );
     tenantTables = tables.map((row) => row.relname);
-    expect(tenantTables).toHaveLength(72);
+    expect(tenantTables).toHaveLength(73);
     expect(tenantTables).toEqual(
       expect.arrayContaining([
         "mail_message_move_sync_state",
@@ -116,6 +116,7 @@ describe("row-level security as the runtime roles", () => {
         "event_remote_state",
         "calendar_account_sync_state",
         "calendar_event_push_state",
+        "calendar_push_channels",
       ]),
     );
   });

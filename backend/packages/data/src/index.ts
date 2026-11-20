@@ -638,6 +638,7 @@ export {
 } from "./calendar/eventInvitationJob.js";
 export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
 export * from "./calendar/sync/adapters/composition.js";
+export * from "./calendar/sync/calendarPushComposition.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,

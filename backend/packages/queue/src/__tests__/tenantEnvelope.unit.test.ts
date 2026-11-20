@@ -43,6 +43,7 @@ const SYSTEM_TASKS = [
   "pageOrphanSweep",
   "calendarSubscriptionSweep",
   "calendarAccountSyncSweep",
+  "calendarPushChannelsSweep",
 ];
 
 interface FakeHelperOptions {

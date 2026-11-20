@@ -2,6 +2,10 @@ import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscrip
 import { handleCalendarAccountCleanupTask } from "./calendar/sync/calendarAccountCleanupJob.js";
 import { handleCalendarEventPushTask } from "./calendar/sync/eventPushJob.js";
 import {
+  handleCalendarPushChannelsSweepTask,
+  handleCalendarPushChannelsTask,
+} from "./calendar/sync/calendarPushChannelsJob.js";
+import {
   handleCalendarAccountSyncSweepTask,
   handleCalendarAccountSyncTask,
 } from "./calendar/sync/calendarAccountSyncJob.js";
@@ -118,6 +122,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 5 4 * * * ${CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP}
 25 * * * * ${CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP}
 */5 * * * * ${CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP}
+35 * * * * ${CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP}
 `;
 
 /**
@@ -226,6 +231,13 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: async (payload, helpers) => {
       await handleCalendarEventPushTask(pool, payload, { jobId: helpers.job.id });
+    },
+    // The OAuth clients and webhook URLs come from `setCalendarPushRuntime`, which the composition root calls.
+    [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: async (payload) => {
+      await handleCalendarPushChannelsTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: async () => {
+      await handleCalendarPushChannelsSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);

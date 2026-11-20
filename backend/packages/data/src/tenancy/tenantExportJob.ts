@@ -21,13 +21,17 @@ import {
 
 /** Builds one tenant's export archive from the catalog-driven table set. */
 
-/** Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, and card-action responses (transient, 24 h). */
+/**
+ * Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, card-action responses
+ * (transient, 24 h) and the calendar push channels, whose rows hold the secret their webhooks are checked against.
+ */
 export const EXPORT_EXCLUDED_TABLES = [
   "external_credentials",
   "tenant_keys",
   "tenant_exports",
   "mail_oauth_states",
   "idempotent_responses",
+  "calendar_push_channels",
 ] as const;
 
 /** Written to `manifest.json`. */

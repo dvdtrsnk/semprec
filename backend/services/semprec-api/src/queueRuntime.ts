@@ -12,12 +12,14 @@ import {
   setEventInvitationDelivery,
   setGoogleCalendarSyncRuntime,
   setGraphCalendarSyncRuntime,
+  setCalendarPushRuntime,
   setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
+import { resolveCalendarPushRuntime } from "./calendarPushComposition.js";
 import { createMailSyncAdapters, readOAuthClient } from "./mailSyncAdapters.js";
 import { createAiGatewayClientForApi } from "./projectAgentGuidanceComposition.js";
 
@@ -48,7 +50,8 @@ export interface ApiQueueRuntime {
  * thread project triage (`setThreadProjectTriageRuntime`), the thread task people sync
  * (`setThreadTaskPeopleDelivery`), the Google calendar sync, over the Gmail OAuth client
  * (`setGoogleCalendarSyncRuntime`), and the Microsoft calendar sync's token refresh
- * (`setGraphCalendarSyncRuntime`, only with the Graph OAuth client configured). The same transports are handed to
+ * (`setGraphCalendarSyncRuntime`, only with the Graph OAuth client configured), and the calendar push channels
+ * (`setCalendarPushRuntime`, `resolveCalendarPushRuntime`). The same transports are handed to
  * `createApiCoreTaskList`, so an approved agent mail send goes through them.
  */
 export async function createApiQueueRuntime(
@@ -95,6 +98,7 @@ export async function createApiQueueRuntime(
   setThreadTaskPeopleDelivery({ pool });
   setGoogleCalendarSyncRuntime("clientId" in gmail ? { pool, ...gmail } : null);
   setGraphCalendarSyncRuntime("clientId" in graph ? { pool, ...graph } : null);
+  setCalendarPushRuntime(resolveCalendarPushRuntime(pool, process.env, { gmail, graph }));
   let runner: Awaited<ReturnType<typeof runWorker>>;
   try {
     runner = await runWorker({
@@ -110,6 +114,7 @@ export async function createApiQueueRuntime(
     setThreadTaskPeopleDelivery(null);
     setGoogleCalendarSyncRuntime(null);
     setGraphCalendarSyncRuntime(null);
+    setCalendarPushRuntime(null);
     throw error;
   }
 
@@ -123,6 +128,7 @@ export async function createApiQueueRuntime(
         setThreadTaskPeopleDelivery(null);
         setGoogleCalendarSyncRuntime(null);
         setGraphCalendarSyncRuntime(null);
+        setCalendarPushRuntime(null);
       });
       return stopped;
     },

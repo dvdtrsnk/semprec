@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { resolveProblem } from "../../semp/sempProblemsStore.js";
 import { calendarProblemKey } from "../../semp/sourceProblemKeys.js";
 import { enqueueCalendarAccountCleanup, enqueueCalendarAccountSync } from "./calendarAccountSyncEnqueue.js";
+import { enqueueCalendarPushChannels } from "./calendarPushChannelsEnqueue.js";
 import {
   deleteAccountCalendarRemoteStates,
   deleteCalendarAccountSyncState,
@@ -18,8 +19,9 @@ export async function startCalendarAccountSync(client: PoolClient, accountItemId
 /**
  * Calendars switched off, or the account removed: the sync state goes, the account's calendars are no longer
  * tracked (their `calendar_remote_state` rows are deleted, so no pass touches them again), the calendar problem is
- * resolved, and the cleanup that trashes those calendars and their Events is queued. A pass already queued finds
- * Calendars off, or the account gone, and does nothing. Repeating it changes nothing.
+ * resolved, and the cleanup that trashes those calendars and their Events is queued, as is the maintenance that stops
+ * the account's push channels. A pass already queued finds Calendars off, or the account gone, and does nothing.
+ * Repeating it changes nothing.
  */
 export async function stopCalendarAccountSync(client: PoolClient, accountItemId: string): Promise<void> {
   await deleteCalendarAccountSyncState(client, accountItemId);
@@ -28,4 +30,5 @@ export async function stopCalendarAccountSync(client: PoolClient, accountItemId:
   await deleteAccountCalendarRemoteStates(client, ids, accountItemId);
   await resolveProblem(client, { dedupeKey: calendarProblemKey(accountItemId), resolutionKind: "sourceDeleted" });
   await enqueueCalendarAccountCleanup(client, accountItemId);
+  await enqueueCalendarPushChannels(client, accountItemId);
 }
