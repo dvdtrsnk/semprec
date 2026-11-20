@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
   BlockInputError,
+  INLINE_COLORS,
   collectItemLinks,
+  isColorKey,
   parseMarkdown,
   serializeBlocks,
   serializeInline,
@@ -23,6 +25,7 @@ interface VectorBlock {
   type: string;
   indent?: number;
   done?: boolean;
+  toggle?: boolean;
   text?: TextRun[];
   pageId?: string;
 }
@@ -54,7 +57,11 @@ function inlineAttributes(value: unknown): value is InlineAttributes {
   if (!record(value)) return false;
   return Object.entries(value).every(([key, entry]) => {
     if (key === "link") return record(entry) && typeof entry.href === "string";
-    return (key === "bold" || key === "italic" || key === "code") && entry === true;
+    if (key === "color" || key === "highlight") return isColorKey(entry);
+    return (
+      (key === "bold" || key === "italic" || key === "code" || key === "strike" || key === "underline") &&
+      entry === true
+    );
   });
 }
 
@@ -64,6 +71,7 @@ function vectorBlock(value: unknown): value is VectorBlock {
     (value.id === undefined || typeof value.id === "string") &&
     (value.indent === undefined || typeof value.indent === "number") &&
     (value.done === undefined || typeof value.done === "boolean") &&
+    (value.toggle === undefined || typeof value.toggle === "boolean") &&
     (value.pageId === undefined || typeof value.pageId === "string") &&
     (value.text === undefined ||
       (Array.isArray(value.text) &&
@@ -127,6 +135,7 @@ function expectedBlocks(vector: Vector): unknown[] {
     type: block.type,
     indent: block.indent ?? 0,
     ...(block.type === "todo" ? { done: block.done ?? false } : {}),
+    ...(block.toggle === true ? { toggle: true } : {}),
     ...(block.type === "page" ? { pageId: block.pageId } : { text: block.text ?? [] }),
   }));
 }
@@ -137,6 +146,7 @@ function serializable(vector: Vector): Array<Omit<PageBlock, "type"> & { type: s
     type: block.type,
     indent: block.indent ?? 0,
     done: block.done ?? false,
+    toggle: block.toggle ?? false,
     text: block.text ?? [],
     pageId: block.pageId ?? null,
     synthetic: vector.synthetic === true,
@@ -410,6 +420,7 @@ describe("markdown behaviour", () => {
       type: "page",
       indent: 0,
       done: false,
+      toggle: false,
       text: [],
       pageId: "p1",
       synthetic: false,
@@ -543,6 +554,109 @@ describe("stripMarkdown", () => {
     expect(stripMarkdown("abcdef", 3)).toBe("abc");
     expect(stripMarkdown("a😀b", 2)).toBe("a😀");
     expect(stripMarkdown("abc", 0)).toBe("");
+  });
+});
+
+describe("strike, underline, color, highlight and toggles", () => {
+  const MARKS: ReadonlyArray<InlineAttributes> = [
+    { code: true },
+    { link: { href: "https://example.com" } },
+    { strike: true },
+    { underline: true },
+    { color: "green" },
+    { highlight: "pink" },
+  ];
+  // Bold and italic together are left out: next to a word they are written as an ambiguous `***`, which predates these marks.
+  const marksOf = (emphasis: InlineAttributes, mask: number): InlineAttributes =>
+    Object.assign({}, emphasis, ...MARKS.filter((_, bit) => (mask & (1 << bit)) !== 0));
+
+  /** Writes `text` to a Y.Text, then checks the Markdown of what is read back parses to the same runs and is stable. */
+  function expectRoundTrip(text: TextRun[], type: "text" | "toggle" | "h2" = "text"): string {
+    const doc = new Y.Doc();
+    writeBlock(doc, { id: "x", type, text });
+    const blocks = readPageBlocks(doc);
+    const markdown = serializeBlocks(blocks);
+    const parsed = parseMarkdown(markdown);
+    // A Y.Text delta may split equally formatted text at format boundaries; the parser yields it as one run.
+    const joined = (blocks[0]?.text ?? []).reduce<TextRun[]>((runs, run) => {
+      const last = runs[runs.length - 1];
+      if (last !== undefined && JSON.stringify(last.attributes) === JSON.stringify(run.attributes)) {
+        return [...runs.slice(0, -1), { ...last, insert: last.insert + run.insert }];
+      }
+      return [...runs, run];
+    }, []);
+    expect(parsed[0]).toMatchObject({ type, text: joined });
+    expect(serializeBlocks(parsed)).toBe(markdown);
+    return markdown;
+  }
+
+  it.each(INLINE_COLORS)("round-trips the color key %s as text color and highlight", (color) => {
+    expect(
+      expectRoundTrip([
+        { insert: "a", attributes: { color } },
+        { insert: "b", attributes: { highlight: color } },
+      ]),
+    ).toBe(`<span data-color="${color}">a</span><mark data-color="${color}">b</mark>`);
+  });
+
+  it.each([{}, { bold: true }, { italic: true }] as const)(
+    "round-trips every combination of marks next to and overlapping other combinations, with %j",
+    (emphasis) => {
+      const all = (1 << MARKS.length) - 1;
+      for (let mask = 0; mask <= all; mask += 1) {
+        expectRoundTrip([
+          { insert: "~a", attributes: marksOf(emphasis, mask) },
+          { insert: " b~ ", attributes: marksOf({}, (mask * 37) & all) },
+          { insert: "c\nd", attributes: marksOf(emphasis, (mask * 101 + 3) & all) },
+          { insert: "~~", attributes: marksOf({}, all - mask) },
+          { insert: "e", attributes: marksOf(emphasis, (mask * 7 + 1) & all) },
+        ]);
+      }
+    },
+  );
+
+  it("round-trips the new marks in a toggle block and a heading", () => {
+    const text: TextRun[] = [{ insert: "x", attributes: { strike: true, underline: true, highlight: "gray" } }];
+    expect(expectRoundTrip(text, "toggle")).toBe(
+      '<!-- semprec:block id=x type=toggle indent=0 -->\n<mark data-color="gray"><u>~~x~~</u></mark>',
+    );
+    expect(expectRoundTrip(text, "h2")).toBe('## <mark data-color="gray"><u>~~x~~</u></mark>');
+  });
+
+  it("writes toggle=true only for a heading", () => {
+    const blocks = [
+      { id: "h", type: "h1", indent: 0, toggle: true, text: [{ insert: "H" }] },
+      { id: "t", type: "text", indent: 0, toggle: true, text: [{ insert: "T" }] },
+      { id: "q", type: "quote", indent: 0, toggle: true, text: [{ insert: "Q" }] },
+    ];
+    expect(serializeBlocks(blocks)).toBe("<!-- semprec:block id=h type=h1 indent=0 toggle=true -->\n# H\n\nT\n\n> Q");
+    expect(serializeBlocks(blocks, { withIds: true })).toBe(
+      [
+        "<!-- semprec:block id=h type=h1 indent=0 toggle=true -->",
+        "# H",
+        "",
+        "<!-- semprec:block id=t type=text indent=0 -->",
+        "T",
+        "",
+        "<!-- semprec:block id=q type=quote indent=0 -->",
+        "> Q",
+      ].join("\n"),
+    );
+  });
+
+  it("reads a toggle heading's flag from the comment even when the line sets a different heading level", () => {
+    expect(parseMarkdown("<!-- semprec:block id=h type=h1 indent=0 toggle=true -->\n### Three")).toEqual([
+      { id: "h", type: "h3", indent: 0, toggle: true, text: [{ insert: "Three" }] },
+    ]);
+  });
+
+  it("strips the new marks and keeps toggle text in plain text", () => {
+    expect(
+      stripMarkdown(
+        '<!-- semprec:block id=t type=toggle indent=0 -->\n~~a~~ <u>b</u> <span data-color="red">c</span> <mark data-color="blue">d</mark> \\~',
+        100,
+      ),
+    ).toBe("a b c d ~");
   });
 });
 

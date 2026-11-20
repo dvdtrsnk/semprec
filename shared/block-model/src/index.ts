@@ -2,13 +2,16 @@ export {
   BLOCK_TYPES,
   BLOCK_TYPE_RULES,
   INLINE_ATTRIBUTES,
+  INLINE_COLORS,
   MAX_INDENT,
   MIN_INDENT,
   isBlockType,
+  isColorKey,
   type BlockType,
   type BlockTypeRule,
   type InlineAttributeName,
   type InlineAttributes,
+  type ColorKey,
 } from "./blockTypes.js";
 export {
   BlockInputError,

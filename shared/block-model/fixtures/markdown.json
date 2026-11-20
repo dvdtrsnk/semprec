@@ -345,6 +345,211 @@
       "markdown": "",
       "synthetic": true,
       "blocks": [{ "type": "text", "text": [] }]
+    },
+    {
+      "name": "strike",
+      "markdown": "a ~~gone~~ b",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "a " }, { "insert": "gone", "attributes": { "strike": true } }, { "insert": " b" }]
+        }
+      ]
+    },
+    {
+      "name": "underline",
+      "markdown": "<u>under</u>",
+      "blocks": [{ "type": "text", "text": [{ "insert": "under", "attributes": { "underline": true } }] }]
+    },
+    {
+      "name": "text color",
+      "markdown": "<span data-color=\"red\">red</span>",
+      "blocks": [{ "type": "text", "text": [{ "insert": "red", "attributes": { "color": "red" } }] }]
+    },
+    {
+      "name": "highlight",
+      "markdown": "<mark data-color=\"yellow\">marked</mark>",
+      "blocks": [{ "type": "text", "text": [{ "insert": "marked", "attributes": { "highlight": "yellow" } }] }]
+    },
+    {
+      "name": "every mark nests outermost first",
+      "markdown": "[<span data-color=\"red\"><mark data-color=\"yellow\"><u>~~**_all_ `code`**~~</u></mark></span>](https://example.com)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "all",
+              "attributes": {
+                "link": { "href": "https://example.com" },
+                "color": "red",
+                "highlight": "yellow",
+                "underline": true,
+                "strike": true,
+                "bold": true,
+                "italic": true
+              }
+            },
+            {
+              "insert": " ",
+              "attributes": {
+                "link": { "href": "https://example.com" },
+                "color": "red",
+                "highlight": "yellow",
+                "underline": true,
+                "strike": true,
+                "bold": true
+              }
+            },
+            {
+              "insert": "code",
+              "attributes": {
+                "link": { "href": "https://example.com" },
+                "color": "red",
+                "highlight": "yellow",
+                "underline": true,
+                "strike": true,
+                "bold": true,
+                "code": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "inner marks split at outer mark boundaries",
+      "markdown": "~~a~~<span data-color=\"blue\">~~b~~ c</span>",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "a", "attributes": { "strike": true } },
+            { "insert": "b", "attributes": { "strike": true, "color": "blue" } },
+            { "insert": " c", "attributes": { "color": "blue" } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "marks parse in any nesting order",
+      "direction": "parse",
+      "markdown": "~~<u>**<mark data-color=\"green\"><span data-color=\"blue\">x</span></mark>**</u>~~",
+      "canonical": "<span data-color=\"blue\"><mark data-color=\"green\"><u>~~**x**~~</u></mark></span>",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "x",
+              "attributes": { "strike": true, "underline": true, "bold": true, "color": "blue", "highlight": "green" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "strike and underline html aliases",
+      "direction": "parse",
+      "markdown": "<s>a</s><del>b</del><U>c</U>",
+      "canonical": "~~ab~~<u>c</u>",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            { "insert": "ab", "attributes": { "strike": true } },
+            { "insert": "c", "attributes": { "underline": true } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "strike with whitespace edges",
+      "markdown": "a~~ b ~~c",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "a" }, { "insert": " b ", "attributes": { "strike": true } }, { "insert": "c" }]
+        }
+      ]
+    },
+    {
+      "name": "literal tildes are escaped",
+      "markdown": "a \\~\\~ b ~ c\\~~~d~~\\~",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [{ "insert": "a ~~ b ~ c~" }, { "insert": "d", "attributes": { "strike": true } }, { "insert": "~" }]
+        }
+      ]
+    },
+    {
+      "name": "unknown color keys are dropped",
+      "direction": "parse",
+      "markdown": "<span data-color=\"teal\">a</span> <mark data-color='teal'>b</mark> <mark data-color='pink'>c</mark>",
+      "canonical": "a b <mark data-color=\"pink\">c</mark>",
+      "blocks": [
+        { "type": "text", "text": [{ "insert": "a b " }, { "insert": "c", "attributes": { "highlight": "pink" } }] }
+      ]
+    },
+    {
+      "name": "markup inside a code span stays literal",
+      "markdown": "`~~a~~ <u>b</u> <span data-color=\"red\">c</span> <mark data-color=\"red\">d</mark>`",
+      "blocks": [
+        {
+          "type": "text",
+          "text": [
+            {
+              "insert": "~~a~~ <u>b</u> <span data-color=\"red\">c</span> <mark data-color=\"red\">d</mark>",
+              "attributes": { "code": true }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "toggle block and its more-indented children",
+      "markdown": "<!-- semprec:block id=t type=toggle indent=0 -->\nToggle ~~item~~\n\n<!-- semprec:block id=c type=text indent=1 -->\nchild\n\n  - list child",
+      "blocks": [
+        {
+          "id": "t",
+          "type": "toggle",
+          "text": [{ "insert": "Toggle " }, { "insert": "item", "attributes": { "strike": true } }]
+        },
+        { "id": "c", "type": "text", "indent": 1, "text": [{ "insert": "child" }] },
+        { "id": "b1", "type": "bullet", "indent": 1, "text": [{ "insert": "list child" }] }
+      ]
+    },
+    {
+      "name": "toggle block content is escaped like a text line",
+      "markdown": "<!-- semprec:block id=t type=toggle indent=2 -->\n\\# not a heading",
+      "blocks": [{ "id": "t", "type": "toggle", "indent": 2, "text": [{ "insert": "# not a heading" }] }]
+    },
+    {
+      "name": "empty toggle block",
+      "markdown": "<!-- semprec:block id=t type=toggle indent=0 -->",
+      "blocks": [{ "id": "t", "type": "toggle", "text": [] }]
+    },
+    {
+      "name": "toggle headings",
+      "markdown": "<!-- semprec:block id=a type=h1 indent=0 toggle=true -->\n# One\n\n<!-- semprec:block id=b type=h3 indent=0 toggle=true -->\n###\n\n## Plain",
+      "blocks": [
+        { "id": "a", "type": "h1", "toggle": true, "text": [{ "insert": "One" }] },
+        { "id": "b", "type": "h3", "toggle": true, "text": [] },
+        { "id": "b1", "type": "h2", "text": [{ "insert": "Plain" }] }
+      ]
+    },
+    {
+      "name": "toggle=true is ignored on non-headings",
+      "direction": "parse",
+      "withIds": true,
+      "markdown": "<!-- semprec:block id=x type=text indent=0 toggle=true -->\nplain\n\n<!-- semprec:block id=t type=toggle indent=0 toggle=true -->\nitem\n\n<!-- semprec:block id=d type=todo indent=0 toggle=true -->\n- [ ] task",
+      "canonical": "<!-- semprec:block id=x type=text indent=0 -->\nplain\n\n<!-- semprec:block id=t type=toggle indent=0 -->\nitem\n\n<!-- semprec:block id=d type=todo indent=0 -->\n- [ ] task",
+      "blocks": [
+        { "id": "x", "type": "text", "text": [{ "insert": "plain" }] },
+        { "id": "t", "type": "toggle", "text": [{ "insert": "item" }] },
+        { "id": "d", "type": "todo", "text": [{ "insert": "task" }] }
+      ]
     }
   ],
   "rejections": [

@@ -152,6 +152,62 @@ describe("replace a page from Markdown (issue #1765)", () => {
     await pool?.end();
   });
 
+  it("keeps strike, underline, colors, toggle blocks and toggle headings through the diff and their ids where unchanged", async () => {
+    const formatted =
+      '[<span data-color="red"><mark data-color="yellow"><u>~~**all**~~</u></mark></span>](https://example.com) \\~\\~';
+    const host = await hostWithText(
+      [
+        "<!-- semprec:block id=h type=h2 indent=0 toggle=true -->",
+        "## Section",
+        "",
+        "<!-- semprec:block id=t type=toggle indent=0 -->",
+        formatted,
+        "",
+        "<!-- semprec:block id=c type=text indent=1 -->",
+        "child",
+      ].join("\n"),
+    );
+    const before = await blocksOf(host.id);
+    const current = await markdownOf(host.id);
+    const changed = current.replace("child", '<mark data-color="green">child</mark>');
+    expect(changed).not.toBe(current);
+
+    await replace(host.id, `${changed}\n\n<!-- semprec:block id=x type=h1 indent=0 toggle=true -->\n# New`);
+
+    const after = await blocksOf(host.id);
+    expect(after.map(({ type, indent, toggle, text }) => ({ type, indent, toggle, text }))).toEqual([
+      { type: "h2", indent: 0, toggle: true, text: [{ insert: "Section" }] },
+      {
+        type: "toggle",
+        indent: 0,
+        toggle: false,
+        text: [
+          {
+            insert: "all",
+            attributes: {
+              link: { href: "https://example.com" },
+              color: "red",
+              highlight: "yellow",
+              underline: true,
+              strike: true,
+              bold: true,
+            },
+          },
+          { insert: " ~~" },
+        ],
+      },
+      { type: "text", indent: 1, toggle: false, text: [{ insert: "child", attributes: { highlight: "green" } }] },
+      { type: "h1", indent: 0, toggle: true, text: [{ insert: "New" }] },
+    ]);
+    // The unchanged toggle heading and toggle block keep their ids; the edited child is a new block.
+    expect(after.slice(0, 2).map((block) => block.id)).toEqual(before.slice(0, 2).map((block) => block.id));
+    expect(after[2]?.id).not.toBe(before[2]?.id);
+    const stored = await markdownOf(host.id);
+    expect(stored).toContain(`type=toggle indent=0 -->\n${formatted}`);
+    expect(stored).toContain("type=h2 indent=0 toggle=true -->\n## Section");
+    expect(stored).toContain("type=h1 indent=0 toggle=true -->\n# New");
+  });
+
   it("refuses a stale token with the current one and writes nothing", async () => {
     const host = await hostWithText("One");
     const stale = (await withTransaction(pool, (client) => readPageMarkdown(client, host.id))).etag;

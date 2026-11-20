@@ -43,6 +43,7 @@ const paramsByKey: Record<string, string[]> = {
   "approval.pageConvertToBlock.number": ["pageName", "pageCount"],
   "approval.pageConvertToBlock.todo": ["pageName", "pageCount"],
   "approval.pageConvertToBlock.quote": ["pageName", "pageCount"],
+  "approval.pageConvertToBlock.toggle": ["pageName", "pageCount"],
   "approval.journalMerge.year": ["period", "survivorName", "mergedName"],
   "approval.journalMerge.quarter": ["period", "survivorName", "mergedName"],
   "approval.journalMerge.month": ["period", "survivorName", "mergedName"],

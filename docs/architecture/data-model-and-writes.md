@@ -311,8 +311,11 @@ empties the write registries.
 - A page is the Yjs document of an item (`docs.item_id`, at most one per item). Blocks are `Y.Map`s
   in `doc.getMap('blocks')`; order is the flat `Y.Array` `doc.getArray('order')`; hierarchy is only
   `indent` (0–5).
-- Closed type set: `text`, `h1`–`h3`, `bullet`, `number`, `todo`, `quote`, `page`. Inline text is
-  `Y.Text` with `bold`, `italic`, `code`, `link`.
+- Closed type set: `text`, `h1`–`h3`, `bullet`, `number`, `todo`, `quote`, `toggle`, `page`. Inline text
+  is `Y.Text` with `bold`, `italic`, `code`, `link`, `strike`, `underline`, and `color`/`highlight`
+  holding a key of the closed `INLINE_COLORS` registry (an unknown key is dropped on read). A
+  `toggle` block's children are the following blocks with a greater indent; `h1`–`h3` carry an
+  optional boolean `toggle` (a toggle heading). Collapsed state is client UI state, never stored.
 - Server-side writes validate strictly (400). Sync (`WS /api/sync`) cannot reject partial updates, so
   readers normalize at read time with a pure function; reading never writes.
 - Markdown is only a serialization; the canonical serializer/parser in `shared/block-model/` is the

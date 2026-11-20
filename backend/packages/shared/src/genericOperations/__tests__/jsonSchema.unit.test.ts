@@ -182,7 +182,7 @@ const defaultHashes: Record<string, string> = {
   "page.mergeJournalDuplicates": "a34df63d5931b36d578a6e20e17f36818f9853db2266f9e253b0dc73932ae387",
   search: "9b2840da72eb61fc284c5065a1575b9bbdc64dca4d0df006f2ca317d6009b2b8",
   "relation.related": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
-  "page.convertToBlock": "993877e7efe30e669041ead866cf7ef4db10e7a0bd4f5554c53cd488b890ef2e",
+  "page.convertToBlock": "460090728b8b2d2a93b3501fb6fa0e8d285d2e099d92314d53d701ad609eb924",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {

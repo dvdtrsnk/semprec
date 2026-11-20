@@ -33,6 +33,7 @@ export async function readPageSummary(client: PoolClient, itemId: string, locale
               type: block.type,
               indent: block.indent,
               done: block.done,
+              toggle: block.toggle,
               text: serializeInline(block.text),
               ...(block.pageId === null ? {} : { pageId: block.pageId }),
             },

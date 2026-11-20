@@ -32,6 +32,7 @@ function contentKey(block: {
   type: string;
   indent?: number;
   done?: boolean;
+  toggle?: boolean;
   text?: PageBlock["text"] | string;
   pageId?: string | null;
 }): string {
@@ -40,6 +41,7 @@ function contentKey(block: {
     type: block.type,
     indent: block.indent ?? 0,
     ...(block.done === undefined ? {} : { done: block.done }),
+    ...(block.toggle === undefined ? {} : { toggle: block.toggle }),
     ...(typeof block.text === "string" ? { text: [{ insert: block.text }] } : block.text ? { text: block.text } : {}),
     pageId: block.pageId?.toLowerCase() ?? null,
   };

@@ -36,6 +36,7 @@
   "approval.pageConvertToBlock.number": "Změnit stránku „{pageName}“ na položku číslovaného seznamu. Stránek přesunutých do koše: {pageCount}.",
   "approval.pageConvertToBlock.todo": "Změnit stránku „{pageName}“ na úkol. Stránek přesunutých do koše: {pageCount}.",
   "approval.pageConvertToBlock.quote": "Změnit stránku „{pageName}“ na citaci. Stránek přesunutých do koše: {pageCount}.",
+  "approval.pageConvertToBlock.toggle": "Změnit stránku „{pageName}“ na rozbalovací položku. Stránek přesunutých do koše: {pageCount}.",
   "approval.journalMerge.day": "Sloučit duplicitní záznamy deníku za den {period}: „{mergedName}“ do „{survivorName}“.",
   "approval.journalMerge.week": "Sloučit duplicitní záznamy deníku za týden {period}: „{mergedName}“ do „{survivorName}“.",
   "approval.journalMerge.month": "Sloučit duplicitní záznamy deníku za měsíc {period}: „{mergedName}“ do „{survivorName}“.",
