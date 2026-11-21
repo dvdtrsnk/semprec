@@ -187,6 +187,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mailbox list": "packages/data/src/mail/mailboxRouteHandlers.ts",
   "mailbox detail": "packages/data/src/mail/mailboxRouteHandlers.ts",
   "mailbox password connect": "packages/data/src/mail/mailboxPasswordRouteHandlers.ts",
+  "mailbox password replace": "packages/data/src/mail/mailboxPasswordRouteHandlers.ts",
   "mailbox removal impact": "packages/data/src/mail/mailboxRemovalImpact.ts",
   "mailbox removal": "packages/data/src/mail/mailboxRemoval.ts",
   "Microsoft Graph mail webhook": "services/semprec-api/src/graphWebhookHandler.ts",
