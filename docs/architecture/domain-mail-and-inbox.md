@@ -65,6 +65,15 @@ described elsewhere and only referenced here:
 - A refused address and every connect/TLS failure become `MailServerUnreachableError`
   (`mail_server_unreachable`) without cause or address; a refused address is indistinguishable from an
   unreachable server. Authentication failures keep their own classification. imapflow's logger is disabled.
+- `openImapFlow()` waits for a login admission of the server host (`admitLogin` of the shared IMAP connection
+  limiter, see [IMAP connection limits](#imap-connection-limits-and-kept-sync-sessions)) before it connects, so every
+  sync, move, Sent APPEND and IDLE login is rate limited; the credential verifications of the connect and sign-in
+  routes do not use it (they are throttled per user).
+- The sync adapter and the IDLE connection factory report a failed `openImapFlow()` through one classifier,
+  `classifyImapConnectFailure()`: too many sessions → `MailConnectionLimitError`; a refused LOGIN →
+  `MailReauthorizationRequiredError`, unless its RFC 5530 code is a transient one (`UNAVAILABLE`, `INUSE`, `LIMIT`,
+  `SERVERBUG`); unreachable stays `MailServerUnreachableError`; anything else becomes a fixed generic error. None
+  keeps a cause.
 - IMAP IDLE (`mail/imapIdleClient.ts`, `mail/imapIdleLifecycle.ts`) receives a connected client from
   `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
   itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
@@ -179,8 +188,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
   property) must match the state's provider (`gmail_api`↔`gmail`, `graph_api`↔`outlook`). A different stored
-  account address is 400 `mail_reauth_wrong_account`. It replaces the token, enqueues a sync, and does not write
-  `syncStatus` or the watch address.
+  account address is 400 `mail_reauth_wrong_account`. It replaces the token, clears the sync failure record
+  (`clearMailSyncFailure`, as the password route does), enqueues a sync, and does not write `syncStatus` or the
+  watch address.
 - After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
   restart is a 500 although the token was replaced.
 
@@ -261,12 +271,47 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   pass it overtakes ends at its next transaction. The pass waits for the guard at most
   `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a removal still holds it, the pass is skipped and records
   nothing (no failure, status, problem or notification); the sweep re-enqueues an account that is still due.
-- A pass with no stored credential fails with `MailReauthorizationRequiredError` (failure kind `reauthorization`,
-  `syncStatus` `needsReauthorization`), whatever the status it read: only the user can store one again.
-- The sweep (`listAccountsDueForSync`) leaves out an account whose last failure kind is `reauthorization`; the
-  sign-in again (OAuth reauthorization or the password route) queues its next pass.
+- A pass with no stored credential, or whose provider refused the stored sign-in, fails with
+  `MailReauthorizationRequiredError` (failure kind `reauthorization`, `syncStatus` `needsReauthorization`),
+  whatever the status it read: only the user can store one again. The job records it and returns without
+  rethrowing, so graphile-worker does not retry it.
+- An account whose last failure kind is `reauthorization` is left alone everywhere until a sign-in clears the kind:
+  the sweep (`listAccountsDueForSync`) does not list it, live-sync discovery does not host it, and the job's
+  prologue ends after the sync state read, before the pass lease, the credential read or any provider call. The
+  sign-in again (OAuth reauthorization or the password route) clears the failure record (`clearMailSyncFailure`) in
+  the transaction that stores the credential and queues the next pass.
+- A failed pass pushes `next_expected_activity_at` out by a jittered delay that grows over the failure streak
+  (decorrelated jitter, `mail/mailBackoff.ts`): uniform between the base and three times the previous delay, capped
+  at 6 hours. The base is 5 minutes, or for `MailConnectionLimitError` the provider's connection-limit backoff
+  (`connectionLimitBackoffSecondsForProvider`, 5 or 10 minutes). The previous delay is read from the row
+  (`next_expected_activity_at − last_activity_at` while `failing_since` is set); a successful pass ends the streak.
+  A connection-limit failure is not rethrown; other failures are, and graphile-worker retries them (`maxAttempts`
+  3).
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
+
+### IMAP connection limits and kept sync sessions
+
+- `mail/imapConnectionLimiter.ts` is the one per-process limiter of IMAP connections, shared by sync passes, moves,
+  Sent APPEND and IDLE (`sharedImapConnectionLimiter`). It bounds open connections per account
+  (`imapConnectionLimitForProvider`: the mailbox's `connectionLimit`, else Gmail 5, iCloud and Outlook 3, others 2),
+  open work connections per server host (`HOST_IMAP_CONNECTION_LIMIT`, 10, the same for every host), and logins per
+  server host (`HOST_IMAP_LOGINS_PER_MINUTE`, 20: a burst of 20, then one every 3 s). A slot is taken account first,
+  then host. Waits are FIFO and reject after 3 minutes; an IDLE lifecycle's waits also end when it stops.
+- An IDLE connection, open for hours, counts against its account only (`kind: "idle"`): counted against the host,
+  it would cap how many accounts of one provider can listen at all. Everything else (`kind: "work"`: a sync session,
+  the IDLE folder lookup, a Sent APPEND) counts against both.
+- `mail/imapSessionPool.ts` keeps one IMAP sync connection per account open between uses in the process
+  (`sharedImapSessionPool`, used by the composition root's sync adapter). The move drain and the pass of a job, and
+  consecutive passes, take the same connection in turn, exclusively; a second concurrent caller gets a connection
+  of its own. A kept connection is reused only when it was opened with the same server settings, user name and
+  credential, answers a NOOP, and nothing it ran failed (`ImapMailClient.isReusable`); a rejected operation, a
+  failed or timed-out fetch, an ambiguous move or a changed sign-in closes it instead.
+- A kept connection holds its account and host slots while it is unused, because the provider counts it, and gives
+  them up as soon as another caller has to wait for one of them (the limiter asks it to close). It is closed after
+  4 minutes unused (`IMAP_SESSION_IDLE_TIMEOUT_MS`, below common server idle cutoffs), on `closeAccount` (the
+  live-sync control calls it after every `restartAccount` and `stopMailbox`: a sign-in again, Mail switched off, a
+  removal) and on shutdown (`close()`, after which checkouts are refused).
 
 ### Live sync root and hosted lifecycles
 
@@ -275,8 +320,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   transactions.
 - Discovery takes no sync guard and never waits: for an account without a sync state row it seeds one only
   after `SELECT … FOR SHARE SKIP LOCKED` on the live Mailboxes item (`ensureMailAccountSyncStateOfLiveMailbox`).
-  A skipped account is left out of the pass silently, as is a paused one (Mail off); a hosted account left out
-  is stopped by the pass.
+  A skipped account is left out of the pass silently, as are a paused one (Mail off) and one whose last sync
+  failure is `reauthorization`; a hosted account left out is stopped by the pass. `restartAccount` does not host an
+  account the root does not host, so an account signed in again is hosted by the next discovery pass.
 - `restartAccount(mailboxItemId)` stops and re-hosts one entry, running in the root's captured async context
   inside `runAsSystem("mail:liveSync")`; the tenant comes from the recorded entry, never from the caller, and a
   caller in a tenant scope only reaches its own tenant's entries. The root must be created outside any scope.
@@ -284,15 +330,20 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   entry once. Routes reach the root through `createMailLiveSyncControl`
   (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
-- The hosted IMAP lifecycle owns its discovery/startup task: policy refusals and transient errors go into the
-  bounded backoff, while `MailReauthorizationRequiredError` (the composition root's `getCredential` throws it when no
-  credential is stored) ends the discovery after one report until `restartAccount` hosts a new lifecycle; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
-  then public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
+- The hosted IMAP lifecycle owns its discovery/startup task. A start queues the account's pass once, however often
+  its discovery is retried. The folder lookup runs under a work slot of the limiter and each folder's IDLE
+  connection under an IDLE slot. Policy refusals and transient errors go into a jittered backoff (decorrelated
+  jitter between 5 s and 5 min), while `MailReauthorizationRequiredError` (the composition root's `getCredential`
+  throws it when no credential is stored; its connection factory classifies a refused login as it) ends the
+  discovery or the folder's loop after one report until `restartAccount` hosts a new lifecycle; stop cancels waits
+  (a slot or login wait included) and joins all owned work before pool shutdown. IDLE logout grace is 10 s, then
+  public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
 - The Gmail Pub/Sub dispatcher (`createGmailPubSubDispatcher`, `mail/gmailWatchLifecycle.ts`) routes each
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
   after every hand-off.
 - `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
-  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` → `pool.end()`.
+  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` →
+  `imapSessions.close()` (the kept IMAP sync sessions, once no pass runs) → `pool.end()`.
   A future long-lived outbound loop that enqueues work stops after the drain, before what it would race.
 
 ### Provider moves
@@ -302,8 +353,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   (`mail/mailMessageMoveSync.ts`). Independently callable reconcilers only observe move state.
 - Each step is claimed atomically in a short guarded transaction (operation token, monotonic desired revision,
   captured revision, durable phase, bounded validated evidence) and committed before dispatch. Only the
-  claiming token records the outcome. The provider call runs outside every transaction, with the shared IMAP
-  connection limiter, under a 30 s elapsed deadline per preparation/step.
+  claiming token records the outcome. The provider call runs outside every transaction, on the account's IMAP sync
+  connection (the kept session, see above), under a 30 s elapsed deadline per preparation/step. A drain runs its
+  moves one after another on one connection; a move after which the connection is not known to be clean closes it,
+  and the next move opens another.
 - OAuth tokens are acquired before the claim into a private one-use command; a lost claim discards it.
 - Unknown acknowledgement or owner death leaves the operation in-flight/uncertain; nothing (lease, timer, new
   desire) clears it automatically and no command is blindly repeated. IMAP identity includes UIDVALIDITY and
