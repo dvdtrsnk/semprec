@@ -62,6 +62,7 @@ async function newThread(messageId: string): Promise<TestThread> {
     withTransaction(runtime, async (client) => {
       const ingested = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: databaseId("emails"),
         filesDatabaseId: databaseId("files"),
         folderRelationPropertyId: properties.emailFolder,

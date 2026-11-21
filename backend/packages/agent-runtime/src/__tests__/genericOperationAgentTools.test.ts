@@ -265,6 +265,7 @@ describe("generic operation AgentTools (issue #220)", () => {
                 messageId,
                 envelope: {},
                 arrival: "live",
+                contentState: "full",
               });
             }
             return { mailbox, first, second };

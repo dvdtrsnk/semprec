@@ -8,7 +8,7 @@ import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
-import { buildMailPreviewFromBody } from "./mailPlainText.js";
+import { buildMailPreview, buildMailPreviewFromBody } from "./mailPlainText.js";
 import {
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
@@ -18,7 +18,12 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
-import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
+import {
+  ingestAttachments,
+  recordIndexedAttachments,
+  type ClassifiedAttachment,
+  type IndexedAttachment,
+} from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
 import { buildMailSearchText } from "./mailSearchText.js";
@@ -44,7 +49,18 @@ export function formatAddressList(list: MailEnvelopeAddress[] | undefined): stri
 /** System-owned Emails properties mirrored from the mailbox; `read`/`flagged` are user-owned and need no exemption. */
 export const EMAIL_INGEST_ALLOWED_SYSTEM_KEYS = ["name", "sender", "recipients", "body", "date"];
 
-export interface IngestEmailMessageInput {
+/**
+ * What of a message's content ingest stores: a `full` message its body and attachment bytes, an `index` message a
+ * plain-text snippet for its preview and search, and its attachments' metadata. Stored on a new message only; one
+ * already ingested keeps its own content and content state.
+ */
+export type IngestedMailContent =
+  | { contentState: "full"; bodyText?: string; bodyHtml?: string; attachments: ClassifiedAttachment[] }
+  | { contentState: "index"; snippet?: string; attachments: IndexedAttachment[] };
+
+export type IngestEmailMessageInput = IngestEmailMessageEnvelope & IngestedMailContent;
+
+export interface IngestEmailMessageEnvelope {
   emailsDatabaseId: string;
   filesDatabaseId: string;
   folderRelationPropertyId: string;
@@ -62,12 +78,9 @@ export interface IngestEmailMessageInput {
   references?: string[];
   subject?: string;
   envelope: MailEnvelope;
-  bodyText?: string;
-  bodyHtml?: string;
   date?: Date;
   providerThreadId?: string | null;
   providerMessageId?: string | null;
-  attachments: ClassifiedAttachment[];
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
@@ -146,7 +159,7 @@ export async function ingestEmailMessage(
             name: input.subject ?? "(no subject)",
             sender: input.envelope.from ? formatAddress(input.envelope.from) : "",
             recipients: formatAddressList(input.envelope.to),
-            body: input.bodyHtml ?? input.bodyText ?? "",
+            body: input.contentState === "full" ? (input.bodyHtml ?? input.bodyText ?? "") : "",
             ...(input.date ? { date: input.date.toISOString() } : {}),
             // Seeded from the server only at creation; later passes must not overwrite user changes.
             ...messageFlagProperties(input.flags),
@@ -188,34 +201,53 @@ export async function ingestEmailMessage(
         // First ingest only: the upsert's DO UPDATE never touches is_bulk.
         isBulk: detectBulkMail({ ...input.bulkHeaders, senderAddress: input.envelope.from?.address }),
         dsnOriginalMessageId,
-        previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
+        previewText:
+          input.contentState === "full"
+            ? buildMailPreviewFromBody(input.bodyText, input.bodyHtml)
+            : buildMailPreview(input.snippet ?? ""),
         ingestedAt: new Date(),
         arrival: input.arrival,
+        contentState: input.contentState,
       });
 
-      const { extractedTexts } = await ingestAttachments(client, {
-        messageItemId: itemId,
-        threadItemId: await getMailThreadItemId(client, threadId),
-        filesDatabaseId: input.filesDatabaseId,
-        attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
-        attachments: input.attachments,
-        storage: input.storage,
-        storageKeyPrefix: input.storageKeyPrefix,
-      });
-
-      // Attachment text is folded into the message's own search text; there is no per-attachment index.
-      await reindexItemSearch(client, {
-        itemId,
-        databaseId: input.emailsDatabaseId,
-        text: buildMailSearchText({
-          subject: input.subject,
-          senderName: input.envelope.from?.name,
-          senderAddress: input.envelope.from?.address,
-          bodyText: input.bodyText,
-          bodyHtml: input.bodyHtml,
-          extractedTexts,
-        }),
-      });
+      const searchedEnvelope = {
+        subject: input.subject,
+        senderName: input.envelope.from?.name,
+        senderAddress: input.envelope.from?.address,
+      };
+      if (input.contentState === "full") {
+        const { extractedTexts } = await ingestAttachments(client, {
+          messageItemId: itemId,
+          threadItemId: await getMailThreadItemId(client, threadId),
+          filesDatabaseId: input.filesDatabaseId,
+          attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
+          attachments: input.attachments,
+          storage: input.storage,
+          storageKeyPrefix: input.storageKeyPrefix,
+        });
+        // Attachment text is folded into the message's own search text; there is no per-attachment index.
+        await reindexItemSearch(client, {
+          itemId,
+          databaseId: input.emailsDatabaseId,
+          text: buildMailSearchText({
+            ...searchedEnvelope,
+            bodyText: input.bodyText,
+            bodyHtml: input.bodyHtml,
+            extractedTexts,
+          }),
+        });
+      } else {
+        await recordIndexedAttachments(client, itemId, input.attachments);
+        await reindexItemSearch(client, {
+          itemId,
+          databaseId: input.emailsDatabaseId,
+          text: buildMailSearchText({
+            ...searchedEnvelope,
+            bodyText: input.snippet ?? "",
+            extractedTexts: input.attachments.map((attachment) => attachment.filename),
+          }),
+        });
+      }
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
       // Tenant-wide (no `userId`); a converged provider-id conflict never reaches here.

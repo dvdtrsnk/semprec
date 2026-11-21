@@ -7,6 +7,7 @@ import { resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { readMailAttachmentProjects, type MailAttachmentProjects } from "./mailThreadAttachmentProjects.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { listMailThreads, MAIL_OWN_ADDRESSES_SQL } from "./mailThreadListQuery.js";
+import { MAIL_CONTENT_STATES } from "./mailContentState.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
 const messageRow = z.object({
@@ -21,12 +22,17 @@ const messageRow = z.object({
   replyTo: z.array(address),
   date: z.string().nullable(),
   body: z.string().nullable(),
+  contentState: z.enum(MAIL_CONTENT_STATES),
+  preview: z.string().nullable(),
   read: z.boolean(),
   flagged: z.boolean(),
   attachments: z.array(
     z.object({
+      attachmentId: z.uuid(),
+      /** Whether the bytes are stored; an index message's attachment has no blob and no Files item. */
+      stored: z.boolean(),
       fileItemId: z.uuid().nullable(),
-      blobId: z.uuid(),
+      blobId: z.uuid().nullable(),
       filename: z.string(),
       contentType: z.string(),
       byteSize: z.number().int(),
@@ -61,7 +67,7 @@ WITH schema_ids AS (
   FROM properties p JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
   WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT emails FROM schema_ids) AND p.key IN ('folder', 'attachments')
 ), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), copies AS (
-  SELECT m.item_id, m.message_id, m.mailbox_item_id, m.envelope, i.properties,
+  SELECT m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.content_state, m.preview_text, i.properties,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at) AS message_date,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
     EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
@@ -88,13 +94,15 @@ SELECT jsonb_build_object(
   'to', ${addressList("to")}, 'cc', ${addressList("cc")}, 'replyTo', ${addressList("replyTo")},
   'date', to_char(d.message_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
   'body', CASE WHEN jsonb_typeof(d.properties->'body') = 'string' THEN d.properties->>'body' END,
+  'contentState', d.content_state, 'preview', d.preview_text,
   'read', COALESCE(d.properties->'read' = 'true'::jsonb, false),
   'flagged', COALESCE(d.properties->'flagged' = 'true'::jsonb, false),
   'attachments', COALESCE(attachments.value, '[]'::jsonb)
 ) AS message
 FROM dedup d
 LEFT JOIN LATERAL (
-  SELECT jsonb_agg(jsonb_build_object('fileItemId', f.id, 'blobId', a.blob_id, 'filename', a.filename,
+  SELECT jsonb_agg(jsonb_build_object('attachmentId', a.id, 'stored', a.blob_id IS NOT NULL,
+    'fileItemId', f.id, 'blobId', a.blob_id, 'filename', a.filename,
     'contentType', a.content_type, 'byteSize', a.byte_size) ORDER BY a.filename, a.blob_id, a.n) AS value
   FROM (
     SELECT a.*, row_number() OVER (PARTITION BY a.blob_id, a.filename ORDER BY a.id) AS n
@@ -221,7 +229,7 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
  *
  * Emails stores one `body` (HTML part, else text part). `bodyHtml` is that body sanitized, with remote
  * images only when `allowRemoteImages` is set; `bodyText` is `htmlToPlainText` of the same body.
- * Nothing sanitized is stored.
+ * Nothing sanitized is stored. An `index` message stores no body (both are empty); its `preview` is the snippet.
  */
 export async function getMailThreadDetail(client: PoolClient, threadId: string, allowRemoteImages: boolean) {
   const targetId = await resolveMergedThreadId(client, threadId);

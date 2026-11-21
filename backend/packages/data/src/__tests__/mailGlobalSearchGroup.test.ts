@@ -146,6 +146,7 @@ async function setup() {
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),

@@ -293,6 +293,7 @@ export async function sendDraftEmail(
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
         ingestedAt: new Date(),
         arrival: "live",
+        contentState: "full",
       });
     });
   } catch (err) {

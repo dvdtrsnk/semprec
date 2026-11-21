@@ -139,11 +139,70 @@ function envelopeOf(raw: Buffer): string {
   ].join(" ")})`;
 }
 
-/** Every message the server holds is one text/plain part. */
+/** A Content-Type or Content-Disposition value: its lowercased value and its parameters by lowercased name. */
+function headerValue(value: string | undefined): { value: string; params: Map<string, string> } {
+  const [head = "", ...rest] = (value ?? "").split(";");
+  const params = new Map<string, string>();
+  for (const param of rest) {
+    const eq = param.indexOf("=");
+    if (eq > 0)
+      params.set(
+        param.slice(0, eq).trim().toLowerCase(),
+        param
+          .slice(eq + 1)
+          .trim()
+          .replace(/^"|"$/g, ""),
+      );
+  }
+  return { value: head.trim().toLowerCase(), params };
+}
+
+/** The parts of a one-level `multipart/*` message, each with its header block and body; none for a single part. */
+function mimePartsOf(raw: Buffer): Array<{ header: string; body: string; fields: Map<string, string> }> {
+  const { body, fields } = partsOf(raw);
+  const contentType = headerValue(fields.get("content-type"));
+  const boundary = contentType.params.get("boundary");
+  if (!contentType.value.startsWith("multipart/") || boundary === undefined) return [];
+  return body
+    .split(`--${boundary}`)
+    .slice(1)
+    .filter((chunk) => !chunk.startsWith("--"))
+    .map((chunk) => partsOf(Buffer.from(chunk.replace(/^\r\n/, "").replace(/\r\n$/, ""), "latin1")));
+}
+
+/** One leaf's BODYSTRUCTURE from its header fields and body. */
+function leafStructureOf(fields: Map<string, string>, body: string): string {
+  const contentType = headerValue(fields.get("content-type") ?? "text/plain; charset=utf-8");
+  const [type = "text", subtype = "plain"] = contentType.value.split("/");
+  const params = [...contentType.params].map(([name, value]) => `${quoted(name.toUpperCase())} ${quoted(value)}`);
+  const encoding = quoted((fields.get("content-transfer-encoding") ?? "7bit").toUpperCase());
+  const size = Buffer.byteLength(body, "latin1");
+  const disposition = fields.get("content-disposition");
+  const dsp = disposition
+    ? (() => {
+        const parsed = headerValue(disposition);
+        const dspParams = [...parsed.params].map(([name, value]) => `${quoted(name.toUpperCase())} ${quoted(value)}`);
+        return `(${quoted(parsed.value.toUpperCase())} ${dspParams.length > 0 ? `(${dspParams.join(" ")})` : "NIL"})`;
+      })()
+    : "NIL";
+  const head = `${quoted(type.toUpperCase())} ${quoted(subtype.toUpperCase())} ${params.length > 0 ? `(${params.join(" ")})` : "NIL"} NIL NIL ${encoding} ${size}`;
+  return type === "text" ? `(${head} ${body.split("\r\n").length} NIL ${dsp} NIL NIL)` : `(${head} NIL ${dsp} NIL NIL)`;
+}
+
+/** A single part, or a one-level `multipart/*` message of leaf parts. */
 function bodyStructureOf(raw: Buffer): string {
-  const { body } = partsOf(raw);
-  const lines = body.split("\r\n").length;
-  return `("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" ${Buffer.byteLength(body, "latin1")} ${lines} NIL NIL NIL NIL)`;
+  const { body, fields } = partsOf(raw);
+  const parts = mimePartsOf(raw);
+  if (parts.length === 0) return leafStructureOf(fields, body);
+  const contentType = headerValue(fields.get("content-type"));
+  const subtype = contentType.value.split("/")[1] ?? "mixed";
+  return `(${parts.map((part) => leafStructureOf(part.fields, part.body)).join("")} ${quoted(subtype.toUpperCase())} (${quoted("BOUNDARY")} ${quoted(contentType.params.get("boundary"))}) NIL NIL NIL)`;
+}
+
+/** The section a `BODY.PEEK[...]` item names, when it names a body part's bytes rather than header fields. */
+function bodyPartSection(item: string): string | undefined {
+  const section = /^BODY(?:\.PEEK)?\[([^\]]*)\]/i.exec(item)?.[1];
+  return section === undefined || /^HEADER/i.test(section) || /\.MIME$/i.test(section) ? undefined : section;
 }
 
 /** The answer to one `BODY.PEEK[...]` item, named as the server returns it (`BODY[...]`, no origin octet). */
@@ -152,9 +211,15 @@ function bodySection(item: string, raw: Buffer): string | undefined {
   if (!match) return undefined;
   const section = match[1] ?? "";
   const { header, body, fields } = partsOf(raw);
+  const parts = mimePartsOf(raw);
+  const partMatch = /^(\d+)(\.MIME)?$/i.exec(section);
   let text: string;
   const fieldList = /^HEADER\.FIELDS \(([^)]*)\)$/i.exec(section);
-  if (fieldList) {
+  if (partMatch && parts.length > 0) {
+    const part = parts[Number(partMatch[1]) - 1];
+    if (!part) return undefined;
+    text = partMatch[2] ? part.header : part.body;
+  } else if (fieldList) {
     const names = (fieldList[1] ?? "").split(/\s+/).filter(Boolean);
     text =
       names
@@ -197,17 +262,22 @@ function inRange(uid: number, set: string, maxUid: number): boolean {
 }
 
 /**
- * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and one
- * text/plain part per message, configurable capabilities, a fixed delay before every response and a log of every
- * command verb it received. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
+ * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and messages of
+ * one part or of one level of `multipart/*` parts, configurable capabilities, a fixed delay before every response, a
+ * log of every command verb it received and of every body part a FETCH read. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
  * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH, UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
- * (with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
+ * (whole or partial, `N` and `N.MIME` of a multipart message; with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
  * LOGOUT. Another client's expunge or move is pushed to an idling connection as VANISHED (QRESYNC enabled) or EXPUNGE,
  * a delivery as EXISTS.
  */
 export class FakeImapServer {
   /** Every command verb received, in order (`UID FETCH` is logged as `FETCH`). */
   readonly commands: string[] = [];
+  /**
+   * Every body part section a FETCH read (header fields and MIME headers aside), in order, with the octet count a
+   * partial fetch asked for.
+   */
+  readonly bodyFetches: Array<{ path: string; uid: number; section: string; length?: number }> = [];
   /** Command verbs answered with `NO` instead of their result. */
   readonly refusedVerbs = new Set<string>();
   private readonly folders = new Map<string, ServerFolder>();
@@ -274,6 +344,20 @@ export class FakeImapServer {
     const targetUid = this.deliver(target, [...message.flags], message.raw);
     this.expunge(path, uid);
     return targetUid;
+  }
+
+  /**
+   * The folder rebuilt by the server: a new UIDVALIDITY, and its messages renumbered from `firstUid` in their order.
+   * An idling connection hears nothing.
+   */
+  resetUidValidity(path: string, firstUid: number): void {
+    const folder = this.folder(path);
+    folder.uidValidity++;
+    folder.messages.forEach((message, index) => {
+      message.uid = firstUid + index;
+    });
+    folder.uidNext = firstUid + folder.messages.length;
+    folder.expunged = [];
   }
 
   /** Replaces a message's flags, as another client's STORE would; raises the folder's mod-sequence. */
@@ -489,6 +573,15 @@ export class FakeImapServer {
             else {
               const section = bodySection(item, message.raw);
               if (section) parts.push(section);
+              const fetchedSection = section ? bodyPartSection(item) : undefined;
+              const length = /<\d+\.(\d+)>$/.exec(item)?.[1];
+              if (fetchedSection !== undefined && session.selected !== undefined)
+                this.bodyFetches.push({
+                  path: session.selected,
+                  uid: message.uid,
+                  section: fetchedSection.toUpperCase(),
+                  ...(length !== undefined ? { length: Number(length) } : {}),
+                });
             }
           }
           if (session.condstore) parts.push(`MODSEQ (${message.modseq})`);

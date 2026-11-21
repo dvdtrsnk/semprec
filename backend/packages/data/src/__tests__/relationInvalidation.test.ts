@@ -18,6 +18,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import type { ItemRow } from "../types.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
 
 describe("relation invalidations", () => {
   let admin: Pool;
@@ -236,18 +237,21 @@ describe("relation invalidations", () => {
           return { uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 };
         },
         async fetchMessagesSince() {
+          return [];
+        },
+        async fetchMessagesBefore() {
           return [
-            {
-              uid: 1,
-              message: {
-                messageId: "<labels@example.test>",
-                envelope: { from: { address: "sender@example.test" } },
-                subject: "Labels",
-                attachments: [],
-                gmailLabels: Array.from({ length: 9 }, (_, i) => `Label ${i}`),
-              },
-            },
+            fakeFetchedMessage(1, {
+              messageId: "<labels@example.test>",
+              envelope: { from: { address: "sender@example.test" } },
+              subject: "Labels",
+              attachments: [],
+              gmailLabels: Array.from({ length: 9 }, (_, i) => `Label ${i}`),
+            }),
           ];
+        },
+        async fetchSnippets() {
+          return new Map();
         },
         async fetchChangesSince() {
           return { flags: [], vanished: [] };

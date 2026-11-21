@@ -142,7 +142,11 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         yield {
           seq: 1,
           uid: 1,
-          envelope: { messageId: "<imap-invite@example.test>", from: [{ address: "olga@example.test" }] },
+          envelope: {
+            messageId: "<imap-invite@example.test>",
+            from: [{ address: "olga@example.test" }],
+            date: new Date(),
+          },
           bodyStructure: {
             type: "multipart/alternative",
             childNodes: [
@@ -234,6 +238,7 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
       await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: setup.emailsId,
           filesDatabaseId: setup.filesId,
           folderRelationPropertyId: setup.folderRelationPropertyId,

@@ -132,6 +132,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
       });
       const received = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property(emailProperties, "folder"),
@@ -286,6 +287,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
       if (!inbox) throw new Error("Missing Inbox");
       return ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),

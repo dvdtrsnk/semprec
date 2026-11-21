@@ -206,6 +206,7 @@ export async function reconcileGmailAccount(
     for (const folderItemId of mappedFolderIds) {
       const result = await ingestEmailMessage(dbClient, {
         arrival,
+        contentState: "full",
         emailsDatabaseId: params.emailsDatabaseId,
         filesDatabaseId: params.filesDatabaseId,
         folderRelationPropertyId: params.folderRelationPropertyId,

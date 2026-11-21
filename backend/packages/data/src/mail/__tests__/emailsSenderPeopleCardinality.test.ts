@@ -114,6 +114,7 @@ async function ingestFrom(
     withTransaction(dataPool, async (client) => {
       const result = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: mail.emailsId,
         filesDatabaseId: mail.filesId,
         folderRelationPropertyId: mail.folderPropertyId,

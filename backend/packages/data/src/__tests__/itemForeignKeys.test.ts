@@ -345,10 +345,10 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "noAction",
     insert: (c, id) =>
-      c.query("INSERT INTO mail_message_meta (item_id, message_id, arrival) VALUES ($1, $2, 'live')", [
-        id,
-        `<${randomUUID()}@example.com>`,
-      ]),
+      c.query(
+        "INSERT INTO mail_message_meta (item_id, message_id, arrival, content_state) VALUES ($1, $2, 'live', 'full')",
+        [id, `<${randomUUID()}@example.com>`],
+      ),
   },
   {
     table: "value_link_sources",

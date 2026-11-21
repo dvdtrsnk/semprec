@@ -151,6 +151,7 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
       const receive = (mailboxItemId: string, folderItemId: string, messageId: string, providerThreadId: string) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property(emailProperties, "folder"),

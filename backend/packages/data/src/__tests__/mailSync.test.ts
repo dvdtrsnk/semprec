@@ -54,7 +54,7 @@ import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/se
 import { NotFoundError, ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import {
-  IMAP_NEW_MESSAGES_PER_PASS,
+  IMAP_FULL_MESSAGES_PER_PASS,
   reconcileImapAccount,
   reconcileImapFolder,
   type ImapFetchedMessage,
@@ -105,6 +105,8 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
+import type { FetchedMessage } from "../mail/providerTypes.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 
 const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
@@ -209,7 +211,8 @@ let chokePoint: ChokePoint;
  */
 const TEST_MAILBOX_ITEM_ID = randomUUID();
 
-type IngestInput = Parameters<typeof ingestEmailMessage>[1];
+/** A full message's ingest input; the IMAP sync tests reach index content through the reconcile. */
+type IngestInput = Extract<Parameters<typeof ingestEmailMessage>[1], { contentState: "full" }>;
 
 function useSeededDatabase(): void {
   beforeEach(async () => {
@@ -278,6 +281,7 @@ async function ingestFixture(
     ).id;
   return (messageId, overrides = {}) => ({
     arrival: "live",
+    contentState: "full",
     emailsDatabaseId: emailsId,
     filesDatabaseId: filesId,
     folderRelationPropertyId,
@@ -412,14 +416,22 @@ async function createOwner(): Promise<{ id: string }> {
   return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
 }
 
-/** An IMAP client over an empty account; every call succeeds and returns nothing. */
+const derivedBackfills = new WeakSet<object>();
+
+/**
+ * An IMAP client over an empty account; every call succeeds and returns nothing. Unless `overrides` gives its own,
+ * `fetchMessagesBefore` serves the messages the client's `fetchMessagesSince` reports, so the backfill of a folder
+ * established at its UIDNEXT ingests them.
+ */
 function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
-  return {
+  const client: ImapMailClient = {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => [],
     selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async () => [],
+    fetchMessagesBefore: async () => [],
+    fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async () => [],
     fetchFlagsChangedSince: async () => [],
@@ -427,10 +439,24 @@ function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     close: async () => {},
     ...overrides,
   };
+  const given: unknown = Reflect.get(overrides, "fetchMessagesBefore");
+  if (typeof given !== "function" || derivedBackfills.has(given)) {
+    const derived = backfillOfFetchedSince(client);
+    derivedBackfills.add(derived);
+    client.fetchMessagesBefore = derived;
+  }
+  return client;
 }
 
-function fetched(uid: number, messageId: string, extra: Partial<ImapFetchedMessage["message"]> = {}) {
-  return { uid, message: { messageId, envelope: { from: { address: "a@x.com" } }, attachments: [], ...extra } };
+/** A fetched message from a@x.com, dated now unless `extra` says otherwise, so that its content is stored in full. */
+function fetched(uid: number, messageId: string, extra: Partial<FetchedMessage> = {}): ImapFetchedMessage {
+  return fakeFetchedMessage(uid, {
+    messageId,
+    envelope: { from: { address: "a@x.com" } },
+    date: new Date(),
+    attachments: [],
+    ...extra,
+  });
 }
 
 /** An IMAP account whose folders hold `counts[path]` messages with UIDs 1..n, honouring `sinceUid` and `limit`. */
@@ -697,7 +723,7 @@ describe("conversation threading", () => {
       const itemId = randomUUID();
       await insertItemsWithIds(client, [itemId]);
       await client.query(
-        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope, arrival) VALUES ($1, $2, $3, $4, '{}', 'live')",
+        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope, arrival, content_state) VALUES ($1, $2, $3, $4, '{}', 'live', 'full')",
         [itemId, messageId, inReplyTo, threadId],
       );
     });
@@ -1078,6 +1104,7 @@ describe("provider_message_id uniqueness convergence", () => {
       messageId: "<fill@x>",
       envelope: {},
       arrival: "live" as const,
+      contentState: "full" as const,
     };
     await withTransaction(pool, async (client) => {
       await insertItemsWithIds(client, [itemId]);
@@ -1598,25 +1625,34 @@ describe("IMAP reconcile core", () => {
     expect(emailRows.map((r) => r.name)).toEqual(["First", "Second"]);
   });
 
-  tenantIt("a UIDVALIDITY change resets folder sync state and forces a full re-fetch", async () => {
+  tenantIt("a UIDVALIDITY change establishes the folder anew and backfills it again from its new UIDNEXT", async () => {
     const params = await reconcileParams();
     await reconcile(twoMessages, params);
 
     const sinceUids: number[] = [];
+    const beforeUids: number[] = [];
     await reconcile(
       fakeImap({
         ...twoMessages,
-        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 0 }),
+        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 1 }),
         fetchMessagesSince: async (_path, sinceUid) => {
           sinceUids.push(sinceUid);
+          return [];
+        },
+        fetchMessagesBefore: async (_path, beforeUid) => {
+          beforeUids.push(beforeUid);
           return [];
         },
       }),
       params,
     );
-    expect(sinceUids).toEqual([1]);
-    const { rows } = await pool.query<{ uidvalidity: string }>("SELECT uidvalidity FROM mail_folder_sync_state");
-    expect(rows[0]?.uidvalidity).toBe("999");
+    // No live fetch: every message the folder holds under the new UIDVALIDITY is the backfill's.
+    expect(sinceUids).toEqual([]);
+    expect(beforeUids).toEqual([2]);
+    const { rows } = await pool.query<Record<string, unknown>>(
+      "SELECT uidvalidity::text, uidnext::text, live_from_uid::text, backfill_below_uid::text FROM mail_folder_sync_state",
+    );
+    expect(rows).toEqual([{ uidvalidity: "999", uidnext: "2", live_from_uid: "2", backfill_below_uid: null }]);
   });
 
   tenantIt(
@@ -1662,9 +1698,9 @@ describe("IMAP reconcile core", () => {
     expect(await folderEdges(params.folderRelationPropertyId)).toBe(1); // one of the two original edges was removed
   });
 
-  tenantIt("a backfill ingests one pass's budget, then resumes after the last ingested UID", async () => {
+  tenantIt("a backfill ingests one pass's budget, newest first, then resumes below the last ingested UID", async () => {
     const params = await reconcileParams();
-    const account = fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_NEW_MESSAGES_PER_PASS + 3 }]);
+    const account = fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_FULL_MESSAGES_PER_PASS + 3 }]);
     const initialSyncCompletedAt = async () =>
       (
         await pool.query<{ initial_sync_completed_at: Date | null; due: boolean }>(
@@ -1674,19 +1710,29 @@ describe("IMAP reconcile core", () => {
         )
       ).rows[0];
 
+    const names = async () =>
+      (
+        await pool.query<{ name: string }>("SELECT properties->>'name' AS name FROM items WHERE database_id = $1", [
+          params.emailsDatabaseId,
+        ])
+      ).rows.map((row) => row.name);
+
     expect(await reconcile(account, params)).toEqual({ ran: true, complete: false });
-    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS);
+    // UIDs 4 and up, the highest ones.
+    expect((await names()).sort()).toEqual(
+      Array.from({ length: IMAP_FULL_MESSAGES_PER_PASS }, (_, index) => `INBOX ${index + 4}`).sort(),
+    );
     expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: null, due: true });
 
     expect(await reconcile(account, params)).toEqual({ ran: true, complete: true });
-    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS + 3);
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_FULL_MESSAGES_PER_PASS + 3);
     expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: expect.any(Date), due: false });
   });
 
   tenantIt("a pass syncs the inbox before folders listed ahead of it", async () => {
     const params = await reconcileParams();
     const account = fakeImapAccount([
-      { path: "Archive", count: IMAP_NEW_MESSAGES_PER_PASS },
+      { path: "Archive", count: IMAP_FULL_MESSAGES_PER_PASS },
       { path: "INBOX", specialUse: "\\Inbox", count: 2 },
     ]);
 
@@ -1696,7 +1742,7 @@ describe("IMAP reconcile core", () => {
       [params.emailsDatabaseId],
     );
     expect(rows.map((row) => row.name)).toEqual(["INBOX 1", "INBOX 2"]);
-    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS);
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_FULL_MESSAGES_PER_PASS);
   });
 
   tenantIt(
@@ -1849,7 +1895,7 @@ describe("Gmail reconcile core", () => {
 describe("Graph reconcile core", () => {
   useSeededDatabase();
 
-  const change = (id: string, message: Partial<ImapFetchedMessage["message"]> = {}): GraphChangedMessage => ({
+  const change = (id: string, message: Partial<FetchedMessage> = {}): GraphChangedMessage => ({
     id,
     parentFolderId: "f1",
     removed: false,
@@ -2028,7 +2074,7 @@ describe("message arrival: live and backfill", () => {
     async () => {
       const params = await reconcileParams();
       const account = new FakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox" }]);
-      const history = Array.from({ length: IMAP_NEW_MESSAGES_PER_PASS + 2 }, (_, index) => `<history-${index}@x>`);
+      const history = Array.from({ length: IMAP_FULL_MESSAGES_PER_PASS + 2 }, (_, index) => `<history-${index}@x>`);
       for (const messageId of history) account.deliver("INBOX", rawMessage(messageId, new Date()));
 
       expect(await reconcileImap(account.client(), params)).toEqual({ ran: true, complete: false });
@@ -2267,6 +2313,7 @@ describe("mail sync job error handling", () => {
             await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
             await upsertMailMessageMeta(client, {
               arrival: "live",
+              contentState: "full",
               itemId: message.id,
               mailboxItemId: mailbox.id,
               messageId: "<move-job@example.test>",
@@ -2483,6 +2530,7 @@ describe("mail sync job error handling", () => {
               await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
               await upsertMailMessageMeta(client, {
                 arrival: "live",
+                contentState: "full",
                 itemId: message.id,
                 mailboxItemId: mailbox.id,
                 messageId: "<baseline@example.test>",
@@ -2506,6 +2554,7 @@ describe("mail sync job error handling", () => {
                     uidvalidity: validity,
                     uidnext: path === "Source" ? "1" : "50",
                     liveFromUid: path === "Source" ? "1" : "50",
+                    backfillBelowUid: null,
                     highestmodseq: null,
                     messageCount: "0",
                   });
@@ -2605,6 +2654,8 @@ describe("mail sync job error handling", () => {
                 listFolders: unexpected,
                 selectFolder: unexpected,
                 fetchMessagesSince: unexpected,
+                fetchMessagesBefore: unexpected,
+                fetchSnippets: unexpected,
                 fetchChangesSince: unexpected,
                 fetchAllUids: unexpected,
                 fetchFlagsChangedSince: unexpected,
@@ -2660,7 +2711,8 @@ describe("mail sync job error handling", () => {
                 highestModSeq: null,
                 messages: 0,
               }),
-              fetchMessagesSince: async (path) => (path === "Source" ? [{ uid: 7, message: observedMessage }] : []),
+              fetchMessagesSince: async (path) =>
+                path === "Source" ? [fakeFetchedMessage(7, { ...observedMessage, date: new Date() })] : [],
               fetchChangesSince: async () => null,
               fetchAllUids: async () => [7, 27],
               setMessageFlag: async () => {
@@ -2919,7 +2971,7 @@ describe("mail sync job error handling", () => {
           ? client.listFolders()
           : stage === "select"
             ? client.selectFolder("INBOX")
-            : client.fetchMessagesSince("INBOX", 1, 10);
+            : client.fetchMessagesSince("INBOX", 1, 10).then(([message]) => message?.fetchContent());
       expectSafeImapFailure(await rejectionOf(work), secret);
     },
   );
@@ -2978,7 +3030,7 @@ describe("mail sync job error handling", () => {
       yield {
         seq: 1,
         uid: 1,
-        envelope: { messageId: "<privacy-storage@example.test>" },
+        envelope: { messageId: "<privacy-storage@example.test>", date: new Date() },
         bodyStructure: { type: "application/pdf", part: "1", disposition: "attachment" },
       };
     });
@@ -3250,7 +3302,7 @@ describe("bounded IMAP sync passes", () => {
   tenantIt("an unfinished backfill queues the next pass with its batch, a finished one does not", async () => {
     const mailbox = await createSyncMailbox();
     const imap = () =>
-      fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_NEW_MESSAGES_PER_PASS + 1 }]);
+      fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_FULL_MESSAGES_PER_PASS + 1 }]);
 
     await runSync(mailbox, { createImapClient: async () => imap() });
     expect(await queuedSyncJobs(mailbox)).toBe("1");
@@ -3878,11 +3930,12 @@ describe("ImapFlowMailClient", () => {
   it("never calls messageFlagsAdd while fetching message bodies in the background", async () => {
     const raw = fakeImapFlow();
     const fetchedMessages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    const content = await fetchedMessages[0]!.fetchContent();
 
     // Proves the fetch reached a real message body (`download` was called), so no flag mutation is not
     // merely an empty fetch.
     expect(fetchedMessages).toHaveLength(1);
-    expect(fetchedMessages[0]!.message.bodyText).toBeDefined();
+    expect(content.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
   });
@@ -3987,16 +4040,17 @@ describe("ImapFlowMailClient", () => {
     });
 
     const [fetched] = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
-    expect(fetched!.message.bodyText).toBe("");
+    const content = await fetched!.fetchContent();
+    expect(content.bodyText).toBe("");
     const chunks: Buffer[] = [];
-    for await (const chunk of await fetched!.message.attachments[0]!.openStream()) chunks.push(chunk as Buffer);
+    for await (const chunk of await content.attachments[0]!.openStream()) chunks.push(chunk as Buffer);
     expect(Buffer.concat(chunks)).toHaveLength(0);
   });
 
   describe("attachment download fallback", () => {
     const attachmentStream = async (raw: ImapFlow): Promise<Readable> => {
       const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
-      return await messages[0]!.message.attachments[0]!.openStream();
+      return await (await messages[0]!.fetchContent()).attachments[0]!.openStream();
     };
     function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
       return (async function* () {
@@ -4350,8 +4404,13 @@ describe("mail flag write-back", () => {
           { path: "INBOX", specialUse: "\\Inbox" },
           { path: "Archive", specialUse: "\\Archive" },
         ],
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
-        fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
+        selectFolder: async (path) => ({
+          uidvalidity: 1,
+          uidnext: path === "INBOX" ? 2 : 3,
+          highestModSeq: null,
+          messages: 1,
+        }),
+        fetchMessagesSince: async (path) => [fetched(path === "INBOX" ? 1 : 2, message.messageId, message)],
         fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       });
       await reconcile(initial);
@@ -4475,9 +4534,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPass = knownUidPass({
-      fetchMessagesSince: async () => [
-        { uid: 1, message: { messageId: "<obs@x>", envelope: {}, attachments: [], flags: [] } },
-      ],
+      fetchMessagesSince: async () => [fetched(1, "<obs@x>", { envelope: {}, flags: [] })],
       ...overrides,
     });
     await reconcileImapFolder(pool, firstPass, params);

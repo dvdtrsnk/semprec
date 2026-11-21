@@ -254,6 +254,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
             withTransaction(runtime, (client) =>
               ingestEmailMessage(client, {
                 arrival: "live",
+                contentState: "full",
                 emailsDatabaseId: emails,
                 filesDatabaseId: ids.filesDatabaseId,
                 folderRelationPropertyId: folderProperty.id,

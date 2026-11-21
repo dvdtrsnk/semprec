@@ -1002,6 +1002,7 @@ describe("item routes", () => {
             const item = await createItemWithClient(client, { databaseId: emails.id, properties: {} });
             await upsertMailMessageMeta(client, {
               arrival: "live",
+              contentState: "full",
               itemId: item.id,
               mailboxItemId: mailbox.id,
               messageId,

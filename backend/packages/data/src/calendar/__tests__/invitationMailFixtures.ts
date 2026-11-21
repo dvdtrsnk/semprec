@@ -126,6 +126,7 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
             arrival: "live",
+            contentState: "full",
             emailsDatabaseId: world.databases.emails!,
             filesDatabaseId: world.databases.files!,
             folderRelationPropertyId: world.properties.emailFolder,

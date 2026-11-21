@@ -103,6 +103,7 @@ describe("historical mail links for newly claimed addresses", () => {
       withTransaction(runtime, async (client) => {
         const message = await ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderPropertyId,

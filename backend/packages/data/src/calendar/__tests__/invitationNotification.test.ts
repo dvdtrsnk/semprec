@@ -112,6 +112,7 @@ async function receive(world: World, messageId: string, text: string, arrival: M
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
         arrival,
+        contentState: "full",
         emailsDatabaseId: world.databases.emails!,
         filesDatabaseId: world.databases.files!,
         folderRelationPropertyId: world.properties.emailFolder,

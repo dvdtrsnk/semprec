@@ -212,19 +212,21 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
-  transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every
-  attachment's bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) are fetched with no transaction
-  open and no guard held; the writes then run in short transactions: a prepare transaction (Folder items, each
-  folder's sync state), one transaction per folder batch, one for the flag write-back confirmations (the IMAP
-  `STORE`s run before it, outside any transaction) and a final one (account activity, the next pass, `ok`
-  status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
+  transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
+  message's body parts and attachment bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) and every index
+  message's snippet are fetched with no transaction open and no guard held; the writes then run in short
+  transactions: a prepare transaction (Folder items, each folder's sync state), one transaction per folder batch
+  (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
+  write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
+  activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
   batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
   from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
   cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
 - On a CONDSTORE server the folder list carries each folder's STATUS (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ,
   MESSAGES), inline where the server offers LIST-STATUS and otherwise one STATUS per folder. A folder whose four
-  values equal its `mail_folder_sync_state` (`message_count` included) is skipped: no SELECT, no fetch, no write
-  transaction. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
+  values equal its `mail_folder_sync_state` (`message_count` included) skips its live step: no SELECT, no fetch, no
+  write transaction. The STATUS tells nothing of the backfill, so a folder whose backfill is unfinished still runs
+  its backfill step. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
   STOREs); the new-UID search runs only when UIDNEXT passed the cursor, the flag fetch only when HIGHESTMODSEQ moved
   (always without CONDSTORE), and the vanished check only when UIDNEXT or the message count differs from the stored
   ones. The folder list is fetched on every pass: it is how an added or removed folder shows, and it brings the
@@ -246,10 +248,35 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
   move keeps its item. A target UID left beyond the pass's budget makes the move a removal and a new item in the
   next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
-- An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
-  inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
-  unfinished pass requests a rerun of itself in its final transaction, leaves the account due at once and keeps
-  `initial_sync_completed_at` unset, so the backfill of a large mailbox is many passes of small batches.
+- IMAP cursors, per folder in `mail_folder_sync_state`. When the folder's state is established (its first pass, or
+  the first after a UIDVALIDITY change, which `resetForUidvalidityChange` clears it for) the selected UIDNEXT becomes
+  `live_from_uid`, the live cursor `uidnext` and `backfill_below_uid` (`NULL` for a UIDNEXT of 1). Every UID at or
+  above `uidnext` is new; every UID from 1 below `backfill_below_uid` still awaits the backfill; `backfill_below_uid`
+  `NULL` with `live_from_uid` set means the folder's backfill is done. The two ranges never meet: the backfill only
+  covers UIDs the folder held when its state was established.
+- Order of a pass. First every folder's live step, the inbox first: the UIDs from `uidnext` up, lowest first, in one
+  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` after
+  the last ingested UID. Then every folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`,
+  highest (newest) first, in write transactions of at most 50 messages, each moving `backfill_below_uid` down to the
+  lowest UID it wrote; the batch that writes the folder's lowest UID sets it `NULL`. New mail is therefore ingested
+  before older history and never waits for a backfill.
+- Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
+  `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
+  as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
+  is two steps: a light `UID FETCH` (UID, flags, ENVELOPE, BODYSTRUCTURE, the threading and delivery headers,
+  Gmail labels) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
+  (`listKnownMailMessageIds`); only after that a full message's body parts are downloaded and its attachments
+  spooled, and every index message's snippet part is read in one partial `UID FETCH … BODY.PEEK[<part>]<0.2048>` per
+  distinct part (`fetchSnippets`, decoded by `mail/imapSnippet.ts`). A known message downloads nothing; a known one
+  whose meta row is gone by the batch's write (removed meanwhile) ends the batch there, unwritten, for a later pass.
+  A pass that leaves new messages or any folder's backfill behind requests a rerun of itself in its final
+  transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset; it is set by the first
+  pass that ends with every folder's backfill done.
+- Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
+  against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
+  before its backfill is simply not found by it. A UIDVALIDITY change removes every old-UID edge in the live step;
+  the backfill of the same pass re-adds each message it reaches under its new UID by Message-ID (without download),
+  and the final transaction trashes only an item left with no folder edge.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
@@ -294,6 +321,25 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   (`calendar/invitationIngestAction.ts` still writes the Invitations item of a backfilled message, unnotified, as a
   calendar's initial sync does). Person linking, thread link rules, invitation reply application and search indexing
   run for backfilled mail too.
+
+### Content: full and index
+
+- Ingest stamps every new message's `mail_message_meta.content_state` once (`mail/mailContentState.ts`,
+  `mailContentStateOf`); a message ingested again keeps it, a send claim is `full`. A message is `full` when it is
+  `live`, or when its Date is at most `MAIL_FULL_CONTENT_WINDOW_DAYS` (90) before the account's `connected_at`;
+  older history, and history without a Date, is `index`. Gmail and Graph store every message `full`.
+- `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
+  blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment
+  text folded into the search text. IMAP records the attachment's body part id in `mail_attachments.provider_part`.
+- `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
+  `preview_text` from the snippet (the first 2 KiB of the IMAP text part, else HTML part); each attachment as a
+  `mail_attachments` row with `blob_id` NULL, its `provider_part` and the size BODYSTRUCTURE gives, and no Files item
+  and no edge; the search text is subject, sender, snippet and attachment filenames. A row has a blob or a provider
+  part (`mail_attachments_stored_or_located_check`).
+- Readers of `mail_attachments` treat a NULL `blob_id` as bytes not stored: the thread detail answers each message's
+  `contentState` and `preview`, and each attachment's `attachmentId` and `stored` (`blobId`, `fileItemId` NULL); the
+  removal impact counts only stored attachments as kept; a Semp attachment reference has no blob; calendar parts
+  are read from stored ones only. A forward copies only attachments that have a Files item.
 
 ### Live sync root and hosted lifecycles
 

@@ -850,6 +850,7 @@ describe("durable Semp thread history", () => {
             const ingest = async (name: string, references: string[]) => {
               const { itemId } = await ingestEmailMessage(client, {
                 arrival: "live",
+                contentState: "full",
                 emailsDatabaseId: ids.emailsDatabaseId,
                 filesDatabaseId: ids.filesDatabaseId,
                 folderRelationPropertyId: ids.folderRelationPropertyId,

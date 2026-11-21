@@ -93,6 +93,7 @@ describe("mail preview and ingest time on ingest and send", () => {
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId,

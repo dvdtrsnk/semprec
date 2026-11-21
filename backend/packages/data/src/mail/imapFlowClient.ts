@@ -7,14 +7,18 @@ import type {
   StatusObject,
 } from "imapflow";
 import { Readable } from "node:stream";
-import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
-import {
-  AttachmentCapExceededError,
-  FlagFetchCapExceededError,
-  MAX_ATTACHMENT_BYTES,
-  type FetchedMessage,
-} from "./providerTypes.js";
-import type { ClassifiedAttachment } from "./attachments.js";
+import type {
+  ImapFetchedMessage,
+  ImapFolderRef,
+  ImapFolderSelection,
+  ImapMailClient,
+  ImapMessageContent,
+  ImapSnippetPart,
+} from "./imapReconcile.js";
+import { AttachmentCapExceededError, FlagFetchCapExceededError, MAX_ATTACHMENT_BYTES } from "./providerTypes.js";
+import type { ClassifiedAttachment, MailAttachmentPart } from "./attachments.js";
+import { decodeBodyPartPrefix, IMAP_SNIPPET_BYTES } from "./imapSnippet.js";
+import { htmlToPlainText } from "./mailPlainText.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
@@ -83,6 +87,35 @@ export function headerValues(headers: Array<{ name: string; value: string }>, na
 /** Every `<...>` token across all `References:` headers, in order. */
 function parseReferences(headers: Array<{ name: string; value: string }>): string[] {
   return headerValues(headers, "references").flatMap((value) => value.match(/<[^<>]+>/g) ?? []);
+}
+
+/** What BODYSTRUCTURE tells of an attachment part. */
+function attachmentPartOf(node: MessageStructureObject): MailAttachmentPart {
+  return {
+    filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? "attachment",
+    contentType: node.type,
+    contentId: node.id ? node.id.replace(/^<|>$/g, "") : null,
+    disposition: node.disposition === "inline" ? "inline" : "attachment",
+  };
+}
+
+/** A part's decoded size from its encoded one: base64 carries 3 bytes in 4 characters, with a CRLF after every 76. */
+function decodedSizeOf(node: MessageStructureObject): number {
+  const size = node.size ?? 0;
+  return node.encoding?.toLowerCase() === "base64" ? Math.floor(((size * 76) / 78) * 0.75) : size;
+}
+
+/** UIDs as an IMAP sequence set (`1:3,7`). */
+function uidSet(uids: number[]): string {
+  const sorted = [...new Set(uids)].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  for (let i = 0; i < sorted.length;) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j]! + 1) j++;
+    ranges.push(i === j ? String(sorted[i]) : `${sorted[i]}:${sorted[j]}`);
+    i = j + 1;
+  }
+  return ranges.join(",");
 }
 
 export interface MimeTree {
@@ -455,14 +488,10 @@ export class ImapFlowMailClient implements ImapMailClient {
     html: string | undefined,
   ): ClassifiedAttachment[] {
     const candidates = parts.map((node): ClassifiedAttachment => {
-      const contentId = node.id ? node.id.replace(/^<|>$/g, "") : null;
-      const disposition: "attachment" | "inline" = node.disposition === "inline" ? "inline" : "attachment";
       const partId = node.part ?? "1";
       return {
-        filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? "attachment",
-        contentType: node.type,
-        contentId,
-        disposition,
+        ...attachmentPartOf(node),
+        providerPart: partId,
         // Lazy and streamed from the socket into storage, never buffered whole.
         openStream: () => this.openAttachmentStream(uid, partId),
       };
@@ -473,63 +502,81 @@ export class ImapFlowMailClient implements ImapMailClient {
     );
   }
 
-  private async parseFetchedMessage(raw: FetchMessageObject): Promise<FetchedMessage> {
+  /** The light half of a message: everything a FETCH of its envelope, flags, headers and BODYSTRUCTURE gives. */
+  private parseFetchedMessage(path: string, raw: FetchMessageObject): ImapFetchedMessage {
     const envelope = raw.envelope;
     const tree = raw.bodyStructure
       ? walkBodyStructure(raw.bodyStructure)
       : { attachmentParts: [] as MessageStructureObject[] };
     const headerList = parseHeaderBlock(raw.headers);
-
-    // A single-part root may have no `.part`; `download()` special-cases "1" for that.
-    const bodyText = tree.textPlainPart ? await this.downloadText(raw.uid, tree.textPlainPart.part ?? "1") : undefined;
-    const bodyHtml = tree.textHtmlPart ? await this.downloadText(raw.uid, tree.textHtmlPart.part ?? "1") : undefined;
-
+    const snippetNode = tree.textPlainPart ?? tree.textHtmlPart;
     return {
-      messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
-      inReplyTo: envelope?.inReplyTo ?? null,
-      references: parseReferences(headerList),
-      subject: envelope?.subject,
-      envelope: {
-        from: toEnvelopeAddress(envelope?.from?.[0]),
-        to: toEnvelopeAddressList(envelope?.to),
-        cc: toEnvelopeAddressList(envelope?.cc),
-        bcc: toEnvelopeAddressList(envelope?.bcc),
-        ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
+      uid: raw.uid,
+      message: {
+        messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
+        inReplyTo: envelope?.inReplyTo ?? null,
+        references: parseReferences(headerList),
+        subject: envelope?.subject,
+        envelope: {
+          from: toEnvelopeAddress(envelope?.from?.[0]),
+          to: toEnvelopeAddressList(envelope?.to),
+          cc: toEnvelopeAddressList(envelope?.cc),
+          bcc: toEnvelopeAddressList(envelope?.bcc),
+          ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
+        },
+        date: envelope?.date,
+        providerMessageId: raw.emailId ?? null,
+        gmailLabels: raw.labels ? [...raw.labels] : undefined,
+        deliveredToHeaders: headerValues(headerList, "delivered-to"),
+        xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
+        envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
+        bulkHeaders: {
+          listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
+          listId: headerValues(headerList, "list-id")[0] ?? null,
+          precedence: headerValues(headerList, "precedence")[0] ?? null,
+          autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
+        },
+        isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
+        flags: raw.flags ? [...raw.flags] : undefined,
       },
-      bodyText,
-      bodyHtml,
-      date: envelope?.date,
-      attachments: this.classifyAttachmentParts(raw.uid, tree.attachmentParts, bodyHtml),
-      providerMessageId: raw.emailId ?? null,
-      gmailLabels: raw.labels ? [...raw.labels] : undefined,
-      deliveredToHeaders: headerValues(headerList, "delivered-to"),
-      xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
-      envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
-      bulkHeaders: {
-        listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
-        listId: headerValues(headerList, "list-id")[0] ?? null,
-        precedence: headerValues(headerList, "precedence")[0] ?? null,
-        autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
-      },
-      isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
-      flags: raw.flags ? [...raw.flags] : undefined,
+      // Without the HTML no `cid:` reference can be checked, so with an HTML part every inline part that has a
+      // Content-ID counts as a rendering asset.
+      attachments: tree.attachmentParts
+        .filter((node) => !(tree.textHtmlPart && node.disposition === "inline" && node.id))
+        .map((node) => ({
+          ...attachmentPartOf(node),
+          providerPart: node.part ?? "1",
+          byteSize: decodedSizeOf(node),
+        })),
+      ...(snippetNode
+        ? {
+            snippetPart: {
+              // A single-part message's body is its TEXT section; imapflow's download does the same for part "1".
+              section: snippetNode.part ?? "TEXT",
+              ...(snippetNode.encoding ? { encoding: snippetNode.encoding.toLowerCase() } : {}),
+              ...(snippetNode.parameters?.charset ? { charset: snippetNode.parameters.charset } : {}),
+              html: snippetNode === tree.textHtmlPart,
+            },
+          }
+        : {}),
+      fetchContent: () => this.fetchMessageContent(path, raw.uid, tree),
     };
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
+  private async fetchMessageContent(path: string, uid: number, tree: MimeTree): Promise<ImapMessageContent> {
     await this.ensureSelected(path);
-    // "*" in a range can include one message below sinceUid on an empty-range edge case.
-    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
-    const uids = (found === false ? [] : found)
-      .filter((uid) => uid >= sinceUid)
-      .sort((a, b) => a - b)
-      .slice(0, limit);
-    const [first] = uids;
-    if (first === undefined) return [];
-    // The batch is a prefix of every UID from sinceUid up, so the range holds exactly these messages.
-    const range = `${first}:${uids[uids.length - 1]}`;
+    // A single-part root may have no `.part`; `download()` special-cases "1" for that.
+    const bodyText = tree.textPlainPart ? await this.downloadText(uid, tree.textPlainPart.part ?? "1") : undefined;
+    const bodyHtml = tree.textHtmlPart ? await this.downloadText(uid, tree.textHtmlPart.part ?? "1") : undefined;
+    return { bodyText, bodyHtml, attachments: this.classifyAttachmentParts(uid, tree.attachmentParts, bodyHtml) };
+  }
+
+  /** Light FETCH of `uids`, which must be every UID of the folder between the lowest and the highest of them. */
+  private async fetchLight(path: string, uids: number[]): Promise<ImapFetchedMessage[]> {
+    if (uids.length === 0) return [];
+    const range = `${Math.min(...uids)}:${Math.max(...uids)}`;
     const raws: FetchMessageObject[] = [];
-    // No `source: true` (see walkBodyStructure); only bounded metadata is fetched here.
+    // No `source: true` and no body section (see walkBodyStructure); only bounded metadata is fetched here.
     // `labels: true` is a no-op on non-Gmail servers.
     for await (const raw of this.providerStream(() =>
       this.client.fetch(
@@ -556,11 +603,64 @@ export class ImapFlowMailClient implements ImapMailClient {
     )) {
       raws.push(raw);
     }
-    // Parsed after the FETCH ends: imapflow keeps it open until every response is read, so a
-    // body download inside the loop would queue behind it forever. Buffered responses are small.
-    const results: ImapFetchedMessage[] = [];
-    for (const raw of raws) results.push({ uid: raw.uid, message: await this.parseFetchedMessage(raw) });
-    return results;
+    return raws.map((raw) => this.parseFetchedMessage(path, raw));
+  }
+
+  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
+    await this.ensureSelected(path);
+    // "*" in a range can include one message below sinceUid on an empty-range edge case.
+    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
+    // A prefix of every UID from sinceUid up, so the range between its ends holds exactly these messages.
+    const uids = (found === false ? [] : found)
+      .filter((uid) => uid >= sinceUid)
+      .sort((a, b) => a - b)
+      .slice(0, limit);
+    return (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
+  }
+
+  async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedMessage[]> {
+    if (beforeUid <= 1) return [];
+    await this.ensureSelected(path);
+    const found = await this.providerCall(() => this.client.search({ uid: `1:${beforeUid - 1}` }, { uid: true }));
+    // The highest UIDs below beforeUid; no UID between their ends is missing from them, and none is added later.
+    const uids = (found === false ? [] : found)
+      .filter((uid) => uid < beforeUid)
+      .sort((a, b) => b - a)
+      .slice(0, limit);
+    return (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
+  }
+
+  /** One partial FETCH per distinct section, of the first `IMAP_SNIPPET_BYTES` octets only. */
+  async fetchSnippets(
+    path: string,
+    requests: ReadonlyArray<{ uid: number; part: ImapSnippetPart }>,
+  ): Promise<Map<number, string>> {
+    const snippets = new Map<number, string>();
+    if (requests.length === 0) return snippets;
+    await this.ensureSelected(path);
+    const bySection = new Map<string, Map<number, ImapSnippetPart>>();
+    for (const { uid, part } of requests) {
+      const group = bySection.get(part.section) ?? new Map<number, ImapSnippetPart>();
+      group.set(uid, part);
+      bySection.set(part.section, group);
+    }
+    for (const [section, parts] of bySection) {
+      const key = section.toLowerCase();
+      for await (const raw of this.providerStream(() =>
+        this.client.fetch(
+          uidSet([...parts.keys()]),
+          { uid: true, bodyParts: [{ key, start: 0, maxLength: IMAP_SNIPPET_BYTES }] },
+          { uid: true },
+        ),
+      )) {
+        const part = parts.get(raw.uid);
+        const bytes = raw.bodyParts?.get(key);
+        if (!part || !bytes) continue;
+        const text = decodeBodyPartPrefix(bytes.subarray(0, IMAP_SNIPPET_BYTES), part.encoding, part.charset);
+        snippets.set(raw.uid, part.html ? htmlToPlainText(text) : text);
+      }
+    }
+    return snippets;
   }
 
   /**

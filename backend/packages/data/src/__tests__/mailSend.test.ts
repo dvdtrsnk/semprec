@@ -421,6 +421,7 @@ describe("drafts and authorized SMTP sending", () => {
       const reconciled = await withTransaction(pool, async (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
@@ -539,6 +540,7 @@ describe("drafts and authorized SMTP sending", () => {
       await withTransaction(operationPool, async (client) => {
         await ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
@@ -1057,6 +1059,7 @@ describe("drafts and authorized SMTP sending", () => {
         });
         const received = await ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,

@@ -261,6 +261,7 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
           withTransaction(runtime, (client) =>
             ingestEmailMessage(client, {
               arrival: "live",
+              contentState: "full",
               emailsDatabaseId: world.databases.emails!,
               filesDatabaseId: world.databases.files!,
               folderRelationPropertyId: world.properties.emailFolder,

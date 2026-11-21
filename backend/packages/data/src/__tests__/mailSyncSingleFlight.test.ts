@@ -333,10 +333,12 @@ describe("one mail sync pass per mailbox", () => {
     const folderCalls = account
       .callsSince(followUpCalls)
       .filter((call) => call.startsWith("selectFolder") || call.startsWith("fetch"));
-    // The rest of the running pass (Archive), then the follow-up, which only looks at INBOX.
+    // The rest of the running pass (Archive), then the follow-up, which only looks at INBOX and downloads the new
+    // message's content.
     expect(folderCalls.filter((call) => !call.endsWith("Archive"))).toEqual([
       "selectFolder INBOX",
       "fetchMessagesSince INBOX",
+      "fetchContent INBOX",
       "fetchFlagsChangedSince INBOX",
     ]);
     // Eight client calls of 80 ms (three to finish the running pass, five of the follow-up) plus database work.

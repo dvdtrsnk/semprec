@@ -148,6 +148,7 @@ async function ingest(options: IngestOptions = {}, target = world): Promise<Test
       withTransaction(data, async (client) => {
         const result = await ingestEmailMessage(client, {
           arrival: options.arrival ?? "live",
+          contentState: "full",
           emailsDatabaseId: databaseId("emails", target),
           filesDatabaseId: databaseId("files", target),
           folderRelationPropertyId: target.properties.emailFolder,
@@ -344,6 +345,7 @@ describe("the thread project triage task (issue gh-1872)", () => {
           withTransaction(data, async (client) => {
             await ingestEmailMessage(client, {
               arrival: "live",
+              contentState: "full",
               emailsDatabaseId: databaseId("emails"),
               filesDatabaseId: databaseId("files"),
               folderRelationPropertyId: world.properties.emailFolder,

@@ -280,6 +280,7 @@ describe("mail.thread.proposeTask (issue gh-2035)", () => {
         );
         await upsertMailMessageMeta(client, {
           arrival: "live",
+          contentState: "full",
           itemId: email.id,
           mailboxItemId: null,
           messageId: `<${randomUUID()}@example.test>`,

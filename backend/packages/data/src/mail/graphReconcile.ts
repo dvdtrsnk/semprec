@@ -172,6 +172,7 @@ export async function reconcileGraphAccount(
 
     const result = await ingestEmailMessage(dbClient, {
       arrival: mailArrivalOf({ reportedNew, date: change.message.date, connectedAt }),
+      contentState: "full",
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
       folderRelationPropertyId: params.folderRelationPropertyId,

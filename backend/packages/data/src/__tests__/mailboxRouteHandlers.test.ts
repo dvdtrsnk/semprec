@@ -100,7 +100,14 @@ describe("mailbox routes", () => {
       const ingest = async (mailboxItemId: string, messageId: string) => {
         const email = await cp.createItem({ databaseId: emails.id, properties: {} });
         await withTransaction(runtime, (client) =>
-          upsertMailMessageMeta(client, { arrival: "live", itemId: email.id, mailboxItemId, messageId, envelope: {} }),
+          upsertMailMessageMeta(client, {
+            arrival: "live",
+            contentState: "full",
+            itemId: email.id,
+            mailboxItemId,
+            messageId,
+            envelope: {},
+          }),
         );
       };
       await ingest(id, "<one@example.test>");

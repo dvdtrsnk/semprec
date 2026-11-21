@@ -1,4 +1,4 @@
-import { requireAffectedRows, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 
 export interface MailFolderSyncStateRow {
   itemId: string;
@@ -11,6 +11,11 @@ export interface MailFolderSyncStateRow {
   lastError: string | null;
   /** UIDs at or above it arrived after the folder's state was established; `null` until its first reconcile. */
   liveFromUid: string | null;
+  /**
+   * Every UID from 1 below it still awaits the backfill, which runs from it downwards. `null` once the backfill is
+   * done, and while the state is not established (`liveFromUid` is `null` then too).
+   */
+  backfillBelowUid: string | null;
 }
 
 type MailFolderSyncStateDbRow = {
@@ -22,6 +27,7 @@ type MailFolderSyncStateDbRow = {
   last_full_reconcile_at: Date | null;
   last_error: string | null;
   live_from_uid: string | null;
+  backfill_below_uid: string | null;
 };
 
 function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
@@ -34,11 +40,13 @@ function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
     lastFullReconcileAt: row.last_full_reconcile_at?.toISOString() ?? null,
     lastError: row.last_error,
     liveFromUid: row.live_from_uid,
+    backfillBelowUid: row.backfill_below_uid,
   };
 }
 
 const COLUMNS =
-  "item_id, uidvalidity, uidnext, highestmodseq, message_count, last_full_reconcile_at, last_error, live_from_uid";
+  "item_id, uidvalidity, uidnext, highestmodseq, message_count, last_full_reconcile_at, last_error, live_from_uid, " +
+  "backfill_below_uid";
 
 export async function ensureMailFolderSyncState(client: Queryable, itemId: string): Promise<MailFolderSyncStateRow> {
   const inserted = await client.query<MailFolderSyncStateDbRow>(
@@ -75,8 +83,8 @@ export async function lockMailFolderSyncState(
 }
 
 /**
- * A `UIDVALIDITY` change invalidates the folder's whole UID cache. Resets `uidnext`/`highestmodseq` so the next pass
- * runs a full reconcile keyed by `Message-ID`, and `live_from_uid` so that reconcile establishes it anew.
+ * A `UIDVALIDITY` change invalidates the folder's whole UID cache. Resets the cursors, `live_from_uid` and
+ * `backfill_below_uid`, so the reconcile establishes the folder anew and backfills it again, keyed by `Message-ID`.
  */
 export async function resetForUidvalidityChange(
   client: Queryable,
@@ -85,7 +93,7 @@ export async function resetForUidvalidityChange(
 ): Promise<void> {
   const result = await client.query(
     `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, message_count = NULL, last_error = NULL,
-       live_from_uid = NULL
+       live_from_uid = NULL, backfill_below_uid = NULL
      WHERE item_id = $1`,
     [itemId, newUidvalidity],
   );
@@ -99,14 +107,17 @@ export interface RecordReconcileInput {
   highestmodseq?: string | null;
   messageCount: string;
   liveFromUid: string;
+  backfillBelowUid: string | null;
 }
 
-export async function recordReconcile(client: Queryable, input: RecordReconcileInput): Promise<void> {
-  const result = await client.query(
+/** Returns the row as written, which the folder's next write in the same pass must still find. */
+export async function recordReconcile(client: Queryable, input: RecordReconcileInput): Promise<MailFolderSyncStateRow> {
+  const result = await client.query<MailFolderSyncStateDbRow>(
     `UPDATE mail_folder_sync_state
      SET uidvalidity = $2, uidnext = $3, highestmodseq = $4, message_count = $5, last_full_reconcile_at = now(),
-         last_error = NULL, live_from_uid = $6
-     WHERE item_id = $1`,
+         last_error = NULL, live_from_uid = $6, backfill_below_uid = $7
+     WHERE item_id = $1
+     RETURNING ${COLUMNS}`,
     [
       input.itemId,
       input.uidvalidity,
@@ -114,9 +125,25 @@ export async function recordReconcile(client: Queryable, input: RecordReconcileI
       input.highestmodseq ?? null,
       input.messageCount,
       input.liveFromUid,
+      input.backfillBelowUid,
     ],
   );
   requireAffectedRows(result, `the reconcile of folder ${input.itemId}`);
+  return mapRow(requireSingleRow(result.rows, `the reconcile of folder ${input.itemId}`));
+}
+
+/** Moves the backfill cursor down after a committed batch; `null` ends the folder's backfill. Returns the row. */
+export async function recordBackfill(
+  client: Queryable,
+  itemId: string,
+  backfillBelowUid: string | null,
+): Promise<MailFolderSyncStateRow> {
+  const result = await client.query<MailFolderSyncStateDbRow>(
+    `UPDATE mail_folder_sync_state SET backfill_below_uid = $2 WHERE item_id = $1 RETURNING ${COLUMNS}`,
+    [itemId, backfillBelowUid],
+  );
+  requireAffectedRows(result, `the backfill of folder ${itemId}`);
+  return mapRow(requireSingleRow(result.rows, `the backfill of folder ${itemId}`));
 }
 
 export async function recordFolderSyncError(client: Queryable, itemId: string, error: string): Promise<void> {

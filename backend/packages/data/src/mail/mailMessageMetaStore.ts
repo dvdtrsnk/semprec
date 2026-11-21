@@ -19,6 +19,7 @@ import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { propagateThreadAttachmentLinks, repointThreadAttachmentLinks } from "./threadAttachmentLinks.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { MAIL_ARRIVALS, type MailArrival } from "./mailArrival.js";
+import { MAIL_CONTENT_STATES, type MailContentState } from "./mailContentState.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -59,6 +60,8 @@ export interface MailMessageMetaRow {
   isBulk: boolean;
   /** Decided once at ingest (mail/mailArrival.ts); a send claim is `live`. */
   arrival: MailArrival;
+  /** Decided once at ingest (mail/mailContentState.ts); a send claim is `full`. */
+  contentState: MailContentState;
 }
 
 type MailMessageMetaDbRow = {
@@ -78,6 +81,7 @@ type MailMessageMetaDbRow = {
   ingested_at: Date | null;
   is_bulk: boolean;
   arrival: string;
+  content_state: string;
 };
 
 function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
@@ -98,12 +102,13 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
     ingestedAt: row.ingested_at,
     isBulk: row.is_bulk,
     arrival: assertKnownValue(MAIL_ARRIVALS, row.arrival, "mail arrival"),
+    contentState: assertKnownValue(MAIL_CONTENT_STATES, row.content_state, "mail content state"),
   };
 }
 
 const COLUMNS =
   'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
-  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk, arrival";
+  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk, arrival, content_state";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -125,6 +130,8 @@ export interface UpsertMailMessageMetaInput {
   isBulk?: boolean;
   /** Written on insert only; a conflicting upsert keeps the stored value. */
   arrival: MailArrival;
+  /** Written on insert only; a conflicting upsert keeps the stored value. */
+  contentState: MailContentState;
 }
 
 /**
@@ -151,8 +158,8 @@ export async function upsertMailMessageMeta(
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
                                      delivered_to_address, message_kind, dsn_original_message_id, mailbox_item_id, preview_text, ingested_at, is_bulk,
-                                     arrival)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
+                                     arrival, content_state)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (mailbox_item_id, message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
@@ -179,6 +186,7 @@ export async function upsertMailMessageMeta(
       input.ingestedAt ?? null,
       input.isBulk ?? false,
       input.arrival,
+      input.contentState,
     ],
   );
   return mapRow(requireSingleRow(rows, "mail_message_meta row"));
@@ -205,6 +213,20 @@ export async function getMailMessageMetaByMailboxAndMessageId(
     [mailboxItemId, messageId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/** Which of `messageIds` the mailbox already holds a message for. */
+export async function listKnownMailMessageIds(
+  client: Queryable,
+  mailboxItemId: string,
+  messageIds: readonly string[],
+): Promise<Set<string>> {
+  if (messageIds.length === 0) return new Set();
+  const { rows } = await client.query<{ message_id: string }>(
+    "SELECT message_id FROM mail_message_meta WHERE mailbox_item_id = $1 AND message_id = ANY($2::text[])",
+    [mailboxItemId, [...messageIds]],
+  );
+  return new Set(rows.map((row) => row.message_id));
 }
 
 export async function getMailMessageMetaByProviderMessageId(

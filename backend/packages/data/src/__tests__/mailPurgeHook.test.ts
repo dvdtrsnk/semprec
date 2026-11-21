@@ -198,6 +198,7 @@ async function ingest(
   const references = input.references ?? [];
   const { itemId } = await ingestEmailMessage(client, {
     arrival: "live",
+    contentState: "full",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,
@@ -665,6 +666,7 @@ describe("mail purge hook (gh-1691)", () => {
         // The store's own writer, without a thread.
         await upsertMailMessageMeta(client, {
           arrival: "live",
+          contentState: "full",
           itemId: item.id,
           mailboxItemId: mailbox.id,
           messageId: "<unthreaded@x>",

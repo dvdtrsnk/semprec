@@ -1765,17 +1765,25 @@ GRANT SELECT(gmail_watch_email_address) ON TABLE public.mail_account_sync_state 
 CREATE TABLE public.mail_attachments (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     message_item_id uuid NOT NULL,
-    blob_id uuid NOT NULL,
+    blob_id uuid,
     filename text NOT NULL,
     content_type text NOT NULL,
     content_id text,
     disposition text NOT NULL,
     byte_size bigint NOT NULL,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text])))
+    provider_part text,
+    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text]))),
+    CONSTRAINT mail_attachments_stored_or_located_check CHECK (((blob_id IS NOT NULL) OR (provider_part IS NOT NULL)))
 );
 
 COMMENT ON TABLE public.mail_attachments IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_attachments.blob_id IS 'The stored bytes; NULL for an attachment of an index message, recorded by its metadata alone.';
+
+COMMENT ON COLUMN public.mail_attachments.provider_part IS 'Where the provider holds the bytes (the IMAP body part id); NULL where the adapter records none.';
+
+COMMENT ON COLUMN public.mail_attachments.byte_size IS 'Bytes stored; for an attachment without stored bytes, the size the provider''s body structure gives.';
 
 ALTER TABLE ONLY public.mail_attachments
     ADD CONSTRAINT mail_attachments_pkey PRIMARY KEY (id);
@@ -1842,12 +1850,15 @@ CREATE TABLE public.mail_folder_sync_state (
     last_full_reconcile_at timestamp with time zone,
     last_error text,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    live_from_uid bigint
+    live_from_uid bigint,
+    backfill_below_uid bigint
 );
 
 COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
 
 COMMENT ON COLUMN public.mail_folder_sync_state.live_from_uid IS 'The folder''s UIDNEXT when its state was first established or reset after a UIDVALIDITY change; a message with a UID at or above it arrived live.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_below_uid IS 'Every UID from 1 up to, not including, this value still awaits the backfill, which runs from it downwards. Set to live_from_uid when the state is established; NULL with live_from_uid set means the backfill is done, NULL with live_from_uid NULL that the state is not established yet.';
 
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_pkey PRIMARY KEY (item_id);
@@ -1899,7 +1910,9 @@ CREATE TABLE public.mail_message_meta (
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
     arrival text NOT NULL,
+    content_state text NOT NULL,
     CONSTRAINT mail_message_meta_arrival_check CHECK ((arrival = ANY (ARRAY['live'::text, 'backfill'::text]))),
+    CONSTRAINT mail_message_meta_content_state_check CHECK ((content_state = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
@@ -1910,6 +1923,8 @@ COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview o
 COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
 
 COMMENT ON COLUMN public.mail_message_meta.arrival IS 'live = new mail after the account connected, backfill = imported history; decided once at ingest.';
+
+COMMENT ON COLUMN public.mail_message_meta.content_state IS 'full = body and attachment bytes stored, index = envelope, preview and attachment metadata only; decided once at ingest.';
 
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);

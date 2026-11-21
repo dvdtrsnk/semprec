@@ -1,6 +1,9 @@
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
 import type { ImapFetchedMessage, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
+import { IMAP_SNIPPET_BYTES } from "../mail/imapSnippet.js";
+import { fakeFetchedMessage } from "./fakeImapMessages.js";
 import type { MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
+import type { FetchedMessage } from "../mail/providerTypes.js";
 import type { WritableImapFlag } from "../mail/messageFlags.js";
 
 interface FakeImapMessage {
@@ -25,7 +28,7 @@ export interface FakeImapAccountOptions {
   latencyMs?: number;
 }
 
-/** One client call the account answered, in order. */
+/** One client call the account answered, or a message content it gave (`fetchContent`), in order. */
 export interface FakeImapCall {
   method: string;
   path?: string;
@@ -122,13 +125,30 @@ export class FakeImapAccount {
           ...(this.options.condstore ? { status: this.selection(folder) } : {}),
         })),
       selectFolder: async (path) => this.selection(this.folder(path)),
-      fetchMessagesSince: async (path, sinceUid, limit) => {
-        const selected = this.folder(path)
-          .messages.filter((message) => message.uid >= sinceUid)
-          .slice(0, limit);
-        const fetched: ImapFetchedMessage[] = [];
-        for (const message of selected) fetched.push({ uid: message.uid, message: await parsed(message) });
-        return fetched;
+      fetchMessagesSince: async (path, sinceUid, limit) =>
+        this.light(
+          path,
+          this.folder(path)
+            .messages.filter((message) => message.uid >= sinceUid)
+            .slice(0, limit),
+        ),
+      fetchMessagesBefore: async (path, beforeUid, limit) =>
+        this.light(
+          path,
+          this.folder(path)
+            .messages.filter((message) => message.uid < beforeUid)
+            .reverse()
+            .slice(0, limit),
+        ),
+      fetchSnippets: async (path, requests) => {
+        const snippets = new Map<number, string>();
+        for (const { uid } of requests) {
+          const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+          if (!message) continue;
+          const text = (await parsed(message)).bodyText ?? "";
+          snippets.set(uid, Buffer.from(text).subarray(0, IMAP_SNIPPET_BYTES).toString("utf8"));
+        }
+        return snippets;
       },
       fetchChangesSince: async () => null,
       fetchAllUids: async (path) => this.folder(path).messages.map((message) => message.uid),
@@ -182,6 +202,8 @@ export class FakeImapAccount {
       listFolders: logged("listFolders", methods.listFolders),
       selectFolder: logged("selectFolder", methods.selectFolder),
       fetchMessagesSince: logged("fetchMessagesSince", methods.fetchMessagesSince),
+      fetchMessagesBefore: logged("fetchMessagesBefore", methods.fetchMessagesBefore),
+      fetchSnippets: logged("fetchSnippets", methods.fetchSnippets),
       fetchChangesSince: logged("fetchChangesSince", methods.fetchChangesSince),
       fetchAllUids: logged("fetchAllUids", methods.fetchAllUids),
       fetchFlagsChangedSince: logged("fetchFlagsChangedSince", methods.fetchFlagsChangedSince),
@@ -191,6 +213,16 @@ export class FakeImapAccount {
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
       close: async () => {},
     };
+  }
+
+  /** The light fetch of `messages`; a message's `fetchContent` is logged as a call too. */
+  private async light(path: string, messages: FakeImapMessage[]): Promise<ImapFetchedMessage[]> {
+    const fetched: ImapFetchedMessage[] = [];
+    for (const message of messages)
+      fetched.push(
+        fakeFetchedMessage(message.uid, await parsed(message), () => this.calls.push({ method: "fetchContent", path })),
+      );
+    return fetched;
   }
 
   private selection(folder: FakeImapFolder) {
@@ -209,7 +241,7 @@ export class FakeImapAccount {
   }
 }
 
-async function parsed(message: FakeImapMessage): Promise<ImapFetchedMessage["message"]> {
+async function parsed(message: FakeImapMessage): Promise<FetchedMessage> {
   const mail = await simpleParser(message.raw);
   const [from] = addressesOf(mail.from);
   return {

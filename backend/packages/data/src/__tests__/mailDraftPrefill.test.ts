@@ -146,6 +146,7 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
     const { db, emailProperties, property } = await schema();
     const input: IngestEmailMessageInput = {
       arrival: "live",
+      contentState: "full",
       emailsDatabaseId: db("emails"),
       filesDatabaseId: db("files"),
       folderRelationPropertyId: property(emailProperties, "folder"),

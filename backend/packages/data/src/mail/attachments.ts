@@ -18,13 +18,26 @@ import { logger } from "./logger.js";
  * `cid:` from the HTML body is a rendering asset (e.g. a signature logo), not a file; each
  * adapter applies that rule while walking its own MIME tree.
  */
-export interface ClassifiedAttachment {
+export interface MailAttachmentPart {
   filename: string;
   contentType: string;
   contentId: string | null;
   disposition: "attachment" | "inline";
+}
+
+/** An attachment of a `full` message, whose bytes ingest stores. */
+export interface ClassifiedAttachment extends MailAttachmentPart {
+  /** Where the provider holds the bytes (the IMAP body part id); absent where the adapter records none. */
+  providerPart?: string;
   /** Lazily opens the decoded byte stream, so attachments are never buffered up front. Called once. */
   openStream(): Promise<Readable> | Readable;
+}
+
+/** An attachment of an `index` message: its metadata only, the bytes left with the provider. */
+export interface IndexedAttachment extends MailAttachmentPart {
+  providerPart: string;
+  /** The size the provider's body structure gives. */
+  byteSize: number;
 }
 
 export interface IngestAttachmentsInput {
@@ -111,8 +124,9 @@ export async function ingestAttachments(
       }
 
       await client.query(
-        `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, content_id, disposition, byte_size,
+                                       provider_part)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           input.messageItemId,
           blob.id,
@@ -121,6 +135,7 @@ export async function ingestAttachments(
           attachment.contentId,
           attachment.disposition,
           byteSize,
+          attachment.providerPart ?? null,
         ],
       );
 
@@ -161,4 +176,31 @@ export async function ingestAttachments(
     }
   }
   return { extractedTexts };
+}
+
+/**
+ * Records each attachment of an index message as a `mail_attachments` row without bytes (`blob_id` NULL), keyed to
+ * the provider's part, with no Files item and no `attachments` edge. Must run in the message-ingest transaction.
+ */
+export async function recordIndexedAttachments(
+  client: PoolClient,
+  messageItemId: string,
+  attachments: readonly IndexedAttachment[],
+): Promise<void> {
+  if (attachments.length === 0) return;
+  await client.query(
+    `INSERT INTO mail_attachments (message_item_id, filename, content_type, content_id, disposition, byte_size, provider_part)
+     SELECT $1::uuid, a.filename, a.content_type, a.content_id, a.disposition, a.byte_size, a.provider_part
+       FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[], $7::text[])
+         AS a(filename, content_type, content_id, disposition, byte_size, provider_part)`,
+    [
+      messageItemId,
+      attachments.map((attachment) => attachment.filename),
+      attachments.map((attachment) => attachment.contentType),
+      attachments.map((attachment) => attachment.contentId),
+      attachments.map((attachment) => attachment.disposition),
+      attachments.map((attachment) => attachment.byteSize),
+      attachments.map((attachment) => attachment.providerPart),
+    ],
+  );
 }

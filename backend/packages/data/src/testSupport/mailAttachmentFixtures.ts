@@ -156,6 +156,7 @@ export async function setupMailAttachmentWorld(runtime: Pool, tenantId: string):
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
             arrival: "live",
+            contentState: "full",
             emailsDatabaseId: databaseId("emails"),
             filesDatabaseId: databaseId("files"),
             folderRelationPropertyId: properties.emailFolder,

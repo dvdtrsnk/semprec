@@ -119,6 +119,7 @@ async function fixture(
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, {
         arrival: "live",
+        contentState: "full",
         itemId: messageItemId,
         mailboxItemId,
         messageId: `<${randomUUID()}@example.test>`,
@@ -153,6 +154,7 @@ async function replaceProviderMessageId(messageItemId: string, mailboxItemId: st
     if (!existing) throw new Error("missing fixture metadata");
     await upsertMailMessageMeta(client, {
       arrival: "live",
+      contentState: "full",
       itemId: existing.itemId,
       mailboxItemId,
       messageId: existing.messageId,
@@ -187,6 +189,7 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
     const messageId = `<${randomUUID()}@example.test>`;
     await upsertMailMessageMeta(client, {
       arrival: "live",
+      contentState: "full",
       itemId: message.id,
       mailboxItemId: mailbox.id,
       messageId,
@@ -209,6 +212,7 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
         uidvalidity: folder.uidValidity,
         uidnext: folder.uidNext,
         liveFromUid: folder.uidNext,
+        backfillBelowUid: null,
         highestmodseq: null,
         messageCount: "0",
       });
@@ -1308,6 +1312,8 @@ describe("mail move intent store", () => {
       listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
       selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [],
+      fetchMessagesBefore: async () => [],
+      fetchSnippets: async () => new Map<number, string>(),
       fetchChangesSince: async () => null,
       fetchAllUids: async () => [23],
       fetchFlagsChangedSince: async () => [],
@@ -1389,6 +1395,7 @@ describe("mail move intent store", () => {
       inTenant((client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: fx.emailsDatabaseId,
           filesDatabaseId: randomUUID(),
           folderRelationPropertyId: fx.folderPropertyId,

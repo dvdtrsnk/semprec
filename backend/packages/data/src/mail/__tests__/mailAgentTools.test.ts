@@ -207,6 +207,7 @@ async function receive(t: MailTenant, options: ReceiveOptions = {}): Promise<str
     };
     const input: IngestEmailMessageInput = {
       arrival: "live",
+      contentState: "full",
       emailsDatabaseId: db("emails"),
       filesDatabaseId: db("files"),
       folderRelationPropertyId: property("folder"),

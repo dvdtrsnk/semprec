@@ -97,6 +97,7 @@ async function mailFixture(tenantId: string) {
       const references = input.references ?? [];
       const { itemId } = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: ids.emailFolderProperty,

@@ -183,6 +183,7 @@ describe("blobs are stored and deduplicated per tenant", () => {
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: ids.filesDatabaseId,
           folderRelationPropertyId: folderProperty.id,

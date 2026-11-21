@@ -37,6 +37,7 @@ import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
 
 const OWN_ADDRESS = "me@example.test";
 const USER_ID = randomUUID();
@@ -66,7 +67,7 @@ const unusedStorage: BlobStorageWriter = {
 /** An IMAP account whose folders hold `count` messages with UIDs 1..n. */
 function providerAccount(): ImapMailClient {
   const countOf = (path: string) => PROVIDER_FOLDERS.find((folder) => folder.path === path)?.count ?? 0;
-  return {
+  const account: ImapMailClient = {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => PROVIDER_FOLDERS.map(({ path, specialUse }) => ({ path, specialUse })),
@@ -75,21 +76,23 @@ function providerAccount(): ImapMailClient {
       Array.from({ length: countOf(path) }, (_, index) => index + 1)
         .filter((uid) => uid >= sinceUid)
         .slice(0, limit)
-        .map((uid) => ({
-          uid,
-          message: {
+        .map((uid) =>
+          fakeFetchedMessage(uid, {
             messageId: `<${path}-${uid}@example.test>`,
             subject: `${path} ${uid}`,
             envelope: { from: { address: "bob@example.test" }, to: [{ address: OWN_ADDRESS }] },
             attachments: [],
-          },
-        })),
+          }),
+        ),
+    fetchMessagesBefore: async (path, beforeUid, limit) => backfillOfFetchedSince(account)(path, beforeUid, limit),
+    fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},
     close: async () => {},
   };
+  return account;
 }
 
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {

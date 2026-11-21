@@ -475,12 +475,14 @@ async function createMailThread(storage: LocalFsBlobStorageWriter) {
       };
       const first = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         ...common,
         messageId,
         bodyText: "REF_MAIL_FIRST_SENTINEL_32",
       });
       const reply = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         ...common,
         messageId: `<${randomUUID()}@example.test>`,
         inReplyTo: messageId,

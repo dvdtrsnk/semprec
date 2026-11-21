@@ -140,6 +140,7 @@ function ingest(
   const references = input.references ?? [];
   return ingestEmailMessage(client, {
     arrival: "live",
+    contentState: "full",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,

@@ -162,6 +162,7 @@ describe("newEmail heartbeat (issue #99)", () => {
       withTransaction(pool, async (client) => {
         const ingestResult = await ingestEmailMessage(client, {
           arrival,
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderProperty.id,
@@ -361,6 +362,7 @@ describe("newEmail heartbeat (issue #99)", () => {
 
     const input = {
       arrival: "live" as const,
+      contentState: "full" as const,
       emailsDatabaseId: emailsId,
       filesDatabaseId: filesId,
       folderRelationPropertyId: folderProperty.id,

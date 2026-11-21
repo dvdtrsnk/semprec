@@ -8,7 +8,7 @@ import { withTransaction } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter, type ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import type { ImapMailClient } from "../mail/imapReconcile.js";
+import { IMAP_FULL_MESSAGES_PER_PASS, type ImapMailClient } from "../mail/imapReconcile.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
@@ -38,10 +38,13 @@ export const noAttachmentStorage: BlobStorageWriter = {
   },
 };
 
-/** A plain-text message from someone else to the fixture account, with a unique Message-ID unless one is given. */
+/**
+ * A plain-text message from someone else to the fixture account, with a unique Message-ID unless one is given, dated
+ * now unless a date is given.
+ */
 export function plainMessage(
   subject: string,
-  options: { messageId?: string; headers?: readonly string[] } = {},
+  options: { messageId?: string; headers?: readonly string[]; date?: Date } = {},
 ): Buffer {
   return Buffer.from(
     [
@@ -49,7 +52,7 @@ export function plainMessage(
       "From: Sender <sender@sender.example.test>",
       `To: ${IMAP_FIXTURE_ACCOUNT}`,
       `Subject: ${subject}`,
-      "Date: Sat, 21 Nov 2026 12:00:00 +0000",
+      `Date: ${(options.date ?? new Date()).toUTCString()}`,
       ...(options.headers ?? []),
       "Content-Type: text/plain; charset=utf-8",
       "",
@@ -61,8 +64,11 @@ export function plainMessage(
 
 export interface ImapMailboxFixture {
   mailboxId: string;
-  /** One `mailAccountSync` run through the production handler, with the given provider client factory. */
-  sync(createImapClient: () => Promise<ImapMailClient>): Promise<void>;
+  /**
+   * One `mailAccountSync` run through the production handler, with the given provider client factory, writing
+   * attachment bytes to `storage` (by default none may be written).
+   */
+  sync(createImapClient: () => Promise<ImapMailClient>, storage?: BlobStorageWriter): Promise<void>;
 }
 
 /** A connected generic IMAP mailbox (item, address, sync state, credential) in the current tenant scope. */
@@ -89,14 +95,14 @@ export async function createImapMailboxFixture(
   });
   return {
     mailboxId,
-    async sync(createImapClient) {
+    async sync(createImapClient, storage = noAttachmentStorage) {
       const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
       await handleSyncMailAccountTask(
         runtime,
         { mailboxItemId: mailboxId },
         { createImapClient },
         moduleIds,
-        noAttachmentStorage,
+        storage,
         undefined,
         limiter,
       );
@@ -185,8 +191,9 @@ export async function createSyncedLoopbackMailbox(
   const port = await server.listen();
   const mailbox = await createImapMailboxFixture(runtime);
   const total = Object.values(options.content).reduce((sum, messages) => sum + messages.length, 0);
-  // A pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` messages.
-  for (let pass = 0; pass <= Math.ceil(total / 10); pass++) await mailbox.sync(async () => account.client());
+  // A pass ingests at most `IMAP_FULL_MESSAGES_PER_PASS` messages in full.
+  for (let pass = 0; pass <= Math.ceil(total / IMAP_FULL_MESSAGES_PER_PASS); pass++)
+    await mailbox.sync(async () => account.client());
   const overWire = () => connectLoopbackImapClient(port);
   await mailbox.sync(overWire);
   return {

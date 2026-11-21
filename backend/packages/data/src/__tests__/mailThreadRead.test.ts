@@ -120,6 +120,7 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
       const result = await withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),

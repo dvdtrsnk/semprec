@@ -15,7 +15,7 @@ export interface MailboxRemovalImpact {
   drafts: number;
   /** Threads whose every non-deleted message is one of this mailbox's. */
   threads: number;
-  /** The stored files are kept. */
+  /** The stored files are kept; an index message's attachment, with no stored bytes, is not one. */
   attachmentsKept: number;
 }
 
@@ -92,7 +92,7 @@ SELECT
    ))::int AS threads,
   (SELECT count(*)
    FROM mail_attachments a
-   WHERE a.message_item_id IN (SELECT email_id FROM mailbox_emails))::int AS "attachmentsKept"
+   WHERE a.blob_id IS NOT NULL AND a.message_item_id IN (SELECT email_id FROM mailbox_emails))::int AS "attachmentsKept"
 `;
 
 /** `null` for an unknown, foreign (hidden by RLS) or soft-deleted mailbox, or no Mailboxes database. */

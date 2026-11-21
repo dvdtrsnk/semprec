@@ -79,6 +79,7 @@ describe("itemRelationFilter related-item lookup (issue #262)", () => {
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
           arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderProperty.id,

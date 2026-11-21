@@ -82,6 +82,7 @@ describe("sender-known filter", () => {
           await withTransaction(data, (client) =>
             upsertMailMessageMeta(client, {
               arrival: "live",
+              contentState: "full",
               itemId: item.id,
               mailboxItemId: null,
               messageId: `<${randomUUID()}@example.test>`,

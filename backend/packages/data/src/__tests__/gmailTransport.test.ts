@@ -199,6 +199,7 @@ describe("Gmail API mail transport (issue #1637)", () => {
       );
       await upsertMailMessageMeta(client, {
         arrival: "live",
+        contentState: "full",
         itemId: item.id,
         mailboxItemId: mailboxId,
         messageId,
@@ -206,6 +207,7 @@ describe("Gmail API mail transport (issue #1637)", () => {
       });
       const ingested = await ingestEmailMessage(client, {
         arrival: "live",
+        contentState: "full",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: folderProperty.id,
