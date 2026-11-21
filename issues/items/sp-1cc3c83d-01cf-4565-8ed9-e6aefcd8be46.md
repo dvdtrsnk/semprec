@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-1cc3c83d-01cf-4565-8ed9-e6aefcd8be46"
 title: "[internet-accounts] Decide an Email whose last IMAP folder copy vanished even when the pass that removed it ended early"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-85e6cbc4-7de7-4385-81a9-a493c421b817"
 assignees: []
 milestone: null
 createdAt: "2026-11-21T21:27:33.606Z"
-updatedAt: "2026-11-21T21:27:49.442Z"
-closedAt: null
+updatedAt: "2026-11-21T21:33:02.328Z"
+closedAt: "2026-11-21T21:33:02.328Z"
 source: null
 approval: {"specSha256":"501df13ecda71e9b4d7cca4b2a1ef864e00b88be6564790726c33160f9a09a97","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-21T21:27:49.442Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"8485b1d23843ba6203375204add0aabe4cf49a1c","at":"2026-11-21T21:33:02.328Z"}
 ---
 **Blocked by:** none
 **Model tier:** high
