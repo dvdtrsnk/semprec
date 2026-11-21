@@ -218,6 +218,14 @@ class CalendarUseCasesTest {
         assertEquals(listOf("create Pay|null|k3"), repository.calls)
     }
 
+    @Test fun `a new item's title is created on one line`() = runTest {
+        val repository = RecordingCalendarRepository()
+        val schedule = CalendarSchedule(DAY, null, null, null)
+        val draft = NewCalendarItem(EVENT, "Lunch\nwith Eva\n", schedule, null, null, submissionKey = "k")
+        CreateCalendarItem(repository)(draft)
+        assertEquals(listOf("create Lunch with Eva|null|k"), repository.calls)
+    }
+
     @Test fun `a refusal by the server stays a failure and is not a form that breaks the rules`() = runTest {
         val repository = RecordingCalendarRepository(createAnswer = RepositoryResult.Failure(FailureKind.REJECTED))
         val schedule = CalendarSchedule(DAY, null, null, null)

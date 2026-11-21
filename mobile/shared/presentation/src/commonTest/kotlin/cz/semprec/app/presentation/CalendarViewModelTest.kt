@@ -575,6 +575,19 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `asking to delete the selected item closes its menu and keeps the question`() = runTest(dispatcher) {
+        serve(MEETING)
+        val vm = loaded()
+        act(vm, CalendarAction.Gesture.Select("meeting"))
+        assertEquals("meeting", vm.state.value.selectedItemId)
+        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
+        assertNull(vm.state.value.selectedItemId)
+        assertEquals("meeting", vm.state.value.pendingDelete?.itemId)
+        act(vm, CalendarAction.Edit.ConfirmDelete)
+        assertTrue("delete meeting" in repository.calls)
+        vm.close()
+    }
+
     @Test fun `a holiday cannot be deleted and a confirm without a request does nothing`() = runTest(dispatcher) {
         serve(HOLIDAY)
         val vm = loaded()

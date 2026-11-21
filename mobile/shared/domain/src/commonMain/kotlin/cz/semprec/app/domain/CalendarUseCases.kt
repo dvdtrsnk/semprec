@@ -93,7 +93,7 @@ sealed interface NewCalendarItemOutcome {
 class CreateCalendarItem(private val repository: CalendarRepository) {
     suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<NewCalendarItemOutcome> {
         val kindFits = draft.kind == CalendarEntryKind.EVENT || draft.kind == CalendarEntryKind.TASK
-        val title = draft.title.trim()
+        val title = singleLineTitle(draft.title)
         if (!kindFits || title.isEmpty() || !draft.optionsFit()) {
             return RepositoryResult.Content(NewCalendarItemOutcome.BreaksRules)
         }

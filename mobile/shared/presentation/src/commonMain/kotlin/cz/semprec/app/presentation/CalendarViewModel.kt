@@ -146,10 +146,16 @@ class CalendarViewModel internal constructor(
         }
     }
 
+    /** Asks before deleting; the item's menu closes, so the question is not shown on top of it. */
     private fun requestDelete(itemId: String) {
         val entry = entryOf(itemId)
         if (entry != null && entry.isEditable) {
-            update { it.copy(pendingDelete = CalendarDeleteRequest(itemId, entry.title, entry.kind.toItemKind())) }
+            update {
+                it.copy(
+                    pendingDelete = CalendarDeleteRequest(itemId, entry.title, entry.kind.toItemKind()),
+                    selectedItemId = null,
+                )
+            }
         }
     }
 

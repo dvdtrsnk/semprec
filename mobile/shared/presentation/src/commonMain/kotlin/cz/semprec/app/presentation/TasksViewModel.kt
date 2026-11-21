@@ -14,6 +14,7 @@ import cz.semprec.app.domain.TaskRepository
 import cz.semprec.app.domain.TaskScope
 import cz.semprec.app.domain.WorkItem
 import cz.semprec.app.domain.map
+import cz.semprec.app.domain.singleLineTitle
 import cz.semprec.app.domain.then
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -78,8 +79,8 @@ class TasksViewModel internal constructor(
             TasksAction.Retry -> load(silent = false)
             TasksAction.Refresh -> load(silent = true)
             is TasksAction.ToggleDone -> toggleDone(action.taskId)
-            is TasksAction.Rename -> rename(action.taskId, action.title.trim())
-            is TasksAction.Add -> add(action.title.trim())
+            is TasksAction.Rename -> rename(action.taskId, singleLineTitle(action.title))
+            is TasksAction.Add -> add(singleLineTitle(action.title))
             is TasksAction.OpenDetails -> emit(TasksEffect.OpenDetails(action.taskId))
             TasksAction.DismissNotice -> update { it.copy(notice = null) }
         }
