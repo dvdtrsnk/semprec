@@ -1,7 +1,6 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { formatOccurrenceId } from "./eventOccurrenceId.js";
 import { MAX_OCCURRENCES_PER_SERIES } from "./eventOccurrences.js";
@@ -177,7 +176,7 @@ export async function readSubscribedEventTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const database = await getDatabaseByModuleId(client, SUBSCRIBED_EVENTS_MODULE_ID);
+  const database = await context.lookups.database(SUBSCRIBED_EVENTS_MODULE_ID);
   if (!database) return [];
   const { rows } = await client.query<StoredRow>(SUBSCRIBED_EVENT_CANDIDATES_SQL, [
     database.id,

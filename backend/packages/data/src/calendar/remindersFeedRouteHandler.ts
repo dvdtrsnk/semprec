@@ -4,7 +4,6 @@ import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getCalendarClock, type CalendarClock } from "../calendarTime.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -16,6 +15,7 @@ import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
 import { ALL_DAY_REMINDER_HOUR, computeReminderFireAt, type ReminderInput } from "./reminderFireTime.js";
 import { shiftDays } from "./recurrenceExpansion.js";
+import { createCalendarTimelineLookups, type CalendarTimelineLookups } from "./timelineLookups.js";
 import { toTimelineItems, type StoredRow } from "./timelineRead.js";
 import type { CalendarTimelineItem } from "./timelineSources.js";
 import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
@@ -128,6 +128,7 @@ async function readReminders(
   databaseId: string,
   window: FeedWindow,
   clock: CalendarClock,
+  lookups: CalendarTimelineLookups,
 ): Promise<UpcomingReminder[]> {
   const { rows: candidates } = await client.query<StoredRow>(CANDIDATES_SQL, [
     databaseId,
@@ -141,8 +142,10 @@ async function readReminders(
   const rows = kind === "event" ? candidates.filter((row) => !isEventSeriesRow(row.properties)) : candidates;
   const propertiesById = new Map(rows.map((row) => [row.id, row.properties]));
   const items = [
-    ...(await toTimelineItems(client, kind, databaseId, rows, { timezone: clock.zone })),
-    ...(kind === "event" ? await readSyncedSeriesOccurrences(client, databaseId, window, clock, propertiesById) : []),
+    ...(await toTimelineItems(client, kind, databaseId, rows, { timezone: clock.zone, lookups })),
+    ...(kind === "event"
+      ? await readSyncedSeriesOccurrences(client, databaseId, window, clock, lookups, propertiesById)
+      : []),
   ];
   if (items.length === 0) return [];
   const notifyByCalendar =
@@ -182,6 +185,7 @@ async function readSyncedSeriesOccurrences(
   eventsDatabaseId: string,
   window: FeedWindow,
   clock: CalendarClock,
+  lookups: CalendarTimelineLookups,
   propertiesById: Map<string, Record<string, unknown>>,
 ): Promise<CalendarTimelineItem[]> {
   const series = (await readLiveEventSeries(client, eventsDatabaseId, window.lastDay)).filter(
@@ -193,6 +197,7 @@ async function readSyncedSeriesOccurrences(
     from: window.firstDay,
     to: window.lastDay,
     timezone: clock.zone,
+    lookups,
   });
   return entries.flatMap(({ seriesId, occurrenceDate: _date, overridden, ...item }) => {
     // An overridden entry is a stored override (a candidate already) or the series row shown once.
@@ -256,12 +261,13 @@ async function readUpcomingReminders(client: PoolClient, interval: FeedInterval)
   const clock = await getCalendarClock(client);
   const window = readWindow(interval, clock);
   const reminders: UpcomingReminder[] = [];
+  const lookups = createCalendarTimelineLookups(client);
   for (const [kind, moduleId] of [
     ["event", EVENTS_MODULE_ID],
     ["task", TASKS_MODULE_ID],
   ] as const) {
-    const database = await getDatabaseByModuleId(client, moduleId);
-    if (database) reminders.push(...(await readReminders(client, kind, database.id, window, clock)));
+    const database = await lookups.database(moduleId);
+    if (database) reminders.push(...(await readReminders(client, kind, database.id, window, clock, lookups)));
   }
   const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   reminders.sort((a, b) => byCodePoint(a.fireAt, b.fireAt) || byCodePoint(a.key, b.key));

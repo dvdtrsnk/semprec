@@ -13,6 +13,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createMaterializeEventOccurrenceRouteHandler } from "../eventOccurrenceRouteHandlers.js";
 import { createRespondToInvitationRouteHandler } from "../invitationRouteHandlers.js";
+import { createCalendarTimelineLookups } from "../timelineLookups.js";
 import { readCalendarTimeline, readTentativeEventIds } from "../timelineRead.js";
 import { createInvitation } from "./invitationFixtures.js";
 import { hideSleepInCalendar } from "./hideSleepInCalendar.js";
@@ -277,7 +278,7 @@ describe("attendance of an Event in the calendar timeline (issue gh-2008)", () =
       expect(entries.find((item) => item.id === own)?.attendance).toBeNull();
       // Asked directly for the other tenant's Event, the reader finds no invitation of that tenant: row-level security hides it.
       const tentative = await withTransaction(runtime, (client) =>
-        readTentativeEventIds(client, [foreignEventId, own]),
+        readTentativeEventIds(client, [foreignEventId, own], createCalendarTimelineLookups(client)),
       );
       expect([...tentative]).toEqual([]);
     });
@@ -299,7 +300,7 @@ describe("attendance of an Event in the calendar timeline (issue gh-2008)", () =
               };
             },
           });
-          return [...(await readTentativeEventIds(observed, ids))];
+          return [...(await readTentativeEventIds(observed, ids, createCalendarTimelineLookups(observed)))];
         });
       const results = [
         await answer([]),

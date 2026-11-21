@@ -681,10 +681,20 @@ export async function countItemsGrouped(
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
+  return getItemsByIdsAmong(client, itemIds, await visibleDatabaseIds(client));
+}
+
+/** `getItemsByIds` with the `visibleDatabaseIds` a caller reading several batches already read. */
+export async function getItemsByIdsAmong(
+  client: Queryable,
+  itemIds: string[],
+  databaseIds: readonly string[],
+): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
-    [itemIds, await visibleDatabaseIds(client)],
+    [itemIds, databaseIds],
   );
   return rows.map(mapItemRow);
 }

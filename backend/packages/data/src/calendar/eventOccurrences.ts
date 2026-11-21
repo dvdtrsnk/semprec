@@ -27,7 +27,7 @@ import type { CalendarEventOccurrence, CalendarTimelineContext, CalendarTimeline
 /** Earliest first. */
 export const MAX_OCCURRENCES_PER_SERIES = 100;
 
-export type EventOccurrenceRange = Pick<CalendarTimelineContext, "from" | "to" | "timezone">;
+export type EventOccurrenceRange = Pick<CalendarTimelineContext, "from" | "to" | "timezone" | "lookups">;
 
 /**
  * Candidates have an object `recurrence` or a string `recurrenceRule` and are not occurrence items;

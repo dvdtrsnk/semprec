@@ -22,6 +22,7 @@ import { formatOccurrenceId } from "../calendar/eventOccurrenceId.js";
 import { expandEventOccurrences, readLiveEventSeries } from "../calendar/eventOccurrences.js";
 import { eventRecurrenceOccursOn } from "../calendar/eventRecurrenceRule.js";
 import { readEventSeries } from "../calendar/eventSeries.js";
+import { createCalendarTimelineLookups } from "../calendar/timelineLookups.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
@@ -201,6 +202,7 @@ async function listVirtualOccurrences(
     from: clock.instantToWallClock(new Date(recording.startMs)).date,
     to,
     timezone: clock.zone,
+    lookups: createCalendarTimelineLookups(client),
   });
   return entries
     .flatMap((entry) => {

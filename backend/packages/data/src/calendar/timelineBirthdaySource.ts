@@ -1,11 +1,9 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { PEOPLE_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { readCalendarCatalog } from "./calendarCatalog.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
-import { readSystemCalendarId } from "./systemCalendar.js";
 import type { CalendarBirthdayTimelineItem, CalendarTimelineContext } from "./timelineSources.js";
 
 const BIRTHDAYS_SYSTEM_KEY = "birthdays";
@@ -38,7 +36,7 @@ export async function readBirthdayTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarBirthdayTimelineItem[]> {
-  const people = await getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
+  const people = await context.lookups.database(PEOPLE_MODULE_ID);
   if (!people) return [];
   const { rows } = await client.query<PersonRow>(PEOPLE_WITH_BIRTHDAY_SQL, [people.id]);
 
@@ -65,8 +63,8 @@ export async function readBirthdayTimelineItems(
   }
   if (entries.length === 0) return [];
 
-  const template = (await readCalendarCatalog(client))("calendar.birthday.title");
-  const calendarId = await readSystemCalendarId(client, BIRTHDAYS_SYSTEM_KEY);
+  const template = (await readCalendarCatalog(await context.lookups.locale()))("calendar.birthday.title");
+  const calendarId = (await context.lookups.calendarIds()).systemCalendarIds.get(BIRTHDAYS_SYSTEM_KEY) ?? null;
   return entries.map(({ personId, personName, year, date }) => ({
     kind: "birthday",
     id: `birthday:${personId}:${year}`,

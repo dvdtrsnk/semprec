@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import type { WallClock } from "../calendarTime.js";
 import type { EventTaskCounts, EventTaskRow, EventTaskState } from "../tasks/taskStateInEvent.js";
+import type { CalendarTimelineLookups } from "./timelineLookups.js";
 import { readBirthdayTimelineItems } from "./timelineBirthdaySource.js";
 import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
@@ -185,6 +186,7 @@ export interface CalendarTimelineContext {
   at: Date;
   /** `false` for a caller without access to the sensitive sleep databases (an ungranted run, an `/mcp` session). */
   includeSleep: boolean;
+  lookups: CalendarTimelineLookups;
 }
 
 export interface CalendarTimelineSource {

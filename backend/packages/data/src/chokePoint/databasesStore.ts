@@ -169,6 +169,29 @@ export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: s
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
+/**
+ * `getDatabaseByModuleId` for several module ids in one statement, failing the same way on several matches. A module
+ * id without a database is absent.
+ */
+export async function getDatabasesByModuleIds(
+  client: PoolClient,
+  ownerModuleIds: readonly string[],
+): Promise<Map<string, DatabaseRow>> {
+  const { rows } = await client.query<DatabaseDbRow>(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = ANY($1::text[]) AND system`,
+    [ownerModuleIds],
+  );
+  const byModule = new Map<string, DatabaseRow>();
+  for (const moduleId of new Set(ownerModuleIds)) {
+    const matches = rows.filter((row) => row.owner_module_id === moduleId);
+    if (matches.length > 1) {
+      throw new Error(`Module id '${moduleId}' resolves to ${matches.length} system databases, expected at most one`);
+    }
+    if (matches[0]) byModule.set(moduleId, mapDatabaseRow(matches[0]));
+  }
+  return byModule;
+}
+
 /** Every non-archived database, including system databases, which no project-scoped query sees. */
 export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
   const { rows } = await client.query<DatabaseDbRow>(

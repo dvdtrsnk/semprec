@@ -1,7 +1,6 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import {
   resolveSleepNights,
@@ -11,6 +10,7 @@ import {
 } from "../sleep/resolveSleepNights.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
+import type { CalendarTimelineLookups } from "./timelineLookups.js";
 import type { CalendarSleepTimelineItem, CalendarTimelineContext } from "./timelineSources.js";
 
 interface SleepItemRow {
@@ -65,10 +65,11 @@ function dayBefore(date: string): string {
 
 async function liveItems(
   client: PoolClient,
-  moduleId: string,
+  lookups: CalendarTimelineLookups,
+  moduleId: typeof SLEEP_SETTINGS_MODULE_ID | typeof SLEEP_PLANS_MODULE_ID | typeof SLEEP_NIGHTS_MODULE_ID,
   nights: { from: string; to: string } | null = null,
 ): Promise<{ databaseId: string; rows: SleepItemRow[] }> {
-  const database = await getDatabaseByModuleId(client, moduleId);
+  const database = await lookups.database(moduleId);
   if (!database) return { databaseId: "", rows: [] };
   const { rows } = await client.query<SleepItemRow>(
     `SELECT id, properties FROM items
@@ -95,8 +96,8 @@ function parseRows<T>(databaseId: string, rows: SleepItemRow[], schema: z.ZodTyp
 }
 
 /** Of several settings items none is chosen. */
-async function readSettings(client: PoolClient): Promise<SleepSettingsItem | null> {
-  const { databaseId, rows } = await liveItems(client, SLEEP_SETTINGS_MODULE_ID);
+async function readSettings(client: PoolClient, lookups: CalendarTimelineLookups): Promise<SleepSettingsItem | null> {
+  const { databaseId, rows } = await liveItems(client, lookups, SLEEP_SETTINGS_MODULE_ID);
   if (rows.length > 1) {
     logger.warn(
       { databaseId, count: rows.length },
@@ -137,17 +138,20 @@ export async function readSleepTimelineItems(
   context: CalendarTimelineContext,
 ): Promise<CalendarSleepTimelineItem[]> {
   if (!context.includeSleep) return [];
-  const settings = await readSettings(client);
+  const settings = await readSettings(client, context.lookups);
   if (settings === null || settings.properties.enabled !== true || settings.properties.showInCalendar !== true)
     return [];
 
   const from = dayBefore(context.from);
-  const planItems = await liveItems(client, SLEEP_PLANS_MODULE_ID);
+  const planItems = await liveItems(client, context.lookups, SLEEP_PLANS_MODULE_ID);
   const plans: SleepPlan[] = parseRows(planItems.databaseId, planItems.rows, planProperties).map(({ id, value }) => ({
     id,
     ...value,
   }));
-  const nightItems = await liveItems(client, SLEEP_NIGHTS_MODULE_ID, { from, to: context.to });
+  const nightItems = await liveItems(client, context.lookups, SLEEP_NIGHTS_MODULE_ID, {
+    from,
+    to: context.to,
+  });
   const nights: SleepNightException[] = parseRows(nightItems.databaseId, nightItems.rows, nightProperties).map(
     ({ value }) => value,
   );

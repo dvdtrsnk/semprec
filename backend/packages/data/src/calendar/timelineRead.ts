@@ -1,10 +1,5 @@
 import type { PoolClient } from "pg";
-import { getTenantUserLocale } from "../auth/usersStore.js";
 import { eventEnd, getCalendarClock, type WallClock } from "../calendarTime.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { getItemsByIds } from "../chokePoint/itemsStore.js";
-import { toManifestLocale } from "../manifest/catalogResolution.js";
-import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
@@ -16,6 +11,7 @@ import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
 import { shiftDays } from "./recurrenceExpansion.js";
 import { readEventTimeZone, scheduleInTenantZone } from "./syncedEventFields.js";
+import { createCalendarTimelineLookups, type CalendarTimelineLookups } from "./timelineLookups.js";
 import { attachTaskInEventState } from "./timelineTaskInEvent.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
@@ -170,36 +166,6 @@ async function readEdges(
   return rows;
 }
 
-/** `readOnlyCalendarIds`: the live account calendars the provider does not let the user write to. */
-export async function readCalendarIds(client: PoolClient): Promise<{
-  defaultCalendarId: string | null;
-  tasksCalendarId: string | null;
-  readOnlyCalendarIds: ReadonlySet<string>;
-}> {
-  const calendars = await getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
-  if (!calendars) return { defaultCalendarId: null, tasksCalendarId: null, readOnlyCalendarIds: new Set() };
-  const { rows } = await client.query<{
-    id: string;
-    is_default: boolean | null;
-    system_key: string | null;
-    read_only: boolean;
-  }>(
-    `SELECT id, properties->'isDefault' = 'true'::jsonb AS is_default, properties->>'systemKey' AS system_key,
-            (properties->>'kind' = 'account' AND properties->'readOnly' = 'true'::jsonb) IS TRUE AS read_only
-       FROM items
-      WHERE database_id = $1 AND deleted_at IS NULL
-        AND (properties->'isDefault' = 'true'::jsonb OR properties->>'systemKey' = $2
-             OR (properties->>'kind' = 'account' AND properties->'readOnly' = 'true'::jsonb))
-      ORDER BY id`,
-    [calendars.id, "tasks"],
-  );
-  return {
-    defaultCalendarId: rows.find((row) => row.is_default === true)?.id ?? null,
-    tasksCalendarId: rows.find((row) => row.system_key === "tasks")?.id ?? null,
-    readOnlyCalendarIds: new Set(rows.filter((row) => row.read_only).map((row) => row.id)),
-  };
-}
-
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -248,10 +214,14 @@ const TENTATIVE_EVENTS_SQL = `
    WHERE p.database_id = $1 AND p.type = 'relation' AND p.key = 'event'`;
 
 /** One query whatever the number of Events; virtual occurrence ids are never tentative. */
-export async function readTentativeEventIds(client: PoolClient, eventIds: string[]): Promise<Set<string>> {
+export async function readTentativeEventIds(
+  client: PoolClient,
+  eventIds: string[],
+  lookups: CalendarTimelineLookups,
+): Promise<Set<string>> {
   const itemIds = eventIds.filter((id) => ITEM_ID_PATTERN.test(id));
   if (itemIds.length === 0) return new Set();
-  const invitations = await getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
+  const invitations = await lookups.database(INVITATIONS_MODULE_ID);
   if (!invitations) return new Set();
   const { rows } = await client.query<{ event_id: string }>(TENTATIVE_EVENTS_SQL, [invitations.id, itemIds]);
   return new Set(rows.map((row) => row.event_id));
@@ -269,7 +239,7 @@ export async function toTimelineItems(
   kind: CalendarTimelineItem["kind"],
   databaseId: string,
   rows: StoredRow[],
-  context: Pick<CalendarTimelineContext, "timezone">,
+  context: Pick<CalendarTimelineContext, "timezone" | "lookups">,
 ): Promise<CalendarTimelineItem[]> {
   const scheduled: { row: StoredRow; schedule: Schedule }[] = [];
   for (const row of rows) {
@@ -296,7 +266,7 @@ export async function toTimelineItems(
     targetIdsByLink.set(link, [...(targetIdsByLink.get(link) ?? []), edge.target_id]);
   }
   const targetIds = (itemId: string, key: string): string[] => targetIdsByLink.get(`${itemId} ${key}`) ?? [];
-  const linked = await getItemsByIds(client, [
+  const linked = await context.lookups.itemsByIds([
     ...new Set(edges.filter((edge) => edge.property_key !== "calendar").map((edge) => edge.target_id)),
   ]);
   const live = new Map(linked.map((item) => [item.id, item.properties]));
@@ -305,14 +275,13 @@ export async function toTimelineItems(
       const properties = live.get(id);
       return properties === undefined ? [] : [{ id, properties }];
     });
-  const calendars = await readCalendarIds(client);
+  const calendars = await context.lookups.calendarIds();
+  const tasksCalendarId = calendars.systemCalendarIds.get("tasks") ?? null;
 
   return scheduled.map(({ row, schedule }) => {
     const isEvent = kind === "event";
     const project = liveTargets(row.id, "project")[0];
-    const calendarId = isEvent
-      ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId)
-      : calendars.tasksCalendarId;
+    const calendarId = isEvent ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId) : tasksCalendarId;
     return {
       kind,
       id: row.id,
@@ -352,7 +321,7 @@ export async function readEventTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
+  const events = await context.lookups.database(EVENTS_MODULE_ID);
   if (!events) return [];
   const { rows } = await client.query<StoredRow>(EVENT_CANDIDATES_SQL, [
     events.id,
@@ -399,7 +368,7 @@ export async function toShownTaskItems(
   client: PoolClient,
   tasksDatabaseId: string,
   rows: StoredRow[],
-  context: Pick<CalendarTimelineContext, "timezone" | "today" | "at">,
+  context: Pick<CalendarTimelineContext, "timezone" | "today" | "at" | "lookups">,
 ): Promise<CalendarTimelineItem[]> {
   const shown = rows.filter((row) => !isHiddenAt(row.properties.hiddenUntil, context.at));
   const completedInEvent = new Set(
@@ -425,7 +394,7 @@ export async function readTaskTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  const tasks = await context.lookups.database(TASKS_MODULE_ID);
   if (!tasks) return [];
   const { rows } = await client.query<StoredRow>(TASK_CANDIDATES_SQL, [
     tasks.id,
@@ -589,6 +558,7 @@ export async function readCalendarTimeline(
     now: clock.now(at),
     at,
     includeSleep: input.includeSleep ?? true,
+    lookups: createCalendarTimelineLookups(client),
   };
   const read: CalendarTimelineEntry[] = [];
   for (const source of CALENDAR_TIMELINE_SOURCES) read.push(...(await source.readItems(client, context)));
@@ -596,12 +566,13 @@ export async function readCalendarTimeline(
   const tentative = await readTentativeEventIds(
     client,
     attached.filter((entry) => entry.kind === "event").map((entry) => entry.id),
+    context.lookups,
   );
   const items = attached.map((entry) =>
     entry.kind === "event" && tentative.has(entry.id) ? { ...entry, attendance: "tentative" as const } : entry,
   );
 
-  const collator = new Intl.Collator(toManifestLocale((await getTenantUserLocale(client)) ?? "cs"));
+  const collator = new Intl.Collator(await context.lookups.locale());
   items.sort((a, b) => {
     const keyA = sortKey(a);
     const keyB = sortKey(b);
