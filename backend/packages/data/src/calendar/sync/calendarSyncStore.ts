@@ -6,7 +6,7 @@ import { z } from "zod";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../../chokePoint/relationsStore.js";
-import type { Queryable } from "../../db/pool.js";
+import { requireSingleRow, type Queryable } from "../../db/pool.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { MAILBOXES_MODULE_ID } from "../../seed/emailModuleKeys.js";
 import { EVENTS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
@@ -132,23 +132,38 @@ export async function deleteCalendarAccountSyncState(client: Queryable, accountI
   return result.rowCount ?? 0;
 }
 
+const manualSyncScheduleRow = z.object({ run_at: z.date(), deferred: z.boolean() });
+
+/** When the pass a manual sync request asks for runs; `deferred` when that is later than now. */
+export interface ManualCalendarSyncSchedule {
+  runAt: Date;
+  deferred: boolean;
+}
+
 /**
- * Records a manual sync request unless one was recorded within `debounceSeconds`; `true` when this call recorded it.
- * The conditional upsert decides, so two concurrent requests record one.
+ * Records a manual sync request in `manual_sync_requested_at`, the run time of the latest requested pass, so that
+ * at most one pass runs per `debounceSeconds`: with none in the last `debounceSeconds` the pass runs now; inside the
+ * window of one that started it runs when that window ends; while one is still ahead, that one also serves this
+ * request. One upsert decides, so concurrent requests serialize on the state row.
  */
 export async function recordManualCalendarSyncRequest(
   client: Queryable,
   accountItemId: string,
   debounceSeconds: number,
-): Promise<boolean> {
-  const result = await client.query(
-    `INSERT INTO calendar_account_sync_state (account_item_id, manual_sync_requested_at) VALUES ($1, now())
-     ON CONFLICT (tenant_id, account_item_id) DO UPDATE SET manual_sync_requested_at = now()
-       WHERE calendar_account_sync_state.manual_sync_requested_at IS NULL
-          OR calendar_account_sync_state.manual_sync_requested_at <= now() - make_interval(secs => $2)`,
+): Promise<ManualCalendarSyncSchedule> {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `INSERT INTO calendar_account_sync_state AS s (account_item_id, manual_sync_requested_at) VALUES ($1, now())
+     ON CONFLICT (tenant_id, account_item_id) DO UPDATE SET manual_sync_requested_at = CASE
+         WHEN s.manual_sync_requested_at IS NULL
+           OR s.manual_sync_requested_at <= now() - make_interval(secs => $2) THEN now()
+         WHEN s.manual_sync_requested_at > now() THEN s.manual_sync_requested_at
+         ELSE s.manual_sync_requested_at + make_interval(secs => $2)
+       END
+     RETURNING manual_sync_requested_at AS run_at, manual_sync_requested_at > now() AS deferred`,
     [accountItemId, debounceSeconds],
   );
-  return (result.rowCount ?? 0) > 0;
+  const row = manualSyncScheduleRow.parse(requireSingleRow(rows, "calendar_account_sync_state"));
+  return { runAt: row.run_at, deferred: row.deferred };
 }
 
 /**

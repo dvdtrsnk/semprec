@@ -53,6 +53,7 @@ import {
   resolveCalendarSyncIds,
   type CalendarSyncFailureStatus,
   type CalendarSyncIds,
+  type ManualCalendarSyncSchedule,
 } from "./calendarSyncStore.js";
 
 export { enqueueCalendarAccountSync, calendarAccountSyncJobKey } from "./calendarAccountSyncEnqueue.js";
@@ -356,25 +357,25 @@ async function readEnabledAccount(
 }
 
 /**
- * `POST /api/accounts/:id/calendars/sync`: queues a pass unless one was requested within the debounce window, and
- * answers 202 with whether this request queued it. The account row is read `FOR SHARE`, so a Calendars switch
- * commits before or after the request, never between its check and its record. Neither that lock nor the state row's
- * waits longer than `MANUAL_SYNC_LOCK_WAIT_MS`: while a pass step, a switch or another writer holds one, the request
- * checks the account without the lock and queues the pass without recording itself (the job key keeps one waiting
- * job), answering `queued: true`. Unknown, malformed, foreign and trashed ids answer the same 404; Calendars off
- * answers 409 `calendars_disabled`.
+ * `POST /api/accounts/:id/calendars/sync`: queues a pass and answers 202 with when it runs. A request within the
+ * debounce window of the last one is coalesced into one pass at the window's end (`recordManualCalendarSyncRequest`),
+ * never dropped. The account row is read `FOR SHARE`, so a Calendars switch commits before or after the request,
+ * never between its check and its record. Neither that lock nor the state row's waits longer than
+ * `MANUAL_SYNC_LOCK_WAIT_MS`: while a pass step, a switch or another writer holds one, the request checks the account
+ * without the lock and queues the pass now without recording itself (the job key keeps one waiting job). Unknown,
+ * malformed, foreign and trashed ids answer the same 404; Calendars off answers 409 `calendars_disabled`.
  */
 export function createCalendarAccountSyncRouteHandler(pool: Pool) {
-  return async (ctx: RouteParams): Promise<CustomRouteResult<{ id: string; queued: boolean }>> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult<{ id: string; queued: true; runAt: string }>> => {
     const parsed = accountIdSchema.safeParse(ctx.params.id);
     if (!parsed.success) throw new NotFoundError("Account not found");
     const accountItemId = parsed.data;
-    const queued = await withTransaction(pool, async (client) => {
+    const runAt = await withTransaction(pool, async (client) => {
       const ids = await resolveCalendarSyncIds(client);
       if (ids === null) throw new NotFoundError("Account not found");
-      let queues: boolean;
+      let schedule: ManualCalendarSyncSchedule;
       try {
-        queues = await withSavepoint(client, async () => {
+        schedule = await withSavepoint(client, async () => {
           const { rows } = await client.query<{ previous: string }>(
             "SELECT current_setting('lock_timeout') AS previous",
           );
@@ -393,11 +394,12 @@ export function createCalendarAccountSyncRouteHandler(pool: Pool) {
       } catch (error) {
         if (!isLockNotAvailable(error)) throw error;
         await readEnabledAccount(client, ids, accountItemId, "");
-        queues = true;
+        const { rows } = await client.query<{ now: Date }>("SELECT now() AS now");
+        schedule = { runAt: requireSingleRow(rows, "now").now, deferred: false };
       }
-      if (queues) await enqueueCalendarAccountSync(client, accountItemId);
-      return queues;
+      await enqueueCalendarAccountSync(client, accountItemId, schedule.deferred ? schedule.runAt : undefined);
+      return schedule.runAt;
     });
-    return { status: 202, body: { id: accountItemId, queued } };
+    return { status: 202, body: { id: accountItemId, queued: true, runAt: runAt.toISOString() } };
   };
 }

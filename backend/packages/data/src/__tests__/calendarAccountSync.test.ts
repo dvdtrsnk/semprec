@@ -776,21 +776,78 @@ describe("calendar sync of internet accounts", () => {
     const route = (id: string, tenantId = tenant) =>
       runInTenant(tenantId, () => createCalendarAccountSyncRouteHandler(runtime)({ params: { id } }));
 
-    it("queues a pass, debounced to one per minute", async () => {
+    /** The account's waiting sync jobs with their run times. */
+    async function syncJobs(accountId: string): Promise<Array<{ key: string; runAt: string }>> {
+      const { rows } = await admin.query<{ key: string; run_at: Date }>(
+        "SELECT key, run_at FROM graphile_worker.jobs WHERE key = $1",
+        [calendarAccountSyncJobKey(accountId)],
+      );
+      return rows.map((row) => ({ key: row.key, runAt: row.run_at.toISOString() }));
+    }
+
+    /** Moves the recorded request back by `seconds`, as if it had been made that long ago. */
+    async function ageRequest(accountId: string, seconds: number): Promise<void> {
+      await admin.query(
+        `UPDATE calendar_account_sync_state
+            SET manual_sync_requested_at = manual_sync_requested_at - make_interval(secs => $2)
+          WHERE account_item_id = $1`,
+        [accountId, seconds],
+      );
+    }
+
+    async function recordedRequest(accountId: string): Promise<Date | null> {
+      const { rows } = await admin.query<{ requested: Date | null }>(
+        "SELECT manual_sync_requested_at AS requested FROM calendar_account_sync_state WHERE account_item_id = $1",
+        [accountId],
+      );
+      return rows[0]?.requested ?? null;
+    }
+
+    it("queues a pass at once, and coalesces requests within a minute into one pass at the minute's end", async () => {
       const accountId = await createAccount({ calendarsEnabled: true });
       await clearJobs();
 
-      expect(await route(accountId)).toEqual({ status: 202, body: { id: accountId, queued: true } });
-      expect(await jobKeys(accountId)).toEqual([calendarAccountSyncJobKey(accountId)]);
-      await clearJobs();
-      expect(await route(accountId)).toEqual({ status: 202, body: { id: accountId, queued: false } });
-      expect(await jobKeys(accountId)).toEqual([]);
+      const before = Date.now();
+      const first = await route(accountId);
+      expect(first).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: expect.any(String) } });
+      const firstRunAt = Date.parse(first.body.runAt);
+      expect(Math.abs(firstRunAt - before)).toBeLessThan(5_000);
+      expect(await syncJobs(accountId)).toEqual([
+        { key: calendarAccountSyncJobKey(accountId), runAt: first.body.runAt },
+      ]);
 
-      await admin.query(
-        "UPDATE calendar_account_sync_state SET manual_sync_requested_at = now() - interval '61 seconds' WHERE account_item_id = $1",
-        [accountId],
-      );
-      expect(await route(accountId)).toEqual({ status: 202, body: { id: accountId, queued: true } });
+      // The worker took the first pass; the second request comes a second later.
+      await clearJobs();
+      await ageRequest(accountId, 1);
+      const windowEnd = new Date(firstRunAt - 1_000 + 60_000).toISOString();
+      const second = await route(accountId);
+      expect(second).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: windowEnd } });
+      expect(await syncJobs(accountId)).toEqual([{ key: calendarAccountSyncJobKey(accountId), runAt: windowEnd }]);
+
+      const third = await route(accountId);
+      expect(third).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: windowEnd } });
+      expect(await syncJobs(accountId)).toEqual([{ key: calendarAccountSyncJobKey(accountId), runAt: windowEnd }]);
+
+      // The deferred pass ran at the window's end; a request a minute after it queues at once again.
+      await clearJobs();
+      await ageRequest(accountId, 120);
+      const later = await route(accountId);
+      expect(Math.abs(Date.parse(later.body.runAt) - Date.now())).toBeLessThan(5_000);
+      expect(await syncJobs(accountId)).toEqual([
+        { key: calendarAccountSyncJobKey(accountId), runAt: later.body.runAt },
+      ]);
+    });
+
+    it("lets a pass still waiting to run serve a request within its minute", async () => {
+      const accountId = await createAccount({ calendarsEnabled: true });
+      await clearJobs();
+      const first = await route(accountId);
+      await ageRequest(accountId, 1);
+      const second = await route(accountId);
+      expect(Date.parse(second.body.runAt)).toBeGreaterThan(Date.parse(first.body.runAt));
+      expect(await syncJobs(accountId)).toEqual([
+        { key: calendarAccountSyncJobKey(accountId), runAt: first.body.runAt },
+      ]);
     });
 
     it("answers 409 calendars_disabled with Calendars off, queuing nothing", async () => {
@@ -845,18 +902,16 @@ describe("calendar sync of internet accounts", () => {
         const response = await route(accountId);
         const elapsedMs = performance.now() - started;
 
-        expect(response).toEqual({ status: 202, body: { id: accountId, queued: true } });
+        expect(response).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: expect.any(String) } });
         expect(elapsedMs).toBeLessThan(1_000);
-        expect(await jobKeys(accountId)).toEqual([calendarAccountSyncJobKey(accountId)]);
+        expect(await syncJobs(accountId)).toEqual([
+          { key: calendarAccountSyncJobKey(accountId), runAt: response.body.runAt },
+        ]);
       } finally {
         release();
         await holder;
       }
-      const { rows } = await admin.query<{ requested: Date | null }>(
-        "SELECT manual_sync_requested_at AS requested FROM calendar_account_sync_state WHERE account_item_id = $1",
-        [accountId],
-      );
-      expect(rows).toEqual([{ requested: null }]);
+      expect(await recordedRequest(accountId)).toBeNull();
     });
   });
 

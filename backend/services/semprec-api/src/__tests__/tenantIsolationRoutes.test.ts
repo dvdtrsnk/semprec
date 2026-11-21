@@ -4187,8 +4187,13 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const sync = (id: string | undefined): Request => POST(`/api/accounts/${id}/calendars/sync`, {});
 
     await expectForeign404(b.member, [a.mailboxItemId], ([id]) => sync(id));
-    expect(await sendOk(b.member, sync(b.mailboxItemId))).toBe(JSON.stringify({ id: b.mailboxItemId, queued: true }));
-    expect(await sendOk(a.member, sync(a.mailboxItemId))).toBe(JSON.stringify({ id: a.mailboxItemId, queued: true }));
+    for (const [member, mailboxItemId] of [
+      [b.member, b.mailboxItemId],
+      [a.member, a.mailboxItemId],
+    ] as const) {
+      const body: unknown = JSON.parse(await sendOk(member, sync(mailboxItemId)));
+      expect(body).toEqual({ id: mailboxItemId, queued: true, runAt: expect.any(String) });
+    }
   },
   // A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
   "calendar cancellation impact": async () => {

@@ -350,11 +350,14 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   critical for the first two). Calendars and Events stay as they were. Only `error` is rethrown for the queue's retry.
 - **Triggers.** An account created with Calendars on or switched on queues a pass; the sweep
   `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
-  last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued }`, 404 for another
-  tenant's or an unknown id, 409 `calendars_disabled`) queues one at most every 60 s per account, decided by a
-  conditional upsert of `manual_sync_requested_at` under the account row's share lock. Neither that lock nor the state
-  row's is waited for longer than 50 ms: while another writer holds one, the request queues the pass without recording
-  itself and answers `queued: true`. CalDAV accounts (`imap`) have
+  last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for
+  another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
+  dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
+  under the account row's share lock. With none in the last 60 s the pass runs now; a request inside the window of a
+  pass that started queues one at the window's end; while that one is still ahead it serves the request too. The
+  deferred pass is queued under the account's job key with that `run_at` and `jobKeyMode` `preserve_run_at`, so a pass
+  already waiting keeps its earlier time. Neither lock is waited for longer than 50 ms: while another writer holds
+  one, the request queues the pass now without recording itself. CalDAV accounts (`imap`) have
   no provider push: the sweep and the app's foreground call of that route are their only triggers.
 - **Push channels** (`calendarPushChannelsJob.ts`, task `calendarPushChannels`, key
   `calendar-push-channels:<account>`, 3 attempts, `api`; sweep `calendarPushChannelsSweep` hourly).

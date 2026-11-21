@@ -9,12 +9,24 @@ export function calendarAccountCleanupJobKey(accountItemId: string): string {
   return `calendar-account-cleanup:${accountItemId}`;
 }
 
-export async function enqueueCalendarAccountSync(client: Queryable, accountItemId: string): Promise<void> {
+/**
+ * One waiting pass per account: a pass queued now replaces the waiting one's time; one queued for a later `runAt`
+ * keeps the time of a pass already waiting, which then serves it too.
+ */
+export async function enqueueCalendarAccountSync(
+  client: Queryable,
+  accountItemId: string,
+  runAt?: Date,
+): Promise<void> {
   await enqueueJob(
     client,
     CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC,
     { accountItemId },
-    { jobKey: calendarAccountSyncJobKey(accountItemId), maxAttempts: 3 },
+    {
+      jobKey: calendarAccountSyncJobKey(accountItemId),
+      maxAttempts: 3,
+      ...(runAt === undefined ? {} : { runAt, jobKeyMode: "preserve_run_at" as const }),
+    },
   );
 }
 
