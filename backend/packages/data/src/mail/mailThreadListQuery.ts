@@ -43,9 +43,29 @@ export const MAIL_OWN_ADDRESSES_SQL = `
 /**
  * The CTEs the thread list and the mail summary share, so a count reads the same copies the list
  * shows. Drafts are left out unless the bind parameter numbered `threadIdParameter` names one thread.
+ * `unreadCandidatesOnly` keeps only the threads with a live copy that is not read: every thread whose `copy_stats`
+ * says `unread` is among them, and each kept thread still has all of its copies, so an unread count is unchanged.
  */
-export function mailThreadCopyCtes(threadIdParameter: number): string {
+export function mailThreadCopyCtes(
+  threadIdParameter: number,
+  options: { unreadCandidatesOnly?: boolean } = {},
+): string {
   const threadId = `$${threadIdParameter}`;
+  const unreadCandidates = options.unreadCandidatesOnly
+    ? `unread_candidates AS (
+  SELECT DISTINCT m.thread_id FROM mail_message_meta m
+  JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id AND i.database_id = (SELECT emails FROM schema_ids)
+  WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
+    AND NOT COALESCE(i.properties->'read' = 'true'::jsonb, false)
+), `
+    : "";
+  const candidateFilter = options.unreadCandidatesOnly
+    ? "\n    AND m.thread_id IN (SELECT thread_id FROM unread_candidates)"
+    : "";
+  const candidateEdgeFilter = options.unreadCandidatesOnly
+    ? `\n      AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) IN (SELECT t.item_id FROM mail_message_meta t
+        WHERE t.tenant_id = app_tenant_default() AND t.thread_id IN (SELECT thread_id FROM unread_candidates))`
+    : "";
   return `schema_ids AS (
   SELECT (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'emails') AS emails,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'folders') AS folders,
@@ -58,7 +78,7 @@ export function mailThreadCopyCtes(threadIdParameter: number): string {
   SELECT rd.id, rd.property_id_a = p.id AS email_is_a
   FROM properties p JOIN relation_definitions rd ON p.id IN (rd.property_id_a, rd.property_id_b)
   WHERE p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
-), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), copies AS (
+), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), ${unreadCandidates}copies AS (
   SELECT m.thread_id, m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.preview_text,
     NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
@@ -72,21 +92,23 @@ export function mailThreadCopyCtes(threadIdParameter: number): string {
     COALESCE(f.folder_ids, ARRAY[]::uuid[]) AS folder_ids
   FROM mail_message_meta m
   JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id AND i.database_id = (SELECT emails FROM schema_ids)
-  LEFT JOIN LATERAL (
-    SELECT count(*) AS n, bool_and(COALESCE(folder.properties->>'specialPurpose' = 'drafts', false)) AS only_drafts,
+  -- One aggregate per email over every folder edge, hash-joined; per-email lookups cost a loop per copy.
+  LEFT JOIN (
+    SELECT CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END AS email_id,
+      count(*) AS n, bool_and(COALESCE(folder.properties->>'specialPurpose' = 'drafts', false)) AS only_drafts,
       bool_or(COALESCE(folder.properties->>'specialPurpose' = 'sent', false)) AS has_sent,
       bool_or(COALESCE(folder.properties->>'specialPurpose' = 'inbox', false)) AS has_inbox,
       bool_or(COALESCE(folder.properties->>'specialPurpose' NOT IN ('junk', 'trash'), true)) AS has_non_junk,
       array_agg(folder.id) AS folder_ids
-    FROM folder_definition fd JOIN item_relations r ON r.relation_definition_id = fd.id AND r.tenant_id = m.tenant_id
-      -- The OR lets the item_a and item_b indexes find the edges; the CASE keeps the email's own side.
-      AND (r.item_a = i.id OR r.item_b = i.id)
-      AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
-    JOIN items folder ON folder.tenant_id = m.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
+    FROM folder_definition fd JOIN item_relations r ON r.relation_definition_id = fd.id AND r.tenant_id = app_tenant_default()
+    JOIN items folder ON folder.tenant_id = r.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
-  ) f ON true
+    WHERE (${threadId}::uuid IS NULL OR (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) IN (
+      SELECT t.item_id FROM mail_message_meta t WHERE t.tenant_id = app_tenant_default() AND t.thread_id = ${threadId}::uuid))${candidateEdgeFilter}
+    GROUP BY 1
+  ) f ON f.email_id = i.id
   WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
-    AND (${threadId}::uuid IS NULL OR m.thread_id = ${threadId}::uuid)
+    AND (${threadId}::uuid IS NULL OR m.thread_id = ${threadId}::uuid)${candidateFilter}
     -- The list leaves drafts out; the detail-only mode (${threadId}) aggregates every live copy, drafts included.
     AND (${threadId}::uuid IS NOT NULL OR (NOT (f.n > 0 AND COALESCE(f.only_drafts, false))
       AND NOT EXISTS (SELECT 1 FROM mail_drafts d WHERE d.tenant_id = m.tenant_id AND d.email_item_id = i.id AND d.sent_at IS NULL)))

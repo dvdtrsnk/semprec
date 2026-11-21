@@ -14,7 +14,7 @@ import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { resolveMailModuleIds, type MailModuleIds } from "../mail/mailModuleIds.js";
-import { createMailSummaryRouteHandler } from "../mail/mailSummary.js";
+import { countUnreadInboxThreads, createMailSummaryRouteHandler, getMailAccountsSummary } from "../mail/mailSummary.js";
 import { createMailThreadListRouteHandler } from "../mail/mailThreadRoutes.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -136,10 +136,23 @@ const summaryBody = z
   })
   .strict();
 
+/** Also checks that the Overview's unread count and the account summary's mailbox figures agree with the route. */
 async function summary(tenantId: string): Promise<z.infer<typeof summaryBody>> {
   const answer = await runInTenant(tenantId, () => createMailSummaryRouteHandler(runtime)());
   expect(answer.status).toBe(200);
-  return summaryBody.parse(answer.body);
+  const body = summaryBody.parse(answer.body);
+  const parts = await runInTenant(tenantId, () =>
+    withTransaction(runtime, async (client) => ({
+      unreadInbox: await countUnreadInboxThreads(client),
+      ...(await getMailAccountsSummary(client)),
+    })),
+  );
+  expect(parts).toEqual({
+    unreadInbox: body.unreadInbox,
+    accounts: body.accounts,
+    accountsNeedingReauth: body.accountsNeedingReauth,
+  });
+  return body;
 }
 
 const listPage = z.object({

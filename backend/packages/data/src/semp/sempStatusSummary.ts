@@ -1,4 +1,5 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { withTransaction } from "../db/pool.js";
 import { readSempStatusReport } from "./sempStatusReport.js";
 
 /** What Semp cannot do while a banner problem is active; an unlisted kind falls back to its category's key. */
@@ -45,10 +46,18 @@ export interface SempStatusBanner {
  * Active count and banner, from one report read. The banner is the first critical `mail` or `agents` problem in
  * report order: the AI budget problem first, then stored problems by severity, latest `last_seen_at`, id.
  */
-export async function getSempStatusSummary(
-  pool: Pool,
-): Promise<{ activeCount: number; banner: SempStatusBanner | null }> {
-  const { report, problemKinds } = await readSempStatusReport(pool);
+export function getSempStatusSummary(pool: Pool): Promise<SempStatusSummary> {
+  return withTransaction(pool, (client) => readSempStatusSummary(client));
+}
+
+export interface SempStatusSummary {
+  activeCount: number;
+  banner: SempStatusBanner | null;
+}
+
+/** {@link getSempStatusSummary} in the caller's transaction. */
+export async function readSempStatusSummary(client: PoolClient): Promise<SempStatusSummary> {
+  const { report, problemKinds } = await readSempStatusReport(client);
   for (const problem of report.problems) {
     if (problem.severity !== "critical" || !isBannerCategory(problem.category)) continue;
     return {
