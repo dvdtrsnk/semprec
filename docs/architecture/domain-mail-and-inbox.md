@@ -439,8 +439,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - `mailContentCacheSweep` (daily 03:55, `api` runtime, system task) deletes expired rows, one transaction per active
   tenant (`forEachActiveTenant`); a failing tenant does not stop the others.
 - `GET /api/mail/messages/:emailId/content[?allowRemoteImages=true]` (`mail/mailMessageContent.ts`) answers
-  `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt }` (the two times `null` for a
-  stored body). A malformed id is 400; an unknown, foreign or trashed id the same 404. A `full` message (or one without
+  `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt, attachments }` (the two times
+  `null` for a stored body; `attachments` as the thread detail lists them, `{ attachmentId, filename, contentType,
+byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until the bytes are saved, read with the body's
+  source before any provider call, `mail/mailMessageAttachments.ts`). A malformed id is 400; an unknown, foreign or trashed id the same 404. A `full` message (or one without
   a meta row) answers its stored body, an `index` message its unexpired cache row; otherwise the body is fetched from the
   provider outside any transaction, written as the cache row in a short transaction and answered `cached`.
   - Before any provider call, an account that is trashed, has no sync state or has Mail off answers 409

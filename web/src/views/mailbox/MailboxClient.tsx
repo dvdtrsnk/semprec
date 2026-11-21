@@ -3,6 +3,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/StateView
 import { useTranslate } from "../../i18n/index.js";
 import { toOperationError, type GenericOperations, type Item } from "../../api/genericOperations.js";
 import type { MailDraftOperations } from "../../api/mailDraftOperations.js";
+import type { MailMessageOperations } from "../../api/mailMessageOperations.js";
 import type { ViewRendererProps } from "../viewRegistry.js";
 import {
   ARCHIVE_FOLDER_PURPOSE,
@@ -17,6 +18,7 @@ import {
 } from "./config.js";
 import { loadFolderMailboxes, loadMailboxes } from "./accounts.js";
 import { ComposeWindow, InlineCompose } from "./ComposeWindow.js";
+import { MessageContent } from "./MessageContent.js";
 import {
   aliasOptions,
   closeCompose,
@@ -270,6 +272,7 @@ function SelectionToolbar({
 
 interface ReadingPaneProps {
   operations: GenericOperations;
+  mailMessages: MailMessageOperations;
   databaseId: string;
   messageId: string | null;
   aliases: readonly AliasOption[];
@@ -290,9 +293,12 @@ type ReplyStart = { status: "starting" } | { status: "failed"; message: string }
 /**
  * The message being read, with its reply beneath it. From and To are the message's own display
  * properties; a reply's recipients are the backend's to compute when it creates the reply draft.
+ * The body and attachments come from the mail module's content route (`MessageContent`), which
+ * may have to fetch them from the provider, so they load and fail on their own.
  */
 function ReadingPane({
   operations,
+  mailMessages,
   databaseId,
   messageId,
   aliases,
@@ -325,8 +331,7 @@ function ReadingPane({
         <dt>{t("mailbox.message.to")}</dt>
         <dd>{text(message, "recipients") ?? ""}</dd>
       </dl>
-      {/* Rendered as text, never as markup: the stored body is untrusted remote content. */}
-      <p className="reading-pane__body">{text(message, "body") ?? ""}</p>
+      <MessageContent key={message.id} mailMessages={mailMessages} emailId={message.id} />
       {aliases.length === 0 ? (
         <p className="reading-pane__no-aliases">{t("mailbox.compose.noAliases")}</p>
       ) : (
@@ -438,11 +443,13 @@ function MailboxPanes({
   config,
   operations,
   mailDrafts,
+  mailMessages,
   databaseId,
 }: {
   config: MailboxConfig;
   operations: GenericOperations;
   mailDrafts: MailDraftOperations;
+  mailMessages: MailMessageOperations;
   databaseId: string;
 }) {
   const t = useTranslate();
@@ -881,6 +888,7 @@ function MailboxPanes({
           <h2 className="mailbox__pane-title">{t("mailbox.message")}</h2>
           <ReadingPane
             operations={operations}
+            mailMessages={mailMessages}
             databaseId={databaseId}
             messageId={messageId}
             aliases={aliases}
@@ -925,14 +933,17 @@ function MailboxPanes({
  * so minimizing, reading another message or a rejected send never costs the user what they
  * typed. A reply is created by the mail module's draft routes from the message it answers, the
  * From dropdown offers the registered aliases (compose.ts), and saving, sending and discarding
- * go through the same draft routes (`MailDraftOperations`) — the only calls in this view that
- * are not generic reads or writes.
+ * go through the same draft routes (`MailDraftOperations`). A message's body and attachments are
+ * read, and an attachment saved to Files, through the mail module's message routes
+ * (`MailMessageOperations`); those and the draft routes are the only calls in this view that are
+ * not generic reads or writes.
  */
 export function MailboxClient({
   view,
   operations,
   mailDrafts,
-}: ViewRendererProps & { mailDrafts: MailDraftOperations }) {
+  mailMessages,
+}: ViewRendererProps & { mailDrafts: MailDraftOperations; mailMessages: MailMessageOperations }) {
   const t = useTranslate();
   const config = useMemo(() => parseMailboxConfig(view.config), [view.config]);
 
@@ -943,7 +954,15 @@ export function MailboxClient({
       </div>
     );
   }
-  return <MailboxPanes config={config} operations={operations} mailDrafts={mailDrafts} databaseId={view.databaseId} />;
+  return (
+    <MailboxPanes
+      config={config}
+      operations={operations}
+      mailDrafts={mailDrafts}
+      mailMessages={mailMessages}
+      databaseId={view.databaseId}
+    />
+  );
 }
 
 export const MAILBOX_CLIENT_COMPONENT = "mailboxClient";
