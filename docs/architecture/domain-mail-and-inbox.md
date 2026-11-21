@@ -486,7 +486,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
 - The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
-  account with Mail off: each chunk takes the mail-thread guard, the paused sync state row and the live
+  account with Mail off: each chunk takes the paused sync state row `FOR SHARE`, the mail-thread guard and the live
   Mailboxes item `FOR SHARE`, trashes with `deletedAtExact` = `sync_paused_at`, and deletes each trashed
   Email's meta row with a thread no other message names (`deleteMailMessageMetaOfRemovedItem`: Threads item
   trashed, `mail_threads` row deleted), so a later sync ingests the mail anew. An account no longer paused, or
@@ -624,12 +624,13 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 
 ## Lock orders to keep
 
-- Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
+- Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
+  folder/item rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
-  → Mailboxes item. Mail-off chunk: mail-thread guard → sync
-  state row (share) → Mailboxes item (share) → member rows.
+  → Mailboxes item. Mail-off chunk: sync state row (share) → mail-thread guard → Mailboxes item (share) → member
+  rows.
 - Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.

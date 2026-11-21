@@ -74,14 +74,15 @@ SELECT id FROM mailbox_folders
 ] as const;
 
 /**
- * Mail-off: the mail-thread guard first (the order a sync pass takes it in), then the paused sync state row and the
- * live Mailboxes item `FOR SHARE`, so switching Mail on again waits for the chunk. `null` (the account is no longer
- * paused, or the mailbox is trashed or gone) ends the job.
+ * Mail-off: the paused sync state row `FOR SHARE`, then the mail-thread guard, then the live Mailboxes item
+ * `FOR SHARE`, so switching Mail on again waits for the chunk. A sync pass renews its lease on the sync state row before
+ * it takes the mail-thread guard, so the chunk takes them in that order too. `null` (the account is no longer paused,
+ * or the mailbox is trashed or gone) ends the job.
  */
 async function lockMailOffEpoch(client: PoolClient, ids: MailModuleIds, mailboxItemId: string): Promise<string | null> {
-  await lockMailThreadMutation(client);
   const pausedAt = await lockMailAccountSyncPause(client, mailboxItemId);
   if (pausedAt === null) return null;
+  await lockMailThreadMutation(client);
   const { rows } = await client.query<{ id: string }>(
     "SELECT id FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL FOR SHARE",
     [ids.mailboxesDatabaseId, mailboxItemId],
