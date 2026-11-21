@@ -267,7 +267,7 @@ describe("IMAP history as an index, backfilled newest first", () => {
       expect(detail.messages).toEqual([
         expect.objectContaining({
           emailId: old.id,
-          contentState: "index",
+          contentState: "remote",
           preview: old.preview_text,
           bodyText: "",
           attachments: [

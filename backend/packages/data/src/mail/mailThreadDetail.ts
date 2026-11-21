@@ -7,7 +7,7 @@ import { resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { readMailAttachmentProjects, type MailAttachmentProjects } from "./mailThreadAttachmentProjects.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { listMailThreads, MAIL_OWN_ADDRESSES_SQL } from "./mailThreadListQuery.js";
-import { MAIL_CONTENT_STATES } from "./mailContentState.js";
+import { MAIL_MESSAGE_CONTENT_STATES } from "./mailContentState.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
 const messageRow = z.object({
@@ -22,7 +22,7 @@ const messageRow = z.object({
   replyTo: z.array(address),
   date: z.string().nullable(),
   body: z.string().nullable(),
-  contentState: z.enum(MAIL_CONTENT_STATES),
+  contentState: z.enum(MAIL_MESSAGE_CONTENT_STATES),
   preview: z.string().nullable(),
   read: z.boolean(),
   flagged: z.boolean(),
@@ -54,7 +54,8 @@ function addressList(field: "to" | "cc" | "replyTo"): string {
 /**
  * Every live Emails copy of the thread (Drafts included), one per `message_id`, keeping the copy the
  * thread list counts (latest activity, then highest item id). `folderPurpose` picks one purpose in the
- * order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels).
+ * order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels). The
+ * body of an `index` message is its unexpired on-demand copy (HTML part, else text part), if any.
  */
 const MESSAGES_SQL = `
 WITH schema_ids AS (
@@ -93,13 +94,17 @@ SELECT jsonb_build_object(
     THEN jsonb_build_object('name', COALESCE(d.envelope->'from'->>'name', ''), 'address', d.envelope->'from'->>'address') END,
   'to', ${addressList("to")}, 'cc', ${addressList("cc")}, 'replyTo', ${addressList("replyTo")},
   'date', to_char(d.message_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-  'body', CASE WHEN jsonb_typeof(d.properties->'body') = 'string' THEN d.properties->>'body' END,
-  'contentState', d.content_state, 'preview', d.preview_text,
+  'body', CASE WHEN d.content_state = 'index' THEN COALESCE(cache.body_html, cache.body_text)
+    WHEN jsonb_typeof(d.properties->'body') = 'string' THEN d.properties->>'body' END,
+  'contentState', CASE WHEN d.content_state = 'full' THEN 'full' WHEN cache.item_id IS NOT NULL THEN 'cached' ELSE 'remote' END,
+  'preview', d.preview_text,
   'read', COALESCE(d.properties->'read' = 'true'::jsonb, false),
   'flagged', COALESCE(d.properties->'flagged' = 'true'::jsonb, false),
   'attachments', COALESCE(attachments.value, '[]'::jsonb)
 ) AS message
 FROM dedup d
+LEFT JOIN mail_message_content_cache cache ON cache.tenant_id = app_tenant_default() AND cache.item_id = d.item_id
+  AND d.content_state = 'index' AND cache.expires_at > now()
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('attachmentId', a.id, 'stored', a.blob_id IS NOT NULL,
     'fileItemId', f.id, 'blobId', a.blob_id, 'filename', a.filename,
@@ -229,7 +234,9 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
  *
  * Emails stores one `body` (HTML part, else text part). `bodyHtml` is that body sanitized, with remote
  * images only when `allowRemoteImages` is set; `bodyText` is `htmlToPlainText` of the same body.
- * Nothing sanitized is stored. An `index` message stores no body (both are empty); its `preview` is the snippet.
+ * Nothing sanitized is stored. An `index` message stores no body: with an unexpired copy fetched on demand
+ * (`mail_message_content_cache`) it is `contentState: "cached"` and served from that copy the same way, otherwise
+ * `"remote"` with both bodies empty. `preview` is always the stored snippet.
  */
 export async function getMailThreadDetail(client: PoolClient, threadId: string, allowRemoteImages: boolean) {
   const targetId = await resolveMergedThreadId(client, threadId);

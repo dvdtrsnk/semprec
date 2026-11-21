@@ -803,12 +803,57 @@ describe("Graph immutable ids and the paged delta", () => {
     expect(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).toBe(
       `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D?$select=body,bodyPreview,hasAttachments`,
     );
+    expect(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).toBe(
+      `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D/attachments?$select=id,name,contentType,isInline,contentId`,
+    );
     for (const [, init] of fetchImpl.mock.calls) expect(preferOf(init)).toBe(GRAPH_IMMUTABLE_ID);
     expect(content).toMatchObject({
       bodyText: "Hi",
       bodyHtml: "<p>Hi</p>",
       attachments: [{ filename: "a.pdf", contentType: "x/y", providerPart: "attachment-1" }],
     });
+  });
+
+  it.each([
+    ["a body without content", { body: { contentType: "html" } }],
+    ["a body that is no object", { body: "text" }],
+    ["a preview that is no string", { bodyPreview: 3 }],
+  ])("refuses a message content response with %s", async (_name, resource) => {
+    const client = graphClient(async () => Response.json(resource));
+    await expect(client.fetchMessageContent("immutable-1")).rejects.toThrow();
+  });
+
+  it("refuses a JSON response over the cap", async () => {
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024 * 1024 + 1).fill(0x20));
+        controller.close();
+      },
+    });
+    const client = graphClient(async () => new Response(oversized));
+    await expect(client.fetchMessageContent("immutable-1")).rejects.toThrow(
+      "Graph sync provider response could not be read",
+    );
+  });
+
+  it("streams one attachment's bytes by its encoded immutable ids, and answers null when Graph has none", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("bytes"))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const client = graphClient(fetchImpl);
+
+    const stream = await client.openAttachmentContent("AAMk/immutable=", "attachment/1");
+    if (!stream) throw new Error("Missing Graph attachment stream");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
+
+    expect(Buffer.concat(chunks).toString()).toBe("bytes");
+    expect(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).toBe(
+      `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D/attachments/attachment%2F1/$value`,
+    );
+    expect(preferOf(fetchImpl.mock.calls[0]?.[1])).toBe(GRAPH_IMMUTABLE_ID);
+    await expect(client.openAttachmentContent("immutable-1", "gone")).resolves.toBeNull();
   });
 
   it("answers null for a message gone before its body was fetched", async () => {

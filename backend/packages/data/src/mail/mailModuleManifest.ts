@@ -55,6 +55,8 @@ export {
 } from "./mailOauthRouteHandlers.js";
 export { createMailSummaryRouteHandler } from "./mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mailFolderList.js";
+export { createMailMessageContentRouteHandler } from "./mailMessageContent.js";
+export { createMailAttachmentSaveRouteHandler } from "./mailAttachmentSave.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
@@ -420,6 +422,24 @@ export const manifest: ModuleManifest = {
       path: "/api/mail/mailboxes/:id/folders",
       handlerExport: "createMailFolderListRouteHandler",
       justification: "single-consumer-read",
+    },
+    {
+      name: "mailMessageContent",
+      method: "GET",
+      path: "/api/mail/messages/:emailId/content",
+      handlerExport: "createMailMessageContentRouteHandler",
+      // Reads one message's body; for an older message it is fetched from the provider and kept in the module's own
+      // cache table, no item is written.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailAttachmentSave",
+      method: "POST",
+      path: "/api/mail/messages/:emailId/attachments/:attachmentId/save",
+      handlerExport: "createMailAttachmentSaveRouteHandler",
+      // Records the fetched bytes on the attachment row and creates the Files item with its Email and Thread edges in
+      // one transaction.
+      justification: "transactional-semantics",
     },
     {
       name: "mailboxRemoval",

@@ -26,6 +26,8 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
+/** Every JSON read's cap: a message with its body, a delta page or a folder listing fits well below it. */
+const RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
 /** Messages one delta page holds (`odata.maxpagesize`), and so one write transaction of a sync pass ingests. */
 const GRAPH_DELTA_PAGE_SIZE = 50;
 const WELL_KNOWN_FOLDERS = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"];
@@ -163,6 +165,26 @@ function classifyGraphAttachments(
   return candidates.filter(
     (a) => !(a.disposition === "inline" && a.contentId !== null && Boolean(html?.includes(`cid:${a.contentId}`))),
   );
+}
+
+/** The fields of a message the content read selects, checked; a body without string content fails. */
+function parseGraphContentResource(
+  resource: Record<string, unknown>,
+): Pick<GraphMessageResource, "body" | "bodyPreview" | "hasAttachments"> {
+  const { bodyPreview, hasAttachments } = resource;
+  if (bodyPreview != null && typeof bodyPreview !== "string")
+    throw new Error("Graph message body preview is not a string");
+  if (hasAttachments != null && typeof hasAttachments !== "boolean")
+    throw new Error("Graph message hasAttachments is not a boolean");
+  const parsed: Pick<GraphMessageResource, "body" | "bodyPreview" | "hasAttachments"> = {
+    ...(typeof bodyPreview === "string" ? { bodyPreview } : {}),
+    ...(typeof hasAttachments === "boolean" ? { hasAttachments } : {}),
+  };
+  if (resource.body == null) return parsed;
+  const { contentType, content } = assertJsonObject(resource.body, "Graph message body");
+  if (typeof contentType !== "string" || typeof content !== "string")
+    throw new Error("Graph message body has no content type or content");
+  return { ...parsed, body: { contentType, content } };
 }
 
 /**
@@ -373,7 +395,9 @@ export class GraphRestClient implements GraphMailClient {
     if (!response.ok) throw new GraphApiError(response.status);
     let parsed: unknown;
     try {
-      parsed = await response.json();
+      const read = await readSendBody(response, RESPONSE_MAX_BYTES);
+      if (read.truncated) throw new Error("over the cap");
+      parsed = JSON.parse(read.text);
     } catch (error) {
       void error;
       // eslint-disable-next-line preserve-caught-error
@@ -386,7 +410,7 @@ export class GraphRestClient implements GraphMailClient {
   private async listAttachmentMetadata(messageId: string): Promise<GraphAttachmentResource[]> {
     // A real 404 means the message disappeared between delta and attachment lookup.
     const page = await this.request<{ value: GraphAttachmentResource[] }>(
-      `${BASE_URL}/messages/${messageId}/attachments?$select=id,name,contentType,isInline,contentId`,
+      `${BASE_URL}/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,isInline,contentId`,
       404,
     );
     return page?.value ?? [];
@@ -397,7 +421,8 @@ export class GraphRestClient implements GraphMailClient {
     const token = await this.getAccessToken();
     let response: Response;
     try {
-      response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
+      const url = `${BASE_URL}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`;
+      response = await this.fetchImpl(url, {
         headers: { Authorization: `Bearer ${token}`, Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE },
         signal: AbortSignal.timeout(30_000),
       });
@@ -535,16 +560,26 @@ export class GraphRestClient implements GraphMailClient {
 
   async fetchMessageContent(messageId: string): Promise<GraphMessageContent | null> {
     // A 404 means the message disappeared since the delta listed it.
-    const resource = await this.request<Pick<GraphMessageResource, "id" | "body" | "bodyPreview" | "hasAttachments">>(
+    const resource = await this.request<Record<string, unknown>>(
       `${BASE_URL}/messages/${encodeURIComponent(messageId)}?$select=body,bodyPreview,hasAttachments`,
       404,
     );
     if (!resource) return null;
     return toGraphMessageContent(
-      { ...resource, id: messageId },
+      { ...parseGraphContentResource(resource), id: messageId },
       (id) => this.listAttachmentMetadata(id),
       (id, attachmentId) => this.fetchAttachmentStream(id, attachmentId),
     );
+  }
+
+  /** One file attachment's bytes by the message's immutable id, streamed and capped; `null` when Graph has no such one. */
+  async openAttachmentContent(messageId: string, attachmentId: string): Promise<Readable | null> {
+    try {
+      return await this.fetchAttachmentStream(messageId, attachmentId);
+    } catch (error) {
+      if (error instanceof GraphApiError && error.status === 404) return null;
+      throw error;
+    }
   }
 
   async patchMessage(

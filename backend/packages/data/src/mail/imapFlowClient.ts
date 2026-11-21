@@ -12,6 +12,7 @@ import type {
   ImapFolderRef,
   ImapFolderSelection,
   ImapMailClient,
+  ImapMessageBody,
   ImapMessageContent,
   ImapSnippetPart,
 } from "./imapReconcile.js";
@@ -46,6 +47,13 @@ const IMAP_APPEND_TIMEOUT_MS = 60_000;
 
 // A connection kept open between passes that does not answer a NOOP within this is given up and replaced.
 const IMAP_PING_TIMEOUT_MS = 10_000;
+
+/** How much of one body part an on-demand content fetch reads; the rest of a larger part is cut off. */
+export const IMAP_CONTENT_MAX_PART_BYTES = 16 * 1024 * 1024;
+
+// One body part's whole download, and one SEARCH, of an on-demand fetch; a stalled server fails the request instead.
+const IMAP_CONTENT_DOWNLOAD_TIMEOUT_MS = 60_000;
+const IMAP_SEARCH_TIMEOUT_MS = 30_000;
 
 // iCloud Mail Drop needs no special case: the server already stores a small download-link body,
 // with no placeholder MIME part to fetch.
@@ -549,6 +557,90 @@ export class ImapFlowMailClient implements ImapMailClient {
     );
   }
 
+  /** Races `operation` against `timeoutMs`; a timeout leaves the connection's state unknown, so it is not reused. */
+  private async withDeadline<T>(operation: () => Promise<T>, timeoutMs: number, what: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`IMAP ${what} timed out after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The message's BODYSTRUCTURE, or `null` when the selected folder holds no message with the UID. */
+  private async bodyStructureOf(path: string, uid: number): Promise<MessageStructureObject | null> {
+    if (!Number.isSafeInteger(uid) || uid < 1 || uid > 4_294_967_295) throw new Error("Invalid IMAP UID");
+    await this.ensureSelected(path);
+    const raw = await this.fetchOneWithTimeout(String(uid), { uid: true, bodyStructure: true }, { uid: true });
+    return raw === false || raw.bodyStructure === undefined ? null : raw.bodyStructure;
+  }
+
+  /** At most `IMAP_CONTENT_MAX_PART_BYTES` of the decoded part, under one deadline for the whole download. */
+  private async downloadCappedText(uid: number, part: string): Promise<string> {
+    let content: Readable | undefined;
+    try {
+      return await this.withDeadline(
+        async () => {
+          const result: { content?: Readable } = await this.providerCall(() =>
+            this.client.download(String(uid), part, { uid: true, maxBytes: IMAP_CONTENT_MAX_PART_BYTES }),
+          );
+          content = result.content;
+          if (content === undefined) return "";
+          const source = content;
+          const chunks: Buffer[] = [];
+          for await (const chunk of this.providerStream(() => source)) chunks.push(chunk as Buffer);
+          return Buffer.concat(chunks).toString("utf8");
+        },
+        IMAP_CONTENT_DOWNLOAD_TIMEOUT_MS,
+        "content download",
+      );
+    } catch (error) {
+      if (content !== undefined && !content.destroyed) content.destroy();
+      throw error;
+    }
+  }
+
+  async fetchMessageBody(path: string, uid: number): Promise<ImapMessageBody | null> {
+    const structure = await this.bodyStructureOf(path, uid);
+    if (structure === null) return null;
+    const tree = walkBodyStructure(structure);
+    // A single-part root may have no `.part`; `download()` special-cases "1" for that.
+    const bodyText = tree.textPlainPart
+      ? await this.downloadCappedText(uid, tree.textPlainPart.part ?? "1")
+      : undefined;
+    const bodyHtml = tree.textHtmlPart ? await this.downloadCappedText(uid, tree.textHtmlPart.part ?? "1") : undefined;
+    return { bodyText, bodyHtml };
+  }
+
+  async searchMessageId(path: string, messageId: string): Promise<number[]> {
+    await this.ensureSelected(path);
+    const found = await this.withDeadline(
+      () => this.providerCall(() => this.client.search({ header: { "message-id": messageId } }, { uid: true })),
+      IMAP_SEARCH_TIMEOUT_MS,
+      "search",
+    );
+    return found === false ? [] : found;
+  }
+
+  async downloadPart(path: string, uid: number, part: string): Promise<Readable | null> {
+    const structure = await this.bodyStructureOf(path, uid);
+    if (structure === null || !hasLeafPart(structure, part)) return null;
+    const stream = this.openAttachmentStream(uid, part);
+    // A consumer that gives up before the end leaves the download's command in flight.
+    stream.once("close", () => {
+      if (!stream.readableEnded) this.failed = true;
+    });
+    return stream;
+  }
+
   /** The light half of a message: everything a FETCH of its envelope, flags, headers and BODYSTRUCTURE gives. */
   private parseFetchedMessage(path: string, raw: FetchMessageObject): ImapFetchedMessage {
     const envelope = raw.envelope;
@@ -911,6 +1003,13 @@ export class ImapFlowMailClient implements ImapMailClient {
     if (observed.length > 0) imapDiagnostic("operation", observed);
     void observed;
   }
+}
+
+/** Whether `part` names a leaf of the structure (a single-part root is part "1"). */
+function hasLeafPart(root: MessageStructureObject, part: string): boolean {
+  const visit = (node: MessageStructureObject): boolean =>
+    node.childNodes && node.childNodes.length > 0 ? node.childNodes.some(visit) : (node.part ?? "1") === part;
+  return visit(root);
 }
 
 /** A listed STATUS with every cursor a pass compares, as numbers; anything less (a refused STATUS) is no status. */

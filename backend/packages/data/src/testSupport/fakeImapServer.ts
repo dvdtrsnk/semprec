@@ -265,7 +265,7 @@ function inRange(uid: number, set: string, maxUid: number): boolean {
  * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and messages of
  * one part or of one level of `multipart/*` parts, configurable capabilities, a fixed delay before every response, a
  * log of every command verb it received and of every body part a FETCH read. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
- * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH, UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
+ * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH (by UID set and HEADER), UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
  * (whole or partial, `N` and `N.MIME` of a multipart message; with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
  * LOGOUT. Another client's expunge or move is pushed to an idling connection as VANISHED (QRESYNC enabled) or EXPUNGE,
  * a delivery as EXISTS.
@@ -536,7 +536,16 @@ export class FakeImapServer {
         const maxUid = selected.messages.at(-1)?.uid ?? 0;
         const uidIndex = criteria.findIndex((token) => token.toUpperCase() === "UID");
         const set = uidIndex === -1 ? undefined : criteria[uidIndex + 1];
-        const found = selected.messages.filter((message) => set === undefined || inRange(message.uid, set, maxUid));
+        // `HEADER <field> <string>`: the field's value contains the string, case-insensitively.
+        const headerIndex = criteria.findIndex((token) => token.toUpperCase() === "HEADER");
+        const field = headerIndex === -1 ? undefined : criteria[headerIndex + 1]?.toLowerCase();
+        const contained = headerIndex === -1 ? undefined : (criteria[headerIndex + 2] ?? "").toLowerCase();
+        const found = selected.messages.filter(
+          (message) =>
+            (set === undefined || inRange(message.uid, set, maxUid)) &&
+            (field === undefined ||
+              (partsOf(message.raw).fields.get(field) ?? "").toLowerCase().includes(contained ?? "")),
+        );
         return { text: `* SEARCH${found.map((message) => ` ${message.uid}`).join("")}\r\n${ok()}` };
       }
       case "FETCH": {

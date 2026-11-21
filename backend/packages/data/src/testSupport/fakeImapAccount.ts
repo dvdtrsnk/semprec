@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
 import type { ImapFetchedMessage, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
 import { IMAP_SNIPPET_BYTES } from "../mail/imapSnippet.js";
@@ -189,6 +190,25 @@ export class FakeImapAccount {
           targetUidValidity: String(this.folder(targetPath).uidValidity),
         };
       },
+      fetchMessageBody: async (path, uid) => {
+        const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+        if (!message) return null;
+        const { bodyText, bodyHtml } = await parsed(message);
+        return { bodyText, bodyHtml };
+      },
+      searchMessageId: async (path, messageId) => {
+        const uids: number[] = [];
+        for (const message of this.folder(path).messages)
+          if ((await parsed(message)).messageId.includes(messageId)) uids.push(message.uid);
+        return uids;
+      },
+      downloadPart: async (path, uid, part) => {
+        const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+        if (!message) return null;
+        // As the light fetch numbers them: the attachments from part 2.
+        const attachment = (await simpleParser(message.raw)).attachments[Number(part) - 2];
+        return attachment ? Readable.from(attachment.content) : null;
+      },
     } satisfies Omit<Required<ImapMailClient>, "close" | "isReusable" | "ping">;
     // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not.
     const logged =
@@ -211,6 +231,9 @@ export class FakeImapAccount {
       appendMessage: logged("appendMessage", methods.appendMessage),
       prepareMove: logged("prepareMove", methods.prepareMove),
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
+      fetchMessageBody: logged("fetchMessageBody", methods.fetchMessageBody),
+      searchMessageId: logged("searchMessageId", methods.searchMessageId),
+      downloadPart: logged("downloadPart", methods.downloadPart),
       close: async () => {},
     };
   }

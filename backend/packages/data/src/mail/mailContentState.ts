@@ -18,3 +18,11 @@ export function mailContentStateOf(input: { arrival: MailArrival; date?: Date; c
   if (input.date && input.date.getTime() >= input.connectedAt.getTime() - FULL_CONTENT_WINDOW_MS) return "full";
   return "index";
 }
+
+/**
+ * What a reader is told of a message's body: `full` is stored with the message, `cached` was fetched from the provider
+ * on demand within the last `MAIL_CONTENT_CACHE_DAYS`, `remote` is with the provider only (an `index` message whose
+ * body was not fetched, or whose fetched copy expired).
+ */
+export const MAIL_MESSAGE_CONTENT_STATES = ["full", "cached", "remote"] as const;
+export type MailMessageContentState = (typeof MAIL_MESSAGE_CONTENT_STATES)[number];

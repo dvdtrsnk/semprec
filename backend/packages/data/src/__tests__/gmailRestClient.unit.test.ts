@@ -94,7 +94,12 @@ describe("Gmail label inventory validation", () => {
     await expect(client.listLabels()).rejects.toThrow();
   });
 });
-import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  MAX_ATTACHMENT_BYTES,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+} from "../mail/providerTypes.js";
 
 function encodeBase64Url(value: string): string {
   return Buffer.from(value).toString("base64url");
@@ -715,5 +720,77 @@ describe("Gmail listing pages and metadata fetches", () => {
     });
     expect(fetched?.message.bodyText).toBeUndefined();
     expect(fetched?.message.bodyHtml).toBeUndefined();
+  });
+});
+
+describe("Gmail attachment parts", () => {
+  const hrefOf = (input: string | URL | Request): string =>
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+  /** A `format=full` message with one attachment at part `1`, its bytes named by `attachmentId`. */
+  function fullMessage(filename: string, attachmentId: string, size = 5): Response {
+    return Response.json({
+      id: "gmail-message-1",
+      threadId: "gmail-thread-1",
+      payload: {
+        partId: "",
+        mimeType: "multipart/mixed",
+        headers: [{ name: "Message-ID", value: "<gmail-message-1@example.test>" }],
+        parts: [
+          { partId: "0", mimeType: "text/plain", body: { size: 4, data: encodeBase64Url("Body") } },
+          { partId: "1", mimeType: "application/pdf", filename, body: { size, attachmentId } },
+        ],
+      },
+    });
+  }
+
+  it("records the payload part id of a full message's attachment as its provider part", async () => {
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => fullMessage("a.pdf", "attachment-id-1"),
+    );
+    const fetched = await client.fetchMessage("gmail-message-1", "full");
+    expect(fetched?.message.attachments.map((attachment) => attachment.providerPart)).toEqual(["1"]);
+  });
+
+  it("reads the message again and fetches the part's bytes by the attachment id of that read", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(fullMessage("a.pdf", "attachment-id-of-this-read"))
+      .mockResolvedValueOnce(Response.json({ size: 5, data: encodeBase64Url("bytes") }));
+    const stream = await new GmailRestClient(async () => "token", fetchImpl).openAttachmentContent(
+      "gmail-message-1",
+      "1",
+      "a.pdf",
+    );
+    if (!stream) throw new Error("Missing Gmail attachment stream");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
+    expect(Buffer.concat(chunks).toString()).toBe("bytes");
+    expect(new URL(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).searchParams.get("format")).toBe("full");
+    expect(new URL(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).pathname).toBe(
+      "/gmail/v1/users/me/messages/gmail-message-1/attachments/attachment-id-of-this-read",
+    );
+  });
+
+  it.each([
+    ["the part has another name", () => fullMessage("other.pdf", "attachment-id-1")],
+    ["the message is gone", () => new Response(null, { status: 404 })],
+  ])("answers null without a byte request when %s", async (_name, response) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => response());
+    const client = new GmailRestClient(async () => "token", fetchImpl);
+    await expect(client.openAttachmentContent("gmail-message-1", "1", "a.pdf")).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an attachment over the cap before decoding it", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(fullMessage("a.pdf", "attachment-id-1"))
+      .mockResolvedValueOnce(Response.json({ size: MAX_ATTACHMENT_BYTES + 1, data: "" }));
+    const client = new GmailRestClient(async () => "token", fetchImpl);
+    await expect(client.openAttachmentContent("gmail-message-1", "1", "a.pdf")).rejects.toBeInstanceOf(
+      AttachmentCapExceededError,
+    );
   });
 });

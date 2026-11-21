@@ -408,8 +408,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   - Graph decides by `mailContentStateOf` with `receivedDateTime` as the Date.
 - `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
   blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment
-  text folded into the search text. IMAP records the attachment's body part id in `mail_attachments.provider_part`,
-  Graph its attachment id; Gmail records none (its attachment ids change between fetches).
+  text folded into the search text. `mail_attachments.provider_part` records where the provider holds the bytes: IMAP
+  the body part id, Graph the attachment id, Gmail the payload's `partId` (Gmail's attachment ids change between
+  `messages.get` calls, so they are not stored).
 - `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
   `preview_text` from the snippet (IMAP: the first 2 KiB of the text part, else HTML part; Gmail: `snippet`, its
   HTML entities decoded; Graph: `bodyPreview`); for IMAP each attachment as a `mail_attachments` row with `blob_id`
@@ -423,6 +424,70 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   removal impact counts only stored attachments as kept; a Semp attachment reference has no blob; calendar parts
   are read from stored ones only. A forward copies only attachments that have a Files item.
 
+### On-demand content and attachments
+
+- `contentState` as readers see it (`MAIL_MESSAGE_CONTENT_STATES`): `full` (the body is stored, `Emails.body`), `cached`
+  (an `index` message with an unexpired row in `mail_message_content_cache`) or `remote` (an `index` message without
+  one). The thread detail serves a `cached` message's body from the row (HTML part, else text part, sanitized like a
+  stored body) and a `remote` one with both bodies empty; `preview` is always the stored snippet.
+- `mail_message_content_cache` (`mail/mailContentCacheStore.ts`): per Emails item (`ON DELETE CASCADE`) the HTML and the
+  text part as the provider returned them, unsanitized, with `fetched_at` and `expires_at` = `fetched_at` +
+  `MAIL_CONTENT_CACHE_DAYS` (7). An expired row reads as none. Its one writer is `writeMailContentCache`, called only by
+  the content route's fetch: it locks the Emails item `FOR KEY SHARE`, writes nothing for a trashed or gone item, and
+  upserts on `(tenant_id, item_id)`, so a repeat fetch replaces the row and two writers never fail on each other.
+  Trash, Mail off and removal leave rows to expire; a purge removes them with the item.
+- `mailContentCacheSweep` (daily 03:55, `api` runtime, system task) deletes expired rows, one transaction per active
+  tenant (`forEachActiveTenant`); a failing tenant does not stop the others.
+- `GET /api/mail/messages/:emailId/content[?allowRemoteImages=true]` (`mail/mailMessageContent.ts`) answers
+  `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt }` (the two times `null` for a
+  stored body). A malformed id is 400; an unknown, foreign or trashed id the same 404. A `full` message (or one without
+  a meta row) answers its stored body, an `index` message its unexpired cache row; otherwise the body is fetched from the
+  provider outside any transaction, written as the cache row in a short transaction and answered `cached`.
+  - Before any provider call, an account that is trashed, has no sync state or has Mail off answers 409
+    `mail_content_unavailable` with `details.reason` `mailboxUnavailable`; one whose last sync failure is
+    `reauthorization` answers `reauthorizationRequired`.
+  - IMAP: the stored password (access logged as the user, purpose `imap_content`), then the account's client from the
+    sync's factory (the kept session of `sharedImapSessionPool`, else a new connection under the connection limiter).
+    Folder edge by folder, those with a UID first: the edge's UID while the folder's UIDVALIDITY equals the stored
+    `mail_folder_sync_state.uidvalidity`, else (UID gone, UIDVALIDITY changed, edge without UID) the first five UIDs
+    `UID SEARCH HEADER Message-ID` finds in that folder. The body parts are chosen as the full ingest chooses them
+    (`walkBodyStructure`), each read up to 16 MiB (`IMAP_CONTENT_MAX_PART_BYTES`) under a 60 s deadline; a SEARCH has
+    30 s. Gmail and Graph read the body with the sync's own full read, so it is chosen and annotated as the full ingest
+    stores it: Gmail `fetchMessage(id, "full")` (`messages.get format=full` by `provider_message_id`), Graph
+    `fetchMessageContent` (`GET /me/messages/{id}?$select=body,bodyPreview,hasAttachments`, then the attachment list
+    of a message that has attachments, item and reference attachments annotated into the body; no attachment byte is
+    fetched). Both: 30 s per request, every JSON response of the Gmail and Graph clients capped at 64 MiB, 404 = no
+    such message.
+  - Failures: a refused sign-in is `reauthorizationRequired`; a provider that holds no such message is
+    `messageNotFound`; any other provider failure (connect, limiter wait, timeout, refused command, HTTP status) is
+    logged by error name with local ids and answered `providerUnreachable`. A database failure keeps its identity.
+    Nothing is cached on a failure.
+  - Concurrent reads of one message in the process share one fetch (keyed by tenant and item id); a read that missed a
+    fetch which just ended re-reads the cache before asking the provider. Only a read that asks the provider is
+    counted by the throttle: action `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as
+    the password routes), refusal 429 `rate_limited` with `Retry-After`.
+- `POST /api/mail/messages/:emailId/attachments/:attachmentId/save` (`mail/mailAttachmentSave.ts`) answers
+  `{ fileItemId }`. A user action; no agent tool calls it. An attachment of another message, an unknown, foreign or
+  trashed id is the same 404. An attachment with stored bytes and a live Files item of the Email (same blob and name)
+  answers that item without a provider call. Otherwise the bytes are fetched by `provider_part` (IMAP: the same folder
+  and UID resolution, the leaf part streamed with the `MAX_ATTACHMENT_BYTES` cap; Gmail: the message read again with
+  `format=full`, the attachment of the stored `partId` and filename taken from it and its bytes read by the attachment
+  id of that read (`attachments.get`), or from its inline data; Graph `/attachments/{id}/$value` with the immutable-id
+  header). Only IMAP records attachments without bytes (a Gmail or Graph index message records none, and a full
+  one stores every attachment's bytes). The bytes are counted by `mailContentFetch`, and written to the mail
+  attachment storage before the transaction; a stream that sends nothing for 60 s fails. An attachment the IMAP or
+  Gmail client reports over the cap is 409 `attachmentTooLarge` (Graph's stream fails as `providerUnreachable`), other
+  failures are answered as for the content route, and the written bytes are removed.
+  - The transaction (`saveMailAttachmentFile`, `mail/attachments.ts`) takes the mail-thread guard, locks the
+    `mail_attachments` row `FOR UPDATE`, gives a row without bytes the blob (`findOrCreateBlob`, deduplicated by content
+    hash) and the stored size, then answers the Email's live Files item over that blob and name or creates one with the
+    `Emails.attachments` and `Threads.attachments` edges, as the full ingest does (no attachment text is indexed).
+    Concurrent saves queue on the guard and the row, so a second save finds what the first wrote; bytes nothing
+    references (a duplicate blob, or a save that lost) are deleted after the transaction.
+- Agent reads never fetch: `mail.thread.get` gives a `remote` message's preview as `bodyText` with a `contentNote`
+  saying its content is not downloaded, and the answer-expected gate shows it as a preview marked so; a `cached`
+  message is read like a stored one.
+
 ### IMAP connection limits and kept sync sessions
 
 - `mail/imapConnectionLimiter.ts` is the one per-process limiter of IMAP connections, shared by sync passes, moves,
@@ -435,9 +500,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   it would cap how many accounts of one provider can listen at all. Everything else (`kind: "work"`: a sync session,
   the IDLE folder lookup, a Sent APPEND) counts against both.
 - `mail/imapSessionPool.ts` keeps one IMAP sync connection per account open between uses in the process
-  (`sharedImapSessionPool`, used by the composition root's sync adapter). The move drain and the pass of a job, and
-  consecutive passes, take the same connection in turn, exclusively; a second concurrent caller gets a connection
-  of its own. A kept connection is reused only when it was opened with the same server settings, user name and
+  (`sharedImapSessionPool`, used by the composition root's sync adapter and its on-demand content reads). The move
+  drain and the pass of a job, consecutive passes and content reads take the same connection in turn, exclusively; a
+  second concurrent caller gets a connection of its own. A kept connection is reused only when it was opened with the same server settings, user name and
   credential, answers a NOOP, and nothing it ran failed (`ImapMailClient.isReusable`); a rejected operation, a
   failed or timed-out fetch, an ambiguous move or a changed sign-in closes it instead.
 - A kept connection holds its account and host slots while it is unused, because the provider counts it, and gives
@@ -512,9 +577,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - It is taken first, before membership reads, thread resolution, metadata or item locks, by: the resolver,
   ingest (before its existing-message read and savepoint), the IMAP/Gmail/Graph reconcilers (Gmail before its
   folder-state guard), SMTP failed-claim cleanup, merges, thread actions, thread-task writes, the
-  `mail.thread.proposeTask` tool and the mail purge hook.
+  `mail.thread.proposeTask` tool, the attachment save (it writes a `Threads.attachments` edge) and the mail purge hook.
 - It serializes all thread decisions of a tenant across mailboxes for the lifetime of the transaction that takes
-  it; no sync pass holds it across a provider call.
+  it; no sync pass, content read or attachment save holds it across a provider call.
 - Only writers that hold several Emails items in one transaction take it. Single-item writers (generic item
   PATCH, draft writes, person linking) do not.
 
@@ -693,7 +758,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ## Provider failure privacy
 
 Applies to SMTP send, IMAP connect and later IMAP calls/streams, Gmail/Graph sync reads and attachment
-streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification and removal cleanup.
+streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification, removal cleanup and the
+on-demand content and attachment reads.
 
 - Inside the operation owner, keep the original primary and secondary failure values (including `undefined`)
   until settlement and cleanup finish; cleanup never replaces the primary.
@@ -816,6 +882,7 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 - Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.
+- Attachment save: mail-thread guard → `mail_attachments` row → blob → Files item and its edges.
 - Inbox: source item → attachment row; source → blob; card holders never wait for the source and source
   holders never wait for a card.
 - Value-link evaluation: target item row → its link row.

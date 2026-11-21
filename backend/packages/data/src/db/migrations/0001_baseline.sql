@@ -1876,6 +1876,34 @@ ALTER TABLE ONLY public.mail_folder_sync_state
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_folder_sync_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- mail_message_content_cache
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_message_content_cache (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    item_id uuid NOT NULL,
+    body_html text,
+    body_text text,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE public.mail_message_content_cache IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_html IS 'The HTML part of an index message as its provider returned it on demand, unsanitized like Emails.body; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_text IS 'The text part of an index message as its provider returned it on demand; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.expires_at IS 'fetched_at plus seven days; readers ignore the row from then on and the daily sweep deletes it.';
+
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_pkey PRIMARY KEY (tenant_id, item_id);
+
+CREATE INDEX mail_message_content_cache_tenant_expires_idx ON public.mail_message_content_cache USING btree (tenant_id, expires_at);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_content_cache TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- mail_message_flag_sync_state
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3442,6 +3470,9 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3787,6 +3818,9 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_message_item_id_tenant_fkey FOREIGN KEY (tenant_id, message_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -4094,6 +4128,12 @@ ALTER TABLE public.mail_folder_sync_state ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.mail_folder_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mail_folder_sync_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_message_content_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_message_content_cache AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_message_content_cache USING (true) WITH CHECK (true);
 
 ALTER TABLE public.mail_message_flag_sync_state ENABLE ROW LEVEL SECURITY;
 
