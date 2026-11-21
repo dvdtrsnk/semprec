@@ -293,7 +293,7 @@ describe("observability.checkSystem (issue #169)", () => {
     const overdueMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: overdueMailbox, syncMode: "imap" });
     await pool.query(
-      `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
+      `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 hour' WHERE item_id = $1`,
       [overdueMailbox],
     );
 
@@ -553,7 +553,7 @@ describe("observability.checkSystem (issue #169)", () => {
       const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       await pool.query(
-        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
+        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 hour' WHERE item_id = $1`,
         [mailboxItemId],
       );
       return mailboxItemId;

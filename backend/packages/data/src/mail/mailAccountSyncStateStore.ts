@@ -161,6 +161,46 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+export interface MailAccountStallState extends MailAccountSyncStateRow {
+  /** A pass holds an unexpired lease. */
+  passRunning: boolean;
+  /** `next_expected_activity_at` lies more than the grace in the past. */
+  overdue: boolean;
+  /** The last successful pass ended within the grace. */
+  recentlySynced: boolean;
+}
+
+/**
+ * Locks the account's row like `lockMailAccountSyncState` and judges its lease and activity times against the
+ * database clock.
+ */
+export async function lockMailAccountStallState(
+  client: PoolClient,
+  itemId: string,
+  graceMs: number,
+): Promise<MailAccountStallState | null> {
+  const { rows } = await client.query<
+    MailAccountSyncStateDbRow & { pass_running: boolean; overdue: boolean; recently_synced: boolean }
+  >(
+    `SELECT ${COLUMNS},
+            COALESCE(pass_lease_token IS NOT NULL AND pass_lease_expires_at > now(), false) AS pass_running,
+            COALESCE(next_expected_activity_at < now() - make_interval(secs => $2::double precision / 1000), false)
+              AS overdue,
+            COALESCE(last_successful_sync_at > now() - make_interval(secs => $2::double precision / 1000), false)
+              AS recently_synced
+       FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId, graceMs],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...mapRow(row),
+    passRunning: row.pass_running,
+    overdue: row.overdue,
+    recentlySynced: row.recently_synced,
+  };
+}
+
 /** The account's sync mode and recorded OAuth grant; `null` for a mailbox that never connected. */
 export async function getMailAccountGrant(
   client: Queryable,
