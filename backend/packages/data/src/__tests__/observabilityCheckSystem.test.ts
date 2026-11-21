@@ -22,7 +22,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
-import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
@@ -102,6 +102,22 @@ async function createActiveMailbox(): Promise<string> {
       await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
       return item.id;
     }),
+  );
+}
+
+/** An IMAP adapter whose connect fails with a plain error: an ordinary sync failure, not a reauthorization. */
+const UNEXPECTED_FAILURE = "IMAP connection failed unexpectedly";
+const unexpectedlyFailing: MailSyncAdapterFactory = {
+  createImapClient: async () => {
+    throw new Error(UNEXPECTED_FAILURE);
+  },
+};
+
+async function storeFixtureCredential(mailboxItemId: string): Promise<void> {
+  await runInTenant(getTenantZeroId(), () =>
+    withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
+    ),
   );
 }
 
@@ -620,13 +636,14 @@ describe("observability.checkSystem (issue #169)", () => {
         withTransaction(pool, (client) => resolveMailModuleIds(client)),
       );
 
-      // The pass has no stored credential, so it fails before any provider call, with its own report.
+      // The pass fails at the provider with an ordinary error, with its own report.
+      await storeFixtureCredential(mailboxItemId);
       await runInTenant(getTenantZeroId(), async () => {
         await expect(
-          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+          handleSyncMailAccountTask(pool, { mailboxItemId }, unexpectedlyFailing, moduleIds, unusedStorage, {
             job: { id: "sync-job-1" },
           }),
-        ).rejects.toThrow("has no stored credential");
+        ).rejects.toThrow(UNEXPECTED_FAILURE);
       });
       await runCheck();
 
@@ -641,21 +658,19 @@ describe("observability.checkSystem (issue #169)", () => {
       const moduleIds = await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) => resolveMailModuleIds(client)),
       );
+      await storeFixtureCredential(mailboxItemId);
       await runInTenant(getTenantZeroId(), async () => {
         await expect(
-          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+          handleSyncMailAccountTask(pool, { mailboxItemId }, unexpectedlyFailing, moduleIds, unusedStorage, {
             job: { id: "sync-before-reauthorization" },
           }),
-        ).rejects.toThrow("has no stored credential");
+        ).rejects.toThrow(UNEXPECTED_FAILURE);
       });
       await runCheck();
       expect(await mailProblems(mailboxItemId)).toMatchObject([
         { severity: "warning", occurrence_count: 2, resolved_at: null },
       ]);
       await runInTenant(getTenantZeroId(), async () => {
-        await withTransaction(pool, (client) =>
-          storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
-        );
         await expect(
           handleSyncMailAccountTask(
             pool,
