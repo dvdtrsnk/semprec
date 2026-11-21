@@ -228,9 +228,16 @@ export async function createDispatcher(
   const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
   const graphWebhookListener = createGraphWebhookRequestListener(pool);
-  const googleCalendarWebhookListener = createGoogleCalendarWebhookRequestListener(pool);
-  const graphCalendarWebhookListener = createGraphCalendarWebhookRequestListener(pool);
-  const mailOauthCallbackListener = createMailOauthCallbackRequestListener(pool);
+  // One limiter for both calendar webhooks, so a client address has one budget across them.
+  const calendarWebhookOptions = {
+    trustProxy: options.trustProxy ?? false,
+    clientIpThrottle: createClientIpThrottle(),
+  };
+  const googleCalendarWebhookListener = createGoogleCalendarWebhookRequestListener(pool, calendarWebhookOptions);
+  const graphCalendarWebhookListener = createGraphCalendarWebhookRequestListener(pool, calendarWebhookOptions);
+  const mailOauthCallbackListener = createMailOauthCallbackRequestListener(pool, {
+    trustProxy: options.trustProxy ?? false,
+  });
   const accountExportDownloadListener = createAccountExportDownloadListener(pool, { storage: options.blobStorage });
 
   // Every request mints its own trace id; `AsyncLocalStorage` carries it through the promise chains

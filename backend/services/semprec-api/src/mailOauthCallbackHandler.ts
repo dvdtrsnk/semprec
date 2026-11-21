@@ -2,7 +2,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { resolveMailOauthRedirectUrl } from "@semprec/data";
 import { NO_STORE, sendJson } from "./adapter/http.js";
+import { clientIpFromRequest } from "./clientIp.js";
+import { createClientIpThrottle, type ClientIpThrottle } from "./clientIpThrottle.js";
 import { logger } from "./logger.js";
+
+export interface MailOauthCallbackRequestListenerOptions {
+  /** Read the throttle key from the last `X-Forwarded-For` hop. */
+  trustProxy: boolean;
+  /** Defaults to one fresh limiter per listener. */
+  clientIpThrottle?: ClientIpThrottle;
+}
 
 /** Matches the redirect URI `mail/mailOauthRouteHandlers.ts` builds. */
 export const MAIL_OAUTH_CALLBACK_PATH = "/api/mail/oauth/callback";
@@ -48,12 +57,28 @@ function parseCallback(req: IncomingMessage): CallbackAnswer | null {
  * expires. A malformed `state` or `error`, or neither `error` nor a bounded `code`, is 400 `validation_failed` before
  * any database read.
  *
+ * Every request counts under `mailOauthCallback` per client address, first of all; over the limit it answers 429
+ * `rate_limited` with `Retry-After` and reads nothing.
+ *
  * When the open state names a redirect target (`redirectTarget: "app"` at start), the same values go to that target
  * as a 302 instead: `semprec://oauth?state=…&code=…`, or `…&error=…`. The target URL comes from the stored state
  * only (`resolveMailOauthRedirectUrl`), never from the request.
  */
-export function createMailOauthCallbackRequestListener(pool: Pool) {
+export function createMailOauthCallbackRequestListener(pool: Pool, options: MailOauthCallbackRequestListenerOptions) {
+  const clientIpThrottle = options.clientIpThrottle ?? createClientIpThrottle();
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const ip = clientIpFromRequest(req, { trustProxy: options.trustProxy });
+    const acquisition = clientIpThrottle.tryAcquire("mailOauthCallback", ip);
+    if (!acquisition.granted) {
+      sendJson(
+        res,
+        429,
+        { error: { code: "rate_limited" } },
+        { ...RESPONSE_HEADERS, "Retry-After": String(acquisition.retryAfterSeconds) },
+      );
+      return;
+    }
     const answer = parseCallback(req);
     if (answer === null) {
       refuse(res);

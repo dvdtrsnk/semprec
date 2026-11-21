@@ -2,10 +2,18 @@ import { isIPv4, isIPv6 } from "node:net";
 
 /**
  * `mailboxCredentialVerification` (the password mailbox connect login check) is counted per user;
- * the other four are public pre-authentication actions counted per client address.
+ * the others are public actions reachable without a session, counted per client address.
+ * `mailOauthCallback` is the provider's OAuth redirect target and `calendarWebhook` a Google or
+ * Microsoft Graph calendar change notification.
  */
 export type ThrottledAction =
-  "login" | "passwordResetRequest" | "passwordResetConsume" | "invitationAccept" | "mailboxCredentialVerification";
+  | "login"
+  | "passwordResetRequest"
+  | "passwordResetConsume"
+  | "invitationAccept"
+  | "mailboxCredentialVerification"
+  | "mailOauthCallback"
+  | "calendarWebhook";
 
 export interface ClientIpThrottleLimit {
   maxEvents: number;
@@ -19,6 +27,10 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   passwordResetConsume: { maxEvents: 10, windowSeconds: 60 * 60 },
   invitationAccept: { maxEvents: 10, windowSeconds: 60 * 60 },
   mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
+  mailOauthCallback: { maxEvents: 30, windowSeconds: 15 * 60 },
+  // A provider delivers every subscribed account's notifications from a few addresses, so the
+  // budget is per minute and well above one user's edit rate.
+  calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];

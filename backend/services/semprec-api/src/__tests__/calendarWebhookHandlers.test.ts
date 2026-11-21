@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import pg, { type Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createItemWithClient, seedSystem, withTransaction } from "@semprec/data";
@@ -11,6 +11,7 @@ import {
   GOOGLE_CALENDAR_WEBHOOK_PATH,
   GRAPH_CALENDAR_WEBHOOK_PATH,
 } from "../calendarWebhookHandlers.js";
+import { createClientIpThrottle } from "../clientIpThrottle.js";
 
 let admin: Pool;
 /** The API's runtime role, under row-level security. */
@@ -94,8 +95,8 @@ describe("calendar webhooks", () => {
     tenantId = await createTestTenant(admin);
     await runInTenant(tenantId, () => seedSystem(pool));
     accountItemId = await createItem("mailboxes", { name: "Account", provider: "gmail" });
-    const googleServer = await listen(createGoogleCalendarWebhookRequestListener(pool));
-    const graphServer = await listen(createGraphCalendarWebhookRequestListener(pool));
+    const googleServer = await listen(createGoogleCalendarWebhookRequestListener(pool, { trustProxy: false }));
+    const graphServer = await listen(createGraphCalendarWebhookRequestListener(pool, { trustProxy: false }));
     servers = [googleServer.server, graphServer.server];
     google = `${googleServer.baseUrl}${GOOGLE_CALENDAR_WEBHOOK_PATH}`;
     graph = `${graphServer.baseUrl}${GRAPH_CALENDAR_WEBHOOK_PATH}`;
@@ -219,12 +220,59 @@ describe("calendar webhooks", () => {
       expect(await calendarSyncJobKeys()).toEqual([]);
     });
 
+    it("looks a repeated subscription up once per batch and at most 20 distinct subscriptions", async () => {
+      const queries = vi.spyOn(pool, "query");
+      const repeated = Array.from({ length: 60 }, () => ({ subscriptionId: "subscription-1", clientState }));
+      const distinct = Array.from({ length: 30 }, (_, index) => ({
+        subscriptionId: `unknown-${index}`,
+        clientState,
+      }));
+      try {
+        expect((await post(JSON.stringify({ value: [...repeated, ...distinct] }))).status).toBe(202);
+        const lookups = queries.mock.calls
+          .map(([query]) => query)
+          .filter((query) => typeof query === "string" && query.includes("route_graph_calendar_subscription"));
+        expect(lookups).toHaveLength(20);
+      } finally {
+        queries.mockRestore();
+      }
+      expect(await calendarSyncJobKeys()).toEqual([`calendar-account-sync:${accountItemId}`]);
+    });
+
     it("refuses malformed JSON with 400, an oversized body with 413 and anything but POST with 404", async () => {
       expect((await post("{not json")).status).toBe(400);
       expect((await post("[]")).status).toBe(400);
       expect((await post(JSON.stringify({ value: [], padding: "x".repeat(300 * 1024) }))).status).toBe(413);
       expect((await fetch(graph, { method: "GET" })).status).toBe(404);
       expect(await calendarSyncJobKeys()).toEqual([]);
+    });
+  });
+
+  describe("the per-address throttle", () => {
+    it("answers 429 with Retry-After before any database read, across both webhooks, once an address is over its budget", async () => {
+      const throttle = createClientIpThrottle({ limits: { calendarWebhook: { maxEvents: 1, windowSeconds: 60 } } });
+      // Nothing listens on port 1: a request that reaches the database fails with a 500.
+      const unreachable = new pg.Pool({ connectionString: "postgres://semprec:none@127.0.0.1:1/none" });
+      const options = { trustProxy: false, clientIpThrottle: throttle };
+      const googleServer = await listen(createGoogleCalendarWebhookRequestListener(unreachable, options));
+      const graphServer = await listen(createGraphCalendarWebhookRequestListener(unreachable, options));
+      servers.push(googleServer.server, graphServer.server);
+      const headers = { "X-Goog-Channel-ID": randomUUID(), "X-Goog-Channel-Token": "a".repeat(64) };
+      const googleUrl = `${googleServer.baseUrl}${GOOGLE_CALENDAR_WEBHOOK_PATH}`;
+      const graphUrl = `${graphServer.baseUrl}${GRAPH_CALENDAR_WEBHOOK_PATH}`;
+      try {
+        expect((await fetch(googleUrl, { method: "POST", headers })).status).toBe(500);
+
+        const refused = await fetch(googleUrl, { method: "POST", headers });
+        expect(refused.status).toBe(429);
+        expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+        expect(await refused.text()).toBe("");
+        const batch = JSON.stringify({ value: [{ subscriptionId: "subscription-1", clientState: "c" }] });
+        expect((await fetch(graphUrl, { method: "POST", body: batch })).status).toBe(429);
+        expect((await fetch(`${graphUrl}?validationToken=token`, { method: "POST" })).status).toBe(429);
+      } finally {
+        await unreachable.end();
+      }
     });
   });
 });
