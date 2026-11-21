@@ -96,13 +96,7 @@ export async function createImapMailboxFixture(runtime: Pool): Promise<ImapMailb
     mailboxId,
     async sync(createImapClient, storage = noAttachmentStorage) {
       const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
-      await handleSyncMailAccountTask(
-        runtime,
-        { mailboxItemId: mailboxId },
-        { createImapClient },
-        moduleIds,
-        storage,
-      );
+      await handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, { createImapClient }, moduleIds, storage);
     },
   };
 }

@@ -48,7 +48,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -1338,7 +1338,7 @@ describe("mail move intent store", () => {
         attachmentsRelationPropertyId: attachments.id,
         storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
         storageKeyPrefix: fx.mailboxItemId,
-        pass: UNGUARDED_IMAP_PASS,
+        pass: UNGUARDED_MAIL_SYNC_PASS,
       }),
     );
     expect(reconciledFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);

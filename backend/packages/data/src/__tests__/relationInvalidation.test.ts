@@ -17,7 +17,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import type { ItemRow } from "../types.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 import { fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
 
 describe("relation invalidations", () => {
@@ -279,7 +279,7 @@ describe("relation invalidations", () => {
         storage,
         storageKeyPrefix: "test",
         folderPaths: ["All Mail"],
-        pass: UNGUARDED_IMAP_PASS,
+        pass: UNGUARDED_MAIL_SYNC_PASS,
       });
       const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
         emailsDatabaseId,

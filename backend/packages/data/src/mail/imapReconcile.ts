@@ -43,8 +43,8 @@ import {
 } from "./mailMessageFlagSyncStore.js";
 import { createImapMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
-import { createAttachmentSpool, type AttachmentSpool } from "./imapAttachmentSpool.js";
-import { logger } from "./logger.js";
+import { createAttachmentSpool, type AttachmentSpool } from "./mailAttachmentSpool.js";
+import { inPassTransaction, withBatchStorage, type MailSyncPass, type MailSyncPassResult } from "./mailSyncPass.js";
 
 /** A message as the light fetch gives it: envelope, threading and delivery headers, flags and labels, no body. */
 export type ImapMessageEnvelope = Omit<FetchedMessage, "bodyText" | "bodyHtml" | "attachments">;
@@ -538,34 +538,6 @@ function unchangedSinceLastReconcile(snapshot: MailFolderSyncStateRow, status: I
   );
 }
 
-/**
- * Records every storage key a batch writes; when the batch's transaction fails they are deleted, best effort, since
- * no committed row references them. Keys of a committed batch are never deleted here.
- */
-async function withBatchStorage<T>(
-  storage: BlobStorageWriter,
-  fn: (tracked: BlobStorageWriter) => Promise<T>,
-): Promise<T> {
-  const written = new Set<string>();
-  const tracked: BlobStorageWriter = {
-    async writeStream(storageKey, source, options) {
-      // Recorded before the write: a mid-write failure (disk full) still leaves a partial file at this key.
-      written.add(storageKey);
-      return storage.writeStream(storageKey, source, options);
-    },
-    delete: (storageKey) => storage.delete(storageKey),
-    readStream: (storageKey, range) => storage.readStream(storageKey, range),
-  };
-  try {
-    return await fn(tracked);
-  } catch (err) {
-    const outcomes = await Promise.allSettled([...written].map((key) => storage.delete(key)));
-    const failed = outcomes.filter((outcome) => outcome.status === "rejected").length;
-    if (failed > 0) logger.warn({ failed }, "Deleting the attachment bytes of a failed mail sync batch failed");
-    throw err;
-  }
-}
-
 /** A folder write's outcome inside a pass: the state it left, what it ingested and the copies that vanished. */
 interface AppliedImapFolder {
   state: MailFolderSyncStateRow;
@@ -893,17 +865,6 @@ const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
   "\\All": "all",
 };
 
-/** How a pass enters and ends each of its transactions; supplied by the sync job. */
-export interface ImapSyncPass {
-  /**
-   * Runs first in every transaction of the pass. `false` (the mailbox is gone, in the trash or has Mail switched off)
-   * ends the pass with nothing more written.
-   */
-  enter(client: PoolClient): Promise<boolean>;
-  /** Runs last in the pass's final transaction, after the account activity is recorded. */
-  finish(client: PoolClient, result: { complete: boolean }): Promise<void>;
-}
-
 export interface ReconcileImapAccountParams {
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
@@ -920,33 +881,13 @@ export interface ReconcileImapAccountParams {
   folderPaths?: string[];
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
-  pass: ImapSyncPass;
-}
-
-export interface ReconcileImapAccountResult {
-  /** `false` when `pass.enter` ended the pass. */
-  ran: boolean;
-  /** `false` when new messages or backfill are left for a later pass, which `pass.finish` must schedule. */
-  complete: boolean;
+  pass: MailSyncPass;
 }
 
 /** The inbox first, so a new account shows its current mail before the backfill of other folders. */
 function inboxFirst(folders: ImapFolderRef[]): ImapFolderRef[] {
   const isInbox = (folder: ImapFolderRef) => folder.specialUse === "\\Inbox" || folder.path.toUpperCase() === "INBOX";
   return [...folders.filter(isInbox), ...folders.filter((folder) => !isInbox(folder))];
-}
-
-/** Every write transaction of a pass: `pass.enter` first, then the mail-thread guard. `null` when the pass ended. */
-async function inPassTransaction<T>(
-  pool: Pool,
-  pass: ImapSyncPass,
-  fn: (client: PoolClient) => Promise<T>,
-): Promise<{ value: T } | null> {
-  return withTransaction(pool, async (client) => {
-    if (!(await pass.enter(client))) return null;
-    await lockMailThreadMutation(client);
-    return { value: await fn(client) };
-  });
 }
 
 /**
@@ -964,7 +905,7 @@ export async function reconcileImapAccount(
   pool: Pool,
   imap: ImapMailClient,
   params: ReconcileImapAccountParams,
-): Promise<ReconcileImapAccountResult> {
+): Promise<MailSyncPassResult> {
   const ended = { ran: false, complete: false };
   const capabilities = await imap.getCapabilities();
   const allFolders = await imap.listFolders();

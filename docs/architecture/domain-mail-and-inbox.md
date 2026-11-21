@@ -223,7 +223,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
-  message's body parts and attachment bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) and every index
+  message's body parts and attachment bytes (spooled to a temp file, `mail/mailAttachmentSpool.ts`) and every index
   message's snippet are fetched with no transaction open and no guard held; the writes then run in short
   transactions: a prepare transaction (Folder items, each folder's sync state), one transaction per folder batch
   (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag

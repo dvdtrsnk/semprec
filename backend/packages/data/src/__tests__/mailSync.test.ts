@@ -106,7 +106,7 @@ import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
-import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
 import type { FetchedMessage } from "../mail/providerTypes.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
@@ -1600,7 +1600,7 @@ describe("IMAP reconcile core", () => {
     fetchAllUids: async () => [1, 2],
   });
   const reconcile = (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
   const folderEdges = async (folderRelationPropertyId: string, itemId?: string) =>
     countRows(`item_relations WHERE relation_definition_id = $1 ${itemId ? "AND (item_a = $2 OR item_b = $2)" : ""}`, [
       await relationDefinitionIdFor(folderRelationPropertyId),
@@ -2069,7 +2069,7 @@ describe("message arrival: live and backfill", () => {
   }
 
   const reconcileImap = async (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
 
   tenantIt(
     "IMAP: the initial backfill is backfill over every pass it takes; a delivery after the first pass is live unless its Date is old",
@@ -4418,7 +4418,7 @@ describe("mail flag write-back", () => {
     async () => {
       const params = await reconcileParams();
       const reconcile = (client: ImapMailClient) =>
-        reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
+        reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
       const message = { messageId: "<writeback@x>", envelope: {}, attachments: [], flags: [] };
       const initial = fakeImap({
         listFolders: async () => [
