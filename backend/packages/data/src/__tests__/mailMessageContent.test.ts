@@ -60,15 +60,17 @@ let storageRoot: string;
 const servers: FakeImapServer[] = [];
 const sessionPools: ImapSessionPool[] = [];
 
-/** A message dated 200 days ago, so indexed: `HTML` as a quoted-printable part and a base64 PDF. */
-function oldMessage(messageId: string, subject = "Old offer"): Buffer {
+/**
+ * `HTML` as a quoted-printable part and a base64 PDF, dated 200 days ago (so indexed) unless `date` is given.
+ */
+function oldMessage(messageId: string, subject = "Old offer", date = new Date(Date.now() - 200 * DAY_MS)): Buffer {
   return Buffer.from(
     [
       `Message-ID: ${messageId}`,
       "From: Sender <sender@sender.example.test>",
       `To: ${IMAP_FIXTURE_ACCOUNT}`,
       `Subject: ${subject}`,
-      `Date: ${new Date(Date.now() - 200 * DAY_MS).toUTCString()}`,
+      `Date: ${date.toUTCString()}`,
       "MIME-Version: 1.0",
       'Content-Type: multipart/mixed; boundary="part-boundary"',
       "",
@@ -278,11 +280,39 @@ describe("message content and attachments on demand", () => {
           bodyText: expect.stringContaining("Recent body"),
           fetchedAt: null,
           expiresAt: null,
+          attachments: [],
         },
       });
       // A stored body asks nothing of the provider and counts no fetch.
       expect(account.connects.count).toBe(0);
       expect(asked).toEqual([]);
+    });
+
+    tenantIt("lists a full message's attachments with their blob and Files item", async () => {
+      const account = await imapAccount();
+      const messageId = `<${randomUUID()}@sender.example.test>`;
+      account.server.deliver("INBOX", [], oldMessage(messageId, "Recent offer", new Date()));
+      await account.pass();
+      const { item_id: emailId, thread_id: threadId, content_state } = await messageByMessageId(messageId);
+      expect(content_state).toBe("full");
+      const stored = await attachmentOf(emailId);
+
+      const answer = await readContent({ throttle: countingThrottle().throttle }, emailId);
+
+      const { email } = await filesLinkedFrom(emailId, threadId);
+      expect(answer.body.attachments).toEqual([
+        {
+          attachmentId: stored.id,
+          filename: "report.pdf",
+          contentType: "application/pdf",
+          byteSize: PDF.length,
+          stored: true,
+          blobId: stored.blob_id,
+          fileItemId: email[0],
+        },
+      ]);
+      expect(stored.blob_id).not.toBeNull();
+      expect(email).toHaveLength(1);
     });
 
     tenantIt(
@@ -304,10 +334,23 @@ describe("message content and attachments on demand", () => {
 
         const first = await readContent(dependencies, account.emailId);
 
+        const attachment = await attachmentOf(account.emailId);
         expect(first.body).toMatchObject({
           emailId: account.emailId,
           contentState: "cached",
           bodyText: "Dobrý den, old offer",
+          // Listed from its metadata; the body fetch reads no attachment bytes.
+          attachments: [
+            {
+              attachmentId: attachment.id,
+              filename: "report.pdf",
+              contentType: "application/pdf",
+              byteSize: Number(attachment.byte_size),
+              stored: false,
+              blobId: null,
+              fileItemId: null,
+            },
+          ],
         });
         expect(first.body.bodyHtml).toContain("<b>old offer</b>");
         expect(first.body.bodyHtml).not.toContain("tracker.example.test");
@@ -583,6 +626,12 @@ describe("message content and attachments on demand", () => {
         expect(account.reads(from)).toEqual(["1:2"]);
         expect(asked).toHaveLength(1);
         expect(await storedFiles()).toHaveLength(1);
+
+        // The content route lists it as stored from now on.
+        const content = await readContent(dependencies, account.emailId);
+        expect(content.body.attachments).toEqual([
+          expect.objectContaining({ attachmentId: attachment.id, stored: true, fileItemId, blobId: stored.blob_id }),
+        ]);
       },
     );
 

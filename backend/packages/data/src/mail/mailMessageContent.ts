@@ -16,6 +16,7 @@ import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import type { ImapMailClient, ImapMessageBody } from "./imapReconcile.js";
 import { getMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
 import { readFreshMailContentCache, writeMailContentCache, type MailContentCacheRow } from "./mailContentCacheStore.js";
+import { readMailMessageAttachments, type MailMessageAttachment } from "./mailMessageAttachments.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { AttachmentCapExceededError, MailReauthorizationRequiredError } from "./providerTypes.js";
@@ -375,6 +376,8 @@ export interface MailMessageContent {
   /** When the provider copy was fetched and until when it is served; `null` for a stored body. */
   fetchedAt: string | null;
   expiresAt: string | null;
+  /** As the thread detail lists them; an unstored one has no blob and no Files item until it is saved. */
+  attachments: MailMessageAttachment[];
 }
 
 type ContentSource =
@@ -382,26 +385,30 @@ type ContentSource =
   | { kind: "cached"; cache: MailContentCacheRow }
   | { kind: "remote"; locator: MailMessageLocator };
 
-async function readContentSource(client: PoolClient, emailId: string): Promise<ContentSource> {
+/** Where the body comes from, and the attachments, read in one transaction. */
+async function readContentSource(
+  client: PoolClient,
+  emailId: string,
+): Promise<{ source: ContentSource; attachments: MailMessageAttachment[] }> {
   const email = await readLiveEmail(client, emailId);
+  const attachments = await readMailMessageAttachments(client, emailId);
   // A message without a meta row (a draft) and a `full` one store their body.
-  if (email.content_state !== "index" || email.message_id === null) return { kind: "full", body: email.body ?? "" };
+  if (email.content_state !== "index" || email.message_id === null)
+    return { source: { kind: "full", body: email.body ?? "" }, attachments };
   const cache = await readFreshMailContentCache(client, emailId);
-  if (cache !== null) return { kind: "cached", cache };
-  return {
-    kind: "remote",
-    locator: await readMailMessageLocator(client, {
-      emailId,
-      mailboxItemId: email.mailbox_item_id,
-      messageId: email.message_id,
-      providerMessageId: email.provider_message_id,
-    }),
-  };
+  if (cache !== null) return { source: { kind: "cached", cache }, attachments };
+  const locator = await readMailMessageLocator(client, {
+    emailId,
+    mailboxItemId: email.mailbox_item_id,
+    messageId: email.message_id,
+    providerMessageId: email.provider_message_id,
+  });
+  return { source: { kind: "remote", locator }, attachments };
 }
 
 /**
  * A stored body as it is; for an `index` message an unexpired cache row, else a fetch from the provider whose result
- * becomes the cache row. Concurrent reads of one message in this process share one fetch, and a read that missed a
+ * becomes the cache row. The attachments are read with the body's source, before any provider call. Concurrent reads of one message in this process share one fetch, and a read that missed a
  * fetch that just ended finds its row; only a read that asks the provider is counted by the throttle.
  */
 export async function readMailMessageContent(
@@ -409,7 +416,7 @@ export async function readMailMessageContent(
   dependencies: MailContentRouteDependencies,
   input: { emailId: string; userId: string; allowRemoteImages: boolean },
 ): Promise<MailMessageContent> {
-  const source = await withTransaction(pool, (client) => readContentSource(client, input.emailId));
+  const { source, attachments } = await withTransaction(pool, (client) => readContentSource(client, input.emailId));
   const present = (contentState: "full" | "cached", raw: string, cache: MailContentCacheRow | null) => ({
     emailId: input.emailId,
     contentState,
@@ -417,6 +424,7 @@ export async function readMailMessageContent(
     bodyText: htmlToPlainText(raw),
     fetchedAt: cache?.fetchedAt.toISOString() ?? null,
     expiresAt: cache?.expiresAt.toISOString() ?? null,
+    attachments,
   });
   // The cache holds both parts; the body served is chosen as ingest chooses `Emails.body`.
   const cachedBody = (cache: MailContentCacheRow) => cache.bodyHtml ?? cache.bodyText ?? "";

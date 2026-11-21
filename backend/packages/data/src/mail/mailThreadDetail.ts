@@ -6,6 +6,11 @@ import { sanitizeMailHtml } from "./htmlSanitize.js";
 import { resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { readMailAttachmentProjects, type MailAttachmentProjects } from "./mailThreadAttachmentProjects.js";
 import { htmlToPlainText } from "./mailPlainText.js";
+import {
+  MAIL_MESSAGE_ATTACHMENTS_CTES,
+  MAIL_MESSAGE_ATTACHMENTS_LATERAL,
+  mailMessageAttachmentSchema,
+} from "./mailMessageAttachments.js";
 import { listMailThreads, MAIL_OWN_ADDRESSES_SQL } from "./mailThreadListQuery.js";
 import { MAIL_MESSAGE_CONTENT_STATES } from "./mailContentState.js";
 
@@ -26,18 +31,7 @@ const messageRow = z.object({
   preview: z.string().nullable(),
   read: z.boolean(),
   flagged: z.boolean(),
-  attachments: z.array(
-    z.object({
-      attachmentId: z.uuid(),
-      /** Whether the bytes are stored; an index message's attachment has no blob and no Files item. */
-      stored: z.boolean(),
-      fileItemId: z.uuid().nullable(),
-      blobId: z.uuid().nullable(),
-      filename: z.string(),
-      contentType: z.string(),
-      byteSize: z.number().int(),
-    }),
-  ),
+  attachments: z.array(mailMessageAttachmentSchema),
 });
 
 /** What an attachment that has no Files item shows as its project and links. */
@@ -61,12 +55,11 @@ const MESSAGES_SQL = `
 WITH schema_ids AS (
   SELECT (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'emails') AS emails,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'folders') AS folders,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'mailboxes') AS mailboxes,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'files') AS files
-), email_relation AS (
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'mailboxes') AS mailboxes
+), ${MAIL_MESSAGE_ATTACHMENTS_CTES}, email_relation AS (
   SELECT p.key, rd.id, rd.property_id_a = p.id AS email_is_a
   FROM properties p JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
-  WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT emails FROM schema_ids) AND p.key IN ('folder', 'attachments')
+  WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
 ), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), copies AS (
   SELECT m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.content_state, m.preview_text, i.properties,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at) AS message_date,
@@ -105,24 +98,7 @@ SELECT jsonb_build_object(
 FROM dedup d
 LEFT JOIN mail_message_content_cache cache ON cache.tenant_id = app_tenant_default() AND cache.item_id = d.item_id
   AND d.content_state = 'index' AND cache.expires_at > now()
-LEFT JOIN LATERAL (
-  SELECT jsonb_agg(jsonb_build_object('attachmentId', a.id, 'stored', a.blob_id IS NOT NULL,
-    'fileItemId', f.id, 'blobId', a.blob_id, 'filename', a.filename,
-    'contentType', a.content_type, 'byteSize', a.byte_size) ORDER BY a.filename, a.blob_id, a.n) AS value
-  FROM (
-    SELECT a.*, row_number() OVER (PARTITION BY a.blob_id, a.filename ORDER BY a.id) AS n
-    FROM mail_attachments a WHERE a.tenant_id = app_tenant_default() AND a.message_item_id = d.item_id
-  ) a
-  LEFT JOIN (
-    SELECT file.id, file.properties->'file'->>'blobId' AS blob_id, file.properties->>'name' AS name,
-      row_number() OVER (PARTITION BY file.properties->'file'->>'blobId', file.properties->>'name' ORDER BY file.id) AS n
-    FROM email_relation er JOIN item_relations r ON r.tenant_id = app_tenant_default() AND r.relation_definition_id = er.id
-      AND (CASE WHEN er.email_is_a THEN r.item_a ELSE r.item_b END) = d.item_id
-    JOIN items file ON file.tenant_id = app_tenant_default() AND file.database_id = (SELECT files FROM schema_ids)
-      AND file.id = CASE WHEN er.email_is_a THEN r.item_b ELSE r.item_a END AND file.deleted_at IS NULL
-    WHERE er.key = 'attachments'
-  ) f ON f.blob_id = a.blob_id::text AND f.name = a.filename AND f.n = a.n
-) attachments ON true
+${MAIL_MESSAGE_ATTACHMENTS_LATERAL}
 ORDER BY d.message_date ASC NULLS LAST, d.item_id ASC
 `;
 
