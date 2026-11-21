@@ -185,6 +185,16 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
   mailbox, state and credential happen first. A Gmail or Graph pass then reconciles in one transaction that also
   talks to the provider (existing, accepted cost; do not add new network work there).
+- One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
+  sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
+  `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
+  beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
+  pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
+  When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
+  `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
+  ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
+  rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every
   attachment's bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) are fetched with no transaction
@@ -195,9 +205,17 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
   from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
   cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+- On a CONDSTORE server the folder list carries each folder's STATUS (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ,
+  MESSAGES), inline where the server offers LIST-STATUS and otherwise one STATUS per folder. A folder whose four
+  values equal its `mail_folder_sync_state` (`message_count` included) is skipped: no SELECT, no fetch, no write
+  transaction. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
+  STOREs); the new-UID search runs only when UIDNEXT passed the cursor, the flag fetch only when HIGHESTMODSEQ moved
+  (always without CONDSTORE), and the vanished check only when UIDNEXT or the message count differs from the stored
+  ones. The folder list is fetched on every pass: it is how an added or removed folder shows, and it brings the
+  STATUS data in the same round trip.
 - An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
   inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
-  unfinished pass enqueues the next pass in its final transaction, leaves the account due at once and keeps
+  unfinished pass requests a rerun of itself in its final transaction, leaves the account due at once and keeps
   `initial_sync_completed_at` unset, so the backfill of a large mailbox is many passes of small batches.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
@@ -562,6 +580,7 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 ## Lock orders to keep
 
 - Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
+- Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
   → Mailboxes item. Mail-off chunk: mail-thread guard → sync

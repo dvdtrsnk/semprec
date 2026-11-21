@@ -36,8 +36,8 @@ export function connectionLimitBackoffSecondsForProvider(provider: string | unde
 
 /**
  * Queues per-account IMAP work beyond `limit` instead of opening another connection that the
- * provider would reject. Per-process only: across processes the sync jobKey already serializes
- * passes for one account.
+ * provider would reject. Per-process only. Across processes the pass lease (`claimMailSyncPass`)
+ * keeps one sync pass per account; the account's IDLE sessions take slots beside it.
  */
 export interface ImapConnectionLimiter {
   run<T>(accountId: string, limit: number, task: () => Promise<T>): Promise<T>;
