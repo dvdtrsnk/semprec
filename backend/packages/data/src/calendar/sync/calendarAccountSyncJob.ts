@@ -1,5 +1,5 @@
 // One calendar sync pass of an internet account: read the account and its tracked calendars, decrypt the credential,
-// fetch through the adapter of its sync mode with no transaction open, then apply everything in one transaction.
+// fetch through the adapter of its sync mode with no transaction open, then apply in bounded transactions.
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
@@ -8,7 +8,7 @@ import { getTenantUserId } from "../../auth/usersStore.js";
 import { getItemById } from "../../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../../credentials/externalCredentialsStore.js";
 import { getMailServerSettings } from "../../mail/mailServerSettingsStore.js";
-import { withTransaction } from "../../db/pool.js";
+import { requireSingleRow, withSavepoint, withTransaction } from "../../db/pool.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 import type { CustomRouteResult, RouteParams } from "../../customRoute.js";
 import {
@@ -58,7 +58,7 @@ export { enqueueCalendarAccountSync, calendarAccountSyncJobKey } from "./calenda
 
 /** The deadline of every adapter call of one pass together. */
 const CALENDAR_SYNC_PASS_TIMEOUT_MS = 5 * 60_000;
-/** How long the apply and the failure record wait for the account's guard before the pass is skipped. */
+/** How long each apply step and the failure record wait for the account's guard before the pass is skipped. */
 const CALENDAR_SYNC_GUARD_WAIT_MS = 5_000;
 /** A pass that ended `ok` this long ago is due again; the sweep runs every five minutes. */
 const CALENDAR_SYNC_DUE_AFTER_SECONDS = 4 * 60;
@@ -94,17 +94,22 @@ export interface CalendarAccountSyncOptions {
   /** graphile-worker's per-attempt job id, so a redelivered failure adds no Semp problem occurrence. */
   jobId?: string;
   passTimeoutMs?: number;
+  /** Event operations per apply batch. */
+  batchEvents?: number;
+  /** Called after each committed apply batch; tests end a pass between batches through it. */
+  afterBatch?: (batch: number) => Promise<void> | void;
 }
 
 /**
- * `null` when the pass did nothing: the account is gone, trashed or has Calendars off, its grant lacks calendar
- * access, or another apply held the account. Otherwise the apply's result, whose `added`, `changed` and `cancelled`
- * lists are where notifications of synced Events hook in.
+ * `null` when the pass did nothing more: the account is gone, trashed or has Calendars off, its grant lacks calendar
+ * access, or another apply step held the account's guard. Otherwise the apply's result, whose `added`, `changed` and
+ * `cancelled` lists are where notifications of synced Events hook in.
  *
  * A failure is recorded under the account's guard in its own transaction (status, failure streak, the account's
- * Semp problem `calendarSyncError`) and leaves the calendars and Events as they were. A provider or unexpected
- * failure is rethrown so the queue retries it; a refused credential or a missing grant is not, since only the user
- * can change it.
+ * Semp problem `calendarSyncError`). A failed fetch leaves the calendars and Events as they were; a failure between
+ * apply batches keeps the committed batches and the old cursors, so the next pass applies the rest. A provider or
+ * unexpected failure is rethrown so the queue retries it; a refused credential or a missing grant is not, since only
+ * the user can change it.
  */
 export async function handleCalendarAccountSyncTask(
   pool: Pool,
@@ -144,16 +149,16 @@ export async function handleCalendarAccountSyncTask(
       );
       fetched.push({ calendar, changes });
     }
-    const result = await withTransaction(pool, (client) =>
-      applyCalendarSync(client, {
-        accountItemId,
-        ids: prologue.ids,
-        tracked: trackedCalendarsSnapshot(prologue.tracked),
-        fetched,
-        window: prologue.window,
-        guardWaitMs: CALENDAR_SYNC_GUARD_WAIT_MS,
-      }),
-    );
+    const result = await applyCalendarSync(pool, {
+      accountItemId,
+      ids: prologue.ids,
+      tracked: trackedCalendarsSnapshot(prologue.tracked),
+      fetched,
+      window: prologue.window,
+      guardWaitMs: CALENDAR_SYNC_GUARD_WAIT_MS,
+      ...(options.batchEvents === undefined ? {} : { batchEvents: options.batchEvents }),
+      ...(options.afterBatch === undefined ? {} : { afterBatch: options.afterBatch }),
+    });
     logger.info(
       {
         accountItemId,
@@ -313,11 +318,44 @@ export async function handleCalendarAccountSyncSweepTask(pool: Pool): Promise<vo
 const accountIdSchema = z.uuid();
 const accountRowSchema = z.object({ properties: z.record(z.string(), z.unknown()) });
 
+/** `lock_not_available`, raised when `lock_timeout` ends a wait. */
+const LOCK_NOT_AVAILABLE = "55P03";
+/** How long the manual request waits for the account row or its state row before it queues without recording. */
+const MANUAL_SYNC_LOCK_WAIT_MS = 50;
+
+function isLockNotAvailable(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === LOCK_NOT_AVAILABLE;
+}
+
+/** Unknown, foreign and trashed ids are the same 404; Calendars off is 409 `calendars_disabled`. */
+async function readEnabledAccount(
+  client: PoolClient,
+  ids: CalendarSyncIds,
+  accountItemId: string,
+  lock: "FOR SHARE" | "",
+) {
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT properties FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL ${lock}`,
+    [ids.mailboxesDatabaseId, accountItemId],
+  );
+  if (rows[0] === undefined) throw new NotFoundError("Account not found");
+  if (!areCalendarsEnabled(accountRowSchema.parse(rows[0]).properties)) {
+    throw new ConflictError(
+      "Calendars are switched off for this account",
+      { accountId: accountItemId },
+      "calendars_disabled",
+    );
+  }
+}
+
 /**
  * `POST /api/accounts/:id/calendars/sync`: queues a pass unless one was requested within the debounce window, and
  * answers 202 with whether this request queued it. The account row is read `FOR SHARE`, so a Calendars switch
- * commits before or after the request, never between its check and its record. Unknown, malformed, foreign and
- * trashed ids answer the same 404; Calendars off answers 409 `calendars_disabled`.
+ * commits before or after the request, never between its check and its record. Neither that lock nor the state row's
+ * waits longer than `MANUAL_SYNC_LOCK_WAIT_MS`: while a pass step, a switch or another writer holds one, the request
+ * checks the account without the lock and queues the pass without recording itself (the job key keeps one waiting
+ * job), answering `queued: true`. Unknown, malformed, foreign and trashed ids answer the same 404; Calendars off
+ * answers 409 `calendars_disabled`.
  */
 export function createCalendarAccountSyncRouteHandler(pool: Pool) {
   return async (ctx: RouteParams): Promise<CustomRouteResult<{ id: string; queued: boolean }>> => {
@@ -327,26 +365,31 @@ export function createCalendarAccountSyncRouteHandler(pool: Pool) {
     const queued = await withTransaction(pool, async (client) => {
       const ids = await resolveCalendarSyncIds(client);
       if (ids === null) throw new NotFoundError("Account not found");
-      const { rows } = await client.query<Record<string, unknown>>(
-        "SELECT properties FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL FOR SHARE",
-        [ids.mailboxesDatabaseId, accountItemId],
-      );
-      if (rows[0] === undefined) throw new NotFoundError("Account not found");
-      const account = accountRowSchema.parse(rows[0]);
-      if (!areCalendarsEnabled(account.properties)) {
-        throw new ConflictError(
-          "Calendars are switched off for this account",
-          { accountId: accountItemId },
-          "calendars_disabled",
-        );
+      let queues: boolean;
+      try {
+        queues = await withSavepoint(client, async () => {
+          const { rows } = await client.query<{ previous: string }>(
+            "SELECT current_setting('lock_timeout') AS previous",
+          );
+          await client.query("SELECT set_config('lock_timeout', $1, true)", [`${MANUAL_SYNC_LOCK_WAIT_MS}ms`]);
+          await readEnabledAccount(client, ids, accountItemId, "FOR SHARE");
+          const result = await recordManualCalendarSyncRequest(
+            client,
+            accountItemId,
+            MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS,
+          );
+          await client.query("SELECT set_config('lock_timeout', $1, true)", [
+            requireSingleRow(rows, "lock_timeout").previous,
+          ]);
+          return result;
+        });
+      } catch (error) {
+        if (!isLockNotAvailable(error)) throw error;
+        await readEnabledAccount(client, ids, accountItemId, "");
+        queues = true;
       }
-      const recorded = await recordManualCalendarSyncRequest(
-        client,
-        accountItemId,
-        MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS,
-      );
-      if (recorded) await enqueueCalendarAccountSync(client, accountItemId);
-      return recorded;
+      if (queues) await enqueueCalendarAccountSync(client, accountItemId);
+      return queues;
     });
     return { status: 202, body: { id: accountItemId, queued } };
   };

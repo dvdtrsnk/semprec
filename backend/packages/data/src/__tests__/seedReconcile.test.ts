@@ -148,30 +148,31 @@ async function removeOlderSeedGap(tenantId: string): Promise<void> {
 
 /** One calendar sync apply of a new account with Calendars on that lists one remote calendar. */
 async function syncOneAccountCalendar(tenantId: string): Promise<void> {
-  await runInTenant(tenantId, () =>
-    withTransaction(pool, async (client) => {
-      const ids = await resolveCalendarSyncIds(client);
-      if (!ids) throw new Error("No calendar databases");
-      const account = await createItemWithClient(client, {
-        databaseId: ids.mailboxesDatabaseId,
+  await runInTenant(tenantId, async () => {
+    const { ids, account } = await withTransaction(pool, async (client) => {
+      const resolved = await resolveCalendarSyncIds(client);
+      if (!resolved) throw new Error("No calendar databases");
+      const created = await createItemWithClient(client, {
+        databaseId: resolved.mailboxesDatabaseId,
         properties: { name: "Work account", provider: "generic", calendarsEnabled: true },
       });
-      const result = await applyCalendarSync(client, {
-        accountItemId: account.id,
-        ids,
-        tracked: [],
-        fetched: [
-          {
-            calendar: { remoteId: "work", url: null, name: "Work", color: null, readOnly: false, ctag: null },
-            changes: { full: true, upserts: [], deletions: [], nextSyncState: { syncToken: null, ctag: null } },
-          },
-        ],
-        window: { start: "2026-01-01", end: "2027-12-31" },
-        guardWaitMs: 5_000,
-      });
-      expect(result.kind).toBe("applied");
-    }),
-  );
+      return { ids: resolved, account: created };
+    });
+    const result = await applyCalendarSync(pool, {
+      accountItemId: account.id,
+      ids,
+      tracked: [],
+      fetched: [
+        {
+          calendar: { remoteId: "work", url: null, name: "Work", color: null, readOnly: false, ctag: null },
+          changes: { full: true, upserts: [], deletions: [], nextSyncState: { syncToken: null, ctag: null } },
+        },
+      ],
+      window: { start: "2026-01-01", end: "2027-12-31" },
+      guardWaitMs: 5_000,
+    });
+    expect(result.kind).toBe("applied");
+  });
 }
 
 async function accountCalendarCount(tenantId: string): Promise<number> {

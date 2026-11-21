@@ -59,16 +59,35 @@ export async function getCalendarAccountSyncState(
   return rows[0] === undefined ? null : mapAccountState(rows[0]);
 }
 
-/** Clears the failure record; the first success also marks the initial sync complete. */
+/** Clears the failure record and the pass's claim; the first success also marks the initial sync complete. */
 export async function recordCalendarSyncSuccess(client: Queryable, accountItemId: string): Promise<void> {
   await client.query(
     `INSERT INTO calendar_account_sync_state (account_item_id, status, last_successful_sync_at, initial_sync_completed_at)
      VALUES ($1, 'ok', now(), now())
      ON CONFLICT (tenant_id, account_item_id) DO UPDATE SET
        status = 'ok', last_successful_sync_at = now(), failing_since = NULL, last_error_code = NULL,
-       initial_sync_completed_at = COALESCE(calendar_account_sync_state.initial_sync_completed_at, now())`,
+       initial_sync_completed_at = COALESCE(calendar_account_sync_state.initial_sync_completed_at, now()),
+       apply_pass_id = NULL`,
     [accountItemId],
   );
+}
+
+/** Makes `passId` the pass whose batches apply to the account; a row is created when the account has none. */
+export async function claimCalendarSyncPass(client: Queryable, accountItemId: string, passId: string): Promise<void> {
+  await client.query(
+    `INSERT INTO calendar_account_sync_state (account_item_id, apply_pass_id) VALUES ($1, $2)
+     ON CONFLICT (tenant_id, account_item_id) DO UPDATE SET apply_pass_id = EXCLUDED.apply_pass_id`,
+    [accountItemId, passId],
+  );
+}
+
+/** The pass that claimed the account last; `null` without a claim or without a row. */
+export async function getCalendarSyncPassClaim(client: Queryable, accountItemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ apply_pass_id: string | null }>(
+    "SELECT apply_pass_id FROM calendar_account_sync_state WHERE account_item_id = $1",
+    [accountItemId],
+  );
+  return rows[0]?.apply_pass_id ?? null;
 }
 
 /** Returns the start of the failure streak. */
@@ -343,6 +362,37 @@ export async function listEventRemoteStates(client: Queryable, calendarItemId: s
       deleted: row.deleted,
     };
   });
+}
+
+/** The calendar's remote state rows of `remoteIds`, by remote id. */
+export async function listEventRemoteStatesByRemoteIds(
+  client: Queryable,
+  calendarItemId: string,
+  remoteIds: readonly string[],
+): Promise<Map<string, StoredRemoteEvent>> {
+  if (remoteIds.length === 0) return new Map();
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT e.event_item_id, e.remote_id, e.remote_href, e.etag, e.base_snapshot, (i.deleted_at IS NOT NULL) AS deleted
+       FROM event_remote_state e JOIN items i ON i.tenant_id = e.tenant_id AND i.id = e.event_item_id
+      WHERE e.calendar_item_id = $1 AND e.remote_id = ANY($2::text[])`,
+    [calendarItemId, remoteIds],
+  );
+  return new Map(
+    rows.map((raw) => {
+      const row = eventRemoteRow.parse(raw);
+      return [
+        row.remote_id,
+        {
+          eventItemId: row.event_item_id,
+          remoteId: row.remote_id,
+          href: row.remote_href,
+          etag: row.etag,
+          baseSnapshot: row.base_snapshot,
+          deleted: row.deleted,
+        },
+      ];
+    }),
+  );
 }
 
 export async function upsertEventRemoteState(

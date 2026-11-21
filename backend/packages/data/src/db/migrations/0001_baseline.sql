@@ -905,9 +905,9 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.blobs TO semprec_side;
 -- calendar_account_sync_state
 -- ----------------------------------------------------------------------------------------------------
 
--- The calendar side of an internet account (a Mailboxes item): the outcome of its last calendar sync pass. Written by
--- the calendar sync and the manual sync route while Calendars is on; deleted when Calendars is switched off or the
--- account is removed.
+-- The calendar side of an internet account (a Mailboxes item): the outcome of its last calendar sync pass and the
+-- pass whose batches are applying (`apply_pass_id`, cleared by its success). Written by the calendar sync and the
+-- manual sync route while Calendars is on; deleted when Calendars is switched off or the account is removed.
 CREATE TABLE public.calendar_account_sync_state (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     account_item_id uuid NOT NULL,
@@ -917,6 +917,7 @@ CREATE TABLE public.calendar_account_sync_state (
     last_error_code text,
     initial_sync_completed_at timestamp with time zone,
     manual_sync_requested_at timestamp with time zone,
+    apply_pass_id uuid,
     CONSTRAINT calendar_account_sync_state_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'error'::text, 'never'::text, 'needsReauthorization'::text, 'needsConsent'::text])))
 );
 

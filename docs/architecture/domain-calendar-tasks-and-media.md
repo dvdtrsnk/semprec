@@ -255,23 +255,31 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   OAuth grant lacks the calendar scope is skipped. Then, with no transaction open, the credential is decrypted
   (`calendar_sync` in `credential_access_log`) and every calendar fetched. A calendar without a cursor is fetched in
   full for one year back to two years ahead (tenant zone); later fetches are incremental.
-- **Apply** (`calendarSyncApply.ts`), one transaction: the account's calendar sync guard (`calendarAccountSyncGuard.ts`,
-  advisory lock `calendar-account-sync:v1:<tenant>:<account>`, at most 5 s, then the pass is skipped), the account and
-  its tracked calendars re-read (Calendars off or gone: skipped; tracked calendars or cursors changed since the
-  fetch: the fetch is discarded). Calendars first: a new remote calendar becomes a Calendars row of `kind` `account`
-  with its `account` edge, a known one gets changed `remoteName`/`remoteColor`/`readOnly`, one no longer listed loses
-  its remote state and the cleanup is queued. Then Events by `(calendar, remote_id)`: a deletion (or, for a full
-  fetch, a stored Event of the window not listed) is trashed and its remote state deleted; an Event whose
-  `base_snapshot` (fields, series, organizer, attendees, and the iCalendar UID, `SEQUENCE` and the account's own
-  answer where the provider reports them) equals the fetched one writes nothing, and only its remote state when its href or etag changed; otherwise the fields the provider changed since the snapshot are written and
-  other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each Event runs in a
-  savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass `allowedSystemKeys` for the
-  provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass `systemOwnerProcess: "calendar"`.
-  An Event whose push is pending (read under its row lock, after the calendar's share lock) is left as it is and its
-  push re-queued: the push merges the provider's change in. The pushes that waited for a new sign-in or grant are
-  re-queued too. The cursors, `ok` state and the resolution of the account's problem commit with the writes. The
-  result lists the Events added, changed and cancelled and whether this was the account's initial sync, for
-  notifications.
+- **Apply** (`calendarSyncApply.ts`), in bounded transactions with no transaction held between them, each first
+  taking the account's calendar sync guard (`calendarAccountSyncGuard.ts`, advisory lock
+  `calendar-account-sync:v1:<tenant>:<account>`, at most 5 s, then the pass is skipped). *Prepare*: the account and
+  its tracked calendars re-read (Calendars off or gone: skipped; tracked calendars or cursors changed since the fetch:
+  the fetch is discarded), then the calendars: a new remote calendar becomes a Calendars row of `kind` `account` with
+  its `account` edge and a `calendar_remote_state` row without cursor, a known one gets changed
+  `remoteName`/`remoteColor`/`readOnly`, one no longer listed loses its remote state and the cleanup is queued. The
+  deletions are decided here (a deletion, or for a full fetch a stored Event of the window not listed), and the pass
+  claims the account (`calendar_account_sync_state.apply_pass_id`). *Batches* of at most 25 Event operations
+  (deletions, then masters, then overrides): each checks that the account is live with Calendars on (else skipped)
+  and still claimed by this pass (else superseded: a newer pass applies its own fetch), takes its calendars' share
+  locks, re-reads its Events' remote state and applies them by `(calendar, remote_id)`: a deletion is trashed and its
+  remote state deleted; an Event whose `base_snapshot` (fields, series, organizer, attendees, and the iCalendar UID,
+  `SEQUENCE` and the account's own answer where the provider reports them) equals the fetched one writes nothing, and
+  only its remote state when its href or etag changed; otherwise the fields the provider changed since the snapshot
+  are written and other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each
+  Event runs in a savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass
+  `allowedSystemKeys` for the provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass
+  `systemOwnerProcess: "calendar"`. An Event whose push is pending (read under its row lock, after the calendar's
+  share lock) is left as it is and its push re-queued: the push merges the provider's change in. *Final*, under the
+  same checks: the cursors of every calendar, the re-queue of the pushes that waited for a new sign-in or grant, the
+  change notifications, the `ok` state (clearing the claim) and the resolution of the account's problem. A pass that
+  ends early (a failure, a stop, a newer claim) keeps its committed batches and the old cursors, so the next pass
+  fetches the same changes and re-applies them by remote id and snapshot without duplicates. The result lists the
+  Events added, changed and cancelled and whether this was the account's initial sync, for notifications.
 - **Write-back** (`eventPushHooks.ts`, `eventPushJob.ts`, `eventMerge.ts`). A create, a change of a provider field
   (`name`, times, `place`, `description`, `url`, `alertMinutes`, `recurrence`), a trash, a restore or a calendar edge
   change of an Event by any writer but `calendarSync` (agents' writes after their usual approval included), in or out
@@ -295,7 +303,8 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `failed` after 5 attempts; a write the provider cannot represent is `failed` (`unsupported`) at once; a refused
   credential or grant keeps the push pending, records the account's status and Semp problem as a failed pass does,
   and waits for a pass that reaches the provider.
-- **Change notifications** (`calendarChangeNotifications.ts`), written in the apply's transaction. Outside the
+- **Change notifications** (`calendarChangeNotifications.ts`), collected over the batches and written in the apply's
+  final transaction; a pass that ends early writes none of them. Outside the
   account's initial sync, the Events added, cancelled, or changed in `name`, date, time, `timeZone` or `place` in a
   calendar that was tracked before the pass and has `notify` on become `calendar_event_added`, `calendar_event_changed`
   or `calendar_event_cancelled` (category `calendarChanges`, preference `calendarChanges`), one per Event, or one
@@ -304,9 +313,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   it is one of the account's addresses or has no name. The dedupe instance is the kind plus the provider's etag (else
   a hash of the snapshot), so a replay writes nothing new. The APNs payload carries `event_id` (not for a summary)
   and `calendar_id`.
-- **Invitations** (`syncedInvitations.ts`, `invitationRespondJob.ts`). In the apply's transaction, after its Event
-  writes, a master or single Event the pass wrote or whose snapshot changed, whose organizer is not one of the
-  account's addresses (`Mailboxes.addresses`, a password account's login name) and in which the account attends with
+- **Invitations** (`syncedInvitations.ts`, `invitationRespondJob.ts`). In the apply batch that wrote its Event,
+  after the batch's Event writes, a master or single Event the pass wrote or whose snapshot changed, whose organizer
+  is not one of the account's addresses (`Mailboxes.addresses`, a password account's login name) and in which the account attends with
   NEEDS-ACTION (the provider's own report: Google's `self` attendee, Graph's `responseStatus`; else the attendee with
   an account address, no `PARTSTAT` counting as NEEDS-ACTION) gets an Invitations row (`kind` `invite`, `status`
   `pending`, `uid` the provider's iCalendar UID, `sequence`) linked to the Event, the account and the Event's
@@ -328,7 +337,7 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   still holds that answer; a refused credential or grant also records the account's status and Semp problem.
 - **Status.** `calendar_account_sync_state` (`status` `ok` | `error` | `never` | `needsReauthorization` |
   `needsConsent`, `last_successful_sync_at`, `failing_since`, `last_error_code`, `initial_sync_completed_at`,
-  `manual_sync_requested_at`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,
+  `manual_sync_requested_at`, `apply_pass_id`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,
   `needsConsent` while the OAuth grant lacks the calendar scope, else the stored status (`never` without a row). A
   failed pass records, under the guard and only while Calendars is on, `needsReauthorization` for a refused credential
   (or none stored), `needsConsent` for a refused calendar grant, otherwise `error` with the provider's code, `timeout`
@@ -338,7 +347,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
   last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued }`, 404 for another
   tenant's or an unknown id, 409 `calendars_disabled`) queues one at most every 60 s per account, decided by a
-  conditional upsert of `manual_sync_requested_at` under the account row's share lock. CalDAV accounts (`imap`) have
+  conditional upsert of `manual_sync_requested_at` under the account row's share lock. Neither that lock nor the state
+  row's is waited for longer than 50 ms: while another writer holds one, the request queues the pass without recording
+  itself and answers `queued: true`. CalDAV accounts (`imap`) have
   no provider push: the sweep and the app's foreground call of that route are their only triggers.
 - **Push channels** (`calendarPushChannelsJob.ts`, task `calendarPushChannels`, key
   `calendar-push-channels:<account>`, 3 attempts, `api`; sweep `calendarPushChannelsSweep` hourly).
@@ -369,7 +380,7 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   each calendar. Switching Calendars on again syncs the account anew into new calendars.
 - **Lock order.** The Calendars switch: calendar sync guard (at most 15 s, then 409 `calendar_sync_busy`) before the
   Mailboxes row; with a Mail switch in the same write, mailbox sync guard → calendar sync guard → mail sync state row
-  → Mailboxes row, the order a removal takes them in. The apply: guard → state row → calendar rows → Event rows. A
+  → Mailboxes row, the order a removal takes them in. Each apply step: guard → state row → calendar rows → Event rows. A
   cleanup chunk: guard → Event rows → calendar row.
 
 ### Reminders and resync pushes

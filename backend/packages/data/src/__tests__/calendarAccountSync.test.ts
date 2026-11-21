@@ -30,9 +30,12 @@ import { ConflictError, NotFoundError } from "../errors.js";
 import { ensureMailAccountSyncState, recordGrantedOauthScopes } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { removeMailbox } from "../mail/mailboxRemoval.js";
-import { createMailboxDetailRouteHandler } from "../mail/mailboxRouteHandlers.js";
+import { createMailboxDetailRouteHandler, createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { createCalendarTimelineRouteHandler } from "../calendar/timelineRouteHandler.js";
+import type { CalendarSyncApplyResult } from "../calendar/sync/calendarSyncApply.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { getProfileAccountSummary } from "../tenancy/profileAccountSummary.js";
 import { FakeCalendarProvider, remoteFields } from "../testSupport/fakeCalendarSyncAdapter.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -300,6 +303,58 @@ async function calendarStatus(accountId: string): Promise<unknown> {
     createMailboxDetailRouteHandler(runtime)({ params: { id: accountId } }),
   );
   return z.object({ calendarStatus: z.unknown() }).parse(response.body).calendarStatus;
+}
+
+/** `calendars` calendars `c0`, `c1`, … of `events` single timed Events each, `c<n>-<i>`, spread over December. */
+function bulkProvider(calendars: number, events: number): FakeCalendarProvider {
+  const fake = new FakeCalendarProvider();
+  for (let calendar = 0; calendar < calendars; calendar += 1) {
+    fake.addCalendar({
+      remoteId: `c${calendar}`,
+      url: null,
+      name: `C${calendar}`,
+      color: null,
+      readOnly: false,
+      ctag: null,
+    });
+    addBulkEvents(fake, `c${calendar}`, 0, events);
+  }
+  return fake;
+}
+
+function addBulkEvents(fake: FakeCalendarProvider, calendarRemoteId: string, from: number, to: number): void {
+  for (let index = from; index < to; index += 1) {
+    fake.putEvent(calendarRemoteId, {
+      remoteId: `${calendarRemoteId}-${index}`,
+      href: null,
+      etag: `"${index}"`,
+      seriesRemoteId: null,
+      fields: remoteFields({
+        name: `Event ${index}`,
+        date: `2026-12-${String((index % 28) + 1).padStart(2, "0")}`,
+        timeFrom: "10:00",
+        timeTo: "11:00",
+      }),
+      organizer: null,
+      attendees: [],
+    });
+  }
+}
+
+/** The longest open transaction of the runtime role on this worker's database, in seconds, sampled until `done`. */
+function sampleLongestTransaction(done: () => boolean): Promise<number> {
+  return (async () => {
+    let longest = 0;
+    while (!done()) {
+      const { rows } = await admin.query<{ age: number | null }>(
+        `SELECT max(extract(epoch FROM now() - xact_start))::float8 AS age FROM pg_stat_activity
+          WHERE datname = current_database() AND usename = 'semprec_data' AND xact_start IS NOT NULL`,
+      );
+      longest = Math.max(longest, rows[0]?.age ?? 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return longest;
+  })();
 }
 
 describe("calendar sync of internet accounts", () => {
@@ -760,6 +815,49 @@ describe("calendar sync of internet accounts", () => {
       expect(await jobKeys(accountId)).toEqual([]);
       expect(await syncState(accountId)).toBeNull();
     });
+
+    it.each([
+      {
+        held: "the account's state row",
+        lock: "SELECT 1 FROM calendar_account_sync_state WHERE account_item_id = $1 FOR UPDATE",
+      },
+      { held: "the account row", lock: "SELECT 1 FROM items WHERE id = $1 FOR UPDATE" },
+    ])("answers 202 at once and queues a pass while a writer holds $held", async ({ lock }) => {
+      const accountId = await enableAndSync(provider());
+      await clearJobs();
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let locked: () => void = () => {};
+      const holding = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const holder = inTenant(async (client) => {
+        await lockCalendarAccountSync(client, accountId);
+        expect((await client.query(lock, [accountId])).rowCount).toBe(1);
+        locked();
+        await released;
+      });
+      try {
+        await holding;
+        const started = performance.now();
+        const response = await route(accountId);
+        const elapsedMs = performance.now() - started;
+
+        expect(response).toEqual({ status: 202, body: { id: accountId, queued: true } });
+        expect(elapsedMs).toBeLessThan(1_000);
+        expect(await jobKeys(accountId)).toEqual([calendarAccountSyncJobKey(accountId)]);
+      } finally {
+        release();
+        await holder;
+      }
+      const { rows } = await admin.query<{ requested: Date | null }>(
+        "SELECT manual_sync_requested_at AS requested FROM calendar_account_sync_state WHERE account_item_id = $1",
+        [accountId],
+      );
+      expect(rows).toEqual([{ requested: null }]);
+    });
   });
 
   it("another tenant's pass of the account id finds nothing and writes nothing", async () => {
@@ -774,6 +872,162 @@ describe("calendar sync of internet accounts", () => {
     expect(await syncState(accountId)).toBeNull();
     await expect(switchCalendars(accountId, false, foreign)).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it.each([
+    { pass: "an initial", tokensBefore: [null, null], tokensAfter: ["60", "60"], events: 60 },
+    { pass: "an incremental", tokensBefore: ["60", "60"], tokensAfter: ["120", "120"], events: 120 },
+  ])(
+    "$pass pass ended between batches keeps its cursors, and the next pass resumes it without duplicates",
+    async ({ pass, tokensBefore, tokensAfter, events }) => {
+      const fake = bulkProvider(2, 30);
+      const accountId = await createAccount();
+      await switchCalendars(accountId, true);
+      if (pass === "an incremental") {
+        expect(await runPass(accountId, fake)).toMatchObject({ kind: "applied", initialSync: true });
+        addBulkEvents(fake, "c0", 30, 60);
+        addBulkEvents(fake, "c1", 30, 60);
+      }
+      const storedBefore = (await remoteState()).events.length;
+      const stop = new Error("stopped between batches");
+
+      await expect(
+        runInTenant(tenant, () =>
+          handleCalendarAccountSyncTask(
+            runtime,
+            { accountItemId: accountId },
+            {
+              adapters: fake.registry(),
+              batchEvents: 10,
+              afterBatch: (batch) => {
+                if (batch === 2) throw stop;
+              },
+            },
+          ),
+        ),
+      ).rejects.toBe(stop);
+
+      const stopped = await remoteState();
+      expect(stopped.calendars.map((row) => [row.remote_id, row.sync_token])).toEqual([
+        ["c0", tokensBefore[0]],
+        ["c1", tokensBefore[1]],
+      ]);
+      expect(stopped.events).toHaveLength(storedBefore + 20);
+      expect(await syncState(accountId)).toMatchObject({ status: "error", last_error_code: "unexpected" });
+
+      const resumed = await runPass(accountId, fake);
+
+      expect(resumed).toMatchObject({ kind: "applied", initialSync: pass === "an initial" });
+      expect(resumed?.kind === "applied" ? resumed.added : null).toHaveLength(events - storedBefore - 20);
+      const state = await remoteState();
+      expect(state.calendars.map((row) => [row.remote_id, row.sync_token])).toEqual([
+        ["c0", tokensAfter[0]],
+        ["c1", tokensAfter[1]],
+      ]);
+      expect(new Set(state.events.map((row) => row.remote_id)).size).toBe(events);
+      const items = await syncedItems();
+      expect(items.filter((item) => !item.deleted)).toHaveLength(2 + events);
+      expect(new Set(items.map((item) => item.remote_id)).size).toBe(items.length);
+      expect(await syncState(accountId)).toMatchObject({ status: "ok", last_error_code: null });
+    },
+  );
+
+  it("a pass whose account a newer pass claimed stops at its next batch and stores no cursor of its own", async () => {
+    const fake = bulkProvider(1, 30);
+    const accountId = await createAccount();
+    await switchCalendars(accountId, true);
+    const newer: Array<CalendarSyncApplyResult | null> = [];
+
+    const older = await runInTenant(tenant, () =>
+      handleCalendarAccountSyncTask(
+        runtime,
+        { accountItemId: accountId },
+        {
+          adapters: fake.registry(),
+          batchEvents: 10,
+          afterBatch: async (batch) => {
+            if (batch !== 1) return;
+            addBulkEvents(fake, "c0", 30, 31);
+            newer.push(await runPass(accountId, fake));
+          },
+        },
+      ),
+    );
+
+    expect(older).toEqual({ kind: "superseded" });
+    expect(newer).toHaveLength(1);
+    expect(newer[0]).toMatchObject({ kind: "applied", initialSync: true });
+    expect(newer[0]?.kind === "applied" ? newer[0].added : null).toHaveLength(21);
+    const state = await remoteState();
+    expect(state.calendars.map((row) => [row.remote_id, row.sync_token])).toEqual([["c0", "31"]]);
+    expect(state.events).toHaveLength(31);
+    expect((await syncedItems()).filter((item) => !item.deleted)).toHaveLength(32);
+  });
+
+  it("a pass of 2000 Events keeps every transaction short while reads and a manual sync request go through", async () => {
+    // As the API process shares its pool: the pass and the reads on six connections, two seconds per statement.
+    const shared = await createRuntimeRolePool(admin, "semprec_data", { statementTimeoutMs: 2_000, max: 6 });
+    try {
+      const fake = bulkProvider(6, 334);
+      const accountId = await createAccount({ calendarsEnabled: true });
+      const userId = userIds.get(tenant);
+      if (userId === undefined) throw new Error("the tenant has no user");
+      let done = false;
+      const longestTransaction = sampleLongestTransaction(() => done);
+      const failures: string[] = [];
+      const latenciesMs: number[] = [];
+      const manual: Array<{ status: number; elapsedMs: number }> = [];
+      const reads = runInTenant(tenant, async () => {
+        const timeline = createCalendarTimelineRouteHandler(shared);
+        const mailboxes = createMailboxListRouteHandler(shared);
+        const syncRoute = createCalendarAccountSyncRouteHandler(shared);
+        let round = 0;
+        while (!done) {
+          round += 1;
+          const started = performance.now();
+          const read = async (name: string, call: () => Promise<unknown>) => {
+            try {
+              await call();
+            } catch (error) {
+              failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          };
+          await Promise.all([
+            read("timeline", () => timeline({ req: { url: "/api/calendar/timeline?from=2026-12-01&to=2026-12-31" } })),
+            read("summary", () => getProfileAccountSummary(shared, { userId })),
+            read("mailboxes", () => mailboxes()),
+          ]);
+          latenciesMs.push(performance.now() - started);
+          if (round === 5) {
+            const requested = performance.now();
+            const response = await syncRoute({ params: { id: accountId } });
+            manual.push({ status: response.status, elapsedMs: performance.now() - requested });
+          }
+        }
+      });
+
+      const result = await runInTenant(tenant, () =>
+        handleCalendarAccountSyncTask(shared, { accountItemId: accountId }, { adapters: fake.registry() }),
+      );
+      done = true;
+      const longestSeconds = await longestTransaction;
+      await reads;
+
+      expect(result).toMatchObject({ kind: "applied", initialSync: true });
+      expect(result?.kind === "applied" ? result.added : null).toHaveLength(2004);
+      expect(failures).toEqual([]);
+      expect(latenciesMs.length).toBeGreaterThan(5);
+      expect(manual).toHaveLength(1);
+      expect(manual[0]?.status).toBe(202);
+      expect(manual[0]?.elapsedMs).toBeLessThan(1_000);
+      // One transaction of the whole apply lasted over a minute on a laptop.
+      expect(longestSeconds).toBeLessThan(10);
+      const state = await remoteState();
+      expect(new Set(state.events.map((row) => row.remote_id)).size).toBe(2004);
+      expect(state.events).toHaveLength(2004);
+    } finally {
+      await shared.end();
+    }
+  }, 600_000);
 
   it("a Calendars switch waits for an apply holding the account's guard", async () => {
     const accountId = await createAccount({ calendarsEnabled: true });

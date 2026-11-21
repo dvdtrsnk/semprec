@@ -87,6 +87,8 @@ export interface CreatePoolOptions {
   statementTimeoutMs?: number;
   /** `-c role=...`, so a CLI logged in as the table owner still works under row-level security. */
   role?: "semprec_data";
+  /** Most connections the pool opens; pg's default (10) otherwise. */
+  max?: number;
 }
 
 /**
@@ -149,6 +151,7 @@ export function createPool(connectionString: string, options: CreatePoolOptions 
     // Fixed UTC so a `timestamptz` cast of an offset-less string never depends on the server zone.
     options: options.role ? `-c TimeZone=UTC -c role=${options.role}` : "-c TimeZone=UTC",
     ...(statementTimeoutMs > 0 ? { statement_timeout: statementTimeoutMs } : {}),
+    ...(options.max === undefined ? {} : { max: options.max }),
   });
   // pg emits 'error' when the server drops an idle client; without a listener that would become an
   // uncaughtException and exit the process. pg has already discarded the client.

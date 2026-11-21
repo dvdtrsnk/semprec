@@ -1,16 +1,17 @@
-// Applies what an adapter fetched for one internet account in one transaction: account calendars created, updated or
-// untracked, Events created, updated or trashed by their remote id, the remote state and cursors stored, and the
-// account's sync state set to `ok`, and the provider's changes notified. Every item write goes through the choke point
-// as `CALENDAR_SYNC_WRITER`.
+// Applies what an adapter fetched for one internet account in bounded transactions: account calendars created,
+// updated or untracked, Events created, updated or trashed by their remote id, then the cursors stored, the account's
+// sync state set to `ok` and the provider's changes notified. Every item write goes through the choke point as
+// `CALENDAR_SYNC_WRITER`.
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getItemById, lockItemById, lockItemForShare } from "../../chokePoint/itemsStore.js";
 import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { CALENDAR_SYNC_WRITER } from "../../chokePoint/writerKind.js";
-import { withSavepoint } from "../../db/pool.js";
+import { withSavepoint, withTransaction } from "../../db/pool.js";
 import { ValidationError } from "../../errors.js";
 import { areCalendarsEnabled } from "../../mail/mailboxServiceHooks.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
@@ -21,6 +22,7 @@ import { createEventInCalendar } from "../defaultCalendarCreateHook.js";
 import { EVENT_SERIES_ID_PROPERTY_KEY } from "../eventOccurrenceId.js";
 import { logger } from "../logger.js";
 import { SYNCED_EVENT_PROPERTY_KEYS } from "../syncedEventFields.js";
+import type { ItemRow } from "../../types.js";
 import { accountOwnAddresses, reconcileSyncedInvitations, type RestatedEvent } from "./syncedInvitations.js";
 import {
   CalendarSyncProviderError,
@@ -39,11 +41,14 @@ import {
 } from "./calendarChangeNotifications.js";
 import { enqueueCalendarAccountCleanup, enqueueCalendarEventPush } from "./calendarAccountSyncEnqueue.js";
 import {
+  claimCalendarSyncPass,
   deleteCalendarRemoteStates,
   deleteEventRemoteStates,
   getCalendarAccountSyncState,
+  getCalendarSyncPassClaim,
   getEventPushState,
   listEventRemoteStates,
+  listEventRemoteStatesByRemoteIds,
   listAccountWaitingEventPushes,
   listSyncedAccountCalendars,
   recordCalendarSyncSuccess,
@@ -172,10 +177,11 @@ export interface SyncedEventChange {
 }
 
 /**
- * The outcome of an apply. `applied` lists the Events this transaction created (`added`), changed (`changed`) and
- * trashed because the provider deleted them (`cancelled`); `initialSync` is `true` for the account's first completed
- * pass, whose Events are not news. `skipped`: the account is gone or has Calendars off. `superseded`: another pass
- * or a switch changed the tracked calendars since the fetch, which is then discarded.
+ * The outcome of an apply. `applied` lists the Events the pass created (`added`), changed (`changed`) and trashed
+ * because the provider deleted them (`cancelled`); `initialSync` is `true` for the account's first completed pass,
+ * whose Events are not news. `skipped`: the account is gone or has Calendars off. `superseded`: another pass or a
+ * switch changed the tracked calendars since the fetch, or a newer pass claimed the account, and the rest of this
+ * pass's fetch is discarded.
  */
 export type CalendarSyncApplyResult =
   | {
@@ -197,8 +203,12 @@ export interface CalendarSyncApplyInput {
   fetched: readonly FetchedCalendar[];
   /** The window the fetches covered; a full fetch deletes only stored Events it could have listed. */
   window: CalendarSyncWindow;
-  /** How long to wait for the account's guard before the pass is skipped. */
+  /** How long each step waits for the account's guard before the pass is skipped. */
   guardWaitMs: number;
+  /** Event operations per batch, `CALENDAR_SYNC_BATCH_EVENTS` by default. */
+  batchEvents?: number;
+  /** Called after each committed batch with its number from 1; tests end a pass between batches through it. */
+  afterBatch?: (batch: number) => Promise<void> | void;
 }
 
 const REMOTE_CALENDAR_KEYS = ["remoteName", "remoteColor", "readOnly"] as const;
@@ -299,29 +309,125 @@ function refusedField(error: ValidationError): string | null {
 }
 
 /**
- * Runs in the caller's transaction. Takes the account's calendar sync guard first (at most `guardWaitMs`, else
- * `CalendarAccountSyncBusyError`), so a Calendars switch or removal of the account, its cleanup and another apply wait
- * for it. Under the guard it re-reads the account and its tracked calendars.
- *
- * A full fetch deletes the stored Events of the window it did not list; Events outside the window stay.
- * Calendars are written before any Event, the order Event writes lock them in (calendar row, then Event row).
- * Calendars the provider no longer lists lose their remote state, and the cleanup is queued to trash them with their
- * Events. An Event whose snapshot equals the fetched one writes nothing; one whose address alone changed updates only
- * its remote state. Each Event is written in a savepoint: an Event rule refusing a value (`ValidationError`) skips that
- * Event, which keeps no remote state and is offered again by a later full fetch.
- *
- * Except in the account's initial sync, the Events added, cancelled, or changed in title, time or place in a calendar
- * that was tracked before this pass and has `notify` on are notified in the same transaction. A change that leaves
- * those fields as the Event already had them locally (the echo of a local edit) is not news.
- *
- * After the Event writes, the Events that invite the account (`syncedInvitations.ts`) get or update their Invitations
- * row, and an Event the provider deleted cancels its invitation. An Event whose invitation was notified gets no
- * added or changed notice of its own.
+ * The Event operations a pass applies in one batch transaction at most, which bounds how long a batch holds the
+ * account's guard, its calendars' share locks and a pooled connection: an Event created through the choke point costs
+ * about 30 ms on a developer machine, several times that on a small host.
  */
-export async function applyCalendarSync(
+export const CALENDAR_SYNC_BATCH_EVENTS = 25;
+
+interface PassTarget extends FetchedCalendar {
+  calendarItemId: string;
+  notify: boolean;
+}
+
+type EventOperation =
+  { kind: "delete"; target: PassTarget; remoteId: string } | { kind: "upsert"; target: PassTarget; event: RemoteEvent };
+
+type PassEnd = { kind: "skipped" } | { kind: "superseded" };
+
+interface PreparedPass {
+  initialSync: boolean;
+  targets: PassTarget[];
+  notifiedCalendars: NotifiedCalendar[];
+  /** Per calendar: deletions, then masters, then overrides, so an override finds the item of its series. */
+  operations: EventOperation[];
+  /** Per calendar, the item of each remote id the pass may resolve a series by. */
+  itemIds: Map<string, Map<string, string>>;
+}
+
+interface BatchOutcome {
+  added: SyncedEventChange[];
+  changed: SyncedEventChange[];
+  cancelled: SyncedEventChange[];
+  notices: CalendarChangeNotice[];
+  /** Events whose invitation was notified, which get no added or changed notice of their own. */
+  invited: Set<string>;
+  skippedEvents: number;
+  created: Array<{ calendarItemId: string; remoteId: string; eventItemId: string }>;
+}
+
+/**
+ * Applies what the adapters fetched in bounded transactions, each under the account's calendar sync guard (at most
+ * `guardWaitMs`, else `CalendarAccountSyncBusyError`), so a Calendars switch or removal of the account, its cleanup,
+ * an Event push and another pass's steps wait at most one step. Call it with no transaction open.
+ *
+ * The prepare step re-reads the account and its tracked calendars, writes the calendars, computes the deletions and
+ * claims the account for this pass (`apply_pass_id`). Each batch and the final step first check that the account is
+ * still live with Calendars on (else `skipped`) and still claimed by this pass (else `superseded`: a newer pass
+ * claimed it and applies its own fetch). Committed batches stay when a pass ends early; the cursors are stored only by
+ * the final step, so the next pass fetches the same changes again and re-applies them by remote id and snapshot.
+ *
+ * Calendars: a new remote calendar becomes an account calendar with its `account` edge and a remote state without
+ * cursor, so a pass that ends early leaves it tracked; a known one gets changed remote fields; one no longer listed
+ * loses its remote state and the cleanup is queued. A full fetch deletes the stored Events of the window it did not
+ * list, decided from the remote state read in the prepare step; Events outside the window stay.
+ *
+ * A batch takes the share locks of its calendars before any Event row, the order Event writes take them in, and
+ * re-reads the remote state of its Events. An Event whose snapshot equals the fetched one writes nothing; one whose
+ * address alone changed updates only its remote state. Each Event is written in a savepoint: an Event rule refusing
+ * a value (`ValidationError`) skips that Event, which keeps no remote state and is offered again by a later full
+ * fetch. An Event with a pending push is left to its push, which is re-queued. After its Event writes, the Events
+ * that invite the account (`syncedInvitations.ts`) get or update their Invitations row, and an Event the provider
+ * deleted cancels its invitation.
+ *
+ * The final step stores the cursors, re-queues the pushes that waited for the account to work again, writes the
+ * change notifications collected over the batches, records `ok` and resolves the account's problem. Except in the
+ * account's initial sync, the Events added, cancelled, or changed in title, time or place in a calendar that was
+ * tracked before this pass and has `notify` on are notified; a change that leaves those fields as the Event already
+ * had them locally (the echo of a local edit) is not news, and an Event whose invitation was notified gets no notice
+ * of its own. A pass that ends early writes none of these notices; an invitation's own notification commits with its
+ * batch.
+ */
+export async function applyCalendarSync(pool: Pool, input: CalendarSyncApplyInput): Promise<CalendarSyncApplyResult> {
+  const passId = randomUUID();
+  const prepared = await withTransaction(pool, (client) => preparePass(client, input, passId));
+  if ("kind" in prepared) return prepared;
+  const collected: BatchOutcome = {
+    added: [],
+    changed: [],
+    cancelled: [],
+    notices: [],
+    invited: new Set(),
+    skippedEvents: 0,
+    created: [],
+  };
+  const batchEvents = input.batchEvents ?? CALENDAR_SYNC_BATCH_EVENTS;
+  for (let start = 0, batch = 1; start < prepared.operations.length; start += batchEvents, batch += 1) {
+    const operations = prepared.operations.slice(start, start + batchEvents);
+    const outcome = await withTransaction(pool, (client) => applyBatch(client, input, passId, prepared, operations));
+    if ("kind" in outcome) return outcome;
+    collected.added.push(...outcome.added);
+    collected.changed.push(...outcome.changed);
+    collected.cancelled.push(...outcome.cancelled);
+    collected.notices.push(...outcome.notices);
+    for (const eventItemId of outcome.invited) collected.invited.add(eventItemId);
+    collected.skippedEvents += outcome.skippedEvents;
+    for (const { calendarItemId, remoteId, eventItemId } of outcome.created) {
+      prepared.itemIds.get(calendarItemId)?.set(remoteId, eventItemId);
+    }
+    await input.afterBatch?.(batch);
+  }
+  return withTransaction(pool, (client) => finishPass(client, input, passId, prepared, collected));
+}
+
+/** The guard, then the account and this pass's claim; the account when the step may go ahead. */
+async function enterClaimedStep(
   client: PoolClient,
   input: CalendarSyncApplyInput,
-): Promise<CalendarSyncApplyResult> {
+  passId: string,
+): Promise<{ account: ItemRow } | PassEnd> {
+  await lockCalendarAccountSync(client, input.accountItemId, { maxWaitMs: input.guardWaitMs });
+  const account = await getItemById(client, input.ids.mailboxesDatabaseId, input.accountItemId);
+  if (!account || account.deletedAt || !areCalendarsEnabled(account.properties)) return { kind: "skipped" };
+  if ((await getCalendarSyncPassClaim(client, input.accountItemId)) !== passId) return { kind: "superseded" };
+  return { account };
+}
+
+async function preparePass(
+  client: PoolClient,
+  input: CalendarSyncApplyInput,
+  passId: string,
+): Promise<PreparedPass | PassEnd> {
   const { accountItemId, ids } = input;
   await lockCalendarAccountSync(client, accountItemId, { maxWaitMs: input.guardWaitMs });
   const account = await getItemById(client, ids.mailboxesDatabaseId, accountItemId);
@@ -333,7 +439,7 @@ export async function applyCalendarSync(
 
   const storedByRemoteId = new Map(stored.map((calendar) => [calendar.remoteId, calendar]));
   const queueAffinity = createActionQueueAffinity();
-  const targets: Array<FetchedCalendar & { calendarItemId: string; notify: boolean }> = [];
+  const targets: PassTarget[] = [];
   const notifiedCalendars: NotifiedCalendar[] = [];
   const accountName = textProperty(account.properties, "name") ?? "";
   for (const { calendar, changes } of input.fetched) {
@@ -394,6 +500,14 @@ export async function applyCalendarSync(
       { ownerProcess: CALENDAR_MODULE_ID },
       CALENDAR_SYNC_WRITER,
     );
+    // Tracked from now on, with no cursor until the pass completes, so a pass that ends early creates no second one.
+    await upsertCalendarRemoteState(client, {
+      calendarItemId: created.id,
+      remoteId: calendar.remoteId,
+      remoteUrl: calendar.url,
+      syncToken: null,
+      ctag: null,
+    });
     // A calendar new to this pass is in its own first sync: its Events are not news.
     targets.push({ calendar, changes, calendarItemId: created.id, notify: false });
   }
@@ -406,33 +520,85 @@ export async function applyCalendarSync(
     await enqueueCalendarAccountCleanup(client, accountItemId);
   }
 
-  const added: SyncedEventChange[] = [];
-  const changed: SyncedEventChange[] = [];
-  const cancelled: SyncedEventChange[] = [];
-  const notices: CalendarChangeNotice[] = [];
-  /** The Events this pass wrote or whose snapshot changed, which may stand for an invitation. */
-  const restated: RestatedEvent[] = [];
-  let skippedEvents = 0;
-  const pushesToRequeue = new Set<string>();
-  for (const { calendar, changes, calendarItemId, notify } of targets) {
-    // Lock order: the calendar before its Events' rows, as an Event write takes them.
-    await lockItemForShare(client, ids.calendarsDatabaseId, calendarItemId);
-    const storedEvents = new Map(
-      (await listEventRemoteStates(client, calendarItemId)).map((event) => [event.remoteId, event]),
-    );
+  const operations: EventOperation[] = [];
+  const itemIds = new Map<string, Map<string, string>>();
+  for (const target of targets) {
+    const { changes } = target;
+    const storedEvents = await listEventRemoteStates(client, target.calendarItemId);
     const upserted = new Set(changes.upserts.map((event) => event.remoteId));
     const deletions = changes.full
-      ? [...storedEvents.values()]
+      ? storedEvents
           .filter((event) => !upserted.has(event.remoteId) && withinWindow(event, input.window))
           .map((event) => event.remoteId)
       : changes.deletions.filter((remoteId) => !upserted.has(remoteId));
-    const released: string[] = [];
-    for (const remoteId of deletions) {
-      const event = storedEvents.get(remoteId);
+    const deleted = new Set(deletions);
+    // An override of a series this pass deletes is skipped.
+    itemIds.set(
+      target.calendarItemId,
+      new Map(
+        storedEvents
+          .filter((event) => !deleted.has(event.remoteId))
+          .map((event) => [event.remoteId, event.eventItemId]),
+      ),
+    );
+    for (const remoteId of deletions) operations.push({ kind: "delete", target, remoteId });
+    for (const event of changes.upserts) {
+      if (event.seriesRemoteId === null) operations.push({ kind: "upsert", target, event });
+    }
+    for (const event of changes.upserts) {
+      if (event.seriesRemoteId !== null) operations.push({ kind: "upsert", target, event });
+    }
+  }
+  await claimCalendarSyncPass(client, accountItemId, passId);
+  return { initialSync, targets, notifiedCalendars, operations, itemIds };
+}
+
+async function applyBatch(
+  client: PoolClient,
+  input: CalendarSyncApplyInput,
+  passId: string,
+  pass: PreparedPass,
+  operations: readonly EventOperation[],
+): Promise<BatchOutcome | PassEnd> {
+  const { accountItemId, ids } = input;
+  const entered = await enterClaimedStep(client, input, passId);
+  if ("kind" in entered) return entered;
+  const remoteIdsByCalendar = new Map<string, string[]>();
+  for (const operation of operations) {
+    const remoteId = operation.kind === "delete" ? operation.remoteId : operation.event.remoteId;
+    const remoteIds = remoteIdsByCalendar.get(operation.target.calendarItemId) ?? [];
+    remoteIds.push(remoteId);
+    remoteIdsByCalendar.set(operation.target.calendarItemId, remoteIds);
+  }
+  const statesByCalendar = new Map<string, Map<string, StoredRemoteEvent>>();
+  for (const [calendarItemId, remoteIds] of remoteIdsByCalendar) {
+    // Lock order: the calendar before its Events' rows, as an Event write takes them.
+    await lockItemForShare(client, ids.calendarsDatabaseId, calendarItemId);
+    statesByCalendar.set(calendarItemId, await listEventRemoteStatesByRemoteIds(client, calendarItemId, remoteIds));
+  }
+
+  const outcome: BatchOutcome = {
+    added: [],
+    changed: [],
+    cancelled: [],
+    notices: [],
+    invited: new Set(),
+    skippedEvents: 0,
+    created: [],
+  };
+  const createdHere = new Map<string, string>();
+  const queueAffinity = createActionQueueAffinity();
+  const released: string[] = [];
+  const pushesToRequeue = new Set<string>();
+  /** The Events this batch wrote or whose snapshot changed, which may stand for an invitation. */
+  const restated: RestatedEvent[] = [];
+  for (const operation of operations) {
+    const { calendarItemId, notify } = operation.target;
+    if (operation.kind === "delete") {
+      const event = statesByCalendar.get(calendarItemId)?.get(operation.remoteId);
       if (!event) continue;
       if (await hasPendingPush(client, ids, event.eventItemId)) {
         pushesToRequeue.add(event.eventItemId);
-        storedEvents.delete(remoteId);
         continue;
       }
       if (!event.deleted) {
@@ -440,9 +606,9 @@ export async function applyCalendarSync(
           queueAffinity,
           writer: CALENDAR_SYNC_WRITER,
         });
-        cancelled.push({ eventItemId: event.eventItemId, calendarItemId, remoteId });
+        outcome.cancelled.push({ eventItemId: event.eventItemId, calendarItemId, remoteId: operation.remoteId });
         if (notify) {
-          notices.push({
+          outcome.notices.push({
             kind: "cancelled",
             eventItemId: event.eventItemId,
             calendarItemId,
@@ -452,51 +618,73 @@ export async function applyCalendarSync(
         }
       }
       released.push(event.eventItemId);
-      storedEvents.delete(remoteId);
+      continue;
     }
-    await deleteEventRemoteStates(client, released);
-
-    const itemIdByRemoteId = new Map([...storedEvents].map(([remoteId, event]) => [remoteId, event.eventItemId]));
-    // Masters before overrides, so an override finds the item of its series.
-    const ordered = [
-      ...changes.upserts.filter((event) => event.seriesRemoteId === null),
-      ...changes.upserts.filter((event) => event.seriesRemoteId !== null),
-    ];
-    for (const event of ordered) {
-      const outcome = await applyEvent(client, {
-        ids,
+    const { event } = operation;
+    const series = event.seriesRemoteId;
+    const outcomeOfEvent = await applyEvent(client, {
+      ids,
+      calendarItemId,
+      event,
+      existing: statesByCalendar.get(calendarItemId)?.get(event.remoteId),
+      seriesItemId:
+        series === null
+          ? null
+          : (createdHere.get(`${calendarItemId}\n${series}`) ?? pass.itemIds.get(calendarItemId)?.get(series)),
+      queueAffinity,
+      notify,
+    });
+    if (outcomeOfEvent.kind === "pendingPush") {
+      pushesToRequeue.add(outcomeOfEvent.eventItemId);
+      continue;
+    }
+    if (outcomeOfEvent.kind === "skipped") {
+      outcome.skippedEvents += 1;
+      continue;
+    }
+    if (outcomeOfEvent.kind !== "unchanged" || outcomeOfEvent.restated) {
+      restated.push({ eventItemId: outcomeOfEvent.eventItemId, calendarItemId, event });
+    }
+    const change = { eventItemId: outcomeOfEvent.eventItemId, calendarItemId, remoteId: event.remoteId };
+    if (outcomeOfEvent.kind === "created") {
+      outcome.added.push(change);
+      createdHere.set(`${calendarItemId}\n${event.remoteId}`, outcomeOfEvent.eventItemId);
+      outcome.created.push(change);
+    }
+    if (outcomeOfEvent.kind === "updated") outcome.changed.push(change);
+    if (notify && (outcomeOfEvent.kind === "created" || (outcomeOfEvent.kind === "updated" && outcomeOfEvent.news))) {
+      outcome.notices.push({
+        kind: outcomeOfEvent.kind === "created" ? "added" : "changed",
+        eventItemId: outcomeOfEvent.eventItemId,
         calendarItemId,
-        event,
-        existing: storedEvents.get(event.remoteId),
-        seriesItemId: event.seriesRemoteId === null ? null : (itemIdByRemoteId.get(event.seriesRemoteId) ?? undefined),
-        queueAffinity,
-        notify,
+        snapshot: snapshotOf(event),
+        etag: event.etag,
       });
-      if (outcome.kind === "pendingPush") {
-        pushesToRequeue.add(outcome.eventItemId);
-        continue;
-      }
-      if (outcome.kind === "skipped") {
-        skippedEvents += 1;
-        continue;
-      }
-      itemIdByRemoteId.set(event.remoteId, outcome.eventItemId);
-      if (outcome.kind !== "unchanged" || outcome.restated) {
-        restated.push({ eventItemId: outcome.eventItemId, calendarItemId, event });
-      }
-      const change = { eventItemId: outcome.eventItemId, calendarItemId, remoteId: event.remoteId };
-      if (outcome.kind === "created") added.push(change);
-      if (outcome.kind === "updated") changed.push(change);
-      if (notify && (outcome.kind === "created" || (outcome.kind === "updated" && outcome.news))) {
-        notices.push({
-          kind: outcome.kind === "created" ? "added" : "changed",
-          eventItemId: outcome.eventItemId,
-          calendarItemId,
-          snapshot: snapshotOf(event),
-          etag: event.etag,
-        });
-      }
     }
+  }
+  await deleteEventRemoteStates(client, released);
+  for (const eventItemId of [...pushesToRequeue].sort()) await enqueueCalendarEventPush(client, eventItemId);
+  outcome.invited = await reconcileSyncedInvitations(client, {
+    accountItemId,
+    ownAddresses: await accountOwnAddresses(client, accountItemId, entered.account.properties),
+    initialSync: pass.initialSync,
+    events: restated,
+    cancelledEventItemIds: outcome.cancelled.map((change) => change.eventItemId),
+  });
+  return outcome;
+}
+
+async function finishPass(
+  client: PoolClient,
+  input: CalendarSyncApplyInput,
+  passId: string,
+  pass: PreparedPass,
+  collected: BatchOutcome,
+): Promise<CalendarSyncApplyResult> {
+  const { accountItemId, ids } = input;
+  const entered = await enterClaimedStep(client, input, passId);
+  if ("kind" in entered) return entered;
+  for (const { calendar, changes, calendarItemId } of pass.targets) {
     await upsertCalendarRemoteState(client, {
       calendarItemId,
       remoteId: calendar.remoteId,
@@ -505,35 +693,32 @@ export async function applyCalendarSync(
       ctag: changes.nextSyncState.ctag ?? calendar.ctag,
     });
   }
-
-  // The pushes this pass left to their job, and the ones that waited for the account to work again.
+  // The pushes that waited for the account to work again.
   for (const eventItemId of await listAccountWaitingEventPushes(
     client,
     ids,
-    targets.map((target) => target.calendarItemId),
+    pass.targets.map((target) => target.calendarItemId),
   )) {
-    pushesToRequeue.add(eventItemId);
+    await enqueueCalendarEventPush(client, eventItemId);
   }
-  for (const eventItemId of [...pushesToRequeue].sort()) await enqueueCalendarEventPush(client, eventItemId);
-
-  const ownAddresses = await accountOwnAddresses(client, accountItemId, account.properties);
-  const invited = await reconcileSyncedInvitations(client, {
-    accountItemId,
-    ownAddresses,
-    initialSync,
-    events: restated,
-    cancelledEventItemIds: cancelled.map((change) => change.eventItemId),
-  });
   await notifyCalendarChanges(client, {
     accountItemId,
-    calendars: notifiedCalendars,
-    ownAddresses,
-    // An invitation's own notification stands for its Event's addition or change.
-    notices: notices.filter((notice) => notice.kind === "cancelled" || !invited.has(notice.eventItemId)),
+    calendars: pass.notifiedCalendars,
+    ownAddresses: await accountOwnAddresses(client, accountItemId, entered.account.properties),
+    notices: collected.notices.filter(
+      (notice) => notice.kind === "cancelled" || !collected.invited.has(notice.eventItemId),
+    ),
   });
   await recordCalendarSyncSuccess(client, accountItemId);
   await resolveProblem(client, { dedupeKey: calendarProblemKey(accountItemId), resolutionKind: "recovered" });
-  return { kind: "applied", initialSync, added, changed, cancelled, skippedEvents };
+  return {
+    kind: "applied",
+    initialSync: pass.initialSync,
+    added: collected.added,
+    changed: collected.changed,
+    cancelled: collected.cancelled,
+    skippedEvents: collected.skippedEvents,
+  };
 }
 
 type EventOutcome =

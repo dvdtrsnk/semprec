@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
 import type { UserRow } from "../auth/types.js";
-import { createPool, withTransaction } from "../db/pool.js";
+import { createPool, withTransaction, type CreatePoolOptions } from "../db/pool.js";
 
 /**
  * Harness for multi-tenant tests.
@@ -123,7 +123,11 @@ async function alterRolePassword(adminPool: Pool, role: RuntimeRole, password: s
 }
 
 /** Uses the production pool constructor. The caller ends it. */
-export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole): Promise<Pool> {
+export async function createRuntimeRolePool(
+  adminPool: Pool,
+  role: RuntimeRole,
+  options: Pick<CreatePoolOptions, "statementTimeoutMs" | "max"> = {},
+): Promise<Pool> {
   const baseUrl = process.env.TEST_DATABASE_URL;
   if (!baseUrl) {
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
@@ -133,7 +137,7 @@ export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole):
   const url = new URL(baseUrl);
   url.username = role;
   url.password = password;
-  return createPool(url.toString());
+  return createPool(url.toString(), options);
 }
 
 /** Test-only stand-in for the tenant scope primitive. */
