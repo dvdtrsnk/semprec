@@ -16,7 +16,7 @@ export async function findEmailItemIdByFolderUid(
   return row.item_a === folderItemId ? row.item_b : row.item_a;
 }
 
-/** DB side of a full UID diff on a server without CONDSTORE/QRESYNC. */
+/** DB side of a full UID diff. */
 export async function listKnownFolderUids(
   client: Queryable,
   relationDefinitionId: string,

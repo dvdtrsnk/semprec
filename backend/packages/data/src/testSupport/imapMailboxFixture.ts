@@ -13,6 +13,9 @@ import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
+import { FakeImapAccount } from "./fakeImapAccount.js";
+import { FakeImapServer } from "./fakeImapServer.js";
 
 export const IMAP_FIXTURE_ACCOUNT = "owner@example.test";
 
@@ -35,15 +38,19 @@ export const noAttachmentStorage: BlobStorageWriter = {
   },
 };
 
-/** A plain-text message with a unique Message-ID from someone else to the fixture account. */
-export function plainMessage(subject: string): Buffer {
+/** A plain-text message from someone else to the fixture account, with a unique Message-ID unless one is given. */
+export function plainMessage(
+  subject: string,
+  options: { messageId?: string; headers?: readonly string[] } = {},
+): Buffer {
   return Buffer.from(
     [
-      `Message-ID: <${randomUUID()}@sender.example.test>`,
+      `Message-ID: ${options.messageId ?? `<${randomUUID()}@sender.example.test>`}`,
       "From: Sender <sender@sender.example.test>",
       `To: ${IMAP_FIXTURE_ACCOUNT}`,
       `Subject: ${subject}`,
       "Date: Sat, 21 Nov 2026 12:00:00 +0000",
+      ...(options.headers ?? []),
       "Content-Type: text/plain; charset=utf-8",
       "",
       `${subject} body`,
@@ -104,6 +111,8 @@ export async function connectLoopbackImapClient(port: number): Promise<ImapMailC
     port,
     secure: false,
     auth: { user: IMAP_FIXTURE_ACCOUNT, pass: "app-password" },
+    // As production's connections: ENABLE QRESYNC where the server advertises it.
+    qresync: true,
     logger: false,
   });
   // imapflow throws from its emitter when an error event has no listener; a failure still reaches the pass through
@@ -111,4 +120,84 @@ export async function connectLoopbackImapClient(port: number): Promise<ImapMailC
   flow.on("error", () => {});
   await flow.connect();
   return new ImapFlowMailClient(flow);
+}
+
+/** About 20 messages over the six folders, as in the production account; INBOX holds unread ones. */
+const FLAGS: Record<string, Array<readonly string[]>> = {
+  INBOX: [[], [], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
+  Sent: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
+  Drafts: [[IMAP_SEEN_FLAG]],
+  Archive: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
+  Trash: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
+  Junk: [[]],
+};
+/** Each folder's messages are named `<folder> <n>`. */
+export const PURELYMAIL_CONTENT: Record<string, readonly LoopbackMessage[]> = Object.fromEntries(
+  Object.entries(FLAGS).map(([path, flags]) => [
+    path,
+    flags.map((messageFlags, index) => ({ subject: `${path} ${index + 1}`, flags: messageFlags })),
+  ]),
+);
+
+/** One message of a loopback mailbox: its subject (unique within the mailbox), flags and optional extra headers. */
+export interface LoopbackMessage {
+  subject: string;
+  flags?: readonly string[];
+  /** Header lines added to the plain message, such as `In-Reply-To: <...>`. */
+  headers?: readonly string[];
+  messageId?: string;
+}
+
+export interface SyncedLoopbackMailbox {
+  mailbox: ImapMailboxFixture;
+  server: FakeImapServer;
+  /** The loopback server's port. */
+  port: number;
+  /** A new connection of the production client to the loopback server. */
+  overWire: () => Promise<ImapMailClient>;
+  /** The server UID of the message with `subject` in `path`. */
+  uidOf(path: string, subject: string): number;
+}
+
+/**
+ * A Purelymail-like mailbox whose messages are ingested through an in-memory account with the same folders, UIDs,
+ * flags and bytes as the loopback server, then synced once over the wire so the folder state holds the server's
+ * cursors. Mail already ingested this way is what a pass over the wire finds known.
+ */
+export async function createSyncedLoopbackMailbox(
+  runtime: Pool,
+  options: { capabilities: readonly string[]; latencyMs: number; content: Record<string, readonly LoopbackMessage[]> },
+): Promise<SyncedLoopbackMailbox> {
+  const account = new FakeImapAccount([...PURELYMAIL_FOLDERS]);
+  const server = new FakeImapServer({
+    folders: PURELYMAIL_FOLDERS,
+    capabilities: options.capabilities,
+    latencyMs: options.latencyMs,
+  });
+  const uids = new Map<string, number>();
+  for (const [path, messages] of Object.entries(options.content)) {
+    for (const message of messages) {
+      const raw = plainMessage(message.subject, message);
+      account.deliver(path, raw, message.flags);
+      uids.set(`${path}\n${message.subject}`, server.deliver(path, message.flags, raw));
+    }
+  }
+  const port = await server.listen();
+  const mailbox = await createImapMailboxFixture(runtime);
+  const total = Object.values(options.content).reduce((sum, messages) => sum + messages.length, 0);
+  // A pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` messages.
+  for (let pass = 0; pass <= Math.ceil(total / 10); pass++) await mailbox.sync(async () => account.client());
+  const overWire = () => connectLoopbackImapClient(port);
+  await mailbox.sync(overWire);
+  return {
+    mailbox,
+    server,
+    port,
+    overWire,
+    uidOf(path, subject) {
+      const uid = uids.get(`${path}\n${subject}`);
+      if (uid === undefined) throw new Error(`No message ${subject} in ${path}`);
+      return uid;
+    },
+  };
 }

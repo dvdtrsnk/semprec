@@ -418,7 +418,7 @@ function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     listFolders: async () => [],
     selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async () => [],
-    fetchVanishedSince: async () => [],
+    fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async () => [],
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},
@@ -1647,7 +1647,7 @@ describe("IMAP reconcile core", () => {
         ...twoMessages,
         selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 6, messages: 1 }),
         fetchMessagesSince: async () => [],
-        fetchVanishedSince: async () => [1],
+        fetchChangesSince: async () => ({ flags: [], vanished: [1] }),
       }),
       params,
     );
@@ -2358,7 +2358,7 @@ describe("mail sync job error handling", () => {
                 listFolders: unexpected,
                 selectFolder: unexpected,
                 fetchMessagesSince: unexpected,
-                fetchVanishedSince: unexpected,
+                fetchChangesSince: unexpected,
                 fetchAllUids: unexpected,
                 fetchFlagsChangedSince: unexpected,
                 setMessageFlag: unexpected,
@@ -2414,7 +2414,7 @@ describe("mail sync job error handling", () => {
                 messages: 0,
               }),
               fetchMessagesSince: async (path) => (path === "Source" ? [{ uid: 7, message: observedMessage }] : []),
-              fetchVanishedSince: async () => null,
+              fetchChangesSince: async () => null,
               fetchAllUids: async () => [7, 27],
               setMessageFlag: async () => {
                 throw new Error("Unexpected IMAP flag mutation");
@@ -2575,11 +2575,11 @@ describe("mail sync job error handling", () => {
     const trackingStorage = blobStorage(writtenKeys, deletedKeys);
     const inbox = { listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }] };
 
-    // A new folder's first reconcile pass never calls fetchVanishedSince/fetchAllUids (nothing to diff
+    // A new folder's first reconcile pass never calls fetchChangesSince/fetchAllUids (nothing to diff
     // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
     await runSync(
       mailbox,
-      { createImapClient: async () => fakeImap({ ...inbox, fetchVanishedSince: async () => null }) },
+      { createImapClient: async () => fakeImap({ ...inbox, fetchChangesSince: async () => null }) },
       trackingStorage,
     );
 
@@ -2588,7 +2588,7 @@ describe("mail sync job error handling", () => {
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [withAttachment(1, "<orphan@x>", "f.txt")],
       // No QRESYNC and a known uidvalidity: the non-CONDSTORE fallback, which diffs via fetchAllUids.
-      fetchVanishedSince: async () => null,
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => {
         throw new Error("boom after the messages were fetched");
       },
@@ -4211,7 +4211,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     fakeImap({
       listFolders: async () => [{ path: "INBOX" }],
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
-      fetchVanishedSince: async () => null,
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => [1],
       setMessageFlag: async () => {
         throw new Error("this pass must not attempt a write-back");

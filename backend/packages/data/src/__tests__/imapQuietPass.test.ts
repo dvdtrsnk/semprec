@@ -9,27 +9,11 @@ import { listMailThreads } from "../mail/mailThreadListQuery.js";
 import { createMailThreadReadRouteHandler } from "../mail/mailThreadRoutes.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
-import { FakeImapServer } from "../testSupport/fakeImapServer.js";
-import {
-  connectLoopbackImapClient,
-  createImapMailboxFixture,
-  plainMessage,
-  PURELYMAIL_FOLDERS,
-} from "../testSupport/imapMailboxFixture.js";
+import type { FakeImapServer } from "../testSupport/fakeImapServer.js";
+import { createSyncedLoopbackMailbox, PURELYMAIL_CONTENT } from "../testSupport/imapMailboxFixture.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const LATENCY_MS = 80;
-
-/** About 20 messages over the six folders, as in the production account; INBOX holds unread ones. */
-const CONTENT: Record<string, Array<readonly string[]>> = {
-  INBOX: [[], [], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
-  Sent: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
-  Drafts: [[IMAP_SEEN_FLAG]],
-  Archive: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
-  Trash: [[IMAP_SEEN_FLAG], [IMAP_SEEN_FLAG]],
-  Junk: [[]],
-};
 
 let admin: Pool;
 let runtime: Pool;
@@ -83,26 +67,14 @@ describe("a quiet IMAP pass against a loopback server with 80 ms per command", (
     return thread.threadId;
   }
 
-  /**
-   * The mailbox's messages are ingested through an in-memory account with the same folders, UIDs and flags as the
-   * loopback server (which holds no bodies), then one pass over the wire records the server's cursors.
-   */
   async function syncedMailbox(capabilities: readonly string[]) {
-    const account = new FakeImapAccount([...PURELYMAIL_FOLDERS]);
-    server = new FakeImapServer({ folders: PURELYMAIL_FOLDERS, capabilities, latencyMs: LATENCY_MS });
-    for (const [path, messages] of Object.entries(CONTENT)) {
-      messages.forEach((flags, index) => {
-        account.deliver(path, plainMessage(`${path} ${index + 1}`), flags);
-        server!.deliver(path, flags);
-      });
-    }
-    const port = await server.listen();
-    const mailbox = await createImapMailboxFixture(runtime);
-    // A pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` messages.
-    for (let pass = 0; pass < 3; pass++) await mailbox.sync(async () => account.client());
-    const overWire = () => connectLoopbackImapClient(port);
-    await mailbox.sync(overWire);
-    return { mailbox, overWire, server };
+    const synced = await createSyncedLoopbackMailbox(runtime, {
+      capabilities,
+      latencyMs: LATENCY_MS,
+      content: PURELYMAIL_CONTENT,
+    });
+    server = synced.server;
+    return synced;
   }
 
   async function measuredPass(sync: () => Promise<void>, wire: FakeImapServer) {
@@ -120,6 +92,12 @@ describe("a quiet IMAP pass against a loopback server with 80 ms per command", (
       capabilities: CONDSTORE_LIST_STATUS,
       counts: { LOGIN: 1, ENABLE: 1, LIST: 2, LSUB: 1, LOGOUT: 1 },
       maxMs: 900,
+    },
+    {
+      name: "QRESYNC without LIST-STATUS (Purelymail)",
+      capabilities: ["ENABLE", "IDLE", "CONDSTORE", "QRESYNC", "MOVE", "UIDPLUS", "SPECIAL-USE"],
+      counts: { LOGIN: 1, ENABLE: 1, LIST: 2, LSUB: 1, STATUS: 6, LOGOUT: 1 },
+      maxMs: 1_400,
     },
     {
       name: "CONDSTORE without LIST-STATUS",

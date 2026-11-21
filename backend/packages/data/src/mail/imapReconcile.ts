@@ -19,6 +19,10 @@ import {
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
+import { deleteMailMessageMetaOfRemovedItem } from "./mailMessageMetaStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import type { WritableImapFlag } from "./messageFlags.js";
 import {
   listPendingImapFlagWrites,
@@ -69,9 +73,15 @@ export interface ImapMailClient {
   selectFolder(path: string): Promise<ImapFolderSelection>;
   /** At most `limit` messages from `sinceUid` up, lowest UIDs first. */
   fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]>;
-  /** `null` without QRESYNC; the caller then falls back to `fetchAllUids`. */
-  fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
-  /** No-QRESYNC deletion detection by full UID diff. */
+  /**
+   * QRESYNC: the flags changed and the UIDs expunged since `sinceModSeq`, in one fetch. `null` when QRESYNC is not
+   * enabled on the connection; the caller then uses `fetchFlagsChangedSince` and the message count.
+   */
+  fetchChangesSince(
+    path: string,
+    sinceModSeq: number,
+  ): Promise<{ flags: Array<{ uid: number; flags: string[] }>; vanished: number[] } | null>;
+  /** Every UID the folder holds, for a full UID diff when the message count does not account for the folder. */
   fetchAllUids(path: string): Promise<number[]>;
   /** Observes provider-side flag changes on known UIDs; `null` modseq fetches every UID's flags. */
   fetchFlagsChangedSince(path: string, sinceModSeq: number | null): Promise<Array<{ uid: number; flags: string[] }>>;
@@ -116,6 +126,11 @@ export interface ReconcileImapFolderResult {
   ingested: number;
   /** `false` when new messages above the last ingested UID are left for a later pass. */
   complete: boolean;
+}
+
+/** A folder batch's outcome inside a pass: what it ingested and the Emails items whose copy in the folder vanished. */
+interface AppliedImapFolder extends ReconcileImapFolderResult {
+  copiesRemovedFrom: string[];
 }
 
 const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
@@ -182,7 +197,7 @@ interface FetchedImapFolder {
   batch: ImapFetchedMessage[];
   complete: boolean;
   changedFlags: Array<{ uid: number; flags: string[] }>;
-  /** Vanished UIDs, or (without QRESYNC) every UID the folder holds now, diffed against the known ones on write. */
+  /** Vanished UIDs, or every UID the folder holds now, diffed against the known ones on write. */
   vanished: { kind: "uids"; uids: number[] } | { kind: "current"; uids: number[] };
 }
 
@@ -226,32 +241,61 @@ async function fetchImapFolder(
     capabilities.has("CONDSTORE") &&
     selection.highestModSeq !== null &&
     state.highestmodseq === String(selection.highestModSeq);
-  // An expunge lowers the message count and a delivery moves UIDNEXT; with both as stored nothing vanished.
+  // UIDs only grow, so with UIDNEXT as stored nothing was added, and with the count as stored nothing left either.
   const nothingVanished =
     !uidvalidityChanged &&
     state.uidnext === String(selection.uidnext) &&
     snapshot.messageCount === String(selection.messages);
 
-  // UIDs below sinceUid are never re-fetched, so their flags are refreshed here. Skipped on a
-  // folder's first sync, where every message is ingested with its flags.
+  // Skipped on a folder's first sync, where every message is ingested with its flags and nothing can have vanished.
+  if (!state.uidvalidity) {
+    const vanished = { kind: "uids" as const, uids: [] };
+    return { snapshot, selection, uidvalidityChanged, sinceUid, batch, complete, changedFlags: [], vanished };
+  }
+
+  // UIDs below sinceUid are never re-fetched, so their flags are refreshed here; under QRESYNC the same fetch reports
+  // the UIDs expunged since the stored mod-sequence.
+  const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
   let changedFlags: Array<{ uid: number; flags: string[] }> = [];
-  if (state.uidvalidity && !flagsUnchanged) {
-    const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
+  let reportedVanished: number[] | null = null;
+  if (capabilities.has("QRESYNC") && sinceModSeq !== null && !(flagsUnchanged && nothingVanished)) {
+    const changes = await imap.fetchChangesSince(folderPath, sinceModSeq);
+    if (changes) {
+      changedFlags = changes.flags;
+      reportedVanished = changes.vanished;
+    }
+  }
+  if (reportedVanished === null && !flagsUnchanged) {
     changedFlags = await imap.fetchFlagsChangedSince(folderPath, sinceModSeq);
   }
 
-  let vanishedUids: number[] | null = null;
-  if (nothingVanished) vanishedUids = [];
-  else if (capabilities.has("QRESYNC") && state.highestmodseq) {
-    vanishedUids = await imap.fetchVanishedSince(folderPath, Number(state.highestmodseq));
-  }
   let vanished: FetchedImapFolder["vanished"];
-  if (vanishedUids !== null) vanished = { kind: "uids", uids: vanishedUids };
-  // Initial sync: nothing to diff against yet.
-  else if (!state.uidvalidity) vanished = { kind: "uids", uids: [] };
+  if (nothingVanished) vanished = { kind: "uids", uids: reportedVanished ?? [] };
+  else if (countAccountsForFolder(snapshot, selection, sinceUid, complete ? fetched.length : null, reportedVanished))
+    vanished = { kind: "uids", uids: reportedVanished ?? [] };
   else vanished = { kind: "current", uids: await imap.fetchAllUids(folderPath) };
 
   return { snapshot, selection, uidvalidityChanged, sinceUid, batch, complete, changedFlags, vanished };
+}
+
+/**
+ * The stored count described the folder at the stored UIDNEXT (`sinceUid`). When it, less the reported vanished UIDs
+ * below `sinceUid` and plus the new UIDs found at or above it, equals the selected count, the reported vanished UIDs
+ * are every UID that left (none without QRESYNC). A removal could only balance against an unseen addition below
+ * `sinceUid`, which IMAP excludes (UIDs only grow), so a `true` never hides a removal. A partial batch (`newUids`
+ * null), a changed UIDVALIDITY or an unknown stored count gives `false`, and the caller diffs every UID.
+ */
+function countAccountsForFolder(
+  snapshot: MailFolderSyncStateRow,
+  selection: ImapFolderSelection,
+  sinceUid: number,
+  newUids: number | null,
+  reportedVanished: number[] | null,
+): boolean {
+  if (newUids === null || snapshot.messageCount === null || snapshot.uidvalidity !== String(selection.uidvalidity))
+    return false;
+  const vanishedBelow = new Set((reportedVanished ?? []).filter((uid) => uid < sinceUid)).size;
+  return Number(snapshot.messageCount) - vanishedBelow + newUids === selection.messages;
 }
 
 function sameFolderState(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
@@ -315,7 +359,7 @@ async function applyImapFolder(
   fetched: FetchedImapFolder,
   params: ReconcileImapFolderParams,
   relationDefinitionId: string,
-): Promise<ReconcileImapFolderResult | null> {
+): Promise<AppliedImapFolder | null> {
   await lockMailThreadMutation(dbClient);
   const current = await lockMailFolderSyncState(dbClient, params.folderItemId);
   if (!current || !sameFolderState(current, fetched.snapshot)) return null;
@@ -374,6 +418,7 @@ async function applyImapFolder(
       (uid) => !currentSet.has(uid),
     );
   }
+  const copiesRemovedFrom: string[] = [];
   for (const uid of vanishedUids) {
     const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinitionId, params.folderItemId, uid);
     if (
@@ -381,6 +426,7 @@ async function applyImapFolder(
       !protectedMoveMessageIds.has(emailItemId) &&
       !(await hasUnsettledMailMove(dbClient, emailItemId))
     ) {
+      copiesRemovedFrom.push(emailItemId);
       await deleteRelationWithClient(
         dbClient,
         {
@@ -403,7 +449,41 @@ async function applyImapFolder(
     highestmodseq: fetched.selection.highestModSeq !== null ? String(fetched.selection.highestModSeq) : null,
     messageCount: String(fetched.selection.messages),
   });
-  return { ingested: fetched.batch.length, complete: fetched.complete };
+  return { ingested: fetched.batch.length, complete: fetched.complete, copiesRemovedFrom };
+}
+
+/**
+ * Trashes, as the system writer, each of `emailItemIds` that has no folder edge left and no move in flight, and
+ * deletes its meta row (and a thread no other message names), so the message leaves every thread count and a later
+ * delivery of the same Message-ID is ingested anew. An Emails item with a copy in another folder is kept: a move by
+ * another client shows as the source copy gone and the target copy ingested onto the same item. Repeating it is a
+ * no-op. Runs under the mail-thread guard of the caller's transaction.
+ */
+async function removeEmailsWithoutFolderCopy(
+  dbClient: PoolClient,
+  emailItemIds: ReadonlySet<string>,
+  params: Pick<
+    ReconcileImapFolderParams,
+    "emailsDatabaseId" | "mailboxItemId" | "moveBaseline" | "protectedMoveMessageIds"
+  >,
+  relationDefinitionId: string,
+): Promise<void> {
+  if (emailItemIds.size === 0) return;
+  const protectedMoveMessageIds = await protectedMailMovesForPass(
+    dbClient,
+    params.mailboxItemId,
+    params.moveBaseline,
+    params.protectedMoveMessageIds,
+  );
+  for (const emailItemId of emailItemIds) {
+    if (protectedMoveMessageIds.has(emailItemId) || (await hasUnsettledMailMove(dbClient, emailItemId))) continue;
+    if ((await listRelationsForItem(dbClient, relationDefinitionId, emailItemId)).length > 0) continue;
+    await itemDeleteWithClient(dbClient, params.emailsDatabaseId, emailItemId, {
+      queueAffinity: createActionQueueAffinity(),
+      writer: SYSTEM_WRITER,
+    });
+    await deleteMailMessageMetaOfRemovedItem(dbClient, emailItemId);
+  }
 }
 
 async function requireFolderRelationDefinitionId(
@@ -444,9 +524,14 @@ export async function reconcileImapFolder(
       spool,
     );
     const result = await withBatchStorage(params.storage, (storage) =>
-      withTransaction(pool, (client) => applyImapFolder(client, fetched, { ...params, storage }, relationDefinitionId)),
+      withTransaction(pool, async (client) => {
+        const applied = await applyImapFolder(client, fetched, { ...params, storage }, relationDefinitionId);
+        if (applied)
+          await removeEmailsWithoutFolderCopy(client, new Set(applied.copiesRemovedFrom), params, relationDefinitionId);
+        return applied;
+      }),
     );
-    return result ?? { ingested: 0, complete: false };
+    return result ? { ingested: result.ingested, complete: result.complete } : { ingested: 0, complete: false };
   } finally {
     await spool.remove();
   }
@@ -572,6 +657,8 @@ export async function reconcileImapAccount(
 
   let budget = IMAP_NEW_MESSAGES_PER_PASS;
   let complete = true;
+  // Decided in the final transaction, once every folder's new copies are in: a moved message keeps its item.
+  const copiesRemovedFrom = new Set<string>();
   const spool = createAttachmentSpool();
   try {
     for (const { folder, folderItemId, snapshot } of prepared.value.folders) {
@@ -611,6 +698,7 @@ export async function reconcileImapAccount(
       }
       budget -= written.value.ingested;
       if (!written.value.complete) complete = false;
+      for (const emailItemId of written.value.copiesRemovedFrom) copiesRemovedFrom.add(emailItemId);
     }
   } finally {
     await spool.remove();
@@ -656,6 +744,7 @@ export async function reconcileImapAccount(
     for (const write of confirmed) {
       await recordConfirmedMailMessageFlag(client, write.messageItemId, write.propertyKey, write.desiredState);
     }
+    await removeEmailsWithoutFolderCopy(client, copiesRemovedFrom, params, folderRelationDefinitionId);
     // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
     // once, so the sweep resumes it even if the follow-up job is lost.
     await recordImapActivity(client, {

@@ -1299,7 +1299,7 @@ describe("mail move intent store", () => {
       listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
       selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => [23],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: reconciledFlag,

@@ -180,6 +180,8 @@ function buildImapFlow(
     tls: { servername: endpoint.host, lookup: createPolicyLookup(policy), ...(testCa ? { ca: testCa } : {}) },
     connectionTimeout,
     greetingTimeout: GREETING_TIMEOUT_MS,
+    // imapflow ENABLEs QRESYNC only where the server advertises it; a sync pass then receives VANISHED for expunges.
+    qresync: true,
     ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),

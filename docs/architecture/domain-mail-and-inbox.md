@@ -213,6 +213,23 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   (always without CONDSTORE), and the vanished check only when UIDNEXT or the message count differs from the stored
   ones. The folder list is fetched on every pass: it is how an added or removed folder shows, and it brings the
   STATUS data in the same round trip.
+- Deleted messages. Every IMAP connection is opened with imapflow's `qresync: true`, which ENABLEs QRESYNC where the
+  server advertises it; `ImapFlowMailClient` decides by the enabled set. Under QRESYNC the flag fetch and the
+  vanished check are one `UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE m VANISHED)` (`fetchChangesSince`), whose
+  `VANISHED (EARLIER)` names the expunged UIDs. Whether those (or, without QRESYNC, none) are every UID that left is
+  decided by the message count: the stored count, less the reported vanished UIDs below the stored UIDNEXT, plus the
+  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a UIDVALIDITY change, a
+  partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
+  known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
+  UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
+- A vanished UID removes that folder's Emails–Folders edge. In the pass's final transaction every Emails item the
+  pass removed an edge from and that has no folder edge left (and no unsettled or protected move) is trashed as the
+  system writer and loses its meta row through `deleteMailMessageMetaOfRemovedItem` (a thread no other message names
+  goes too), as the Mail-off removal does, so it leaves every thread count and a re-delivery is ingested anew. The
+  decision waits for the final transaction because another client's move shows as the target folder's new UID,
+  ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
+  move keeps its item. A target UID left beyond the pass's budget makes the move a removal and a new item in the
+  next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
 - An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
   inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
   unfinished pass requests a rerun of itself in its final transaction, leaves the account due at once and keeps

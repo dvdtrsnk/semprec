@@ -130,7 +130,7 @@ export class FakeImapAccount {
         for (const message of selected) fetched.push({ uid: message.uid, message: await parsed(message) });
         return fetched;
       },
-      fetchVanishedSince: async () => null,
+      fetchChangesSince: async () => null,
       fetchAllUids: async (path) => this.folder(path).messages.map((message) => message.uid),
       fetchFlagsChangedSince: async (path, sinceModSeq) =>
         this.folder(path)
@@ -182,7 +182,7 @@ export class FakeImapAccount {
       listFolders: logged("listFolders", methods.listFolders),
       selectFolder: logged("selectFolder", methods.selectFolder),
       fetchMessagesSince: logged("fetchMessagesSince", methods.fetchMessagesSince),
-      fetchVanishedSince: logged("fetchVanishedSince", methods.fetchVanishedSince),
+      fetchChangesSince: logged("fetchChangesSince", methods.fetchChangesSince),
       fetchAllUids: logged("fetchAllUids", methods.fetchAllUids),
       fetchFlagsChangedSince: logged("fetchFlagsChangedSince", methods.fetchFlagsChangedSince),
       setMessageFlag: logged("setMessageFlag", methods.setMessageFlag),

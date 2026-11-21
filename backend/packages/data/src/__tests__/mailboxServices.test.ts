@@ -84,7 +84,7 @@ function providerAccount(): ImapMailClient {
             attachments: [],
           },
         })),
-    fetchVanishedSince: async () => [],
+    fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},

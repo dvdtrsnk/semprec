@@ -249,8 +249,8 @@ describe("relation invalidations", () => {
             },
           ];
         },
-        async fetchVanishedSince() {
-          return [];
+        async fetchChangesSince() {
+          return { flags: [], vanished: [] };
         },
         async fetchAllUids() {
           return [1];

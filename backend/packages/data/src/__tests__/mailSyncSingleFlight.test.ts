@@ -338,9 +338,8 @@ describe("one mail sync pass per mailbox", () => {
       "selectFolder INBOX",
       "fetchMessagesSince INBOX",
       "fetchFlagsChangedSince INBOX",
-      "fetchAllUids INBOX",
     ]);
-    // Nine client calls of 80 ms (three to finish the running pass, six of the follow-up) plus database work.
+    // Eight client calls of 80 ms (three to finish the running pass, five of the follow-up) plus database work.
     expect(visibleAfterMs).toBeLessThan(2_000);
   }, 30_000);
 });

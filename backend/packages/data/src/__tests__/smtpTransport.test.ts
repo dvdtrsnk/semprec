@@ -937,7 +937,7 @@ const unusedReconcileMethods: Omit<ImapMailClient, "appendMessage" | "close"> = 
   listFolders: notCalled,
   selectFolder: notCalled,
   fetchMessagesSince: notCalled,
-  fetchVanishedSince: notCalled,
+  fetchChangesSince: notCalled,
   fetchAllUids: notCalled,
   fetchFlagsChangedSince: notCalled,
   setMessageFlag: notCalled,

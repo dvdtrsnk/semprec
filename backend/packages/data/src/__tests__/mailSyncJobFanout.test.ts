@@ -54,7 +54,7 @@ function inboxAccount(): ImapMailClient {
     selectFolder: async () => ({ uidvalidity: 1, uidnext: MESSAGES + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (_path, sinceUid, limit) =>
       messages.filter((message) => message.uid >= sinceUid).slice(0, limit),
-    fetchVanishedSince: async () => [],
+    fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async () => messages.map((message) => message.uid),
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},

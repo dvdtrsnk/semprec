@@ -563,25 +563,18 @@ export class ImapFlowMailClient implements ImapMailClient {
     return results;
   }
 
-  async fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null> {
-    if (!this.client.capabilities.has("QRESYNC")) return null;
-    await this.ensureSelected(path);
+  /**
+   * With QRESYNC enabled on this connection, imapflow adds `VANISHED` to a UID FETCH with `CHANGEDSINCE`, so one
+   * command returns the changed flags and the expunged UIDs, which imapflow reports as `expunge` events.
+   */
+  async fetchChangesSince(
+    path: string,
+    sinceModSeq: number,
+  ): Promise<{ flags: Array<{ uid: number; flags: string[] }>; vanished: number[] } | null> {
+    if (!this.client.enabled.has("QRESYNC")) return null;
     const vanished: number[] = [];
-    const onExpunge = (event: { vanished: boolean; uid?: number }) => {
-      if (event.vanished && event.uid !== undefined) vanished.push(event.uid);
-    };
-    this.client.on("expunge", onExpunge);
-    try {
-      // QRESYNC reports VANISHED via 'expunge' events; the fetch is drained only to collect them.
-      for await (const _raw of this.providerStream(() =>
-        this.client.fetch("1:*", { uid: true }, { uid: true, changedSince: BigInt(sinceModSeq) }),
-      )) {
-        // draining only
-      }
-    } finally {
-      this.client.off("expunge", onExpunge);
-    }
-    return vanished;
+    const flags = await this.fetchFlags(path, sinceModSeq, vanished);
+    return { flags, vanished };
   }
 
   async fetchAllUids(path: string): Promise<number[]> {
@@ -595,8 +588,27 @@ export class ImapFlowMailClient implements ImapMailClient {
     path: string,
     sinceModSeq: number | null,
   ): Promise<Array<{ uid: number; flags: string[] }>> {
+    return this.fetchFlags(path, sinceModSeq);
+  }
+
+  /**
+   * The flag fetch, collecting into `vanished` every UID a VANISHED response names for `path` while it runs. The
+   * vanished UIDs count against the same result cap as the flags.
+   */
+  private async fetchFlags(
+    path: string,
+    sinceModSeq: number | null,
+    vanished?: number[],
+  ): Promise<Array<{ uid: number; flags: string[] }>> {
     await this.ensureSelected(path);
     const results: Array<{ uid: number; flags: string[] }> = [];
+    let vanishedOverCap = false;
+    const onExpunge = (event: { path: string; vanished: boolean; uid?: number }) => {
+      if (!vanished || !event.vanished || event.uid === undefined || event.path !== path) return;
+      if (results.length + vanished.length >= MAX_FLAG_FETCH_RESULTS) vanishedOverCap = true;
+      else vanished.push(event.uid);
+    };
+    if (vanished) this.client.on("expunge", onExpunge);
     const iterator = this.providerStream(() =>
       this.client.fetch(
         "1:*",
@@ -624,15 +636,20 @@ export class ImapFlowMailClient implements ImapMailClient {
           clearTimeout(timer);
         }
         if (step.done) break;
-        if (results.length >= MAX_FLAG_FETCH_RESULTS) {
+        if (vanishedOverCap || results.length + (vanished?.length ?? 0) >= MAX_FLAG_FETCH_RESULTS) {
           throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
         }
         results.push({ uid: step.value.uid, flags: step.value.flags ? [...step.value.flags] : [] });
+      }
+      // VANISHED (EARLIER) may be the whole response, with no FETCH line after it.
+      if (vanishedOverCap) {
+        throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
       }
     } catch (error) {
       primary = { value: error };
       throw error;
     } finally {
+      if (vanished) this.client.off("expunge", onExpunge);
       // Best effort: with no abort signal this only stops local consumption.
       try {
         await iterator.return?.(undefined);

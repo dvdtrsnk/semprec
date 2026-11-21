@@ -220,7 +220,7 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
       return { uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 };
     },
     fetchMessagesSince: async () => called("fetchMessagesSince", []),
-    fetchVanishedSince: async () => called("fetchVanishedSince", []),
+    fetchChangesSince: async () => called("fetchChangesSince", { flags: [], vanished: [] }),
     fetchAllUids: async () => called("fetchAllUids", []),
     fetchFlagsChangedSince: async () => called("fetchFlagsChangedSince", []),
     setMessageFlag: async () => called("setMessageFlag", undefined),
