@@ -1,4 +1,5 @@
 import "../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -594,6 +595,31 @@ describe("CalDAV adapter against a fake server", () => {
     );
     expect(server.files("work")).toContain(created.href?.slice(work.url?.length ?? 0));
     expect(server.files("work")).toHaveLength(4);
+  });
+
+  it("names a local Event's resource after it, so a repeated create writes onto the first one's resource", async () => {
+    const caldav = adapter();
+    const work = await calendarNamed(caldav, "Work");
+    const lunch = eventNamed((await caldav.fetchChanges(work, null, fetchOptions())).upserts, "Lunch");
+    const createKey = randomUUID();
+    const before = server.files("work").length;
+
+    const created = await caldav.putEvent(work, { ref: null, fields: lunch.fields, createKey }, signal());
+    // Its answer lost, the create is repeated with the fields changed here meanwhile.
+    const repeated = await caldav.putEvent(
+      work,
+      { ref: null, fields: { ...lunch.fields, name: "Brunch" }, createKey },
+      signal(),
+    );
+    expect(repeated).toEqual({ remoteId: created.remoteId, href: created.href, etag: expect.any(String) });
+    expect(repeated.etag).not.toBe(created.etag);
+    expect(server.files("work")).toHaveLength(before + 1);
+    const name = created.href?.slice(work.url?.length ?? 0) ?? "";
+    expect(server.resource("work", name)?.text).toContain("SUMMARY:Brunch");
+
+    const other = await caldav.putEvent(work, { ref: null, fields: lunch.fields, createKey: randomUUID() }, signal());
+    expect(other.href).not.toBe(created.href);
+    expect(other.remoteId).not.toBe(created.remoteId);
   });
 
   it("deletes a single Event with If-Match and cancels one occurrence inside its series", async () => {

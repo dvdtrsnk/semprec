@@ -650,6 +650,61 @@ export async function getEventPushState(
   };
 }
 
+export type EventPushClaim =
+  | { kind: "claimed"; desiredRevision: number }
+  /** Another push job of the Event holds the lease until `until`. */
+  | { kind: "leased"; until: Date }
+  /** No pending push. */
+  | { kind: "none" };
+
+/**
+ * Takes the lease of the Event's pending push for `leaseMs`, so that one push job runs for the Event at a time; a lease
+ * past its end (its job died) is taken over.
+ */
+export async function claimEventPush(
+  client: Queryable,
+  eventItemId: string,
+  leaseId: string,
+  leaseMs: number,
+): Promise<EventPushClaim> {
+  const claimed = await client.query<{ desired_revision: string }>(
+    `UPDATE calendar_event_push_state
+        SET lease_id = $2, lease_until = now() + $3 * interval '1 millisecond'
+      WHERE event_item_id = $1 AND status = 'pending' AND (lease_until IS NULL OR lease_until <= now())
+      RETURNING desired_revision`,
+    [eventItemId, leaseId, leaseMs],
+  );
+  const revision = claimed.rows[0]?.desired_revision;
+  if ((claimed.rowCount ?? 0) > 0 && revision !== undefined) {
+    return { kind: "claimed", desiredRevision: Number(revision) };
+  }
+  const { rows } = await client.query<{ lease_until: Date | null }>(
+    "SELECT lease_until FROM calendar_event_push_state WHERE event_item_id = $1 AND status = 'pending'",
+    [eventItemId],
+  );
+  const until = rows[0]?.lease_until;
+  return until === undefined || until === null ? { kind: "none" } : { kind: "leased", until };
+}
+
+/**
+ * Ends the lease `leaseId` holds; `true` when a newer change than `desiredRevision` is pending, whose push then runs.
+ * A lease another job took over is left to it.
+ */
+export async function releaseEventPush(
+  client: Queryable,
+  eventItemId: string,
+  leaseId: string,
+  desiredRevision: number,
+): Promise<boolean> {
+  const released = await client.query<{ newer: boolean }>(
+    `UPDATE calendar_event_push_state SET lease_id = NULL, lease_until = NULL
+      WHERE event_item_id = $1 AND lease_id = $2
+      RETURNING status = 'pending' AND desired_revision <> $3 AS newer`,
+    [eventItemId, leaseId, desiredRevision],
+  );
+  return (released.rowCount ?? 0) > 0 && released.rows[0]?.newer === true;
+}
+
 /**
  * Ends the push of `desiredRevision`; `false` (nothing written) when a newer change was recorded meanwhile, whose own
  * push is queued.

@@ -450,18 +450,26 @@ describe("Microsoft Graph calendar adapter", () => {
     });
     const saved = (id: string, etag: string) => json({ id, "@odata.etag": etag, type: "singleInstance" });
 
-    it("creates in the calendar with a transactionId that a retried create repeats", async () => {
+    it("creates in the calendar with a transactionId that a retried create of the same Event repeats", async () => {
       const graph = new FakeGraph({
         "POST /me/calendars/AAMkCal-work/events": () => saved("AAMkEv-new", 'W/"n1"'),
       });
       const adapter = adapterOn(graph);
-      expect(await adapter.putEvent(WORK, { ref: null, fields }, signal())).toEqual({
+      const createKey = randomUUID();
+      expect(await adapter.putEvent(WORK, { ref: null, fields, createKey }, signal())).toEqual({
         remoteId: "AAMkEv-new",
         href: null,
         etag: 'W/"n1"',
       });
-      await adapter.putEvent(WORK, { ref: null, fields }, signal());
-      const [first, second] = graph.graphRequests();
+      await adapter.putEvent(WORK, { ref: null, fields, createKey }, signal());
+      // Another Event with the same fields, and the same Event changed since, are creates of their own.
+      await adapter.putEvent(WORK, { ref: null, fields, createKey: randomUUID() }, signal());
+      await adapter.putEvent(WORK, { ref: null, fields: { ...fields, place: "Room 2" }, createKey }, signal());
+      const [first, second, other, changed] = graph.graphRequests();
+      const transactionIdOf = (request: Recorded | undefined) =>
+        z.object({ transactionId: z.string() }).parse(request?.body).transactionId;
+      expect(transactionIdOf(other)).not.toBe(transactionIdOf(first));
+      expect(transactionIdOf(changed)).not.toBe(transactionIdOf(first));
       expect(first?.body).toEqual({
         subject: "Planning",
         body: { contentType: "text", content: "Bring numbers" },

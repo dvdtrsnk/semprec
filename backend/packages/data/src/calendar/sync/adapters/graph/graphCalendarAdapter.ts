@@ -229,7 +229,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
         {
           method: "POST",
           url: `${GRAPH_API_ROOT}/me/calendars/${encodeURIComponent(calendar.remoteId)}/events`,
-          body: { ...body, transactionId: graphTransactionIdOf(calendar.remoteId, fields) },
+          body: { ...body, transactionId: graphTransactionIdOf(calendar.remoteId, event.createKey ?? null, fields) },
         },
         signal,
       );

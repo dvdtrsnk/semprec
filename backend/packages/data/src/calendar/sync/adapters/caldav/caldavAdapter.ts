@@ -1,7 +1,7 @@
 // The calendar sync adapter of iCloud and generic CalDAV accounts (sync mode `imap`): the account's stored password
 // over Basic authentication, discovery from iCloud's CalDAV root or the account's CalDAV address, changes by
 // sync-collection or, on a server without a sync-token, by the ctag and the resources' ETags, and conditional writes.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { OutboundAddressPolicy } from "../../../../net/outboundAddressPolicy.js";
 import { logger } from "../../../logger.js";
 import {
@@ -64,6 +64,11 @@ function calendarUrl(calendar: RemoteCalendar): URL {
   const url = new URL(calendar.url);
   if (!url.pathname.endsWith("/")) url.pathname = `${url.pathname}/`;
   return url;
+}
+
+/** The name of the resource made for a local Event: the same for every create of it. */
+function createdResourceName(createKey: string): string {
+  return createHash("sha256").update(createKey).digest("hex").slice(0, 32);
 }
 
 function eventHref(ref: RemoteEventRef): URL {
@@ -239,7 +244,7 @@ export function createCalDavAdapter(
     fetchChanges: (calendar, cursor, { window, signal, known }) =>
       session(signal, (s) => fetchChanges(s, calendar, cursor, { window, known })),
 
-    putEvent: (calendar, { ref: eventRef, fields, icalUid, seriesRef }, signal) =>
+    putEvent: (calendar, { ref: eventRef, fields, icalUid, seriesRef, createKey }, signal) =>
       session(signal, async (s) => {
         const url = calendarUrl(calendar);
         // A new override is written into its series' resource, which then holds it as one more VEVENT.
@@ -248,12 +253,21 @@ export function createCalDavAdapter(
           if (fields.recurrenceId !== null) {
             throw new Error("An override is written into its series' resource, which needs the series' address");
           }
-          // The resource's name is always generated: a UID may hold characters no path segment should.
-          const uid = icalUid || randomUUID();
-          const href = new URL(`${randomUUID()}.ics`, url);
+          // The resource's name is always generated (a UID may hold characters no path segment should), from the
+          // local Event when there is one, so that a repeated create meets the resource the first one made.
+          const name = createKey ? createdResourceName(createKey) : randomUUID();
+          const uid = icalUid || name;
+          const href = new URL(`${name}.ics`, url);
           const outcome = await createResource(s, href, serializeNewResource(uid, fields));
-          if (outcome.kind !== "written") throw new CalendarSyncEventConflictError();
-          return { remoteId: uid, href: href.href, etag: outcome.etag };
+          if (outcome.kind === "written") return { remoteId: uid, href: href.href, etag: outcome.etag };
+          if (!createKey) throw new CalendarSyncEventConflictError();
+          // The resource of an earlier attempt: these fields are written onto it.
+          const existing = await fetchResource(s, href);
+          if (existing === null) throw new CalendarSyncEventConflictError();
+          const { text, remoteId } = edited(() => updateResource(existing.text, fields));
+          const replaced = await replaceResource(s, href, text, existing.etag);
+          if (replaced.kind !== "written") throw new CalendarSyncEventConflictError();
+          return { remoteId, href: href.href, etag: replaced.etag };
         }
         const href = eventHref(ref);
         const current = await fetchResource(s, href);

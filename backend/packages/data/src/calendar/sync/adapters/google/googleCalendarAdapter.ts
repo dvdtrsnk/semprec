@@ -1,6 +1,7 @@
 // The calendar sync adapter of Google accounts (`gmail_api`), over Google Calendar API v3. Events are listed with
 // `singleEvents=false`, so a series is its master plus one event per changed or cancelled instance: a changed
 // instance becomes an override, a cancelled one an exception date of its master.
+import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { refreshAndPersistAccessToken } from "../../../../mail/mailOAuthAccess.js";
@@ -94,6 +95,43 @@ export interface GoogleCalendarSyncRuntime {
 
 function calendarPath(calendar: RemoteCalendar): string {
   return `/calendars/${encodeURIComponent(calendar.remoteId)}`;
+}
+
+/** How many ids one local Event gets in one calendar: a later one only after the earlier ones were deleted there. */
+const MAX_CREATE_ID_GENERATIONS = 8;
+const BASE32HEX = "0123456789abcdefghijklmnopqrstuv";
+
+/**
+ * The id a new Event is created with: base32hex (Google's id alphabet) of a hash of the calendar, the local Event and
+ * the generation, so a repeated create names the same Google event. A generation is used once the earlier ones
+ * name events deleted in that calendar, whose ids Google does not give out again.
+ */
+export function googleEventIdOf(calendarRemoteId: string, createKey: string, generation: number): string {
+  const digest = createHash("sha256")
+    .update(calendarRemoteId)
+    .update("\n")
+    .update(createKey)
+    .update("\n")
+    .update(String(generation))
+    .digest();
+  let id = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of digest.subarray(0, 20)) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      id += BASE32HEX.charAt((buffer >> bits) & 31);
+    }
+    buffer &= (1 << bits) - 1;
+  }
+  return id;
+}
+
+function refOfWritten(body: unknown): RemoteEventRef {
+  const written = parseGoogleBody(googleEventSchema, body);
+  return { remoteId: written.id, href: null, etag: written.etag ?? null };
 }
 
 function invalidResponse(message: string): CalendarSyncProviderError {
@@ -229,30 +267,75 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     // in its Google calendar's zone, as the adapter does not know the tenant's.
     const zone = fields.timeFrom === null ? "UTC" : (fields.timeZone ?? (await this.calendarZone(calendar, signal)));
     const body = googleEventBody(fields, zone);
+    if (ref === null) {
+      const created = event.icalUid ? { ...body, iCalUID: event.icalUid } : body;
+      return event.createKey
+        ? this.createNamed(calendar, event.createKey, created, body, signal)
+        : this.writeEvent(calendar, { method: "POST", body: created }, signal);
+    }
+    return this.writeEvent(calendar, { method: "PATCH", eventId: ref.remoteId, body, ifMatch: ref.etag }, signal);
+  }
+
+  /**
+   * Creates the event under the id of `createKey`. Google answers 409 when that id is taken: a live event there is the
+   * one an earlier attempt made, and gets `body`; a deleted one moves on to the next generation's id.
+   */
+  private async createNamed(
+    calendar: RemoteCalendar,
+    createKey: string,
+    created: Record<string, unknown>,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
+    for (let generation = 0; generation < MAX_CREATE_ID_GENERATIONS; generation += 1) {
+      const id = googleEventIdOf(calendar.remoteId, createKey, generation);
+      const answer = await this.http.request(
+        {
+          method: "POST",
+          path: `${calendarPath(calendar)}/events`,
+          query: new URLSearchParams({ sendUpdates: "none" }),
+          body: { ...created, id },
+        },
+        signal,
+        [409],
+      );
+      if (answer.status !== 409) return refOfWritten(answer.body);
+      const existing = await this.readEvent(calendar, id, signal);
+      // A 409 for an id Google does not have is a clash of the iCalendar UID with another event.
+      if (existing === null) throw new Error("Google Calendar refused the request with status 409");
+      if (!isCancelled(existing)) {
+        return this.writeEvent(
+          calendar,
+          { method: "PATCH", eventId: id, body, ifMatch: existing.etag ?? null },
+          signal,
+        );
+      }
+    }
+    // Every id of the Event was used and deleted in this calendar; Google names this one.
+    return this.writeEvent(calendar, { method: "POST", body: created }, signal);
+  }
+
+  private async writeEvent(
+    calendar: RemoteCalendar,
+    write:
+      | { method: "POST"; body: Record<string, unknown> }
+      | { method: "PATCH"; eventId: string; body: Record<string, unknown>; ifMatch: string | null },
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
     const query = new URLSearchParams({ sendUpdates: "none" });
-    const { body: response } =
-      ref === null
-        ? await this.http.request(
-            {
-              method: "POST",
-              path: `${calendarPath(calendar)}/events`,
-              query,
-              body: event.icalUid ? { ...body, iCalUID: event.icalUid } : body,
-            },
-            signal,
-          )
-        : await this.http.request(
-            {
-              method: "PATCH",
-              path: `${calendarPath(calendar)}/events/${encodeURIComponent(ref.remoteId)}`,
-              query,
-              body,
-              ifMatch: ref.etag,
-            },
-            signal,
-          );
-    const written = parseGoogleBody(googleEventSchema, response);
-    return { remoteId: written.id, href: null, etag: written.etag ?? null };
+    const { body } = await this.http.request(
+      write.method === "POST"
+        ? { method: "POST", path: `${calendarPath(calendar)}/events`, query, body: write.body }
+        : {
+            method: "PATCH",
+            path: `${calendarPath(calendar)}/events/${encodeURIComponent(write.eventId)}`,
+            query,
+            body: write.body,
+            ifMatch: write.ifMatch,
+          },
+      signal,
+    );
+    return refOfWritten(body);
   }
 
   /** A cancelled event, or one Google no longer has, is `null`; an override is read with its series' zone. */

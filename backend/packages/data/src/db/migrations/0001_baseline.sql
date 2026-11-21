@@ -933,8 +933,9 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO
 -- ----------------------------------------------------------------------------------------------------
 
 -- The desired state of an account calendar Event that a user's or agent's change must bring to its provider: the
--- operation last recorded, a revision every recorded change raises, and the push job's outcome. Written in the
--- transaction of the Event's write and by the `calendarEventPush` job.
+-- operation last recorded, a revision every recorded change raises, the push job's outcome, and the lease of the one
+-- push job running for the Event (`lease_id` until `lease_until`). Written in the transaction of the Event's write
+-- and by the `calendarEventPush` job.
 CREATE TABLE public.calendar_event_push_state (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     event_item_id uuid NOT NULL,
@@ -944,6 +945,9 @@ CREATE TABLE public.calendar_event_push_state (
     attempts integer DEFAULT 0 NOT NULL,
     last_error_code text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_id uuid,
+    lease_until timestamp with time zone,
+    CONSTRAINT calendar_event_push_state_lease_check CHECK (((lease_id IS NULL) = (lease_until IS NULL))),
     CONSTRAINT calendar_event_push_state_operation_check CHECK ((operation = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'move'::text]))),
     CONSTRAINT calendar_event_push_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'sent'::text, 'conflict'::text, 'failed'::text]))),
     CONSTRAINT calendar_event_push_state_attempts_check CHECK ((attempts >= 0)),

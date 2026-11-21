@@ -210,7 +210,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   pass's deadline signal
   (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
   `CalendarSyncEventConflictError` of every adapter; a new Event's `icalUid` becomes its Google `iCalUID` or CalDAV
-  `UID` (Graph assigns its own). The factory gets the account and the tenant's zone. An adapter holds no database
+  `UID` (Graph assigns its own). A new Event also carries its local Event's id (`createKey`): Google gets an event id
+  (base32hex of a hash of calendar, Event and a generation; a 409 for a live event there writes the fields onto it
+  with `If-Match`, a deleted one moves to the next generation) and CalDAV a resource name (and, without an `icalUid`,
+  a UID) from it, so a create repeated after a lost answer finds what the first one made and writes onto it; Graph's
+  `transactionId` repeats only for the same Event with the same fields. The factory gets the account and the tenant's
+  zone. An adapter holds no database
   client; it does network and OAuth refreshes. The registry
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
@@ -236,7 +241,8 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
   changed in the resource as the server has it now (read by a plain GET), adds a generated VTIMEZONE for a zone the resource lacks, and is
   conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
-  stored one is `CalendarSyncEventConflictError`, not a provider error. Deleting an override cancels the occurrence
+  stored one is `CalendarSyncEventConflictError`, not a provider error, except a create's 412 at the resource named
+  after the same local Event, which is read and replaced with the fields. Deleting an override cancels the occurrence
   in its series' resource. The password connect route verifies a body's `caldavUrl` by the same discovery
   (`caldav_auth_failed`, `caldav_server_unreachable`, `caldav_server_invalid`).
 - **Microsoft Graph adapter** (`adapters/graph/`). Its only database access is the token refresh through mail's
@@ -251,7 +257,7 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`), the tenant's zone when it
   shares the Windows id (a Prague tenant reads "Central Europe Standard Time" as `Europe/Prague`); an unknown one is
   `Etc/UTC`. Writes: `PATCH /me/events/{id}` with `If-Match` (412 is `CalendarSyncEventConflictError`), `POST
-  /me/calendars/{id}/events` with a `transactionId` derived from calendar and fields; an Event without its own zone is
+  /me/calendars/{id}/events` with a `transactionId` derived from calendar, local Event and fields; an Event without its own zone is
   written in the tenant's; RRULEs no Graph pattern expresses and a new override are refused
   (`GraphCalendarWriteUnsupportedError`).
 - **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
@@ -291,9 +297,14 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   of a writable tracked account calendar, records the desired state in `calendar_event_push_state` (`operation`
   `create` | `update` | `delete` | `move`, a `desired_revision` every change raises, `status` `pending` | `sent` |
   `conflict` | `failed`, `attempts`, `last_error_code`) in the write's transaction and queues `calendarEventPush` (key
-  `calendar-event-push:<event>`, replaced). The job decides from the Event, its remote state and its calendar, with
+  `calendar-event-push:<event>`, replaced). One job runs per Event at a time: its first transaction takes the push's
+  lease (`lease_id`, `lease_until`: the adapter deadline plus 8 min; an expired one is taken over), and a job that
+  finds it held is queued again for the lease's end; the holder ends the lease when it settles and queues a change
+  recorded meanwhile at once. The job decides from the Event, its remote state and its calendar, with
   no transaction open calls the adapter, and stores each result in its own transaction under the account's guard and
-  the Event's locks, setting the status only while its revision is current. What it sends: the Event's fields, a
+  the Event's locks, setting the status only while its revision is current. A created provider Event that a pass
+  gave an Event of its own between the write and the store trashes that one only when it has no push state (nothing
+  here changed it); otherwise the push is `conflict` and both stay. What it sends: the Event's fields, a
   timed Event without a zone in the tenant's, a `recurrence` rule as its RRULE; a new override as a change of its
   series' occurrence (`seriesRef`); a cancelled occurrence the provider never had as an override as an exception date
   of its series. After a push the sent fields are the new `base_snapshot`, so the next fetch of them is no change. A

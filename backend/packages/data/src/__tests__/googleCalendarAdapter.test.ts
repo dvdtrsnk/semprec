@@ -14,6 +14,7 @@ import {
 } from "../calendar/sync/adapter.js";
 import {
   GoogleCalendarAdapter,
+  googleEventIdOf,
   setGoogleCalendarSyncRuntime,
   type GoogleCalendarSyncRuntime,
 } from "../calendar/sync/adapters/google/googleCalendarAdapter.js";
@@ -622,6 +623,49 @@ describe("Google Calendar adapter", () => {
         reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 15 }] },
         source: null,
       });
+    });
+
+    it("a create for a local Event names the Google event after it, so a repeat writes onto the first one", async () => {
+      const eventItemId = randomUUID();
+      const first = googleEventIdOf(PRIMARY, eventItemId, 0);
+      const second = googleEventIdOf(PRIMARY, eventItemId, 1);
+      expect(first).toMatch(/^[0-9a-v]{32}$/);
+      expect(googleEventIdOf(PRIMARY, randomUUID(), 0)).not.toBe(first);
+      const live = new Set<string>();
+      const cancelled = new Set<string>([first]);
+      google.on("POST", `/calendars/${PRIMARY}/events`, (request) => {
+        const id = z.object({ id: z.string() }).parse(request.body).id;
+        if (live.has(id) || cancelled.has(id)) return { status: 409 };
+        live.add(id);
+        return { status: 200, body: { id, etag: '"e-1"', status: "confirmed" } };
+      });
+      for (const id of [first, second]) {
+        google.on("GET", `/calendars/${PRIMARY}/events/${id}`, () => ({
+          status: 200,
+          body: { id, etag: '"e-1"', status: cancelled.has(id) ? "cancelled" : "confirmed" },
+        }));
+        google.on("PATCH", `/calendars/${PRIMARY}/events/${id}`, (request) =>
+          request.headers.get("if-match") === '"e-1"' ? { status: 200, body: { id, etag: '"e-2"' } } : { status: 412 },
+        );
+      }
+      const run = adapterIn(await createGoogleAccount(GRANT));
+      const create = () =>
+        run((adapter) => adapter.putEvent(calendar, { ref: null, fields, createKey: eventItemId }, signal()));
+
+      // The first id names an event deleted in this calendar: the next generation's is used.
+      expect(await create()).toEqual({ remoteId: second, href: null, etag: '"e-1"' });
+      google.requests.length = 0;
+      // A repeat (its answer lost) finds that event and writes the fields onto it, conditional on its etag.
+      expect(await create()).toEqual({ remoteId: second, href: null, etag: '"e-2"' });
+      expect(google.requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+        `POST /calendars/${PRIMARY}/events`,
+        `GET /calendars/${PRIMARY}/events/${first}`,
+        `POST /calendars/${PRIMARY}/events`,
+        `GET /calendars/${PRIMARY}/events/${second}`,
+        `PATCH /calendars/${PRIMARY}/events/${second}`,
+      ]);
+      expect(google.requests.at(-1)?.body).toMatchObject({ summary: "Standup", location: "Room 4" });
+      expect(live.size).toBe(1);
     });
 
     it("an all-day Event without a zone is written with an exclusive end day", async () => {

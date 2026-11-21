@@ -286,12 +286,20 @@ export function graphEventBodyOf(fields: RemoteEventFields, tenantZone: string):
 }
 
 /**
- * The same fields in the same calendar give the same id, so a create Graph received but whose answer was lost is
- * not made twice when the write is retried.
+ * The same local Event (`createKey`) with the same fields in the same calendar gives the same id, so a create Graph
+ * received but whose answer was lost is not made twice when the write is retried; two local Events with equal fields
+ * get different ids. The fields are part of the id because Graph may answer a known id with the Event as it was first
+ * made: a repeat after the Event changed here is a create of its own.
  */
-export function graphTransactionIdOf(calendarRemoteId: string, fields: RemoteEventFields): string {
+export function graphTransactionIdOf(
+  calendarRemoteId: string,
+  createKey: string | null,
+  fields: RemoteEventFields,
+): string {
   return createHash("sha256")
     .update(calendarRemoteId)
+    .update("\n")
+    .update(createKey ?? "")
     .update("\n")
     .update(JSON.stringify(fields))
     .digest("hex")

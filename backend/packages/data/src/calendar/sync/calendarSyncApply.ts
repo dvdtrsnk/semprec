@@ -90,7 +90,8 @@ const participantSchema = z.strictObject({
   status: nullableShortText,
 });
 
-const fieldsSchema = z.strictObject({
+/** The contract of `RemoteEventFields`, which a stored `base_snapshot` holds as well. */
+export const remoteEventFieldsSchema = z.strictObject({
   name: nullableText,
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   endDate: z
@@ -114,7 +115,7 @@ const remoteEventSchema = z.strictObject({
   href: nullableShortText,
   etag: nullableShortText,
   seriesRemoteId: nullableShortText,
-  fields: fieldsSchema,
+  fields: remoteEventFieldsSchema,
   organizer: participantSchema.nullable(),
   attendees: z.array(participantSchema).max(MAX_PARTICIPANTS),
   icalUid: nullableShortText.optional(),
