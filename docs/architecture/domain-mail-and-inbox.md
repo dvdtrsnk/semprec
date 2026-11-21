@@ -268,6 +268,33 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 
+### Arrival: live and backfill
+
+- Ingest stamps every new message's `mail_message_meta.arrival` once: `live` for new mail after the account
+  connected, `backfill` for history an initial sync or a full resync imports. A message ingested again (another
+  folder, a repeat observation, the sync confirmation of a sent message) keeps the stored value; a send claim is
+  `live`.
+- The anchor is `mail_account_sync_state.connected_at`, set to `now()` by the first pass that finds it unset
+  (`anchorMailAccountConnection`) and cleared by `pauseMailAccountSync`, so switching Mail off and on again anchors the
+  account as a new one.
+- The adapter decides whether the provider reports a message as new (`mail/mailArrival.ts`, `mailArrivalOf`):
+  - IMAP: per folder, `mail_folder_sync_state.live_from_uid` is the UIDNEXT selected when the folder's state is first
+    established, and again after a UIDVALIDITY reset (`resetForUidvalidityChange` clears it). A UID at or above it is
+    new; every message the folder already held, including the rest of a backfill spread over many passes, is not.
+  - Gmail: a message reached through `history.list` from the stored history id is new; the full listing of a first
+    pass or of the resync after a history invalidation is not.
+  - Graph: a message of a delta round started from the stored delta link is new; a delta from scratch (first pass, or
+    after `410 Gone`/`resyncRequired`) is not.
+- A message the provider reports as new is still `backfill` when its Date is older than `connected_at` less one day
+  (`MAIL_LIVE_ARRIVAL_DATE_GRACE_MS`): old mail another client moves into a folder is not new mail. A message without a
+  Date is judged by the provider alone.
+- Only `live` mail triggers model calls or notifications: the `newEmail` heartbeat (`core.agentRun` with the
+  `liveMailFilter` gate, checked before the answer-expected gate's model call), thread project triage
+  (`mailThreadProject`, queued by ingest), and the `calendar_invitation` notification of an iMIP invitation
+  (`calendar/invitationIngestAction.ts` still writes the Invitations item of a backfilled message, unnotified, as a
+  calendar's initial sync does). Person linking, thread link rules, invitation reply application and search indexing
+  run for backfilled mail too.
+
 ### Live sync root and hosted lifecycles
 
 - `mail/mailLiveSyncRoot.ts` (`createMailLiveSyncRoot`) decides which accounts a process hosts (IMAP IDLE,
