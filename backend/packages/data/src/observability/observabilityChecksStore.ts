@@ -93,18 +93,6 @@ async function transitionCheckIn(
   };
 }
 
-/** The status of another check of the caller's tenant, `null` when it has no row; must run in a tenant scope. */
-export async function getTenantObservabilityCheckStatus(
-  client: PoolClient,
-  checkKey: string,
-): Promise<ObservabilityCheckStatus | null> {
-  const { rows } = await client.query<{ status: ObservabilityCheckStatus }>(
-    "SELECT status FROM tenant_observability_checks WHERE check_key = $1",
-    [checkKey],
-  );
-  return rows[0]?.status ?? null;
-}
-
 /**
  * Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. RLS limits it to the
  * caller's tenant.

@@ -18,7 +18,8 @@ import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID } from "../mail/personLinkingKeys.js";
-import { createActionRegistry, ITEM_EVENT_BATCH_ACTION_IDS, type ActionContext } from "../scheduler/actions.js";
+import { createActionRegistry, type ActionContext } from "../scheduler/actions.js";
+import { ITEM_EVENT_BATCH_ACTION_IDS } from "../scheduler/itemEventBatchActions.js";
 import { createHeartbeatFireCoreTask } from "../scheduler/sweep.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";

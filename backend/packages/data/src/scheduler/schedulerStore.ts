@@ -20,11 +20,11 @@ import {
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createActionQueueAffinity,
-  ITEM_EVENT_BATCH_ACTION_IDS,
   resolveAgentRunLane,
   resolveHeartbeatFireTaskName,
   type ActionQueueAffinity,
 } from "./actions.js";
+import { ITEM_EVENT_BATCH_ACTION_IDS } from "./itemEventBatchActions.js";
 
 export const HEARTBEAT_ORIGINS = ["user", "system"] as const;
 export type HeartbeatOrigin = (typeof HEARTBEAT_ORIGINS)[number];

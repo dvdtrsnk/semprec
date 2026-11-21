@@ -17,9 +17,9 @@ import {
   transitionObservabilityCheck,
   transitionTenantObservabilityCheck,
   deleteOrphanedTenantObservabilityChecks,
-  getTenantObservabilityCheckStatus,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { getTenantObservabilityCheckStatus } from "./tenantObservabilityCheckStatus.js";
 import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { AGENTS_PROCESS_PROBLEM_KEY, mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { resolveOperatorAlertProblems, writeOperatorAlert } from "./operatorAlerts.js";
