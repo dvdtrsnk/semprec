@@ -13,6 +13,8 @@ import type { ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
 import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
+  recordGmailSyncCursor,
+  recordGraphSyncCursor,
   listAccountsDueForSync,
 } from "../mail/mailAccountSyncStateStore.js";
 import { createMailDraftCreateRouteHandler, createMailDraftSendRouteHandler } from "../mail/mailDraftRouteHandlers.js";
@@ -319,6 +321,18 @@ describe("internet account service switches", () => {
     const inbox = await inboxFolderId();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).not.toBeNull();
     expect((await inTenant((client) => getMailAccountSyncState(client, mailboxId)))?.connectedAt).not.toBeNull();
+    // Cursors of an unfinished Gmail listing and Graph delta round, as a pass of either mode leaves them.
+    await inTenant(async (client) => {
+      await recordGmailSyncCursor(client, mailboxId, {
+        historyId: "7",
+        listingPhase: "index",
+        listingPageToken: "page-9",
+      });
+      await recordGraphSyncCursor(client, mailboxId, {
+        deltaLink: "https://graph.test/delta",
+        nextLink: "https://graph.test/next",
+      });
+    });
     await clearJobs();
     const stops: Array<{ tenantId: string; mailboxItemId: string; committed: boolean }> = [];
     bindMailboxServiceLiveSyncStop(async (tenantId, mailboxItemId) => {
@@ -342,6 +356,11 @@ describe("internet account service switches", () => {
       initialSyncCompletedAt: null,
       nextExpectedActivityAt: null,
       connectedAt: null,
+      gmailHistoryId: null,
+      gmailListingPhase: null,
+      gmailListingPageToken: null,
+      graphDeltaLink: null,
+      graphDeltaNextLink: null,
     });
     expect(state?.syncPausedAt).not.toBeNull();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).toBeNull();

@@ -1,11 +1,15 @@
 import type { GmailMailClient } from "./gmailReconcile.js";
 import type { GraphMailClient } from "./graphReconcile.js";
 import type { ImapMailClient } from "./imapReconcile.js";
+import type { Pool } from "pg";
 import {
   imapFlagForProperty,
+  listPendingProviderFlagWrites,
   type PendingImapFlagWrite,
   type PendingProviderFlagWrite,
 } from "./mailMessageFlagSyncStore.js";
+import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
+import { inPassTransaction, type MailSyncPass } from "./mailSyncPass.js";
 
 export interface MailFlagWritebackAdapter {
   write(input: PendingImapFlagWrite | PendingProviderFlagWrite): Promise<"applied" | "pending">;
@@ -53,4 +57,45 @@ export function createGraphMailFlagWritebackAdapter(graph: GraphMailClient): Mai
       return "applied";
     },
   };
+}
+
+/**
+ * The flag write-back of a Gmail or Graph pass: the pending writes are read in one pass transaction, then written to
+ * the provider with no transaction open. Returns the writes the provider applied, for the caller to confirm in its
+ * final transaction (a desired state changed since stays pending), or `null` when the pass ended. Rows only exist where
+ * observed != desired, so provider changes are not echoed back.
+ */
+export async function writeBackProviderFlags(
+  pool: Pool,
+  pass: MailSyncPass,
+  input: {
+    mailboxItemId: string;
+    moveBaseline?: MailMoveBaseline;
+    protectedMoveMessageIds?: ReadonlySet<string>;
+    folderRelationDefinitionId: string;
+    mailboxFolderRelationDefinitionId: string;
+  },
+  adapter: MailFlagWritebackAdapter,
+): Promise<PendingProviderFlagWrite[] | null> {
+  const pending = await inPassTransaction(pool, pass, async (client) => {
+    const protectedMoveMessageIds = await protectedMailMovesForPass(
+      client,
+      input.mailboxItemId,
+      input.moveBaseline,
+      input.protectedMoveMessageIds,
+    );
+    const writes: PendingProviderFlagWrite[] = [];
+    for (const write of await listPendingProviderFlagWrites(client, input)) {
+      if (protectedMoveMessageIds.has(write.messageItemId) || (await hasUnsettledMailMove(client, write.messageItemId)))
+        continue;
+      writes.push(write);
+    }
+    return writes;
+  });
+  if (!pending) return null;
+  const applied: PendingProviderFlagWrite[] = [];
+  for (const write of pending.value) {
+    if ((await adapter.write(write)) === "applied") applied.push(write);
+  }
+  return applied;
 }

@@ -9,7 +9,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
-  recordGmailActivity,
+  recordGmailSyncCursor,
 } from "../mail/mailAccountSyncStateStore.js";
 import {
   createGmailPubSubDispatcher,
@@ -142,7 +142,11 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
     const mailboxItemId = await createMailboxItem("A2");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
     // Simulates a reconcile pass having already advanced the cursor past this renewal's historyId.
-    await recordGmailActivity(pool, { itemId: mailboxItemId, historyId: "500000", nextExpectedActivityAt: new Date() });
+    await recordGmailSyncCursor(pool, mailboxItemId, {
+      historyId: "500000",
+      listingPhase: null,
+      listingPageToken: null,
+    });
 
     const { transport, registerWatchCalls } = createFakeTransport({
       registerWatch: async () => ({ historyId: "1", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }),

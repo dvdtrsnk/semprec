@@ -231,7 +231,7 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
             ),
         ),
       );
-      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1");
+      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1", "full");
       if (!fetched) throw new Error("The stubbed Gmail message was not returned");
       expect(fetched.message.attachments.map((entry) => entry.contentType)).toEqual(["text/calendar"]);
 

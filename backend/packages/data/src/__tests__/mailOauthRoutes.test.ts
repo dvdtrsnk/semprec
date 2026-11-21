@@ -26,8 +26,10 @@ import {
   getMailAccountSyncState,
   getProviderAccountAddress,
   recordGmailActivity,
+  recordGmailSyncCursor,
   recordGmailWatchEmailAddress,
   recordGraphActivity,
+  recordGraphSyncCursor,
   recordProviderAccountAddress,
   recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
@@ -48,6 +50,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
+import { recentGmailListing } from "../testSupport/gmailListing.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -1452,10 +1455,11 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     const mailboxId = await existingMailbox(caller.tenantId);
     await inTenant(caller.tenantId, async (client) => {
       const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+      await recordGmailSyncCursor(client, mailboxId, { historyId: "4711", listingPhase: null, listingPageToken: null });
       await recordGmailActivity(client, {
         itemId: mailboxId,
-        historyId: "4711",
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+        completesInitialSync: true,
       });
       await updateItemWithClient(
         client,
@@ -1536,13 +1540,17 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       provider: "outlook",
       address: "work.user@contoso.com",
     });
-    await inTenant(caller.tenantId, (client) =>
-      recordGraphActivity(client, {
-        itemId: mailboxId,
+    await inTenant(caller.tenantId, async (client) => {
+      await recordGraphSyncCursor(client, mailboxId, {
         deltaLink: "https://graph.microsoft.com/v1.0/me/messages/delta?$deltatoken=kept",
+        nextLink: null,
+      });
+      await recordGraphActivity(client, {
+        itemId: mailboxId,
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
-      }),
-    );
+        completesInitialSync: true,
+      });
+    });
     const provider = fakeProvider(microsoftRoutes({ mail: "Work.User@Contoso.com" }));
     const liveSync = liveSyncSpy();
 
@@ -2113,7 +2121,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
         changedMessageIds: [],
         removedMessageIds: [],
       }),
-      listAllMessageIds: async () => ["new-message"],
+      listMessageIds: recentGmailListing(["new-message"]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({
         id: "new-message",

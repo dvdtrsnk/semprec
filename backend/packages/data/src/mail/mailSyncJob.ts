@@ -2,7 +2,6 @@ import { captureMailMoveBaseline, listPendingMoves } from "./mailMessageMoveSync
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "./mailMessageMoveSync.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 export { enqueueMailAccountSync, mailAccountSyncJobKey } from "./mailSyncEnqueue.js";
-import type { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/pool.js";
@@ -29,6 +28,7 @@ import { reconcileImapAccount, type ImapMailClient } from "./imapReconcile.js";
 import { reconcileGmailAccount, type GmailLabelRef, type GmailMailClient } from "./gmailReconcile.js";
 import { reconcileGraphAccount, type GraphMailClient } from "./graphReconcile.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import type { MailSyncPass } from "./mailSyncPass.js";
 import { MailConnectionLimitError, MailReauthorizationRequiredError } from "./providerTypes.js";
 import { connectionLimitBackoffSecondsForProvider, imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import type { RandomSource } from "./mailBackoff.js";
@@ -127,26 +127,6 @@ export interface SyncMailAccountPayload {
   mailboxItemId: string;
 }
 
-/**
- * Attachment bytes are written before the DB transaction commits, so a rollback would leak them on disk, under fresh
- * keys on every retry. `delete()` is idempotent.
- */
-function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWriter; writtenKeys: Set<string> } {
-  const writtenKeys = new Set<string>();
-  return {
-    writtenKeys,
-    storage: {
-      async writeStream(storageKey: string, source: Readable) {
-        // Recorded before the write: a mid-write failure (disk full) still leaves a partial file at this key.
-        writtenKeys.add(storageKey);
-        return storage.writeStream(storageKey, source);
-      },
-      delete: (storageKey: string) => storage.delete(storageKey),
-      readStream: (storageKey: string, range?: { start: number; end: number }) => storage.readStream(storageKey, range),
-    },
-  };
-}
-
 export interface SyncMailAccountHelpers {
   job: { id: string };
 }
@@ -164,7 +144,6 @@ export async function handleSyncMailAccountTask(
   helpers: SyncMailAccountHelpers = { job: { id: randomUUID() } },
   random: RandomSource = Math.random,
 ): Promise<void> {
-  const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
   // This run's pass lease (`claimMailSyncPass`); `leased` once it holds it, so every way out releases it.
   const passToken = randomUUID();
   let leased = false;
@@ -183,8 +162,8 @@ export async function handleSyncMailAccountTask(
   /**
    * Takes the mailbox's sync guard, which a removal and the Mail switch take first, so neither runs until this
    * transaction ends, then re-reads the mailbox and renews the pass lease. `false` (trashed, gone, no sync state row,
-   * Mail switched off, or another pass holds the lease now) means the pass does nothing more. An IMAP pass runs it
-   * first in each of its transactions, so a removal or the Mail switch can run between them and ends the pass at its
+   * Mail switched off, or another pass holds the lease now) means the pass does nothing more. A pass of every sync
+   * mode runs it first in each of its write transactions, so a removal or the Mail switch can run between them and ends the pass at its
    * next one. The generic trash takes no guard and can still happen during a pass. A guard still held after
    * `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError`: a removal or the Mail switch of this mailbox, or a pass
    * whose lease expired, is running, and the pass is skipped.
@@ -294,11 +273,24 @@ export async function handleSyncMailAccountTask(
       folderRelationPropertyId: folderProperty.id,
       mailboxFolderRelationPropertyId: mailboxFolderProperty.id,
       attachmentsRelationPropertyId: attachmentsProperty.id,
-      storage: trackedStorage,
+      storage,
       storageKeyPrefix: payload.mailboxItemId,
       mailboxAliases: parseAddressListProperty(mailboxItem.properties.addresses),
     };
 
+    // Every sync mode's pass checks a pooled database connection out only for each of its short transactions, and
+    // removes the attachment bytes of a failed batch itself: a later failure keeps the bytes of a batch that committed.
+    const pass: MailSyncPass = {
+      enter: enterSyncPass,
+      finish: async (client, { complete }) => {
+        // The release that follows this pass enqueues the backfill's next pass.
+        if (!complete) await requestMailSyncRerun(client, payload.mailboxItemId, passToken);
+        // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and
+        // resolves the Semp problem in the same transaction.
+        await writeSyncStatus(client, "ok");
+        await resolveMailboxProblem(client, payload.mailboxItemId);
+      },
+    };
     // `false` when `enterSyncPass` found nothing to sync any more.
     let ran: boolean;
     if (state.syncMode === "imap") {
@@ -325,26 +317,9 @@ export async function handleSyncMailAccountTask(
           folderProperty.id,
         );
       }
-      // The pass checks a pooled database connection out only for each of its short transactions. Attachment bytes of
-      // a failed batch are removed by the pass itself, so it gets the untracked storage: a later failure must not
-      // delete the bytes of a batch that committed.
       const imap = await openImap();
       try {
-        const result = await reconcileImapAccount(pool, imap, {
-          ...shared,
-          storage,
-          pass: {
-            enter: enterSyncPass,
-            finish: async (client, { complete }) => {
-              // The release that follows this pass enqueues the backfill's next pass.
-              if (!complete) await requestMailSyncRerun(client, payload.mailboxItemId, passToken);
-              // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and
-              // resolves the Semp problem in the same transaction.
-              await writeSyncStatus(client, "ok");
-              await resolveMailboxProblem(client, payload.mailboxItemId);
-            },
-          },
-        });
+        const result = await reconcileImapAccount(pool, imap, { ...shared, pass });
         ran = result.ran;
       } finally {
         // The pass's outcome is decided; a connection that fails to close is logged and changes nothing of it.
@@ -361,24 +336,12 @@ export async function handleSyncMailAccountTask(
       if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
       await drainGmailMoves(pool, payload.mailboxItemId, gmail);
-      ran = await withTransaction(pool, async (client) => {
-        if (!(await enterSyncPass(client))) return false;
-        await reconcileGmailAccount(client, gmail, shared);
-        await writeSyncStatus(client, "ok");
-        await resolveMailboxProblem(client, payload.mailboxItemId);
-        return true;
-      });
+      ran = (await reconcileGmailAccount(pool, gmail, { ...shared, pass })).ran;
     } else {
       if (!adapters.createGraphClient) throw new Error("No Graph adapter configured for this composition root");
       const graph = adapters.createGraphClient(payload.mailboxItemId, credential);
       await drainGraphMoves(pool, payload.mailboxItemId, graph, moduleIds.foldersDatabaseId, mailboxFolderProperty.id);
-      ran = await withTransaction(pool, async (client) => {
-        if (!(await enterSyncPass(client))) return false;
-        await reconcileGraphAccount(client, graph, shared);
-        await writeSyncStatus(client, "ok");
-        await resolveMailboxProblem(client, payload.mailboxItemId);
-        return true;
-      });
+      ran = (await reconcileGraphAccount(pool, graph, { ...shared, pass })).ran;
     }
     if (!ran) {
       logger.info(
@@ -389,10 +352,6 @@ export async function handleSyncMailAccountTask(
     }
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync completed");
   } catch (err) {
-    // Attachment bytes written this pass are not covered by the rollback. Best-effort cleanup: a cleanup failure must
-    // not mask the original error.
-    await Promise.all([...writtenKeys].map((key) => trackedStorage.delete(key).catch(() => {})));
-
     // The running pass or removal decides the mailbox's state; this one has nothing to record. The sweep re-enqueues
     // an account that is still due.
     if (err instanceof MailboxSyncBusyError) {

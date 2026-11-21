@@ -16,6 +16,8 @@ import {
   type GmailMailClient,
 } from "../mail/gmailReconcile.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { recentGmailListing } from "../testSupport/gmailListing.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -191,7 +193,7 @@ function gmailClient(messages: Record<string, string[]>): GmailMailClient {
       changedMessageIds: Object.keys(messages),
       removedMessageIds: [],
     }),
-    listAllMessageIds: async () => Object.keys(messages),
+    listMessageIds: recentGmailListing(Object.keys(messages)),
     fetchMessage: async (id) => ({
       id,
       threadId: `t-${id}`,
@@ -248,7 +250,7 @@ async function setup(scopeTenant = tenantId): Promise<Setup> {
 
 async function sync(params: Setup, messages: Record<string, string[]>): Promise<void> {
   await runInTenant(tenantId, () =>
-    withTransaction(pool, (client) => reconcileGmailAccount(client, gmailClient(messages), params)),
+    reconcileGmailAccount(pool, gmailClient(messages), { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
   );
 }
 
@@ -328,23 +330,25 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
-  it("rejects missing and system tenant scope before Gmail reconciliation queries", async () => {
+  it("rejects missing and system tenant scope before Gmail reconciliation queries or provider calls", async () => {
     const params = await setup();
-    const client = await admin.connect();
-    const query = vi.spyOn(client, "query");
+    const connect = vi.spyOn(pool, "connect");
+    const gmail = gmailClient({});
+    const listLabels = vi.spyOn(gmail, "listLabels");
     try {
-      await expect(reconcileGmailAccount(client, gmailClient({}), params)).rejects.toThrow(/tenant scope/i);
+      const passParams = { ...params, pass: UNGUARDED_MAIL_SYNC_PASS };
+      await expect(reconcileGmailAccount(pool, gmail, passParams)).rejects.toThrow(/tenant scope/i);
       await expect(
-        runAsSystem("gmail-scope-test", () => reconcileGmailAccount(client, gmailClient({}), params)),
+        runAsSystem("gmail-scope-test", () => reconcileGmailAccount(pool, gmail, passParams)),
       ).rejects.toThrow(/tenant scope/i);
-      expect(query).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      expect(listLabels).not.toHaveBeenCalled();
     } finally {
-      query.mockRestore();
-      client.release();
+      connect.mockRestore();
     }
   });
 
-  it("settles and closes an owned reconcile that times out before the provider barrier", async () => {
+  it("settles and closes an owned reconcile that times out before the provider call after its first transaction", async () => {
     const params = await setup();
     const operationPool = await createRuntimeRolePool(admin, "semprec_data");
     const capturedBackends: OwnedBackend[] = [];
@@ -370,14 +374,15 @@ describe("Gmail label folders (issue #1496)", () => {
             `mail-thread-mutation:v1:${tenantId.toLowerCase()}`,
           ]),
         );
+        // A first pass captures the history id after its prepare transaction, which waits for the guard.
         const gmail = gmailClient({});
-        gmail.listLabels = async () => {
+        gmail.getCurrentHistoryId = async () => {
           barrierReached = true;
-          return LABELS;
+          return "100";
         };
         operation = runInTenant(tenantId, () =>
-          withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmail, params)),
-        );
+          reconcileGmailAccount(operationPool, gmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+        ).then(() => undefined);
         const operationSettled = Promise.allSettled([operation]);
         let participantPid: number | undefined;
         const deadline = Date.now() + 3000;
@@ -657,8 +662,8 @@ describe("Gmail label folders (issue #1496)", () => {
         );
         expect(refused.rows[0]?.locked).toBe(false);
         operation = runInTenant(tenantId, () =>
-          withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmailClient({}), params)),
-        );
+          reconcileGmailAccount(operationPool, gmailClient({}), { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+        ).then(() => undefined);
         const result = Promise.allSettled([operation]);
         await bounded(connecting);
         expect(capturedBackends).toEqual([]);

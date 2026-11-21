@@ -27,6 +27,10 @@ export function defaultSyncModeForProvider(provider: string): SyncMode {
   }
 }
 
+/** `full`: the Gmail listing of the messages inside the full-content window; `index`: of the older ones. */
+export const GMAIL_LISTING_PHASES = ["full", "index"] as const;
+export type GmailListingPhase = (typeof GMAIL_LISTING_PHASES)[number];
+
 export const MAIL_SYNC_FAILURE_KINDS = ["reauthorization", "connectionLimit", "other"] as const;
 export type MailSyncFailureKind = (typeof MAIL_SYNC_FAILURE_KINDS)[number];
 
@@ -50,6 +54,9 @@ export interface MailAccountSyncStateRow {
   syncPausedAt: string | null;
   /** Set by the first sync pass that finds it unset (`anchorMailAccountConnection`); cleared with the pause. */
   connectedAt: string | null;
+  gmailListingPhase: GmailListingPhase | null;
+  gmailListingPageToken: string | null;
+  graphDeltaNextLink: string | null;
 }
 
 type MailAccountSyncStateDbRow = {
@@ -70,6 +77,9 @@ type MailAccountSyncStateDbRow = {
   last_failure_kind: string | null;
   sync_paused_at: Date | null;
   connected_at: Date | null;
+  gmail_listing_phase: string | null;
+  gmail_listing_page_token: string | null;
+  graph_delta_next_link: string | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -94,11 +104,17 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
         : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
     syncPausedAt: row.sync_paused_at?.toISOString() ?? null,
     connectedAt: row.connected_at?.toISOString() ?? null,
+    gmailListingPhase:
+      row.gmail_listing_phase === null
+        ? null
+        : assertKnownValue(GMAIL_LISTING_PHASES, row.gmail_listing_phase, "Gmail listing phase"),
+    gmailListingPageToken: row.gmail_listing_page_token,
+    graphDeltaNextLink: row.graph_delta_next_link,
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at, connected_at";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at, connected_at, gmail_listing_phase, gmail_listing_page_token, graph_delta_next_link";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -272,7 +288,8 @@ export async function pauseMailAccountSync(client: Queryable, itemId: string, sy
   const result = await client.query(
     `INSERT INTO mail_account_sync_state (item_id, sync_mode, sync_paused_at) VALUES ($1, $2, now())
      ON CONFLICT (item_id) DO UPDATE
-       SET sync_paused_at = now(), gmail_history_id = NULL, graph_delta_link = NULL, last_error = NULL,
+       SET sync_paused_at = now(), gmail_history_id = NULL, gmail_listing_phase = NULL,
+           gmail_listing_page_token = NULL, graph_delta_link = NULL, graph_delta_next_link = NULL, last_error = NULL,
            next_expected_activity_at = NULL, failing_since = NULL, last_failure_kind = NULL,
            initial_sync_completed_at = NULL, connected_at = NULL
      WHERE mail_account_sync_state.sync_paused_at IS NULL`,
@@ -319,31 +336,74 @@ export async function setSyncMode(client: Queryable, itemId: string, syncMode: S
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
 
-/** After a `history.list` 404: clears the cursor so the next sync does a full resync. */
+/** After a `history.list` 404: clears the history id and any listing, so a full resync starts. */
 export async function invalidateGmailHistory(client: Queryable, itemId: string, reason: string): Promise<void> {
-  await client.query(`UPDATE mail_account_sync_state SET gmail_history_id = NULL, last_error = $2 WHERE item_id = $1`, [
-    itemId,
-    reason,
-  ]);
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+        SET gmail_history_id = NULL, gmail_listing_phase = NULL, gmail_listing_page_token = NULL, last_error = $2
+      WHERE item_id = $1`,
+    [itemId, reason],
+  );
+  requireAffectedRows(result, `Gmail history invalidation of item ${itemId}`);
+}
+
+/**
+ * Where a Gmail pass resumes: `historyId` is the `history.list` start of the live step, the listing fields the full
+ * listing in progress (`listingPhase` NULL when none runs).
+ */
+export interface GmailSyncCursor {
+  historyId: string | null;
+  listingPhase: GmailListingPhase | null;
+  listingPageToken: string | null;
+}
+
+export function sameGmailSyncCursor(a: GmailSyncCursor, b: GmailSyncCursor): boolean {
+  return a.historyId === b.historyId && a.listingPhase === b.listingPhase && a.listingPageToken === b.listingPageToken;
+}
+
+/** Locks the account's row for a cursor write in the caller's transaction; `null` when the row is gone. */
+export async function lockGmailSyncCursor(client: PoolClient, itemId: string): Promise<GmailSyncCursor | null> {
+  const state = await lockMailAccountSyncState(client, itemId);
+  return state
+    ? {
+        historyId: state.gmailHistoryId,
+        listingPhase: state.gmailListingPhase,
+        listingPageToken: state.gmailListingPageToken,
+      }
+    : null;
+}
+
+export async function recordGmailSyncCursor(client: Queryable, itemId: string, cursor: GmailSyncCursor): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+        SET gmail_history_id = $2, gmail_listing_phase = $3, gmail_listing_page_token = $4
+      WHERE item_id = $1`,
+    [itemId, cursor.historyId, cursor.listingPhase, cursor.listingPageToken],
+  );
+  requireAffectedRows(result, `Gmail sync cursor of item ${itemId}`);
 }
 
 export interface RecordGmailActivityInput {
   itemId: string;
-  historyId: string;
   watchExpiresAt?: Date;
   nextExpectedActivityAt: Date;
+  /** `false` while the full listing still runs, so the account keeps reporting its initial sync. */
+  completesInitialSync: boolean;
 }
 
 export async function recordGmailActivity(client: Queryable, input: RecordGmailActivityInput): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE mail_account_sync_state
-     SET gmail_history_id = $2, gmail_watch_expires_at = COALESCE($3, gmail_watch_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4,
-         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+     SET gmail_watch_expires_at = COALESCE($2, gmail_watch_expires_at),
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $3,
+         last_successful_sync_at = now(),
+         initial_sync_completed_at = CASE WHEN $4::boolean THEN COALESCE(initial_sync_completed_at, now())
+                                          ELSE initial_sync_completed_at END,
          failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
-    [input.itemId, input.historyId, input.watchExpiresAt ?? null, input.nextExpectedActivityAt],
+    [input.itemId, input.watchExpiresAt ?? null, input.nextExpectedActivityAt, input.completesInitialSync],
   );
+  requireAffectedRows(result, `Gmail activity of item ${input.itemId}`);
 }
 
 export interface RecordGmailWatchRegistrationInput {
@@ -509,40 +569,72 @@ export async function getGmailAccountUse(client: Queryable, itemId: string): Pro
   return own.shared ? "shared" : "sole";
 }
 
-/** After a delta 410 / `resyncRequired`: clears the link so the next sync does a full resync. */
+/** After a delta 410 / `resyncRequired`: clears the delta link and the round in progress, so a full resync starts. */
 export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
-  await client.query(`UPDATE mail_account_sync_state SET graph_delta_link = NULL, last_error = $2 WHERE item_id = $1`, [
-    itemId,
-    reason,
-  ]);
+  const result = await client.query(
+    `UPDATE mail_account_sync_state SET graph_delta_link = NULL, graph_delta_next_link = NULL, last_error = $2
+      WHERE item_id = $1`,
+    [itemId, reason],
+  );
+  requireAffectedRows(result, `Graph delta invalidation of item ${itemId}`);
+}
+
+/**
+ * Where a Graph pass resumes: `deltaLink` is the delta link of the last completed round, `nextLink` the next page of
+ * the round in progress. A round in progress with no `deltaLink` started from scratch.
+ */
+export interface GraphSyncCursor {
+  deltaLink: string | null;
+  nextLink: string | null;
+}
+
+export function sameGraphSyncCursor(a: GraphSyncCursor, b: GraphSyncCursor): boolean {
+  return a.deltaLink === b.deltaLink && a.nextLink === b.nextLink;
+}
+
+/** Locks the account's row for a cursor write in the caller's transaction; `null` when the row is gone. */
+export async function lockGraphSyncCursor(client: PoolClient, itemId: string): Promise<GraphSyncCursor | null> {
+  const state = await lockMailAccountSyncState(client, itemId);
+  return state ? { deltaLink: state.graphDeltaLink, nextLink: state.graphDeltaNextLink } : null;
+}
+
+export async function recordGraphSyncCursor(client: Queryable, itemId: string, cursor: GraphSyncCursor): Promise<void> {
+  const result = await client.query(
+    "UPDATE mail_account_sync_state SET graph_delta_link = $2, graph_delta_next_link = $3 WHERE item_id = $1",
+    [itemId, cursor.deltaLink, cursor.nextLink],
+  );
+  requireAffectedRows(result, `Graph sync cursor of item ${itemId}`);
 }
 
 export interface RecordGraphActivityInput {
   itemId: string;
-  deltaLink: string;
   subscriptionId?: string;
   subscriptionExpiresAt?: Date;
   nextExpectedActivityAt: Date;
+  /** `false` while the first delta round from scratch still runs, so the account keeps reporting its initial sync. */
+  completesInitialSync: boolean;
 }
 
 export async function recordGraphActivity(client: Queryable, input: RecordGraphActivityInput): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE mail_account_sync_state
-     SET graph_delta_link = $2,
-         graph_subscription_id = COALESCE($3, graph_subscription_id),
-         graph_subscription_expires_at = COALESCE($4, graph_subscription_expires_at),
-         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $5,
-         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+     SET graph_subscription_id = COALESCE($2, graph_subscription_id),
+         graph_subscription_expires_at = COALESCE($3, graph_subscription_expires_at),
+         last_error = NULL, last_activity_at = now(), next_expected_activity_at = $4,
+         last_successful_sync_at = now(),
+         initial_sync_completed_at = CASE WHEN $5::boolean THEN COALESCE(initial_sync_completed_at, now())
+                                          ELSE initial_sync_completed_at END,
          failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
     [
       input.itemId,
-      input.deltaLink,
       input.subscriptionId ?? null,
       input.subscriptionExpiresAt ?? null,
       input.nextExpectedActivityAt,
+      input.completesInitialSync,
     ],
   );
+  requireAffectedRows(result, `Graph activity of item ${input.itemId}`);
 }
 
 /** The in-tenant re-read under RLS after `routeGraphSubscription`. */

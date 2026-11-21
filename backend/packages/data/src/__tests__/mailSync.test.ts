@@ -64,7 +64,13 @@ import {
 import { lockMailboxSync } from "../mail/mailboxSyncGuard.js";
 import { mailAccountSyncJobKey } from "../mail/mailSyncEnqueue.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
-import { reconcileGraphAccount, type GraphChangedMessage, type GraphMailClient } from "../mail/graphReconcile.js";
+import {
+  reconcileGraphAccount,
+  type GraphChangedMessage,
+  type GraphDeltaPage,
+  type GraphMailClient,
+  type GraphMessageEnvelope,
+} from "../mail/graphReconcile.js";
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
@@ -107,6 +113,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { recentGmailListing } from "../testSupport/gmailListing.js";
 import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
 import type { FetchedMessage } from "../mail/providerTypes.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
@@ -1799,7 +1806,7 @@ describe("Gmail reconcile core", () => {
         changedMessageIds: [],
         removedMessageIds: [],
       }),
-      listAllMessageIds: async () => ["m1"],
+      listMessageIds: recentGmailListing(["m1"]),
       fetchMessage: async (id) => ({
         id,
         threadId: "t1",
@@ -1812,9 +1819,9 @@ describe("Gmail reconcile core", () => {
     };
   }
   const reconcile = (client: GmailMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    inTenantZero(() => withTransaction(pool, (tx) => reconcileGmailAccount(tx, client, params)));
+    inTenantZero(() => reconcileGmailAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }));
 
-  it("initial sync does a full listAllMessageIds pass, and a history.list 404 forces a full resync instead of resuming", async () => {
+  it("initial sync lists the whole account, and a history.list 404 forces a full resync instead of resuming", async () => {
     const params = await reconcileParams();
     await reconcile(fakeGmailClient(), params);
     expect((await syncState(params.mailboxItemId))?.gmailHistoryId).toBe("100");
@@ -1829,15 +1836,16 @@ describe("Gmail reconcile core", () => {
           changedMessageIds: [],
           removedMessageIds: [],
         }),
-        listAllMessageIds: async () => {
+        listMessageIds: async (query, pageToken) => {
           fullResyncCallCount++;
-          return ["m2"];
+          return recentGmailListing(["m2"])(query, pageToken);
         },
         getCurrentHistoryId: async () => "200",
       }),
       params,
     );
-    expect(fullResyncCallCount).toBe(1);
+    // Both listing phases, each one page.
+    expect(fullResyncCallCount).toBe(2);
     expect((await syncState(params.mailboxItemId))?.gmailHistoryId).toBe("200");
     // The first sync's message plus the resync's new one.
     expect(await countRows("items WHERE database_id = $1", [params.emailsDatabaseId])).toBe(2);
@@ -1897,29 +1905,32 @@ describe("Gmail reconcile core", () => {
 describe("Graph reconcile core", () => {
   useSeededDatabase();
 
-  const change = (id: string, message: Partial<FetchedMessage> = {}): GraphChangedMessage => ({
+  // Dated now: a delta from scratch stores a message inside the full-content window in full.
+  const change = (id: string, message: Partial<GraphMessageEnvelope> = {}): GraphChangedMessage => ({
     id,
     parentFolderId: "f1",
     removed: false,
-    message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, attachments: [], ...message },
+    message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, date: new Date(), ...message },
+  });
+  const lastPage = (deltaLink: string, changes: GraphChangedMessage[]): GraphDeltaPage => ({
+    changes,
+    nextLink: null,
+    deltaLink,
   });
   function fakeGraphClient(overrides: Partial<GraphMailClient> = {}): GraphMailClient {
     return {
       listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
-      fetchDelta: async () => ({
-        invalidated: false,
-        newDeltaLink: "link-1",
-        changes: [change("m1", { subject: "Hi" })],
-      }),
+      fetchDeltaPage: async () => lastPage("link-1", [change("m1", { subject: "Hi" })]),
+      fetchMessageContent: async () => ({ attachments: [] }),
       patchMessage: async () => {},
       ...overrides,
     };
   }
   const reconcile = (client: GraphMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    withTransaction(pool, (tx) => reconcileGraphAccount(tx, client, params));
+    reconcileGraphAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
 
   tenantIt(
-    "stores the returned deltaLink, and a 410 Gone clears it and runs a full resync (fetchDelta(null)) instead of resuming",
+    "stores the returned deltaLink, and a 410 Gone clears it and runs a full resync (a round from scratch) instead of resuming",
     async () => {
       const params = await reconcileParams();
       await reconcile(fakeGraphClient(), params);
@@ -1929,11 +1940,9 @@ describe("Graph reconcile core", () => {
       const deltaLinksSeen: (string | null)[] = [];
       await reconcile(
         fakeGraphClient({
-          fetchDelta: async (deltaLink) => {
-            deltaLinksSeen.push(deltaLink);
-            return deltaLink !== null
-              ? { invalidated: true, newDeltaLink: "", changes: [] }
-              : { invalidated: false, newDeltaLink: "link-2", changes: [change("m2", { subject: "Second" })] };
+          fetchDeltaPage: async (url) => {
+            deltaLinksSeen.push(url);
+            return url !== null ? null : lastPage("link-2", [change("m2", { subject: "Second" })]);
           },
         }),
         params,
@@ -1949,21 +1958,21 @@ describe("Graph reconcile core", () => {
     async () => {
       const params = await reconcileParams();
       const body = "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>";
-      const mixed = change("mixed-1", {
-        subject: "Mixed attachments",
-        bodyHtml: body,
-        attachments: [
-          {
-            filename: "report.txt",
-            contentType: "text/plain",
-            contentId: null,
-            disposition: "attachment",
-            openStream: () => Readable.from("real file"),
-          },
-        ],
-      });
+      const mixed = change("mixed-1", { subject: "Mixed attachments" });
       const graph = fakeGraphClient({
-        fetchDelta: async () => ({ invalidated: false, newDeltaLink: "link-mixed", changes: [mixed] }),
+        fetchDeltaPage: async () => lastPage("link-mixed", [mixed]),
+        fetchMessageContent: async () => ({
+          bodyHtml: body,
+          attachments: [
+            {
+              filename: "report.txt",
+              contentType: "text/plain",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from("real file"),
+            },
+          ],
+        }),
       });
 
       await reconcile(graph, params);
@@ -2012,11 +2021,7 @@ describe("Graph reconcile core", () => {
 
       await patch({ read: true });
       const observed = fakeGraphClient({
-        fetchDelta: async () => ({
-          invalidated: false,
-          newDeltaLink: "link-2",
-          changes: [change("m1", { envelope: {}, flags: [IMAP_SEEN_FLAG] })],
-        }),
+        fetchDeltaPage: async () => lastPage("link-2", [change("m1", { envelope: {}, flags: [IMAP_SEEN_FLAG] })]),
         patchMessage: async () => {
           throw new Error("converged Graph observation must not echo");
         },
@@ -2167,7 +2172,7 @@ describe("message arrival: live and backfill", () => {
     async () => {
       const params = await reconcileParams();
       const dates: Record<string, Date> = { "old-in-history": OLD_DATE };
-      const gmail = (sync: Pick<GmailMailClient, "listHistorySince" | "listAllMessageIds">): GmailMailClient => ({
+      const gmail = (sync: Pick<GmailMailClient, "listHistorySince" | "listMessageIds">): GmailMailClient => ({
         getCurrentHistoryId: async () => "100",
         fetchMessage: async (id) => ({
           id,
@@ -2188,20 +2193,20 @@ describe("message arrival: live and backfill", () => {
         listHistorySince: async () => ({ invalidated, newHistoryId: "101", changedMessageIds, removedMessageIds: [] }),
       });
       const reconcile = (client: GmailMailClient) =>
-        withTransaction(pool, (tx) => reconcileGmailAccount(tx, client, params));
+        reconcileGmailAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
 
-      await reconcile(gmail({ ...history([]), listAllMessageIds: async () => ["listed"] }));
+      await reconcile(gmail({ ...history([]), listMessageIds: recentGmailListing(["listed"]) }));
       const connectedAt = (await syncState(params.mailboxItemId))?.connectedAt;
       expect(connectedAt).not.toBeNull();
       await reconcile(
         gmail({
           ...history(["listed", "delivered", "old-in-history"]),
-          listAllMessageIds: async () => {
+          listMessageIds: async () => {
             throw new Error("a pass with a valid history id must not list every message");
           },
         }),
       );
-      await reconcile(gmail({ ...history([], true), listAllMessageIds: async () => ["listed", "resynced"] }));
+      await reconcile(gmail({ ...history([], true), listMessageIds: recentGmailListing(["listed", "resynced"]) }));
 
       expect(await arrivals(params.mailboxItemId)).toEqual({
         "<delivered@x>": "live",
@@ -2221,36 +2226,30 @@ describe("message arrival: live and backfill", () => {
         id,
         parentFolderId: "f1",
         removed: false,
-        message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, attachments: [], date },
+        message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, date },
       });
-      const graph = (fetchDelta: GraphMailClient["fetchDelta"]): GraphMailClient => ({
+      const graph = (fetchDeltaPage: GraphMailClient["fetchDeltaPage"]): GraphMailClient => ({
         listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
-        fetchDelta,
+        fetchDeltaPage,
+        fetchMessageContent: async () => ({ attachments: [] }),
         patchMessage: async () => {},
       });
       const reconcile = (client: GraphMailClient) =>
-        withTransaction(pool, (tx) => reconcileGraphAccount(tx, client, params));
+        reconcileGraphAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
+      const lastPage = (deltaLink: string, changes: GraphChangedMessage[]): GraphDeltaPage => ({
+        changes,
+        nextLink: null,
+        deltaLink,
+      });
 
+      await reconcile(graph(async () => lastPage("link-1", [change("scratch")])));
       await reconcile(
-        graph(async () => ({ invalidated: false, newDeltaLink: "link-1", changes: [change("scratch")] })),
-      );
-      await reconcile(
-        graph(async (deltaLink) => {
-          expect(deltaLink).toBe("link-1");
-          return {
-            invalidated: false,
-            newDeltaLink: "link-2",
-            changes: [change("delivered"), change("old-in-delta", OLD_DATE)],
-          };
+        graph(async (url) => {
+          expect(url).toBe("link-1");
+          return lastPage("link-2", [change("delivered"), change("old-in-delta", OLD_DATE)]);
         }),
       );
-      await reconcile(
-        graph(async (deltaLink) =>
-          deltaLink === null
-            ? { invalidated: false, newDeltaLink: "link-3", changes: [change("resynced")] }
-            : { invalidated: true, newDeltaLink: "", changes: [] },
-        ),
-      );
+      await reconcile(graph(async (url) => (url === null ? lastPage("link-3", [change("resynced")]) : null)));
 
       expect(await arrivals(params.mailboxItemId)).toEqual({
         "<delivered@x>": "live",
@@ -2360,7 +2359,7 @@ describe("mail sync job error handling", () => {
               changedMessageIds: [],
               removedMessageIds: [],
             }),
-            listAllMessageIds: async () => ["fake-provider-id"],
+            listMessageIds: recentGmailListing(["fake-provider-id"]),
             fetchMessage: async () => ({
               id: "fake-provider-id",
               threadId: "fake-thread",
@@ -2690,11 +2689,12 @@ describe("mail sync job error handling", () => {
                 { id: "Source", displayName: "Source", wellKnownName: "inbox" },
                 { id: "Destination", displayName: "Destination", wellKnownName: "archive" },
               ],
-              fetchDelta: async () => ({
-                invalidated: false,
-                newDeltaLink: "delta",
+              fetchDeltaPage: async () => ({
                 changes: [{ id: "old-id", parentFolderId: "Source", removed: false, message: observedMessage }],
+                nextLink: null,
+                deltaLink: "delta",
               }),
+              fetchMessageContent: async () => ({ attachments: [] }),
               patchMessage: async () => {
                 throw new Error("Unexpected Graph flag mutation");
               },
@@ -3082,8 +3082,16 @@ describe("mail sync job error handling", () => {
       const success = () =>
         withTransaction(pool, (client) =>
           mode === "gmail"
-            ? recordGmailActivity(client, { itemId: mailbox, historyId: "1", nextExpectedActivityAt: new Date() })
-            : recordGraphActivity(client, { itemId: mailbox, deltaLink: "delta", nextExpectedActivityAt: new Date() }),
+            ? recordGmailActivity(client, {
+                itemId: mailbox,
+                nextExpectedActivityAt: new Date(),
+                completesInitialSync: true,
+              })
+            : recordGraphActivity(client, {
+                itemId: mailbox,
+                nextExpectedActivityAt: new Date(),
+                completesInitialSync: true,
+              }),
         );
       await success();
       const first = await syncState(mailbox);

@@ -237,14 +237,15 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
         changedMessageIds: [],
         removedMessageIds: [],
       }),
-    listAllMessageIds: async () => called("listAllMessageIds", []),
+    listMessageIds: async () => called("listMessageIds", { ids: [], nextPageToken: null }),
     fetchMessage: async () => called("fetchMessage", null),
     listLabels: async () => called("listLabels", []),
     modifyMessageLabels: async () => called("modifyMessageLabels", undefined),
   };
   const graph: GraphMailClient = {
     listFolders: async () => called("listFolders", []),
-    fetchDelta: async () => called("fetchDelta", { invalidated: false, newDeltaLink: "delta-1", changes: [] }),
+    fetchDeltaPage: async () => called("fetchDeltaPage", { changes: [], nextLink: null, deltaLink: "delta-1" }),
+    fetchMessageContent: async () => called("fetchMessageContent", null),
     patchMessage: async () => called("patchMessage", undefined),
   };
   return {

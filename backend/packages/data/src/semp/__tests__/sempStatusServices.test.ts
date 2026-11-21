@@ -53,8 +53,8 @@ describe("Semp status services", () => {
         await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "gmail_api" });
         await recordGmailActivity(client, {
           itemId: item.id,
-          historyId: "1",
           nextExpectedActivityAt: new Date("2030-01-01T00:00:00Z"),
+          completesInitialSync: true,
         });
         const row = await client.query<{ last_activity_at: Date }>(
           "SELECT last_activity_at FROM mail_account_sync_state WHERE item_id = $1",

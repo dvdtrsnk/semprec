@@ -12,7 +12,9 @@ import {
   ensureMailAccountSyncState,
   getTestPool,
   reconcileGmailAccount,
+  recentGmailListing,
   resetDatabase,
+  UNGUARDED_MAIL_SYNC_PASS,
   type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
@@ -53,56 +55,60 @@ function get(auth: string, path: string) {
 }
 
 async function seedMail(tenantId: string) {
-  return runInTenant(tenantId, () =>
-    withTransaction(runtime, async (client) => {
+  return runInTenant(tenantId, async () => {
+    const { ids, mailbox } = await withTransaction(runtime, async (client) => {
       const ids = await resolveMailModuleIds(client);
-      const cp = createChokePoint(runtime);
-      const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
-      const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
-      const find = (properties: typeof emailProperties, key: string) => {
-        const property = properties.find((entry) => entry.key === key);
-        if (!property) throw new Error(`Missing ${key}`);
-        return property.id;
-      };
       const mailbox = await createItemWithClient(client, {
         databaseId: ids.mailboxesDatabaseId,
         properties: { name: "Mailbox", provider: "gmail" },
       });
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
-      const gmail: GmailMailClient = {
-        getCurrentHistoryId: async () => "1",
-        listHistorySince: async () => ({
-          invalidated: false,
-          newHistoryId: "2",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
-        listAllMessageIds: async () => ["message"],
-        listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
-        fetchMessage: async () => ({
-          id: "message",
-          threadId: "thread",
-          labelIds: ["INBOX"],
-          message: {
-            messageId: `<${tenantId}@example.test>`,
-            subject: "Distinct proposal",
-            envelope: { from: { address: "sender@example.test" } },
-            attachments: [],
-          },
-        }),
-        modifyMessageLabels: async () => undefined,
-      };
-      await reconcileGmailAccount(client, gmail, {
-        mailboxItemId: mailbox.id,
-        emailsDatabaseId: ids.emailsDatabaseId,
-        filesDatabaseId: ids.filesDatabaseId,
-        foldersDatabaseId: ids.foldersDatabaseId,
-        folderRelationPropertyId: find(emailProperties, "folder"),
-        attachmentsRelationPropertyId: find(emailProperties, "attachments"),
-        mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
-        storage: new LocalFsBlobStorageWriter(root),
-        storageKeyPrefix: "mail-http",
-      });
+      return { ids, mailbox };
+    });
+    const cp = createChokePoint(runtime);
+    const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+    const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+    const find = (properties: typeof emailProperties, key: string) => {
+      const property = properties.find((entry) => entry.key === key);
+      if (!property) throw new Error(`Missing ${key}`);
+      return property.id;
+    };
+    const gmail: GmailMailClient = {
+      getCurrentHistoryId: async () => "1",
+      listHistorySince: async () => ({
+        invalidated: false,
+        newHistoryId: "2",
+        changedMessageIds: [],
+        removedMessageIds: [],
+      }),
+      listMessageIds: recentGmailListing(["message"]),
+      listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+      fetchMessage: async () => ({
+        id: "message",
+        threadId: "thread",
+        labelIds: ["INBOX"],
+        message: {
+          messageId: `<${tenantId}@example.test>`,
+          subject: "Distinct proposal",
+          envelope: { from: { address: "sender@example.test" } },
+          attachments: [],
+        },
+      }),
+      modifyMessageLabels: async () => undefined,
+    };
+    await reconcileGmailAccount(runtime, gmail, {
+      mailboxItemId: mailbox.id,
+      emailsDatabaseId: ids.emailsDatabaseId,
+      filesDatabaseId: ids.filesDatabaseId,
+      foldersDatabaseId: ids.foldersDatabaseId,
+      folderRelationPropertyId: find(emailProperties, "folder"),
+      attachmentsRelationPropertyId: find(emailProperties, "attachments"),
+      mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
+      storage: new LocalFsBlobStorageWriter(root),
+      storageKeyPrefix: "mail-http",
+      pass: UNGUARDED_MAIL_SYNC_PASS,
+    });
+    return withTransaction(runtime, async (client) => {
       const thread = await client.query<{ thread_id: string; item_id: string; thread_item_id: string }>(
         "SELECT m.thread_id, m.item_id, t.item_id AS thread_item_id FROM mail_message_meta m JOIN mail_threads t ON t.tenant_id = m.tenant_id AND t.id = m.thread_id WHERE m.mailbox_item_id = $1",
         [mailbox.id],
@@ -121,8 +127,8 @@ async function seedMail(tenantId: string) {
         threadItemId: thread.rows[0].thread_item_id,
         emailsDatabaseId: ids.emailsDatabaseId,
       };
-    }),
-  );
+    });
+  });
 }
 
 describe("mail reads through the dispatcher", () => {

@@ -7,18 +7,27 @@ import {
 import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./mailSendPrivacy.js";
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
-import type { GraphChangedMessage, GraphDeltaResult, GraphFolderRef, GraphMailClient } from "./graphReconcile.js";
+import { GRAPH_IMMUTABLE_ID_PREFERENCE } from "./graphImmutableIds.js";
+import type {
+  GraphChangedMessage,
+  GraphDeltaPage,
+  GraphFolderRef,
+  GraphMailClient,
+  GraphMessageContent,
+  GraphMessageEnvelope,
+} from "./graphReconcile.js";
 import {
   assertJsonObject,
   MailReauthorizationRequiredError,
   MailRecipientRejectedError,
   MAX_ATTACHMENT_BYTES,
-  type FetchedMessage,
 } from "./providerTypes.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://graph.microsoft.com/v1.0/me";
+/** Messages one delta page holds (`odata.maxpagesize`), and so one write transaction of a sync pass ingests. */
+const GRAPH_DELTA_PAGE_SIZE = 50;
 const WELL_KNOWN_FOLDERS = ["inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"];
 
 interface GraphMessageResource {
@@ -134,7 +143,7 @@ function appendGraphNonFileAttachmentAnnotations(
   return [body, ...annotations].filter((part): part is string => Boolean(part)).join(separator);
 }
 
-/** Lazy byte sources over `/attachments/{id}/$value`, a true streamed response. */
+/** Lazy byte sources over `/attachments/{id}/$value`, a true streamed response; the attachment id is its provider part. */
 function classifyGraphAttachments(
   fetchAttachmentStream: (attachmentId: string) => Promise<Readable>,
   metas: GraphAttachmentResource[],
@@ -147,6 +156,7 @@ function classifyGraphAttachments(
       contentType: m.contentType || "application/octet-stream",
       contentId: m.contentId ?? null,
       disposition: m.isInline ? "inline" : "attachment",
+      providerPart: m.id,
       openStream: () => fetchAttachmentStream(m.id),
     }));
   // An inline part referenced via cid: in the HTML is a rendering asset, not a document.
@@ -156,15 +166,14 @@ function classifyGraphAttachments(
 }
 
 /**
- * Item/reference attachments have no bytes, so they become body annotations rather than Files
- * rows; repeated delta passes then converge through message dedup like the body.
+ * The body of a full message and its attachments. Item/reference attachments have no bytes, so they become body
+ * annotations rather than Files rows; repeated delta passes then converge through message dedup like the body.
  */
-export async function toFetchedGraphMessage(
-  resource: GraphMessageResource,
+export async function toGraphMessageContent(
+  resource: Pick<GraphMessageResource, "id" | "body" | "bodyPreview" | "hasAttachments">,
   listAttachmentMetadata: (messageId: string) => Promise<GraphAttachmentResource[]>,
   fetchAttachmentStream: (messageId: string, attachmentId: string) => Promise<Readable>,
-): Promise<FetchedMessage> {
-  const referencesHeader = header(resource, "References");
+): Promise<GraphMessageContent> {
   const html = resource.body?.contentType === "html" ? resource.body.content : undefined;
   const attachmentMetas = resource.hasAttachments ? await listAttachmentMetadata(resource.id) : [];
   const attachments = classifyGraphAttachments(
@@ -176,6 +185,21 @@ export async function toFetchedGraphMessage(
     const providerType = graphNonFileAttachmentType(attachment["@odata.type"]);
     return providerType ? [{ filename: safeAttachmentLabel(attachment.name), providerType, id: attachment.id }] : [];
   });
+  return {
+    bodyText: appendGraphNonFileAttachmentAnnotations(
+      resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
+      nonFileAttachments,
+      "text",
+    ),
+    bodyHtml:
+      html !== undefined ? appendGraphNonFileAttachmentAnnotations(html, nonFileAttachments, "html") : undefined,
+    attachments,
+  };
+}
+
+/** A message as a delta page lists it: envelope, threading and delivery headers and flags, no body. */
+export function toGraphMessageEnvelope(resource: GraphMessageResource): GraphMessageEnvelope {
+  const referencesHeader = header(resource, "References");
   const contentType = parseContentTypeHeader(header(resource, "Content-Type"));
 
   const replyTo = toEnvelopeAddressList(resource.replyTo);
@@ -192,15 +216,7 @@ export async function toFetchedGraphMessage(
       bcc: toEnvelopeAddressList(resource.bccRecipients),
       ...(replyTo.length > 0 ? { replyTo } : {}),
     },
-    bodyText: appendGraphNonFileAttachmentAnnotations(
-      resource.body?.contentType === "text" ? resource.body.content : resource.bodyPreview,
-      nonFileAttachments,
-      "text",
-    ),
-    bodyHtml:
-      html !== undefined ? appendGraphNonFileAttachmentAnnotations(html, nonFileAttachments, "html") : undefined,
     date: resource.receivedDateTime ? new Date(resource.receivedDateTime) : undefined,
-    attachments,
     deliveredToHeaders: headerValues(resource, "Delivered-To"),
     xOriginalTo: headerValues(resource, "X-Original-To")[0] ?? null,
     envelopeTo: headerValues(resource, "Envelope-To")[0] ?? null,
@@ -299,7 +315,8 @@ function isHttpsUrl(value: string): boolean {
 
 /**
  * `GraphMailClient` over Microsoft Graph. `internetMessageHeaders` is `$select`ed to recover
- * `References`/`In-Reply-To`, which Graph does not expose as fields.
+ * `References`/`In-Reply-To`, which Graph does not expose as fields. Every request asks for immutable ids
+ * (`Prefer: IdType="ImmutableId"`), so a message keeps its id across folder moves.
  */
 export class GraphRestClient implements GraphMailClient {
   constructor(
@@ -338,13 +355,13 @@ export class GraphRestClient implements GraphMailClient {
   }
 
   private request<T>(url: string): Promise<T>;
-  private request<T>(url: string, tolerated: 404 | 410): Promise<T | null>;
-  private async request<T>(url: string, tolerated?: 404 | 410): Promise<T | null> {
+  private request<T>(url: string, tolerated: 404 | 410, prefer?: string): Promise<T | null>;
+  private async request<T>(url: string, tolerated?: 404 | 410, prefer?: string): Promise<T | null> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, Prefer: prefer ?? GRAPH_IMMUTABLE_ID_PREFERENCE },
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
@@ -381,7 +398,7 @@ export class GraphRestClient implements GraphMailClient {
     let response: Response;
     try {
       response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE },
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
@@ -484,37 +501,50 @@ export class GraphRestClient implements GraphMailClient {
     );
   }
 
-  async fetchDelta(deltaLink: string | null): Promise<GraphDeltaResult> {
-    let url =
-      deltaLink ??
-      `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,body,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`;
-    const changes: GraphChangedMessage[] = [];
-    let newDeltaLink = "";
+  /** The body is left out of the delta and fetched per full message (`fetchMessageContent`). */
+  async fetchDeltaPage(url: string | null): Promise<GraphDeltaPage | null> {
+    const page = await this.request<{
+      value: GraphMessageResource[];
+      ["@odata.nextLink"]?: string;
+      ["@odata.deltaLink"]?: string;
+    }>(
+      url ??
+        `${BASE_URL}/messages/delta?$select=internetMessageId,subject,from,toRecipients,ccRecipients,bccRecipients,replyTo,bodyPreview,receivedDateTime,parentFolderId,internetMessageHeaders,hasAttachments,isRead,flag`,
+      410,
+      `${GRAPH_IMMUTABLE_ID_PREFERENCE}, odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}`,
+    );
+    if (!page) return null;
+    if (!Array.isArray(page.value)) throw new Error("Graph delta page has no message list");
+    const nextLink = page["@odata.nextLink"] ?? null;
+    const deltaLink = page["@odata.deltaLink"] ?? null;
+    if ((nextLink === null) === (deltaLink === null))
+      throw new Error("Graph delta page has neither or both of a next link and a delta link");
+    const changes = page.value.map((resource): GraphChangedMessage =>
+      resource["@removed"]
+        ? { id: resource.id, removed: true }
+        : {
+            id: resource.id,
+            parentFolderId: resource.parentFolderId,
+            removed: false,
+            message: toGraphMessageEnvelope(resource),
+            ...(resource.bodyPreview !== undefined ? { preview: resource.bodyPreview } : {}),
+          },
+    );
+    return { changes, nextLink, deltaLink };
+  }
 
-    while (url) {
-      const page = await this.request<{
-        value: GraphMessageResource[];
-        ["@odata.nextLink"]?: string;
-        ["@odata.deltaLink"]?: string;
-      }>(url, 410);
-      if (!page) return { invalidated: true, newDeltaLink: "", changes: [] };
-      for (const resource of page.value) {
-        if (resource["@removed"]) {
-          changes.push({ id: resource.id, removed: true });
-        } else {
-          const message = await toFetchedGraphMessage(
-            resource,
-            (messageId) => this.listAttachmentMetadata(messageId),
-            (messageId, attachmentId) => this.fetchAttachmentStream(messageId, attachmentId),
-          );
-          changes.push({ id: resource.id, parentFolderId: resource.parentFolderId, removed: false, message });
-        }
-      }
-      if (page["@odata.deltaLink"]) newDeltaLink = page["@odata.deltaLink"];
-      url = page["@odata.nextLink"] ?? "";
-    }
-
-    return { invalidated: false, newDeltaLink, changes };
+  async fetchMessageContent(messageId: string): Promise<GraphMessageContent | null> {
+    // A 404 means the message disappeared since the delta listed it.
+    const resource = await this.request<Pick<GraphMessageResource, "id" | "body" | "bodyPreview" | "hasAttachments">>(
+      `${BASE_URL}/messages/${encodeURIComponent(messageId)}?$select=body,bodyPreview,hasAttachments`,
+      404,
+    );
+    if (!resource) return null;
+    return toGraphMessageContent(
+      { ...resource, id: messageId },
+      (id) => this.listAttachmentMetadata(id),
+      (id, attachmentId) => this.fetchAttachmentStream(id, attachmentId),
+    );
   }
 
   async patchMessage(
@@ -524,7 +554,11 @@ export class GraphRestClient implements GraphMailClient {
     const token = await this.getAccessToken();
     const response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(patch),
       signal: AbortSignal.timeout(30_000),
     });
@@ -542,6 +576,7 @@ export class GraphRestClient implements GraphMailClient {
         method: init.method,
         headers: {
           Authorization: `Bearer ${token}`,
+          Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE,
           ...(init.contentType ? { "Content-Type": init.contentType } : {}),
         },
         ...(init.body !== undefined ? { body: init.body } : {}),

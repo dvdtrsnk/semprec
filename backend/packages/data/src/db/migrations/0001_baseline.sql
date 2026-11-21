@@ -1729,6 +1729,10 @@ CREATE TABLE public.mail_account_sync_state (
     pass_lease_expires_at timestamp with time zone,
     pass_rerun_requested boolean DEFAULT false NOT NULL,
     connected_at timestamp with time zone,
+    gmail_listing_phase text,
+    gmail_listing_page_token text,
+    graph_delta_next_link text,
+    CONSTRAINT mail_account_sync_state_gmail_listing_phase_check CHECK ((gmail_listing_phase = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
@@ -1736,6 +1740,12 @@ CREATE TABLE public.mail_account_sync_state (
 COMMENT ON TABLE public.mail_account_sync_state IS 'semprec:tenancy=tenant';
 
 COMMENT ON COLUMN public.mail_account_sync_state.connected_at IS 'Anchor of the account''s mail: set by the first sync pass that finds it NULL, cleared when Mail is switched off.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_phase IS 'Gmail full listing in progress: ''full'' lists the messages inside the full-content window, ''index'' the older ones; NULL when no listing runs.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_page_token IS 'The messages.list page token the Gmail listing resumes at; NULL at the start of its phase.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.graph_delta_next_link IS 'The nextLink of the Graph delta round in progress; promoted to graph_delta_link only when the round''s deltaLink arrives.';
 
 ALTER TABLE ONLY public.mail_account_sync_state
     ADD CONSTRAINT mail_account_sync_state_pkey PRIMARY KEY (item_id);

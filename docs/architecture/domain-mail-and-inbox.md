@@ -32,10 +32,10 @@ described elsewhere and only referenced here:
   `FOR UPDATE` before the update locks the Mailboxes item, the order of a removal. The update hook decides by
   the locked row, so a repeated write changes nothing.
   - Off (`pauseMailAccountSync`), in the write's transaction: set `sync_paused_at` (seeding a row for a
-    never-connected mailbox) and reset the account to never synced (Gmail history id, Graph delta link,
-    initial-sync mark, next expected activity and failure record cleared); delete the folder sync states;
-    resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the mail-off `mailboxRemoval` job. After
-    the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
+    never-connected mailbox) and reset the account to never synced (Gmail history id and listing cursor, Graph
+    delta link and delta round in progress, initial-sync mark, next expected activity and failure record
+    cleared); delete the folder sync states; resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the
+    mail-off `mailboxRemoval` job. After the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
     (`semprec-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
     a binding the next discovery pass unhosts the account. The item, credential, server settings, sync mode,
     provider account and Gmail routing addresses and the Graph subscription id stay; the provider-side Gmail
@@ -209,8 +209,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Sync pass and the mailbox sync guard
 
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
-  mailbox, state and credential happen first. A Gmail or Graph pass then reconciles in one transaction that also
-  talks to the provider (existing, accepted cost; do not add new network work there).
+  mailbox, state and credential happen first. No pass, in any sync mode, talks to the provider inside a
+  transaction: every provider call runs between short write transactions, each of which starts with
+  `enterSyncPass` and then takes the mail-thread guard (`inPassTransaction`, `mail/mailSyncPass.ts`). A failed
+  batch deletes the attachment bytes it wrote (`withBatchStorage`); committed batches keep theirs.
 - One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
   sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
   `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
@@ -232,6 +234,55 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
   from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
   cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+- A Gmail pass (`reconcileGmailAccount` in `mail/gmailReconcile.ts`): the label list, then a prepare transaction
+  (label Folders, the cursor read), then the live step, then the listing, then the flag write-back (pending writes
+  read in one transaction, `messages.modify` outside it, confirmations in the final transaction) and the final
+  transaction (account activity, the next pass, `ok` status, problem resolved). Every write transaction also takes
+  the Gmail folder-state guard after the mail-thread guard, locks the sync state row and writes only while the
+  stored cursor is still the one its fetch started from; otherwise it writes nothing and ends the pass incomplete.
+  - Cursor (`mail_account_sync_state`): `gmail_history_id`, the start of the live step, and the listing cursor
+    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`.
+  - A first pass (no history id) captures the current history id (`users.getProfile`) before anything is listed
+    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which also records
+    the invalidation as `last_error`. Every later pass applies the history since the stored id first, then
+    continues the listing, so new mail is never held back by a running listing.
+  - Live step: `history.list` from the stored id (all its pages, ids only), the changed messages in write
+    transactions of `GMAIL_MESSAGES_PER_BATCH` (50); the last one drops the edges of deleted messages and stores the
+    new history id. It is not bounded by the pass budget; an interrupted step lists the same history again, and the
+    messages its committed batches wrote are then known.
+  - Listing: `messages.list` newest first, `maxResults` 50 (`GMAIL_LISTING_PAGE_SIZE`), one page per write
+    transaction, which stores the page token of the next page; the last page of `full` moves the cursor to `index`,
+    the last page of `index` ends the listing. Phase `full` searches `after:<window start>`, phase `index`
+    `before:<window start + 1 s>`, the window start being `connected_at` less 90 days in epoch seconds (the
+    phases may overlap by a second; a message both list is ingested once). An interrupted listing resumes at its
+    stored page, and its history id is kept.
+  - Fetches: a message the mailbox already holds by its Gmail id is fetched with `format=metadata` (labels and
+    flags are what can change) and converges; otherwise a live-step or `full`-phase message with `format=full`, an
+    `index`-phase message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and
+    Content-Type headers) and its `snippet`.
+  - Budget: `GMAIL_FULL_MESSAGES_PER_PASS` (50) full and `GMAIL_INDEX_MESSAGES_PER_PASS` (500) index or known
+    messages per pass, spent page by page; a pass whose listing is left unfinished is incomplete, requests a rerun
+    in its final transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset, which the
+    pass that ends the listing sets.
+- A Graph pass (`reconcileGraphAccount` in `mail/graphReconcile.ts`): the folder list, then a prepare transaction
+  (Folder items, the cursor read), then the delta round page by page, then the flag write-back and the final
+  transaction as for Gmail. Every write transaction locks the sync state row and writes only while the stored cursor
+  is still the one its fetch started from.
+  - Cursor: `graph_delta_link`, the delta link of the last completed round, and `graph_delta_next_link`, the next
+    page of the round in progress. A pass continues the round at the stored next link, else starts a round at the
+    delta link, else from scratch. Each page (`Prefer: odata.maxpagesize=50`, `GRAPH_DELTA_PAGE_SIZE`, `$select`
+    without `body`) is written in one transaction that stores its next link; the page carrying the round's delta
+    link stores it as `graph_delta_link` and clears the next link, and only then is the round complete. A
+    `410 Gone`/`resyncRequired` on a stored link clears both, records the invalidation as `last_error`, and the same
+    pass starts a round from scratch.
+  - Per page, outside any transaction: which Message-IDs the mailbox already holds (those converge, nothing is
+    fetched), and for each other message its content state by `mailContentStateOf` (`receivedDateTime` as its
+    Date); a `full` one's body (`GET /messages/{id}?$select=body,bodyPreview,hasAttachments`) and, when it has
+    attachments, its attachment list, the bytes spooled.
+  - Budget: `GRAPH_FULL_MESSAGES_PER_PASS` (50) full and `GRAPH_INDEX_MESSAGES_PER_PASS` (500) index or known
+    messages per pass, for rounds from scratch and from the delta link alike, spent page by page; a pass that ends
+    its round unfinished is incomplete like a Gmail one, and `initial_sync_completed_at` is set by the pass that
+    completes the first round.
 - On a CONDSTORE server the folder list carries each folder's STATUS (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ,
   MESSAGES), inline where the server offers LIST-STATUS and otherwise one STATUS per folder. A folder whose four
   values equal its `mail_folder_sync_state` (`message_count` included) skips its live step: no SELECT, no fetch, no
@@ -291,11 +342,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
-- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction (every
-  transaction of an IMAP pass), then re-reads the Mailboxes item and sync state row; a trashed/missing item, a
+- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction, then re-reads
+  the Mailboxes item and sync state row; a trashed/missing item, a
   missing row or a paused row (Mail off) ends the pass with no further provider call and no further write. A
-  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and an IMAP
-  pass it overtakes ends at its next transaction. The pass waits for the guard at most
+  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and a pass it
+  overtakes ends at its next transaction. The pass waits for the guard at most
   `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a removal still holds it, the pass is skipped and records
   nothing (no failure, status, problem or notification); the sweep re-enqueues an account that is still due.
 - A pass with no stored credential, or whose provider refused the stored sign-in, fails with
@@ -350,14 +401,22 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - Ingest stamps every new message's `mail_message_meta.content_state` once (`mail/mailContentState.ts`,
   `mailContentStateOf`); a message ingested again keeps it, a send claim is `full`. A message is `full` when it is
   `live`, or when its Date is at most `MAIL_FULL_CONTENT_WINDOW_DAYS` (90) before the account's `connected_at`;
-  older history, and history without a Date, is `index`. Gmail and Graph store every message `full`.
+  older history, and history without a Date, is `index`.
+  - Gmail decides by where the pass reaches the message: the live step (`history.list`) stores it `full`, the
+    listing by its phase, which Gmail's search decides by the internal date (`full` inside the window, `index`
+    beyond it).
+  - Graph decides by `mailContentStateOf` with `receivedDateTime` as the Date.
 - `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
   blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment
-  text folded into the search text. IMAP records the attachment's body part id in `mail_attachments.provider_part`.
+  text folded into the search text. IMAP records the attachment's body part id in `mail_attachments.provider_part`,
+  Graph its attachment id; Gmail records none (its attachment ids change between fetches).
 - `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
-  `preview_text` from the snippet (the first 2 KiB of the IMAP text part, else HTML part); each attachment as a
-  `mail_attachments` row with `blob_id` NULL, its `provider_part` and the size BODYSTRUCTURE gives, and no Files item
-  and no edge; the search text is subject, sender, snippet and attachment filenames. A row has a blob or a provider
+  `preview_text` from the snippet (IMAP: the first 2 KiB of the text part, else HTML part; Gmail: `snippet`, its
+  HTML entities decoded; Graph: `bodyPreview`); for IMAP each attachment as a `mail_attachments` row with `blob_id`
+  NULL, its `provider_part` and the size BODYSTRUCTURE gives, and no Files item and no edge; the search text is
+  subject, sender, snippet and attachment filenames. A Gmail or Graph index message records no attachment: a
+  `format=metadata` fetch lists no parts, and a Graph attachment list per message would cost a request per
+  message of the backfill. A row has a blob or a provider
   part (`mail_attachments_stored_or_located_check`).
 - Readers of `mail_attachments` treat a NULL `blob_id` as bytes not stored: the thread detail answers each message's
   `contentState` and `preview`, and each attachment's `attachmentId` and `stored` (`blobId`, `fileItemId` NULL); the
@@ -415,6 +474,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - The Gmail Pub/Sub dispatcher (`createGmailPubSubDispatcher`, `mail/gmailWatchLifecycle.ts`) routes each
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
   after every hand-off.
+- Graph ids: every Graph mail request (sync reads, attachment streams, flag write-back, moves, drafts and sends,
+  the subscription's creation) sends `Prefer: IdType="ImmutableId"` (`mail/graphImmutableIds.ts`), so
+  `provider_message_id` of a Graph account holds the immutable id, which survives a folder move; a move response
+  names the same id, and change notifications name messages by it.
 - `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
   HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` →
   `imapSessions.close()` (the kept IMAP sync sessions, once no pass runs) → `pool.end()`.
@@ -423,7 +486,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Provider moves
 
 - A user move records a desire in `mail_message_move_sync_state` (`mail/mailMessageMoveSyncStore.ts`,
-  `recordDesiredMailMessageMove`); sync executes it in a move phase **before** the reconcile transaction
+  `recordDesiredMailMessageMove`); sync executes it in a move phase **before** the reconcile
   (`mail/mailMessageMoveSync.ts`). Independently callable reconcilers only observe move state.
 - Each step is claimed atomically in a short guarded transaction (operation token, monotonic desired revision,
   captured revision, durable phase, bounded validated evidence) and committed before dispatch. Only the
@@ -450,8 +513,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   ingest (before its existing-message read and savepoint), the IMAP/Gmail/Graph reconcilers (Gmail before its
   folder-state guard), SMTP failed-claim cleanup, merges, thread actions, thread-task writes, the
   `mail.thread.proposeTask` tool and the mail purge hook.
-- It serializes all thread decisions of a tenant across mailboxes and inherits the reconcile transaction's
-  lifetime, provider calls included.
+- It serializes all thread decisions of a tenant across mailboxes for the lifetime of the transaction that takes
+  it; no sync pass holds it across a provider call.
 - Only writers that hold several Emails items in one transaction take it. Single-item writers (generic item
   PATCH, draft writes, person linking) do not.
 

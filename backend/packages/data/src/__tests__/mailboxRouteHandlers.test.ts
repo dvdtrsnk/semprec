@@ -67,8 +67,8 @@ describe("mailbox routes", () => {
         await ensureMailAccountSyncState(client, { itemId: id, syncMode: "gmail_api" });
         await recordGmailActivity(client, {
           itemId: id,
-          historyId: "1",
           nextExpectedActivityAt: new Date("2030-01-01T00:00:00Z"),
+          completesInitialSync: true,
         });
       });
       const before = (await detail({ params: { id } })).body.lastSuccessfulSyncAt;
@@ -121,7 +121,11 @@ describe("mailbox routes", () => {
         syncedMessageCount: 2,
       });
       await withTransaction(runtime, (client) =>
-        recordGmailActivity(client, { itemId: id, historyId: "1", nextExpectedActivityAt: new Date("2030-01-01") }),
+        recordGmailActivity(client, {
+          itemId: id,
+          nextExpectedActivityAt: new Date("2030-01-01"),
+          completesInitialSync: true,
+        }),
       );
       expect((await detail({ params: { id } })).body).toMatchObject({
         initialSyncInProgress: false,

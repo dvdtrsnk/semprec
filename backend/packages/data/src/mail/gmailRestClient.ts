@@ -7,7 +7,14 @@ import {
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
-import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
+import type {
+  GmailFetchedMessage,
+  GmailHistoryResult,
+  GmailLabelRef,
+  GmailMailClient,
+  GmailMessageFormat,
+  GmailMessageIdPage,
+} from "./gmailReconcile.js";
 import {
   assertJsonObject,
   MAX_ATTACHMENT_BYTES,
@@ -20,6 +27,8 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** Ids one listing page holds, and so one write transaction of a sync pass ingests. */
+const GMAIL_LISTING_PAGE_SIZE = 50;
 
 function decodeBase64Url(value: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
@@ -32,7 +41,8 @@ interface GmailPayloadHeader {
 
 interface GmailPayloadPart {
   partId?: string;
-  mimeType: string;
+  /** Absent on the payload of a `format=metadata` response. */
+  mimeType?: string;
   filename?: string;
   headers?: GmailPayloadHeader[];
   body?: { size?: number; data?: string; attachmentId?: string };
@@ -71,7 +81,7 @@ function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
       for (const child of node.parts) visit(child);
       return;
     }
-    const type = node.mimeType.toLowerCase();
+    const type = (node.mimeType ?? "").toLowerCase();
     if (!tree.textPlainPart && type === "text/plain" && !node.filename) {
       tree.textPlainPart = node;
       return;
@@ -164,7 +174,7 @@ function classifyGmailAttachmentParts(
     return [
       {
         filename: part.filename || "attachment",
-        contentType: part.mimeType,
+        contentType: part.mimeType || "application/octet-stream",
         contentId,
         disposition,
         openStream: async () => {
@@ -189,13 +199,55 @@ function classifyGmailAttachmentParts(
   );
 }
 
+/**
+ * The headers a `format=metadata` fetch asks for: every header the envelope, threading, delivery resolution, bulk
+ * detection and DSN detection read.
+ */
+const GMAIL_METADATA_HEADERS = [
+  "From",
+  "To",
+  "Cc",
+  "Bcc",
+  "Reply-To",
+  "Subject",
+  "Date",
+  "Message-ID",
+  "In-Reply-To",
+  "References",
+  "Delivered-To",
+  "X-Original-To",
+  "Envelope-To",
+  "List-Unsubscribe",
+  "List-Id",
+  "Precedence",
+  "Auto-Submitted",
+  "Content-Type",
+];
+
+const SNIPPET_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** Gmail's `snippet` is plain text with HTML entities escaped. */
+function decodeGmailSnippet(snippet: string): string {
+  return snippet.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (entity: string, name: string) => {
+    const code =
+      name.startsWith("#x") || name.startsWith("#X")
+        ? Number.parseInt(name.slice(2), 16)
+        : name.startsWith("#")
+          ? Number.parseInt(name.slice(1), 10)
+          : undefined;
+    if (code === undefined) return SNIPPET_ENTITIES[name.toLowerCase()] ?? entity;
+    return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
+/** `attachments` empty and no body parts: a `format=metadata` payload lists no parts. */
 async function toFetchedMessage(
   gmailMessageId: string,
   payload: GmailPayloadPart,
-  fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
+  fetchAttachmentBytes: ((attachmentId: string) => Promise<Buffer>) | null,
 ): Promise<FetchedMessage> {
   const parsedHeaders = await parseGmailHeaders(payload.headers ?? []);
-  const tree = walkGmailPayload(payload);
+  const tree: GmailMimeTree = fetchAttachmentBytes ? walkGmailPayload(payload) : { attachmentParts: [] };
   const bodyText = decodePartText(tree.textPlainPart);
   const bodyHtml = decodePartText(tree.textHtmlPart);
   const contentType = parseContentTypeHeader(partHeader(payload, "Content-Type"));
@@ -233,7 +285,9 @@ async function toFetchedMessage(
     bodyText,
     bodyHtml,
     date: parsedHeaders.date,
-    attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml, bodyText),
+    attachments: fetchAttachmentBytes
+      ? classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml, bodyText)
+      : [],
     deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
     xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
     envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
@@ -379,18 +433,16 @@ export class GmailRestClient implements GmailMailClient {
     return { invalidated: false, newHistoryId, changedMessageIds: [...changedIds], removedMessageIds: [...removedIds] };
   }
 
-  async listAllMessageIds(): Promise<string[]> {
-    const ids: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const query = new URLSearchParams({ maxResults: "500", ...(pageToken ? { pageToken } : {}) });
-      const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(
-        `/messages?${query.toString()}`,
-      );
-      for (const m of json?.messages ?? []) ids.push(m.id);
-      pageToken = json?.nextPageToken;
-    } while (pageToken);
-    return ids;
+  async listMessageIds(query: string, pageToken: string | null): Promise<GmailMessageIdPage> {
+    const params = new URLSearchParams({
+      maxResults: String(GMAIL_LISTING_PAGE_SIZE),
+      q: query,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(
+      `/messages?${params.toString()}`,
+    );
+    return { ids: (json?.messages ?? []).map((m) => m.id), nextPageToken: json?.nextPageToken ?? null };
   }
 
   private async fetchAttachmentBytes(gmailMessageId: string, attachmentId: string): Promise<Buffer> {
@@ -405,23 +457,35 @@ export class GmailRestClient implements GmailMailClient {
     return decodeBase64Url(json.data);
   }
 
-  async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
-    // `format=full` avoids pulling every attachment's bytes into one response.
+  async fetchMessage(id: string, format: GmailMessageFormat): Promise<GmailFetchedMessage | null> {
+    // `format=full` avoids pulling every attachment's bytes into one response; `format=metadata` returns the named
+    // headers, the labels and the snippet only.
+    const query =
+      format === "full"
+        ? new URLSearchParams({ format: "full" })
+        : new URLSearchParams([
+            ["format", "metadata"],
+            ...GMAIL_METADATA_HEADERS.map((name): [string, string] => ["metadataHeaders", name]),
+          ]);
     const { status, json } = await this.request<{
       id: string;
       threadId: string;
       labelIds?: string[];
+      snippet?: string;
       payload: GmailPayloadPart;
-    }>(`/messages/${id}?format=full`);
+    }>(`/messages/${id}?${query.toString()}`);
     if (status === 404 || !json) return null;
-    const message = await toFetchedMessage(json.id, json.payload, (attachmentId) =>
-      this.fetchAttachmentBytes(json.id, attachmentId),
+    const message = await toFetchedMessage(
+      json.id,
+      json.payload,
+      format === "full" ? (attachmentId) => this.fetchAttachmentBytes(json.id, attachmentId) : null,
     );
     const labelIds = json.labelIds ?? [];
     return {
       id: json.id,
       threadId: json.threadId,
       labelIds,
+      ...(json.snippet !== undefined ? { snippet: decodeGmailSnippet(json.snippet) } : {}),
       message: {
         ...message,
         flags: [

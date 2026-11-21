@@ -22,6 +22,7 @@ import {
   ensureMailAccountSyncState,
   listAccountsDueForSync,
   recordGmailActivity,
+  recordGmailSyncCursor,
   recordProviderAccountAddress,
   recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
@@ -49,6 +50,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
+import { recentGmailListing } from "../testSupport/gmailListing.js";
 
 interface MailIds {
   mailboxes: string;
@@ -163,10 +165,11 @@ async function connect(client: PoolClient, mailboxId: string): Promise<void> {
   });
   await ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "gmail_api" });
   await recordProviderAccountAddress(client, mailboxId, GOOGLE_ACCOUNT);
+  await recordGmailSyncCursor(client, mailboxId, { historyId: "4711", listingPhase: null, listingPageToken: null });
   await recordGmailActivity(client, {
     itemId: mailboxId,
-    historyId: "4711",
     nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+    completesInitialSync: true,
   });
 }
 
@@ -339,9 +342,9 @@ function gmailAccount(messageIds: string[]): { client: GmailMailClient; calls: s
       calls.push("listHistorySince");
       return { invalidated: false, newHistoryId: "9000", changedMessageIds: [], removedMessageIds: [] };
     },
-    listAllMessageIds: async () => {
-      calls.push("listAllMessageIds");
-      return messageIds;
+    listMessageIds: async (query) => {
+      calls.push(`listMessageIds ${query.split(":")[0]}`);
+      return recentGmailListing(messageIds)(query, null);
     },
     listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
     fetchMessage: async (id) =>
@@ -685,10 +688,15 @@ describe("mailbox restore hook (gh-2032)", () => {
     await inTenant(async (client) => {
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
       await recordProviderAccountAddress(client, mailbox.id, GOOGLE_ACCOUNT);
+      await recordGmailSyncCursor(client, mailbox.id, {
+        historyId: "4711",
+        listingPhase: null,
+        listingPageToken: null,
+      });
       await recordGmailActivity(client, {
         itemId: mailbox.id,
-        historyId: "4711",
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+        completesInitialSync: true,
       });
     });
     const before = await syncStateRows(mailbox.id);
@@ -1253,8 +1261,9 @@ describe("mailbox restore hook (gh-2032)", () => {
     const gmail = gmailAccount(["g1", "g2", "g3"]);
     expect(await syncPass(mailboxId, gmail.client)).toEqual([NEW_REFRESH_TOKEN]);
 
-    // The default row has no cursor, so the pass listed the whole account, and matched what it already had.
-    expect(gmail.calls).toEqual(["listAllMessageIds"]);
+    // The default row has no cursor, so the pass listed the whole account, both phases, and matched what it
+    // already had.
+    expect(gmail.calls).toEqual(["listMessageIds after", "listMessageIds before"]);
     const resumed = await messagesOf(mailboxId);
     expect(resumed.map((message) => message.providerMessageId)).toEqual(["g1", "g2", "g3"]);
     expect(resumed.slice(0, 2)).toEqual(synced);

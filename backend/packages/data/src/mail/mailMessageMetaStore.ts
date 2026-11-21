@@ -229,6 +229,21 @@ export async function listKnownMailMessageIds(
   return new Set(rows.map((row) => row.message_id));
 }
 
+/** Which of `providerMessageIds` the mailbox already holds a message for. */
+export async function listKnownProviderMessageIds(
+  client: Queryable,
+  mailboxItemId: string,
+  providerMessageIds: readonly string[],
+): Promise<Set<string>> {
+  if (providerMessageIds.length === 0) return new Set();
+  const { rows } = await client.query<{ provider_message_id: string }>(
+    `SELECT provider_message_id FROM mail_message_meta
+      WHERE mailbox_item_id = $1 AND provider_message_id = ANY($2::text[])`,
+    [mailboxItemId, [...providerMessageIds]],
+  );
+  return new Set(rows.map((row) => row.provider_message_id));
+}
+
 export async function getMailMessageMetaByProviderMessageId(
   client: Queryable,
   providerMessageId: string,

@@ -16,6 +16,8 @@ import {
   clearHooksForTests,
   ensureMailAccountSyncState,
   reconcileGmailAccount,
+  recentGmailListing,
+  UNGUARDED_MAIL_SYNC_PASS,
   type GmailMailClient,
   type RelationEdgeChangedHookContext,
 } from "@semprec/data/testSupport";
@@ -1150,7 +1152,7 @@ describe("generic operation REST contract", () => {
             changedMessageIds: [],
             removedMessageIds: [],
           }),
-          listAllMessageIds: async () => ["message"],
+          listMessageIds: recentGmailListing(["message"]),
           listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
           fetchMessage: async () => ({
             id: "message",
@@ -1165,23 +1167,27 @@ describe("generic operation REST contract", () => {
           }),
           modifyMessageLabels: async () => undefined,
         };
-        const threadItemId = await withTransaction(runtime, async (client) => {
+        const mailbox = await withTransaction(runtime, async (client) => {
           const mailbox = await createItemWithClient(client, {
             databaseId: ids.mailboxesDatabaseId,
             properties: { name: "Mailbox", provider: "gmail" },
           });
           await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
-          await reconcileGmailAccount(client, gmail, {
-            mailboxItemId: mailbox.id,
-            emailsDatabaseId: ids.emailsDatabaseId,
-            filesDatabaseId: ids.filesDatabaseId,
-            foldersDatabaseId: ids.foldersDatabaseId,
-            folderRelationPropertyId,
-            attachmentsRelationPropertyId,
-            mailboxFolderRelationPropertyId,
-            storage: new LocalFsBlobStorageWriter(tmpBlobDir),
-            storageKeyPrefix: "threads-contract",
-          });
+          return mailbox;
+        });
+        await reconcileGmailAccount(runtime, gmail, {
+          mailboxItemId: mailbox.id,
+          emailsDatabaseId: ids.emailsDatabaseId,
+          filesDatabaseId: ids.filesDatabaseId,
+          foldersDatabaseId: ids.foldersDatabaseId,
+          folderRelationPropertyId,
+          attachmentsRelationPropertyId,
+          mailboxFolderRelationPropertyId,
+          storage: new LocalFsBlobStorageWriter(tmpBlobDir),
+          storageKeyPrefix: "threads-contract",
+          pass: UNGUARDED_MAIL_SYNC_PASS,
+        });
+        const threadItemId = await withTransaction(runtime, async (client) => {
           const rows = await client.query<{ item_id: string }>(
             "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND item_id IS NOT NULL",
           );

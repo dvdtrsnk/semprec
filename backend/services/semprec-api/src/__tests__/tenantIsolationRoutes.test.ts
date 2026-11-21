@@ -27,7 +27,9 @@ import {
   getTenantZeroId,
   getTestPool,
   reconcileGmailAccount,
+  recentGmailListing,
   resetDatabase,
+  UNGUARDED_MAIL_SYNC_PASS,
   setTenantAiBudget,
   storeCredential,
   stubDnsLookup,
@@ -1375,8 +1377,16 @@ function seedMailThread(
   providerThreadId = "thread",
   attachmentNames: string[] = [],
 ): Promise<string> {
-  return inTenantTransaction(fixture.tenantId, async (client) => {
-    const ids = await resolveMailModuleIds(client);
+  return runInTenant(fixture.tenantId, async () => {
+    const { ids, mailbox } = await withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const mailbox = await createItemWithClient(client, {
+        databaseId: ids.mailboxesDatabaseId,
+        properties: { name: "Mailbox", provider: "gmail" },
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+      return { ids, mailbox };
+    });
     const cp = createChokePoint(pool);
     const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
     const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
@@ -1385,11 +1395,6 @@ function seedMailThread(
       if (!property) throw new Error(`Missing ${key}`);
       return property.id;
     };
-    const mailbox = await createItemWithClient(client, {
-      databaseId: ids.mailboxesDatabaseId,
-      properties: { name: "Mailbox", provider: "gmail" },
-    });
-    await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
       listHistorySince: async () => ({
@@ -1398,7 +1403,7 @@ function seedMailThread(
         changedMessageIds: [],
         removedMessageIds: [],
       }),
-      listAllMessageIds: async () => [providerId],
+      listMessageIds: recentGmailListing([providerId]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({
         id: providerId,
@@ -1419,7 +1424,7 @@ function seedMailThread(
       }),
       modifyMessageLabels: async () => undefined,
     };
-    await reconcileGmailAccount(client, gmail, {
+    await reconcileGmailAccount(pool, gmail, {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: ids.emailsDatabaseId,
       filesDatabaseId: ids.filesDatabaseId,
@@ -1429,10 +1434,12 @@ function seedMailThread(
       mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
       storage: filesStorage,
       storageKeyPrefix: "thread-isolation",
+      pass: UNGUARDED_MAIL_SYNC_PASS,
     });
-    const result = await client.query<{ thread_id: string }>(
-      "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
-      [mailbox.id],
+    const result = await withTransaction(pool, (client) =>
+      client.query<{ thread_id: string }>("SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1", [
+        mailbox.id,
+      ]),
     );
     if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
     return result.rows[0].thread_id;
