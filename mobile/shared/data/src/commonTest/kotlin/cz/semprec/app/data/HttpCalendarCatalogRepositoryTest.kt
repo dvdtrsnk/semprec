@@ -55,21 +55,30 @@ private const val INVITATIONS =
         """{"id":"i4","version":"7","properties":{"title":"Odd","status":"strange"}},{"id":"i5",""" +
         """"version":"7","properties":{"status":"pending"}}]}"""
 
+/** An expanded account target: its title and its addresses, the primary one after a blank entry. */
+private const val ICLOUD =
+    """{"id":"m1","databaseKey":"mailboxes","title":"iCloud","databaseId":"db-mail","metadata":{},""" +
+        """"properties":{"addresses":"\n david@tresnak.cc ,\nd@icloud.com"}}"""
+
 /**
- * Account calendars: one with only the provider's name and colour, one renamed and recoloured here and read-only, one
- * whose account the server did not name and with no colour at all, and one without any name, which is not shown.
- * An own calendar's stray remote fields are ignored.
+ * Account calendars: one with only the provider's name and colour under a named account with addresses, one renamed and
+ * recoloured here and read-only under an account with a blank title and no addresses, one whose account the server
+ * did not name and with no colour at all, one whose account the reader may not read, and one without any name, which
+ * is not shown. An own calendar's stray remote fields and account are ignored.
  */
 private const val ACCOUNT_CALENDARS =
     """{"items":[{"id":"g1","version":"1","properties":{"kind":"account","name":null,"color":null,""" +
-        """"remoteName":"Family","remoteColor":"#0B8043","readOnly":false},"relations":{"account":[{"id":"m1"}]}},""" +
+        """"remoteName":"Family","remoteColor":"#0B8043","readOnly":false},"relations":{"account":[$ICLOUD]}},""" +
         """{"id":"g2","version":"1","properties":{"kind":"account","name":"Holidays","color":"#FF3B30",""" +
-        """"remoteName":"Svátky","remoteColor":"#16A765","readOnly":true},"relations":{"account":[{"id":"m1"}]}},""" +
+        """"remoteName":"Svátky","remoteColor":"#16A765","readOnly":true},"relations":{"account":[{"id":"m2",""" +
+        """"title":" ","properties":{"addresses":null}}]}},""" +
+        """{"id":"g5","version":"1","properties":{"kind":"account","remoteName":"Hidden"},""" +
+        """"relations":{"account":[{"id":"m3","hidden":true}]}},""" +
         """{"id":"g3","version":"1","properties":{"kind":"account","remoteName":"Work"},""" +
         """"relations":{"account":[]}},""" +
         """{"id":"g4","version":"1","properties":{"kind":"account","remoteColor":"#0B8043"}},""" +
         """{"id":"own","version":"1","properties":{"name":"Mine","color":"#007AFF","remoteName":"x",""" +
-        """"readOnly":true},"relations":{"account":[]}}]}"""
+        """"readOnly":true},"relations":{"account":[$ICLOUD]}}]}"""
 
 class HttpCalendarCatalogRepositoryTest {
     private val requests = mutableListOf<HttpRequestData>()
@@ -100,6 +109,8 @@ class HttpCalendarCatalogRepositoryTest {
             else -> json("""{"id":"c9","version":"9","properties":{}}""")
         }
 
+    private fun CalendarInfo.account() = listOf(accountId, accountName, accountAddress)
+
     private fun sent(index: Int): JsonObject = Json.parseToJsonElement(bodies[index]).jsonObject
 
     private fun info(kind: CalendarKind = CalendarKind.OWN) =
@@ -119,7 +130,7 @@ class HttpCalendarCatalogRepositoryTest {
         HttpCalendarCatalogRepository(api(), changes).calendars()
         val query = requests.indexOfFirst { it.url.encodedPath == "/api/databases/db-cal/query" }
         assertEquals(
-            Json.parseToJsonElement("""{"include":{"relations":{"account":[]}}}"""),
+            Json.parseToJsonElement("""{"include":{"relations":{"account":["addresses"]}}}"""),
             Json.parseToJsonElement(bodies[query]),
         )
     }
@@ -130,7 +141,7 @@ class HttpCalendarCatalogRepositoryTest {
         }
         val result = HttpCalendarCatalogRepository(api(), changes).calendars()
         val calendars = assertIs<RepositoryResult.Content<List<CalendarInfo>>>(result).value.associateBy { it.id }
-        assertEquals(setOf("g1", "g2", "g3", "own"), calendars.keys)
+        assertEquals(setOf("g1", "g2", "g3", "g5", "own"), calendars.keys)
 
         val remote = calendars.getValue("g1")
         assertEquals(CalendarKind.ACCOUNT, remote.kind)
@@ -138,6 +149,7 @@ class HttpCalendarCatalogRepositoryTest {
         assertEquals("Family" to "#0B8043", remote.name to remote.color)
         assertEquals(true, remote.usesRemoteColor)
         assertEquals(false, remote.readOnly)
+        assertEquals("iCloud" to "david@tresnak.cc", remote.accountName to remote.accountAddress)
 
         // Recoloured and renamed here: the next sync changes only the provider's values, which stay apart.
         val recoloured = calendars.getValue("g2")
@@ -145,15 +157,19 @@ class HttpCalendarCatalogRepositoryTest {
         assertEquals("Svátky" to "#16A765", recoloured.remoteName to recoloured.remoteColor)
         assertEquals(false, recoloured.usesRemoteColor)
         assertEquals(true, recoloured.readOnly)
+        assertEquals(listOf("m2", null, null), recoloured.account())
+
+        assertEquals(listOf("m3", null, null), calendars.getValue("g5").account())
 
         val colourless = calendars.getValue("g3")
         assertEquals("#8E8E93", colourless.color)
-        assertEquals(null, colourless.accountId)
+        assertEquals(listOf(null, null, null), colourless.account())
 
         val own = calendars.getValue("own")
         assertEquals(CalendarKind.OWN, own.kind)
-        val accountFields = listOf(own.accountId, own.remoteName, own.remoteColor, own.readOnly)
-        assertEquals(listOf(null, null, null, false), accountFields)
+        assertEquals(listOf(null, null, null), own.account())
+        val accountFields = listOf(own.remoteName, own.remoteColor, own.readOnly)
+        assertEquals(listOf(null, null, false), accountFields)
     }
 
     @Test fun `going back to the provider colour clears the colour set here`() = runTest {

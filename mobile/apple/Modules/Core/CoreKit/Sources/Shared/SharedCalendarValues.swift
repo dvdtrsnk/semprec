@@ -320,10 +320,46 @@ extension NewItemKind {
     }
 }
 
+// MARK: - NewItemCalendarGroup
+extension NewItemCalendarGroup {
+
+    init(_ group: SharedSDK.NewItemCalendarGroup) {
+        self.init(account: group.account.map(NewItemAccount.init), calendars: group.calendars.map(NewItemCalendar.init))
+    }
+}
+
+// MARK: - NewItemAccount
+extension NewItemAccount {
+
+    init(_ account: SharedSDK.NewItemAccount) {
+        self.init(id: account.id, name: account.name, address: account.address)
+    }
+}
+
 // MARK: - NewItemCalendar
 extension NewItemCalendar {
 
     init(_ calendar: SharedSDK.NewItemCalendar) {
-        self.init(id: calendar.id, name: calendar.name, color: calendar.color, isDefault: calendar.isDefault)
+        self.init(
+            id: calendar.id,
+            name: calendar.name,
+            color: calendar.color,
+            isDefault: calendar.isDefault,
+            account: calendar.account.map(NewItemAccount.init),
+            qualifier: NewItemCalendarQualifier(calendar.qualifier)
+        )
+    }
+}
+
+// MARK: - NewItemCalendarQualifier
+extension NewItemCalendarQualifier {
+
+    init(_ qualifier: SharedSDK.NewItemCalendarQualifier) {
+        switch qualifier {
+        case .none: self = .unqualified
+        case .own: self = .own
+        case .accountName: self = .accountName
+        case .accountAddress: self = .accountAddress
+        }
     }
 }

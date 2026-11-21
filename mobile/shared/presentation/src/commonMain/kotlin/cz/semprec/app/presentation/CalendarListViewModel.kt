@@ -244,6 +244,7 @@ private fun sectionsOf(calendars: List<CalendarInfo>, known: List<InternetAccoun
             name = account?.mailbox?.name,
             provider = account?.mailbox?.provider,
             status = account?.calendarService(),
+            address = account?.mailbox?.primaryAddress,
         )
     }
 }

@@ -6,6 +6,7 @@ import cz.semprec.app.domain.CalendarCatalogRepository
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarInfo
+import cz.semprec.app.domain.CalendarKind
 import cz.semprec.app.domain.CalendarRepeat
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.ClockTime
@@ -28,21 +29,48 @@ enum class NewItemKind { EVENT, TASK }
  */
 enum class NewItemRepeat { NEVER, DAILY, WEEKDAYS, WEEKLY, MONTHLY, YEARLY }
 
-/** A calendar a new event can be put on. */
-data class NewItemCalendar(val id: String, val name: String, val color: String, val isDefault: Boolean)
+/**
+ * What a calendar's name is shown with when another calendar offered has the same name: nothing ([NONE]), the own
+ * calendars' title ([OWN]), its account's name ([ACCOUNT_NAME]) or, when that name is missing or another account has
+ * it too, its account's address ([ACCOUNT_ADDRESS]).
+ */
+enum class NewItemCalendarQualifier { NONE, OWN, ACCOUNT_NAME, ACCOUNT_ADDRESS }
 
 /**
- * The new item sheet. [calendars] are the calendars a new event can be put on: the own ones and the writable ones of
- * internet accounts. [defaultDay] is the day the sheet was opened for.
+ * The internet account calendars are synced from, with its name and primary address when the server gave them. The
+ * calendars whose account the server did not name share one with an empty [id].
+ */
+data class NewItemAccount(val id: String, val name: String?, val address: String?)
+
+/** A calendar a new event can be put on; [account] is `null` for an own calendar. */
+data class NewItemCalendar(
+    val id: String,
+    val name: String,
+    val color: String,
+    val isDefault: Boolean,
+    val account: NewItemAccount? = null,
+    val qualifier: NewItemCalendarQualifier = NewItemCalendarQualifier.NONE,
+)
+
+/** The calendars of one source: the own ones when [account] is `null`, else those of one internet account. */
+data class NewItemCalendarGroup(val account: NewItemAccount?, val calendars: List<NewItemCalendar>)
+
+/**
+ * The new item sheet. [groups] are the calendars a new event can be put on, by where they come from: the own ones
+ * first, then the writable ones of each internet account in the order the list names them; no group is empty.
+ * [calendars] are the same calendars in one list. [defaultDay] is the day the sheet was opened for.
  * [failure] explains [NewItemPhase.FAILED]: [FailureKind.REJECTED] is a form the server or the rules refused (no
  * title, an end before the start).
  */
 data class NewItemState(
     val phase: NewItemPhase,
     val failure: FailureKind?,
-    val calendars: List<NewItemCalendar>,
+    val groups: List<NewItemCalendarGroup>,
     val defaultDay: String,
-)
+) {
+    val calendars: List<NewItemCalendar>
+        get() = groups.flatMap { it.calendars }
+}
 
 sealed interface NewItemAction {
     /**
@@ -117,7 +145,7 @@ class NewCalendarItemViewModel internal constructor(
                 when (result) {
                     is RepositoryResult.Content -> it.copy(
                         phase = NewItemPhase.EDITING,
-                        calendars = result.value.filter { it.takesNewEvents }.map { it.toChoice() },
+                        groups = newItemGroups(result.value.filter { it.takesNewEvents }),
                     )
                     // The form still works without the list: the server puts the event on the default calendar.
                     is RepositoryResult.Failure -> it.copy(phase = NewItemPhase.EDITING)
@@ -147,7 +175,36 @@ class NewCalendarItemViewModel internal constructor(
     }
 }
 
-private fun CalendarInfo.toChoice() = NewItemCalendar(id, name, color, isDefault)
+/**
+ * The calendars in their groups: the own ones, then one group per account in the order its first calendar is listed.
+ * A calendar whose name another one has too is given the qualifier that tells them apart.
+ */
+private fun newItemGroups(calendars: List<CalendarInfo>): List<NewItemCalendarGroup> {
+    val accounts = calendars.filter { it.kind == CalendarKind.ACCOUNT }
+        .map { NewItemAccount(it.accountId.orEmpty(), it.accountName, it.accountAddress) }
+        .distinctBy { it.id }
+    val sharedNames = accounts.mapNotNull { it.name?.comparable() }.groupingBy { it }.eachCount()
+        .filterValues { it > 1 }.keys
+    val repeatedNames = calendars.groupingBy { it.name.comparable() }.eachCount().filterValues { it > 1 }.keys
+    fun choice(calendar: CalendarInfo, account: NewItemAccount?): NewItemCalendar {
+        val qualifier = when {
+            calendar.name.comparable() !in repeatedNames -> NewItemCalendarQualifier.NONE
+            account == null -> NewItemCalendarQualifier.OWN
+            account.address != null && (account.name == null || account.name.comparable() in sharedNames) ->
+                NewItemCalendarQualifier.ACCOUNT_ADDRESS
+            else -> NewItemCalendarQualifier.ACCOUNT_NAME
+        }
+        return NewItemCalendar(calendar.id, calendar.name, calendar.color, calendar.isDefault, account, qualifier)
+    }
+    val own = calendars.filter { it.kind != CalendarKind.ACCOUNT }.map { choice(it, null) }
+    val byAccount = accounts.map { account ->
+        val members = calendars.filter { it.kind == CalendarKind.ACCOUNT && it.accountId.orEmpty() == account.id }
+        NewItemCalendarGroup(account, members.map { choice(it, account) })
+    }
+    return listOfNotNull(NewItemCalendarGroup(null, own).takeIf { own.isNotEmpty() }) + byAccount
+}
+
+private fun String.comparable(): String = trim().lowercase()
 
 /** The item the form describes, or `null` for a schedule that cannot be one. */
 private fun NewItemAction.Create.toDraft(): NewCalendarItem? {

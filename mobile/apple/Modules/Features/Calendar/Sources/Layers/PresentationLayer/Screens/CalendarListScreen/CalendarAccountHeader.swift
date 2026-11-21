@@ -2,8 +2,8 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The header of an internet account's calendars: the provider's badge, the account's name and how its calendar sync
-/// is doing.
+/// The header of an internet account's calendars: the provider's badge, the account's name, its address and how its
+/// calendar sync is doing.
 struct CalendarAccountHeader: View {
 
     // MARK: - Dependencies
@@ -15,6 +15,12 @@ struct CalendarAccountHeader: View {
             InternetAccountProviderBadge(provider: account.provider, size: Self.badgeSize)
             VStack(alignment: .leading, spacing: 0) {
                 Text(name)
+                if let address = account.address {
+                    Text(verbatim: address)
+                        .font(.caption)
+                        .textCase(nil)
+                        .foregroundStyle(Theme.Colors.secondaryText)
+                }
                 if let status = account.status {
                     Text(status.calendarsText)
                         .font(.caption)
@@ -45,7 +51,9 @@ private extension CalendarAccountHeader {
             Text(verbatim: "Rodina")
         } header: {
             CalendarAccountHeader(
-                account: CalendarAccountSection(id: "m1", name: "Gmail", provider: "gmail", status: .ok)
+                account: CalendarAccountSection(
+                    id: "m1", name: "Gmail", provider: "gmail", status: .ok, address: "david@gmail.com"
+                )
             )
         }
         Section {

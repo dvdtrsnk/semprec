@@ -142,31 +142,86 @@ public enum NewItemKind: Equatable, Sendable {
     case task
 }
 
-/// A calendar a new event can be put on.
+/// What a calendar's name is shown with when another calendar offered has the same name: nothing (`unqualified`),
+/// the own calendars' title (`own`), its account's name (`accountName`) or, when that name is missing or another
+/// account has it too, its account's address (`accountAddress`).
+public enum NewItemCalendarQualifier: Equatable, Sendable {
+
+    case unqualified
+    case own
+    case accountName
+    case accountAddress
+}
+
+/// The internet account calendars are synced from, with its name and primary address when the server gave them. The
+/// calendars whose account the server did not name share one with an empty `id`.
+public struct NewItemAccount: Equatable, Sendable {
+
+    public let id: String
+    public let name: String?
+    public let address: String?
+
+    public init(id: String, name: String? = nil, address: String? = nil) {
+        self.id = id
+        self.name = name
+        self.address = address
+    }
+}
+
+/// A calendar a new event can be put on; `account` is `nil` for an own calendar.
 public struct NewItemCalendar: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let name: String
     public let color: String
     public let isDefault: Bool
+    public let account: NewItemAccount?
+    public let qualifier: NewItemCalendarQualifier
 
-    public init(id: String, name: String, color: String, isDefault: Bool = false) {
+    public init(
+        id: String,
+        name: String,
+        color: String,
+        isDefault: Bool = false,
+        account: NewItemAccount? = nil,
+        qualifier: NewItemCalendarQualifier = .unqualified
+    ) {
         self.id = id
         self.name = name
         self.color = color
         self.isDefault = isDefault
+        self.account = account
+        self.qualifier = qualifier
     }
 }
 
+/// The calendars of one source: the own ones when `account` is `nil`, else those of one internet account.
+public struct NewItemCalendarGroup: Equatable, Sendable {
+
+    public let account: NewItemAccount?
+    public let calendars: [NewItemCalendar]
+
+    public init(account: NewItemAccount? = nil, calendars: [NewItemCalendar]) {
+        self.account = account
+        self.calendars = calendars
+    }
+}
+
+/// The new item sheet. `groups` are the calendars a new event can be put on, by where they come from: the own ones
+/// first, then those of each internet account; no group is empty. `calendars` are the same calendars in one list.
 public struct NewItemState: Equatable, Sendable {
 
     public var phase: NewItemPhase
-    public var calendars: [NewItemCalendar]
+    public var groups: [NewItemCalendarGroup]
     public var defaultDay: String
 
-    public init(phase: NewItemPhase, calendars: [NewItemCalendar] = [], defaultDay: String) {
+    public var calendars: [NewItemCalendar] {
+        groups.flatMap(\.calendars)
+    }
+
+    public init(phase: NewItemPhase, groups: [NewItemCalendarGroup] = [], defaultDay: String) {
         self.phase = phase
-        self.calendars = calendars
+        self.groups = groups
         self.defaultDay = defaultDay
     }
 }

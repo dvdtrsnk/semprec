@@ -67,6 +67,69 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `the own calendars come first then each account's in the order they are listed`() = runTest(dispatcher) {
+        catalog.calendars += listOf(
+            synced("g1", "m1", "Family", "iCloud", "david@tresnak.cc"),
+            synced("o1", "m2", "Team", "Outlook", "david@work.cz"),
+            synced("g2", "m1", "Timelog", "iCloud", "david@tresnak.cc"),
+            synced("x1", null, "Shared", null, null),
+        )
+        val state = loaded().also { it.close() }.state.value
+        val icloud = NewItemAccount("m1", "iCloud", "david@tresnak.cc")
+        assertEquals(
+            listOf(null, icloud, NewItemAccount("m2", "Outlook", "david@work.cz"), NewItemAccount("", null, null)),
+            state.groups.map { it.account },
+        )
+        assertEquals(
+            listOf(listOf("personal", "work"), listOf("g1", "g2"), listOf("o1"), listOf("x1")),
+            state.groups.map { group -> group.calendars.map { it.id } },
+        )
+        assertEquals(listOf(icloud, icloud), state.groups[1].calendars.map { it.account })
+        assertEquals(listOf("personal", "work", "g1", "g2", "o1", "x1"), state.calendars.map { it.id })
+    }
+
+    @Test fun `read-only system and subscribed calendars are not offered and leave no empty group`() =
+        runTest(dispatcher) {
+            catalog.calendars += listOf(
+                synced("g1", "m1", "Holidays", "iCloud", "a@icloud.com", readOnly = true),
+                synced("o1", "m2", "Team", "Outlook", "b@work.cz"),
+            )
+            val state = loaded().also { it.close() }.state.value
+            assertEquals(listOf(null, "m2"), state.groups.map { it.account?.id })
+            assertEquals(listOf("personal", "work", "o1"), state.calendars.map { it.id })
+        }
+
+    @Test fun `a name another offered calendar has too is shown with its source`() = runTest(dispatcher) {
+        catalog.calendars = listOf(
+            own("own-personal", "Osobní"),
+            own("own-family", "Rodina"),
+            own("own-work", "Práce"),
+            synced("g1", "m1", " osobní ", "iCloud", "david@tresnak.cc"),
+            synced("g2", "m1", "Rodina", "iCloud", "david@tresnak.cc"),
+            synced("g3", "m1", "Work", "iCloud", "david@tresnak.cc"),
+            synced("g4", "m2", "Rodina", "Family", "family@icloud.com"),
+            synced("g5", "m3", "Rodina", "Family", "anna@icloud.com"),
+            synced("g6", "m4", "Rodina", null, "shared@example.com"),
+            synced("g7", "m5", "Rodina", null, null),
+        )
+        val qualifiers = loaded().also { it.close() }.state.value.calendars.associate { it.id to it.qualifier }
+        assertEquals(
+            mapOf(
+                "own-personal" to NewItemCalendarQualifier.OWN,
+                "own-family" to NewItemCalendarQualifier.OWN,
+                "own-work" to NewItemCalendarQualifier.NONE,
+                "g1" to NewItemCalendarQualifier.ACCOUNT_NAME,
+                "g2" to NewItemCalendarQualifier.ACCOUNT_NAME,
+                "g3" to NewItemCalendarQualifier.NONE,
+                "g4" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g5" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g6" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g7" to NewItemCalendarQualifier.ACCOUNT_NAME,
+            ),
+            qualifiers,
+        )
+    }
+
     @Test fun `the form works when the calendars cannot be read`() = runTest(dispatcher) {
         catalog.listResult = unavailable
         val vm = loaded()
@@ -168,4 +231,15 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertTrue(repository.calls.none { it.startsWith("create") })
     }
+
+    private fun own(id: String, name: String) = calendarInfo(id).copy(name = name)
+
+    private fun synced(
+        id: String,
+        accountId: String?,
+        name: String,
+        accountName: String?,
+        address: String?,
+        readOnly: Boolean = false,
+    ) = accountCalendar(id, accountId, readOnly).copy(name = name, accountName = accountName, accountAddress = address)
 }

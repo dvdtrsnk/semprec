@@ -17,7 +17,8 @@ import kotlinx.serialization.json.contentOrNull
 /**
  * A calendar from its stored item. A calendar of an internet account may leave its name and colour empty, which means
  * the provider's; any other calendar without a name or colour is not one the app can show, nor is an account calendar
- * without any name. The account is the first target of the expanded `account` relation.
+ * without any name. The account is the first target of the expanded `account` relation, named by its title and the
+ * first of its addresses.
  */
 internal fun CalendarStoredItem.toCalendar(): CalendarInfo? {
     val system = properties.calendarText("systemKey")
@@ -34,6 +35,7 @@ internal fun CalendarStoredItem.toCalendar(): CalendarInfo? {
     val name = properties.calendarText("name") ?: remoteName.takeIf { isAccount }
     val color = ownColor ?: (remoteColor ?: ACCOUNT_FALLBACK_COLOR).takeIf { isAccount }
     if (name == null || color == null) return null
+    val account = relations[ACCOUNT_RELATION]?.firstOrNull()?.takeIf { isAccount }
     return CalendarInfo(
         id = id,
         name = name,
@@ -44,7 +46,9 @@ internal fun CalendarStoredItem.toCalendar(): CalendarInfo? {
         kind = kind,
         systemKey = system,
         version = version,
-        accountId = relations[ACCOUNT_RELATION]?.firstOrNull()?.id.takeIf { isAccount },
+        accountId = account?.id,
+        accountName = account?.title?.takeIf { it.isNotBlank() },
+        accountAddress = account?.properties?.calendarText(ACCOUNT_ADDRESSES)?.firstAddress(),
         readOnly = isAccount && properties.calendarFlag("readOnly"),
         remoteName = remoteName.takeIf { isAccount },
         remoteColor = remoteColor.takeIf { isAccount },
@@ -54,6 +58,13 @@ internal fun CalendarStoredItem.toCalendar(): CalendarInfo? {
 
 /** The relation of the Calendars database that names the internet account a synced calendar belongs to. */
 internal const val ACCOUNT_RELATION = "account"
+
+/** The property of a Mailboxes item that lists its addresses, the primary one first. */
+internal const val ACCOUNT_ADDRESSES = "addresses"
+
+/** The first address of a Mailboxes `addresses` value, whose entries are separated by new lines or commas. */
+private fun String.firstAddress(): String? =
+    split('\n', '\r', ',').map { it.trim() }.firstOrNull { it.isNotEmpty() }
 
 /** The colour of an account calendar for which neither the person nor the provider chose one. */
 private const val ACCOUNT_FALLBACK_COLOR = "#8E8E93"

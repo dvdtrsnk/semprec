@@ -33,7 +33,8 @@ extension CalendarAccountSection {
             id: section.id,
             name: section.name,
             provider: section.provider,
-            status: section.status.map(InternetServiceStatus.init)
+            status: section.status.map(InternetServiceStatus.init),
+            address: section.address
         )
     }
 }

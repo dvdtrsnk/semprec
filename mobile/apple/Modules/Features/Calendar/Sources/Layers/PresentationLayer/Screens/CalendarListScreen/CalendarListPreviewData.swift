@@ -57,7 +57,11 @@ extension CalendarListState {
         return CalendarListState(
             phase: .content,
             calendars: Array(previewCalendars.prefix(2)) + accountCalendars,
-            accounts: [CalendarAccountSection(id: "m1", name: "david@gmail.com", provider: "gmail", status: .ok)],
+            accounts: [
+                CalendarAccountSection(
+                    id: "m1", name: "Gmail", provider: "gmail", status: .ok, address: "david@gmail.com"
+                )
+            ],
             swatches: previewSwatches
         )
     }

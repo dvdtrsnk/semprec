@@ -10,7 +10,8 @@ struct NewItemFormView: View {
 
     // MARK: - Dependencies
     @Binding var form: NewItemForm
-    let calendars: [NewItemCalendar]
+    /// The calendars a new event can be put on, by where they come from.
+    let groups: [NewItemCalendarGroup]
     /// The message of a failed save, shown above the fields.
     let failure: String?
 
@@ -116,28 +117,58 @@ private extension NewItemFormView {
         }
     }
 
+    var calendars: [NewItemCalendar] {
+        groups.flatMap(\.calendars)
+    }
+
+    /// A menu with a section per source, the own calendars first, each calendar with its colour; the row shows the
+    /// chosen one's colour and name, and its source when another calendar has the same name.
     var calendarRow: some View {
         NewItemRow(systemImage: "calendar", key: "newItem.calendar") {
-            HStack(spacing: 6) {
-                Circle().fill(chosenColor).frame(width: 12, height: 12)
+            Menu {
                 Picker(selection: calendar) {
-                    ForEach(calendars) { choice in
-                        Text(choice.name).tag(choice.id)
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                        Section(NewItemOptions.title(of: group)) {
+                            ForEach(group.calendars) { choice in
+                                Label {
+                                    Text(choice.name)
+                                } icon: {
+                                    dot(choice.color)
+                                }
+                                .tag(choice.id)
+                            }
+                        }
                     }
                 } label: {
                     Text("newItem.calendar", tableName: "Sheets", bundle: .module)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .tint(.secondary)
+                .pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(chosenColor).frame(width: 12, height: 12)
+                    Text(chosen.map(NewItemOptions.label(of:)) ?? "")
+                    Image(systemName: "chevron.up.chevron.down").font(.footnote.weight(.semibold))
+                }
+                .foregroundStyle(.secondary)
             }
+            .tint(.secondary)
         }
         .accessibilityIdentifier(CalendarSheetIdentifiers.newItemCalendar)
     }
 
+    var chosen: NewItemCalendar? {
+        calendars.first { $0.id == calendar.wrappedValue }
+    }
+
     var chosenColor: Color {
-        let chosen = calendars.first { $0.id == calendar.wrappedValue }
-        return chosen.flatMap { Color(hex: $0.color) } ?? Theme.Colors.accent
+        chosen.flatMap { Color(hex: $0.color) } ?? Theme.Colors.accent
+    }
+
+    /// A calendar's colour as a menu shows it: the palette mode keeps the colour a menu would otherwise drop.
+    func dot(_ hex: String) -> some View {
+        Image(systemName: "circle.fill")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(Color(hex: hex) ?? Theme.Colors.accent)
     }
 
     /// The chosen calendar; until the person picks one, the default calendar (or the first) shows as chosen.
@@ -230,7 +261,7 @@ private extension NewItemFormView {
 #Preview("Event") {
     @Previewable @State var form = NewItemForm(day: "2026-10-16")
     NavigationStack {
-        NewItemFormView(form: $form, calendars: NewItemState.preview.calendars, failure: nil)
+        NewItemFormView(form: $form, groups: NewItemState.preview.groups, failure: nil)
     }
 }
 
@@ -241,6 +272,6 @@ private extension NewItemFormView {
         return form
     }()
     NavigationStack {
-        NewItemFormView(form: $form, calendars: [], failure: nil)
+        NewItemFormView(form: $form, groups: [], failure: nil)
     }
 }

@@ -22,8 +22,9 @@ class CalendarChanges {
  * A calendar of the tenant: the container of events, or one Semprec fills itself (tasks, birthdays, sleep). [version]
  * is the token an edit sends as `ifVersion`.
  *
- * A calendar of an internet account ([CalendarKind.ACCOUNT]) belongs to [accountId] and carries the name and colour
- * the provider gives it ([remoteName], [remoteColor]). [name] and [color] are what the person set here, or the
+ * A calendar of an internet account ([CalendarKind.ACCOUNT]) belongs to [accountId], whose name and primary address
+ * are [accountName] and [accountAddress] when the server gave them, and carries the name and colour the provider gives
+ * it ([remoteName], [remoteColor]). [name] and [color] are what the person set here, or the
  * provider's when nothing was set; [usesRemoteColor] says the colour is the provider's. A [readOnly] calendar takes no
  * new events.
  */
@@ -38,6 +39,8 @@ data class CalendarInfo(
     val systemKey: String?,
     val version: String,
     val accountId: String? = null,
+    val accountName: String? = null,
+    val accountAddress: String? = null,
     val readOnly: Boolean = false,
     val remoteName: String? = null,
     val remoteColor: String? = null,

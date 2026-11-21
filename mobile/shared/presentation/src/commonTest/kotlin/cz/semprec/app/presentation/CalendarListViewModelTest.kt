@@ -72,7 +72,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `account calendars are shown under their account with its provider and status`() = runTest(dispatcher) {
+    @Test fun `account calendars are shown under their account and its address`() = runTest(dispatcher) {
         catalog.calendars += listOf(
             accountCalendar("g1", "m1"),
             accountCalendar("o1", "m2", readOnly = true),
@@ -83,8 +83,8 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         val state = loaded().also { it.close() }.state.value
         assertEquals(
             listOf(
-                CalendarAccountSection("m2", "Gmail", "outlook", InternetServiceStatus.PENDING),
-                CalendarAccountSection("m1", "Gmail", "gmail", InternetServiceStatus.OK),
+                CalendarAccountSection("m2", "Gmail", "outlook", InternetServiceStatus.PENDING, "me@gmail.com"),
+                CalendarAccountSection("m1", "Gmail", "gmail", InternetServiceStatus.OK, "me@gmail.com"),
                 CalendarAccountSection("", null, null, null),
                 CalendarAccountSection("m9", null, null, null),
             ),

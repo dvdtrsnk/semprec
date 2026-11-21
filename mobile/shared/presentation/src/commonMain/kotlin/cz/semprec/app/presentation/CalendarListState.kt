@@ -35,15 +35,16 @@ data class CalendarRow(
 )
 
 /**
- * An internet account whose calendars the list shows, in the order of the sections. [name] and [provider] (`gmail`,
- * `outlook`, `icloud`, `imap`) are `null` when the accounts could not be read or the account is not among them;
- * [status] is then `null` too.
+ * An internet account whose calendars the list shows, in the order of the sections. [name], [provider] (`gmail`,
+ * `outlook`, `icloud`, `imap`) and the primary [address] are `null` when the accounts could not be read or the account
+ * is not among them; [status] is then `null` too. An account without an address has a `null` [address] as well.
  */
 data class CalendarAccountSection(
     val id: String,
     val name: String?,
     val provider: String?,
     val status: InternetServiceStatus?,
+    val address: String? = null,
 )
 
 /** What deleting a calendar would cancel; shown before the delete is confirmed. */

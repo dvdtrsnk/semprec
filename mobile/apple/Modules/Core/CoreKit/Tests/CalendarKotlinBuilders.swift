@@ -110,8 +110,10 @@ enum CalendarKotlin {
             failure: failure,
             calendars: [row()],
             accounts: [
-                SharedSDK.CalendarAccountSection(id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent),
-                SharedSDK.CalendarAccountSection(id: "", name: nil, provider: nil, status: nil)
+                SharedSDK.CalendarAccountSection(
+                    id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent, address: "me@gmail.com"
+                ),
+                SharedSDK.CalendarAccountSection(id: "", name: nil, provider: nil, status: nil, address: nil)
             ],
             swatches: [SharedSDK.CalendarSwatch(key: "red", hex: "#FF3B30")],
             detailId: "c1",
@@ -152,8 +154,40 @@ enum CalendarKotlin {
         SharedSDK.NewItemState(
             phase: phase,
             failure: failure,
-            calendars: [SharedSDK.NewItemCalendar(id: "c1", name: "Work", color: "#007AFF", isDefault: true)],
+            groups: [
+                SharedSDK.NewItemCalendarGroup(
+                    account: nil,
+                    calendars: [
+                        SharedSDK.NewItemCalendar(
+                            id: "c1", name: "Osobní", color: "#007AFF", isDefault: true, account: nil, qualifier: .own
+                        )
+                    ]
+                ),
+                SharedSDK.NewItemCalendarGroup(
+                    account: icloud,
+                    calendars: [
+                        SharedSDK.NewItemCalendar(
+                            id: "g1", name: "Osobní", color: "#0B8043", isDefault: false, account: icloud,
+                            qualifier: .accountName
+                        ),
+                        SharedSDK.NewItemCalendar(
+                            id: "g2", name: "Rodina", color: "#16A765", isDefault: false, account: icloud,
+                            qualifier: .accountAddress
+                        ),
+                        SharedSDK.NewItemCalendar(
+                            id: "g3", name: "Work", color: "#16A765", isDefault: false, account: icloud,
+                            qualifier: .none
+                        )
+                    ]
+                ),
+                SharedSDK.NewItemCalendarGroup(
+                    account: SharedSDK.NewItemAccount(id: "", name: nil, address: nil),
+                    calendars: []
+                )
+            ],
             defaultDay: "2026-10-17"
         )
     }
+
+    static let icloud = SharedSDK.NewItemAccount(id: "m1", name: "iCloud", address: "david@tresnak.cc")
 }

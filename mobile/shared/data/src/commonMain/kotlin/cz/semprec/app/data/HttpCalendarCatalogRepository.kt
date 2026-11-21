@@ -13,8 +13,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
-/** The calendars query, with the internet account of each synced calendar. */
-private const val CALENDARS_WITH_ACCOUNT = """{"include":{"relations":{"$ACCOUNT_RELATION":[]}}}"""
+/** The calendars query, with the internet account of each synced calendar, its name and its addresses. */
+private const val CALENDARS_WITH_ACCOUNT =
+    """{"include":{"relations":{"$ACCOUNT_RELATION":["$ACCOUNT_ADDRESSES"]}}}"""
 
 /**
  * The calendars of the tenant through the item routes of the Calendars database: a calendar is hidden, renamed,

@@ -31,7 +31,9 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
         XCTAssertEqual(
             state.accounts,
             [
-                CoreKit.CalendarAccountSection(id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent),
+                CoreKit.CalendarAccountSection(
+                    id: "m1", name: "Gmail", provider: "gmail", status: .needsConsent, address: "me@gmail.com"
+                ),
                 CoreKit.CalendarAccountSection(id: "")
             ]
         )
@@ -187,12 +189,37 @@ final class SharedCalendarSheetMappingTests: XCTestCase {
         XCTAssertEqual(Model.state(CalendarKotlin.newItemState(.failed)).phase, .failed(nil))
     }
 
-    func testNewItemMapsTheCalendarsAndTheDay() {
+    func testNewItemMapsTheGroupsTheirAccountsEveryQualifierAndTheDay() {
         let state = SharedNewItemScreenModel.state(CalendarKotlin.newItemState(.editing))
+        let icloud = CoreKit.NewItemAccount(id: "m1", name: "iCloud", address: "david@tresnak.cc")
         XCTAssertEqual(
-            state.calendars,
-            [CoreKit.NewItemCalendar(id: "c1", name: "Work", color: "#007AFF", isDefault: true)]
+            state.groups,
+            [
+                CoreKit.NewItemCalendarGroup(
+                    calendars: [
+                        CoreKit.NewItemCalendar(
+                            id: "c1", name: "Osobní", color: "#007AFF", isDefault: true, qualifier: .own
+                        )
+                    ]
+                ),
+                CoreKit.NewItemCalendarGroup(
+                    account: icloud,
+                    calendars: [
+                        CoreKit.NewItemCalendar(
+                            id: "g1", name: "Osobní", color: "#0B8043", account: icloud, qualifier: .accountName
+                        ),
+                        CoreKit.NewItemCalendar(
+                            id: "g2", name: "Rodina", color: "#16A765", account: icloud, qualifier: .accountAddress
+                        ),
+                        CoreKit.NewItemCalendar(
+                            id: "g3", name: "Work", color: "#16A765", account: icloud, qualifier: .unqualified
+                        )
+                    ]
+                ),
+                CoreKit.NewItemCalendarGroup(account: CoreKit.NewItemAccount(id: ""), calendars: [])
+            ]
         )
+        XCTAssertEqual(state.calendars.map(\.id), ["c1", "g1", "g2", "g3"])
         XCTAssertEqual(state.defaultDay, "2026-10-17")
     }
 

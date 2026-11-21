@@ -90,21 +90,29 @@ public struct CalendarRow: Equatable, Sendable, Identifiable {
     }
 }
 
-/// An internet account whose calendars the list shows, in the order of the sections. `name` and `provider` (`gmail`,
-/// `outlook`, `icloud`, `imap`) are `nil` when the accounts could not be read or the account is not among them;
-/// `status` is then `nil` too.
+/// An internet account whose calendars the list shows, in the order of the sections. `name`, `provider` (`gmail`,
+/// `outlook`, `icloud`, `imap`) and the primary `address` are `nil` when the accounts could not be read or the account
+/// is not among them; `status` is then `nil` too. An account without an address has a `nil` `address` as well.
 public struct CalendarAccountSection: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let name: String?
     public let provider: String?
     public let status: InternetServiceStatus?
+    public let address: String?
 
-    public init(id: String, name: String? = nil, provider: String? = nil, status: InternetServiceStatus? = nil) {
+    public init(
+        id: String,
+        name: String? = nil,
+        provider: String? = nil,
+        status: InternetServiceStatus? = nil,
+        address: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.provider = provider
         self.status = status
+        self.address = address
     }
 }
 

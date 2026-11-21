@@ -51,7 +51,7 @@ private extension NewItemScreen {
         if state.phase == .loading {
             StatusView(.loading)
         } else {
-            NewItemFormView(form: $form, calendars: state.calendars, failure: failure)
+            NewItemFormView(form: $form, groups: state.groups, failure: failure)
                 .disabled(saving)
         }
     }
@@ -123,7 +123,7 @@ private extension NewItemScreen {
             viewModel: NewItemViewModel(
                 model: ScriptedNewItemScreenModel(
                     state: NewItemState(
-                        phase: .failed(.rejected), calendars: NewItemState.preview.calendars, defaultDay: "2026-10-16"
+                        phase: .failed(.rejected), groups: NewItemState.preview.groups, defaultDay: "2026-10-16"
                     )
                 )
             )
