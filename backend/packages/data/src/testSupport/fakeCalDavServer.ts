@@ -72,6 +72,8 @@ export class FakeCalDavServer {
   eventFilterNeedsTimeRange = false;
   /** Answers the next PUT or DELETE with 412, as a server whose resource changed after the client read it. */
   refuseNextWrite = false;
+  /** Delay before each request is answered, standing in for one network round trip. */
+  latencyMs = 0;
   private readonly calendars = new Map<string, StoredCalendar>();
   private etagCounter = 0;
   private server: Server | null = null;
@@ -93,16 +95,27 @@ export class FakeCalDavServer {
 
   async start(): Promise<void> {
     const server = createServer((req, res) => {
-      void this.handle(req, res).catch(() => {
-        res.statusCode = 500;
-        res.end();
-      });
+      void new Promise((resolve) => setTimeout(resolve, this.latencyMs))
+        .then(() => this.handle(req, res))
+        .catch(() => {
+          res.statusCode = 500;
+          res.end();
+        });
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     this.server = server;
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("The fake CalDAV server has no port");
     this.port = address.port;
+  }
+
+  /** How many client connections are open right now. */
+  openConnections(): Promise<number> {
+    const server = this.server;
+    if (server === null) return Promise.resolve(0);
+    return new Promise((resolve, reject) =>
+      server.getConnections((error, count) => (error ? reject(error) : resolve(count))),
+    );
   }
 
   async close(): Promise<void> {

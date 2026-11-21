@@ -1,6 +1,5 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { inspect } from "node:util";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
@@ -9,7 +8,7 @@ import { createUser } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError } from "../errors.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import type { ImapMailClient } from "../mail/imapReconcile.js";
+import type { ImapFolderRef } from "../mail/imapReconcile.js";
 import { logger as mailLogger } from "../mail/logger.js";
 import { createMailboxPasswordConnectRouteHandler } from "../mail/mailboxPasswordRouteHandlers.js";
 import { createMailDraftCreateRouteHandler, createMailDraftSendRouteHandler } from "../mail/mailDraftRouteHandlers.js";
@@ -73,17 +72,24 @@ afterAll(async () => {
 
 const user = () => ({ identity: { user: { id: userId, locale: "en" } } });
 
-type ImapOpener = () => Promise<ImapMailClient>;
+/** What the verification lists on a Purelymail account's verified IMAP connection. */
+const LISTED_FOLDERS: ImapFolderRef[] = PURELYMAIL_FOLDERS.map((folder) => ({
+  path: folder.path,
+  specialUse: folder.specialUse,
+}));
 
-/** Through the production handler, with a verification that accepts the login and the given folder listing opener. */
-async function connectPasswordMailbox(openImap: ImapOpener | undefined): Promise<string> {
+/**
+ * Through the production handler, with a verification that accepts the login and answers `folders` as listed on its
+ * IMAP connection (`null`: the listing failed).
+ */
+async function connectPasswordMailbox(folders: ImapFolderRef[] | null): Promise<string> {
   const handler = createMailboxPasswordConnectRouteHandler(runtime, {
     mailServerClients: {
       verifyPassword: async (input) => ({
         imap: { host: input.imapHost ?? "", port: 993, security: "tls" },
         smtp: { host: input.smtpHost ?? "", port: 465, security: "tls" },
+        folders: input.listFolders === true ? folders : null,
       }),
-      ...(openImap ? { openImap } : {}),
     },
     throttle: { tryAcquire: () => ({ granted: true }) },
   });
@@ -184,14 +190,12 @@ describe("a password mailbox, right after POST /api/mail/mailboxes", () => {
     const server = new FakeImapServer({ folders: PURELYMAIL_FOLDERS, capabilities: ["SPECIAL-USE"], latencyMs: 0 });
     const port = await server.listen();
     try {
-      const mailboxId = await connectPasswordMailbox(() => connectLoopbackImapClient(port));
+      const mailboxId = await connectPasswordMailbox(LISTED_FOLDERS);
 
       expect(await foldersOf(mailboxId)).toEqual([
         { purpose: "drafts", provider_id: "Drafts", name: "Drafts" },
         { purpose: "sent", provider_id: "Sent", name: "Sent" },
       ]);
-      expect(server.commands).toContain("LIST");
-      expect(server.commands.at(-1)).toBe("LOGOUT");
 
       const { sentCount } = await draftAndSend(mailboxId, IMAP_FIXTURE_ACCOUNT);
       expect(sentCount).toBe(1);
@@ -228,45 +232,16 @@ describe("a password mailbox, right after POST /api/mail/mailboxes", () => {
     }
   });
 
-  it("connects without folders when the listing fails, logs no user content, and refuses a draft with mail_drafts_folder_missing", async () => {
-    const warn = vi.spyOn(mailLogger, "warn");
+  it("connects without folders when the listing failed, and refuses a draft with mail_drafts_folder_missing", async () => {
     const emailsBefore = await emailCount();
 
-    const mailboxId = await connectPasswordMailbox(() =>
-      Promise.reject(new Error(`login ${PASSWORD} for ${IMAP_FIXTURE_ACCOUNT} failed`)),
-    );
+    const mailboxId = await connectPasswordMailbox(null);
 
     expect(await foldersOf(mailboxId)).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      { stage: "listing", errorName: "Error" },
-      "The connect could not list the IMAP folders; the first sync pass discovers them",
-    );
-    const logged = inspect(warn.mock.calls, { depth: 8 });
-    expect(logged).not.toContain(PASSWORD);
-    expect(logged).not.toContain(IMAP_FIXTURE_ACCOUNT);
-
     const refusal = await createDraft(mailboxId, IMAP_FIXTURE_ACCOUNT).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(ChokePointError);
     expect(refusal).toMatchObject({ status: 409, code: "mail_drafts_folder_missing", details: { mailboxId } });
     expect(await emailCount()).toBe(emailsBefore);
-  });
-
-  it("fails with a configuration error before verifying any login when the composition root gave no IMAP opener", async () => {
-    const verifyPassword = vi.fn();
-    const handler = createMailboxPasswordConnectRouteHandler(runtime, {
-      mailServerClients: { verifyPassword },
-      throttle: { tryAcquire: () => ({ granted: true }) },
-    });
-
-    const error = await runInTenant(tenant, () => handler({ ...user(), body: PASSWORD_BODY })).catch(
-      (failure: unknown) => failure,
-    );
-
-    expect(error).not.toBeInstanceOf(ChokePointError);
-    expect(error).toMatchObject({
-      message: 'custom route dependency "mailServerClients.openImap" is not configured by the composition root',
-    });
-    expect(verifyPassword).not.toHaveBeenCalled();
   });
 });
 

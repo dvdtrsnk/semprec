@@ -2,10 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import type {
   HeartbeatRuleKindRegistry,
-  ImapMailClient,
   MailSendAdapterFactory,
-  MailServerConnectionSettings,
-  MailServerCredential,
   VerifiedMailServerSettings,
   VerifyCalDavServerInput,
   VerifyMailCredentialsInput,
@@ -31,9 +28,9 @@ export interface CustomRouteOAuthConfig {
 
 export interface MailServerClients {
   /**
-   * Resolves with the IMAP and SMTP endpoints that accepted the login, and rejects when none did.
-   * Runs before any mailbox is stored. A mount without it fails each request of the password
-   * connect route with a configuration error.
+   * Resolves with the IMAP and SMTP endpoints that accepted the login, and the folders listed on the
+   * verified IMAP connection when asked for; rejects when no endpoint did. Runs before any mailbox is
+   * stored. A mount without it fails each request of the password routes with a configuration error.
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
   /**
@@ -42,11 +39,6 @@ export interface MailServerClients {
    * a configuration error.
    */
   verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<void>;
-  /**
-   * Opens the connection on which the password connect route lists the new account's folders. A mount without it
-   * fails each request of that route with a configuration error.
-   */
-  openImap?: (settings: MailServerConnectionSettings, credential: MailServerCredential) => Promise<ImapMailClient>;
   /**
    * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.

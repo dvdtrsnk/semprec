@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import {
-  getTestPool,
-  inTenantZero,
-  openPurelymailAccount,
-  resetDatabase,
-  tenantForNextTestUser,
-} from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase, tenantForNextTestUser } from "@semprec/data/testSupport";
 import {
   createUser,
   hashPassword,
@@ -393,8 +387,8 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
           verifyPassword: async () => ({
             imap: { host: "imap.example.test", port: 993, security: "tls" },
             smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+            folders: null,
           }),
-          openImap: openPurelymailAccount,
         },
       }),
     );
@@ -413,9 +407,9 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
         return {
           imap: { host: "imap.example.test", port: 993, security: "tls" },
           smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+          folders: null,
         };
       },
-      openImap: openPurelymailAccount,
     };
     /** As no dispatcher does. */
     const connect = async (dependencies: CustomRouteDependencies): Promise<Response> => {

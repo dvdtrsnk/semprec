@@ -34,6 +34,8 @@ export interface FakeImapServerOptions {
   capabilities: readonly string[];
   /** Delay before each response (the greeting included), standing in for one network round trip. */
   latencyMs: number;
+  /** When set, a LOGIN with another password is refused with `AUTHENTICATIONFAILED`; otherwise every LOGIN succeeds. */
+  password?: string;
 }
 
 type Token = string | Token[];
@@ -206,6 +208,8 @@ function inRange(uid: number, set: string, maxUid: number): boolean {
 export class FakeImapServer {
   /** Every command verb received, in order (`UID FETCH` is logged as `FETCH`). */
   readonly commands: string[] = [];
+  /** Command verbs answered with `NO` instead of their result. */
+  readonly refusedVerbs = new Set<string>();
   private readonly folders = new Map<string, ServerFolder>();
   private readonly sockets = new Set<Socket>();
   private readonly sessions = new Set<Session>();
@@ -379,11 +383,15 @@ export class FakeImapServer {
     this.commands.push(verb);
     const ok = (text = "done") => `${String(tag)} OK ${text}\r\n`;
     const selected = session.selected !== undefined ? this.folder(session.selected) : undefined;
+    if (this.refusedVerbs.has(verb)) return { text: `${String(tag)} NO ${verb} refused\r\n` };
 
     switch (verb) {
       case "CAPABILITY":
         return { text: `* CAPABILITY ${this.capabilityLine()}\r\n${ok()}` };
       case "LOGIN":
+        if (this.options.password !== undefined && args[1] !== this.options.password) {
+          return { text: `${String(tag)} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n` };
+        }
         return { text: ok(`[CAPABILITY ${this.capabilityLine()}] logged in`) };
       case "ENABLE": {
         const enabled = atoms(args).filter(

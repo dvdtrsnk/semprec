@@ -11,7 +11,6 @@ import {
   NodemailerInviteMailer,
   NodemailerPasswordResetMailer,
   noopPasswordResetMailer,
-  openImapConnection,
   resolveDocHistoryRetentionDays,
   resolveModuleRuleKinds,
   startProcessHeartbeat,
@@ -84,11 +83,10 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
 const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {
-  // The password connect route verifies a login and lists the account's folders only through these members.
+  // The password routes verify a login, and the connect lists the account's folders, only through these members.
   mailServerClients: {
     verifyPassword: verifyMailCredentials,
     verifyCalDav: verifyCalDavServer,
-    openImap: openImapConnection,
   },
   oauth: {
     gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),

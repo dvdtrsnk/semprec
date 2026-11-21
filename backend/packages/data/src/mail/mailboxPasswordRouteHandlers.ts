@@ -43,10 +43,8 @@ import { enqueueCalendarAccountSync } from "../calendar/sync/calendarAccountSync
 import { clearCalendarSyncReauthorization } from "../calendar/sync/calendarSyncStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { ensureComposeFolders, type ProviderFolder } from "./folderDiscovery.js";
-import { imapProviderFolder, type ImapFolderRef } from "./imapReconcile.js";
+import { imapProviderFolder } from "./imapReconcile.js";
 import { logger } from "./logger.js";
-import type { MailServerConnectionSettings, MailServerCredential } from "./mailServerConnections.js";
-import type { ImapConnectionOpener } from "./mailTransport.js";
 
 /** Gmail and Outlook sign in through OAuth instead. */
 const PASSWORD_MAILBOX_PROVIDERS = ["icloud", "generic"] as const;
@@ -225,8 +223,6 @@ export interface MailboxPasswordRouteDependencies {
   mailServerClients?: {
     verifyPassword?: VerifyPassword;
     verifyCalDav?: VerifyCalDav;
-    /** Opens the connection on which the connect lists the account's folders. */
-    openImap?: ImapConnectionOpener;
   };
   throttle?: VerificationThrottle;
   /** Called by the password replacement after its commit. */
@@ -255,76 +251,42 @@ function requireVerifyCalDav(dependencies: MailboxPasswordRouteDependencies): Ve
   return verifyCalDav;
 }
 
-/** Fails like `requireVerifyPassword`, so no mailbox is connected whose folders the route cannot list. */
-function requireOpenImap(dependencies: MailboxPasswordRouteDependencies): ImapConnectionOpener {
-  const openImap = dependencies.mailServerClients?.openImap;
-  if (!openImap) {
-    throw new Error('custom route dependency "mailServerClients.openImap" is not configured by the composition root');
-  }
-  return openImap;
+interface VerificationRequest {
+  verifyPassword: VerifyPassword;
+  mail: VerifyMailCredentialsInput;
+  /** `null` when the account's calendars are not verified. */
+  calDav: { verify: VerifyCalDav; input: VerifyCalDavServerInput } | null;
 }
 
-/** Spans the connection, the login and the LIST of the connect's folder listing. */
-const FOLDER_LISTING_DEADLINE_MS = 15_000;
-
-class FolderListingTimeoutError extends Error {
-  constructor() {
-    super(`The IMAP folder listing did not finish within ${FOLDER_LISTING_DEADLINE_MS} ms`);
-    this.name = "FolderListingTimeoutError";
-  }
-}
-
-function logFolderListingFailure(error: unknown, stage: "listing" | "after_deadline"): void {
+function logUnreportedCalDavFailure(error: unknown): void {
   logger.warn(
-    { stage, errorName: error instanceof Error ? error.name : typeof error },
-    "The connect could not list the IMAP folders; the first sync pass discovers them",
+    { verification: "calDav", errorName: error instanceof Error ? error.name : typeof error },
+    "A login verification failed behind the failure the request reports",
   );
 }
 
 /**
- * The account's folders over one new connection to the verified endpoint, closed on every way out. At the deadline the
- * connection is closed, which fails a LIST still running, and one that opens later is closed at once.
+ * Starts the mail and the CalDAV verification together and waits for both, so neither outlives the request. The mail
+ * failure is reported before a CalDAV failure, a refusal as 400 with its code; a CalDAV failure behind a mail failure
+ * is logged.
  */
-async function listImapFolders(
-  openImap: ImapConnectionOpener,
-  settings: MailServerConnectionSettings,
-  credential: MailServerCredential,
-): Promise<ImapFolderRef[]> {
-  let isExpired = false;
-  let expire = () => {};
-  const expired = new Promise<void>((resolve) => {
-    expire = () => {
-      isExpired = true;
-      resolve();
-    };
-  });
-  const timer = setTimeout(() => expire(), FOLDER_LISTING_DEADLINE_MS);
-  const listing = (async () => {
-    const imap = await openImap(settings, credential);
-    if (isExpired) {
-      await imap.close();
-      throw new FolderListingTimeoutError();
-    }
-    let closing: Promise<void> | undefined;
-    const close = () => (closing ??= imap.close());
-    // `close` never rejects.
-    void expired.then(close);
-    try {
-      return await imap.listFolders();
-    } finally {
-      await close();
-    }
-  })();
-  try {
-    const outcome = await Promise.race([listing, expired.then(() => "expired" as const)]);
-    if (outcome !== "expired") return outcome;
-    // The deadline is the outcome reported; what the abandoned listing does after it is only logged.
-    listing.catch((late: unknown) => logFolderListingFailure(late, "after_deadline"));
-    throw new FolderListingTimeoutError();
-  } finally {
-    clearTimeout(timer);
-    expire();
+async function verifyLogins(request: VerificationRequest): Promise<VerifiedMailServerSettings> {
+  const [mail, calDav] = await Promise.allSettled([
+    request.verifyPassword(request.mail),
+    request.calDav === null ? Promise.resolve() : request.calDav.verify(request.calDav.input),
+  ]);
+  if (mail.status === "rejected") {
+    if (calDav.status === "rejected") logUnreportedCalDavFailure(calDav.reason);
+    if (isVerificationRefusal(mail.reason)) throw new ChokePointError(400, mail.reason.code, mail.reason.message);
+    throw mail.reason;
   }
+  if (calDav.status === "rejected") {
+    if (isCalDavVerificationRefusal(calDav.reason)) {
+      throw new ChokePointError(400, calDav.reason.code, calDav.reason.message);
+    }
+    throw calDav.reason;
+  }
+  return mail.value;
 }
 
 /** Fails like `requireVerifyPassword`, so the route never verifies a login it cannot count. */
@@ -343,11 +305,10 @@ function requireThrottle(dependencies: MailboxPasswordRouteDependencies): Verifi
  * 1. One transaction reads the duplicate rule (409 `provider_account_already_connected`).
  * 2. The attempt is counted per user (429 `rate_limited`); earlier refusals are not counted, and a counted
  *    attempt stays counted.
- * 3. Outside any transaction the login is verified on both protocols, and on CalDAV when the body names a CalDAV
- *    address; a refusal answers 400 with its code.
- * 4. Outside any transaction one connection to the verified IMAP endpoint lists the folders; a failure is logged and
- *    the mailbox is connected without them.
- * 5. One transaction rereads the duplicate rule and writes the mailbox with its Drafts and Sent folders; a race answers
+ * 3. Outside any transaction the login is verified on IMAP and SMTP, and on CalDAV when the body names a CalDAV
+ *    address, all concurrently; the IMAP verification lists the folders on its verified connection. A refusal answers
+ *    400 with its code; a failed listing is logged and the mailbox is connected without the folders.
+ * 4. One transaction rereads the duplicate rule and writes the mailbox with its Drafts and Sent folders; a race answers
  *    409 and rolls back everything.
  *
  * The password is sealed by `storeCredential` and is in no response and no log line.
@@ -358,7 +319,6 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
     // Read per request: a mount without a member must still start.
     const verifyPassword = requireVerifyPassword(dependencies);
     const verifyCalDav = request.caldavUrl === null ? null : requireVerifyCalDav(dependencies);
-    const openImap = requireOpenImap(dependencies);
     const throttle = requireThrottle(dependencies);
     const name = defaultMailboxName(request.provider, request.address);
 
@@ -373,41 +333,27 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
     const attempt = throttle.tryAcquire("mailboxCredentialVerification", ctx.identity.user.id);
     if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
 
-    let verified: VerifiedMailServerSettings;
-    try {
-      verified = await verifyPassword({
+    const verified = await verifyLogins({
+      verifyPassword,
+      mail: {
         provider: request.provider,
         address: request.address,
         username: request.username,
         password: request.password,
         ...(request.hosts ?? {}),
-      });
-    } catch (error) {
-      if (isVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
-      throw error;
-    }
-    if (verifyCalDav !== null && request.caldavUrl !== null) {
-      try {
-        await verifyCalDav({ caldavUrl: request.caldavUrl, username: request.username, password: request.password });
-      } catch (error) {
-        if (isCalDavVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
-        throw error;
-      }
-    }
-
-    let folders: ProviderFolder[] = [];
-    try {
-      const listed = await listImapFolders(
-        openImap,
-        { endpoint: verified.imap, username: request.username },
-        { password: request.password },
-      );
-      folders = listed.map(imapProviderFolder);
-    } catch (error) {
-      // The login is verified and the first sync pass lists the folders anyway; until it ran, a draft is refused with
-      // `mail_drafts_folder_missing`.
-      logFolderListingFailure(error, "listing");
-    }
+        listFolders: true,
+      },
+      calDav:
+        verifyCalDav === null || request.caldavUrl === null
+          ? null
+          : {
+              verify: verifyCalDav,
+              input: { caldavUrl: request.caldavUrl, username: request.username, password: request.password },
+            },
+    });
+    // Until the first sync pass ran, a mailbox connected without its Drafts folder refuses a draft with
+    // `mail_drafts_folder_missing`.
+    const folders = (verified.folders ?? []).map(imapProviderFolder);
 
     const item = await withTransaction(pool, (client) =>
       createPasswordMailbox(client, { request, name, verified, folders, userId: ctx.identity.user.id }),
@@ -549,7 +495,8 @@ async function replaceMailboxPassword(client: PoolClient, replacement: PasswordR
  *    `mailbox_not_password` for one that does not sign in with a password).
  * 2. The attempt is counted per user (429 `rate_limited`), as for the connect.
  * 3. Outside any transaction the login is verified against the stored IMAP and SMTP hosts, and on CalDAV when
- *    Calendars is on and the account has a CalDAV address; a refusal answers 400 with its code and changes nothing.
+ *    Calendars is on and the account has a CalDAV address, all concurrently; a refusal answers 400 with its code and
+ *    changes nothing.
  * 4. One transaction checks the account again on locked rows, replaces the sealed password and the server settings,
  *    clears the mail failure record and a calendar `needsReauthorization`, and queues a mail sync and, with Calendars
  *    on, a calendar sync.
@@ -592,9 +539,9 @@ export function createMailboxPasswordReplaceRouteHandler(pool: Pool, dependencie
     const attempt = throttle.tryAcquire("mailboxCredentialVerification", ctx.identity.user.id);
     if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
 
-    let verified: VerifiedMailServerSettings;
-    try {
-      verified = await verifyPassword({
+    const verified = await verifyLogins({
+      verifyPassword,
+      mail: {
         provider: account.provider,
         address: account.address,
         username: login,
@@ -602,19 +549,12 @@ export function createMailboxPasswordReplaceRouteHandler(pool: Pool, dependencie
         ...(account.provider === "icloud"
           ? {}
           : { imapHost: account.settings.imap.host, smtpHost: account.settings.smtp.host }),
-      });
-    } catch (error) {
-      if (isVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
-      throw error;
-    }
-    if (verifyCalDav !== null && caldavUrl !== null) {
-      try {
-        await verifyCalDav({ caldavUrl, username: login, password });
-      } catch (error) {
-        if (isCalDavVerificationRefusal(error)) throw new ChokePointError(400, error.code, error.message);
-        throw error;
-      }
-    }
+      },
+      calDav:
+        verifyCalDav === null || caldavUrl === null
+          ? null
+          : { verify: verifyCalDav, input: { caldavUrl, username: login, password } },
+    });
 
     const item = await withTransaction(pool, (client) =>
       replaceMailboxPassword(client, { mailboxItemId: mailboxId.data, password, username, verified }),

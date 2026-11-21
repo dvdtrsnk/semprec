@@ -56,7 +56,8 @@ described elsewhere and only referenced here:
 - Every connection to a tenant-chosen host is opened through `mail/mailServerConnections.ts`:
   `openImapFlow()` (the one IMAP connect step; returns only a _connected_ `ImapFlow`), `openImapConnection()`
   (sync wrapper `ImapFlowMailClient`), `createSmtpTransporter()`, and the verification helpers
-  `verifyImapServerConnection()` / `verifySmtpServerConnection()`. No other code constructs `ImapFlow` or a
+  `verifyImapServerConnection()` (and `verifyImapServerConnectionAndListFolders()`, which lists the folders on the
+  verified connection) / `verifySmtpServerConnection()`. No other code constructs `ImapFlow` or a
   nodemailer transport for a tenant host.
 - These factories resolve the name once through the outbound address policy (`createPolicyLookup` in
   `net/outboundAddressPolicy.ts`): IMAP sets `tls.lookup` + `tls.servername`; SMTP hands nodemailer a socket
@@ -76,18 +77,20 @@ described elsewhere and only referenced here:
 `POST /api/mail/mailboxes` (`mail/mailboxPasswordRouteHandlers.ts`) connects an iCloud or generic IMAP mailbox.
 
 - Order: validate body → duplicate rule (`mailboxHoldsAddress`, READ COMMITTED read, 409
-  `provider_account_already_connected`) → throttle → `verifyMailCredentials` outside any transaction → for a
-  generic body with `caldavUrl`, the `verifyCalDav` member (`verifyCalDavServer`, CalDAV discovery to the calendar
-  home with the same login; 400 `caldav_auth_failed`, `caldav_server_unreachable` or `caldav_server_invalid`) →
-  the folder listing outside any transaction → `createPasswordMailbox` in one READ COMMITTED transaction that re-reads
-  the duplicate rule before writing.
-- The folder listing opens one connection to the verified IMAP endpoint through the `mailServerClients.openImap`
-  member (`openImapConnection`), lists the folders and closes it, under a 15 s deadline spanning connect, login and
-  LIST. `createPasswordMailbox` writes the Drafts and Sent Folder items among them (`ensureComposeFolders`,
-  `mail/folderDiscovery.ts`) with the `providerId`, name and purpose the first sync pass derives
-  (`imapProviderFolder`), so the account drafts and sends before that pass, which finds them by `providerId`. A failed
-  or expired listing is logged (error name only) and the mailbox is connected without them. A mount without the
-  member fails each request before any login is verified.
+  `provider_account_already_connected`) → throttle → outside any transaction and concurrently,
+  `verifyMailCredentials` with `listFolders` and, for a generic body with `caldavUrl`, the `verifyCalDav` member
+  (`verifyCalDavServer`, CalDAV discovery to the calendar home with the same login; 400 `caldav_auth_failed`,
+  `caldav_server_unreachable` or `caldav_server_invalid`) → `createPasswordMailbox` in one READ COMMITTED transaction
+  that re-reads the duplicate rule before writing.
+- Both verifications settle before the route answers. The mail failure is answered before a CalDAV failure; a failure
+  that is not answered is logged (verification and error name only).
+- The folders are listed on the IMAP verification's own connection: once its login succeeded, the attempt sends LIST
+  (imapflow `list()` without a status query, so no STATUS) under its own 15 s deadline and then closes the connection
+  as any attempt does. What the client and its sockets report while the LIST runs is the listing's and never fails
+  the verification. `createPasswordMailbox` writes the Drafts and Sent Folder items among them
+  (`ensureComposeFolders`, `mail/folderDiscovery.ts`) with the `providerId`, name and purpose the first sync pass
+  derives (`imapProviderFolder`), so the account drafts and sends before that pass, which finds them by `providerId`.
+  A failed or expired listing is logged (error name only) and the mailbox is connected without them.
 - An address is held when `mail_account_sync_state.provider_account_address` records it or a live Mailboxes
   item's `addresses` list names it (`mailboxHoldsAnyAddress`, `mail/mailboxAddresses.ts`). A trashed mailbox does not
   count: its removal deleted its sync state row, so its address can be connected again. The partial unique index
@@ -97,8 +100,9 @@ described elsewhere and only referenced here:
   `tryAcquire` runs directly before the verification with no `await` between; a counted attempt is never
   released. Refusal is `RateLimitedError` → 429 `rate_limited` with `Retry-After`. Without a throttle the
   route fails before contacting any server.
-- `verifyMailCredentials` (`mail/mailCredentialVerification.ts`) has a 15 s whole-attempt deadline spanning
-  DNS, connect, TLS and login. It owns its sockets: on expiry it destroys the owned socket (so `connect()`
+- `verifyMailCredentials` (`mail/mailCredentialVerification.ts`) verifies IMAP and SMTP concurrently, each trying
+  its candidates in order; both settle before it returns, and when both fail the IMAP failure is thrown. Each attempt
+  has a 15 s whole-attempt deadline spanning DNS, connect, TLS and login. It owns its sockets: on expiry it destroys the owned socket (so `connect()`
   rejects through the library's handlers), fences late DNS/connect callbacks and waits for real socket close
   before trying the next candidate or returning. The one private accessor reads ImapFlow 1.7.6's `socket`
   property behind a runtime `net.Socket` check; a library upgrade must re-prove it with the real-library tests.
@@ -116,9 +120,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - Body `{ password, username? }` (strict, same bounds as the connect); `username` defaults to the stored one. A
   malformed, unknown, foreign or trashed id is 404 `not_found`. A mailbox whose `provider` is not `icloud`/`generic`,
   that lacks stored IMAP or SMTP settings, or whose sync mode is not `imap` is 409 `mailbox_not_password`.
-- Order: read the account → throttle (`mailboxCredentialVerification`, as the connect) → `verifyMailCredentials`
-  against the stored hosts outside any transaction → with Calendars on, `verifyCalDav` at the CalDAV start
-  (`https://caldav.icloud.com/` for iCloud, else the stored `caldav_url`; none without one) → one READ COMMITTED
+- Order: read the account → throttle (`mailboxCredentialVerification`, as the connect) → outside any transaction and
+  concurrently, as the connect, `verifyMailCredentials` against the stored hosts (no folder listing) and, with
+  Calendars on, `verifyCalDav` at the CalDAV start (`https://caldav.icloud.com/` for iCloud, else the stored
+  `caldav_url`; none without one) → one READ COMMITTED
   transaction: unlocked sanity read → `ensureMailAccountSyncState` → lock sync state row → lock Mailboxes item →
   re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
   (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected

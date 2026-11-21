@@ -57,7 +57,7 @@ import {
 } from "../calendar/sync/adapters/caldav/caldavErrors.js";
 import { getCalendarAccountSyncState, recordCalendarSyncFailure } from "../calendar/sync/calendarSyncStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { openPurelymailAccount } from "../testSupport/imapMailboxFixture.js";
+import { PURELYMAIL_FOLDERS } from "../testSupport/imapMailboxFixture.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
@@ -86,10 +86,16 @@ const GENERIC_BODY = {
   smtpHost: SMTP_HOST,
 };
 
-const ICLOUD_SETTINGS: VerifiedMailServerSettings = {
+/** The endpoints `verifyMailCredentials` fixes for iCloud, as they are stored. */
+const ICLOUD_ENDPOINTS = {
   imap: { host: "imap.mail.me.com", port: 993, security: "tls" },
   smtp: { host: "smtp.mail.me.com", port: 587, security: "starttls" },
-};
+} as const;
+
+const ICLOUD_SETTINGS: VerifiedMailServerSettings = { ...ICLOUD_ENDPOINTS, folders: null };
+
+/** What the verification lists on a Purelymail account's verified IMAP connection. */
+const LISTED_FOLDERS = PURELYMAIL_FOLDERS.map((folder) => ({ path: folder.path, specialUse: folder.specialUse }));
 
 let admin: Pool;
 let runtime: Pool;
@@ -127,15 +133,73 @@ function acceptingVerifier(): AcceptingVerifier {
         },
         verifyPassword: async (input) => {
           calls.push(input);
-          if (input.imapHost === undefined || input.smtpHost === undefined) return ICLOUD_SETTINGS;
+          const folders = input.listFolders === true ? LISTED_FOLDERS : null;
+          if (input.imapHost === undefined || input.smtpHost === undefined) return { ...ICLOUD_SETTINGS, folders };
           return {
             imap: { host: input.imapHost, port: 993, security: "tls" },
             smtp: { host: input.smtpHost, port: 465, security: "tls" },
+            folders,
           };
         },
       },
     },
   };
+}
+
+/**
+ * A mail and a CalDAV verification that each wait up to a second for the other to have started, so a route running
+ * them one after the other fails with `not concurrent`. Once both run, the mail verification settles first and the
+ * CalDAV one 50 ms later, each with its refusal when one is given; `settled` records the order.
+ */
+function overlappingVerifier(refusals: { mail?: Error; calDav?: Error } = {}) {
+  const settled: Array<"mail" | "calDav"> = [];
+  let mailStarted = () => {};
+  let calDavStarted = () => {};
+  const mailRunning = new Promise<void>((resolve) => (mailStarted = resolve));
+  const calDavRunning = new Promise<void>((resolve) => (calDavStarted = resolve));
+  const afterStart = async (other: Promise<void>) => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        other,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("not concurrent")), 1_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const dependencies: MailboxPasswordRouteDependencies = {
+    mailServerClients: {
+      verifyPassword: async (input) => {
+        mailStarted();
+        try {
+          await afterStart(calDavRunning);
+          if (refusals.mail) throw refusals.mail;
+          if (input.imapHost === undefined || input.smtpHost === undefined) return ICLOUD_SETTINGS;
+          return {
+            imap: { host: input.imapHost, port: 993, security: "tls" },
+            smtp: { host: input.smtpHost, port: 465, security: "tls" },
+            folders: null,
+          };
+        } finally {
+          settled.push("mail");
+        }
+      },
+      verifyCalDav: async () => {
+        calDavStarted();
+        try {
+          await afterStart(mailRunning);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (refusals.calDav) throw refusals.calDav;
+        } finally {
+          settled.push("calDav");
+        }
+      },
+    },
+  };
+  return { dependencies, settled };
 }
 
 type Throttle = NonNullable<MailboxPasswordRouteDependencies["throttle"]>;
@@ -180,16 +244,10 @@ interface ConnectOptions {
   tenantId?: string;
 }
 
-/**
- * Mail server clients that leave out the folder listing's opener get one listing an in-memory Purelymail account, so a
- * case about the verification needs to name only the verification.
- */
 function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status: number; item: ItemRow }> {
   const dependencies = options.dependencies ?? acceptingVerifier().dependencies;
-  const { mailServerClients } = dependencies;
   const handler = createMailboxPasswordConnectRouteHandler(runtime, {
     ...dependencies,
-    ...(mailServerClients ? { mailServerClients: { openImap: openPurelymailAccount, ...mailServerClients } } : {}),
     throttle: options.throttle === undefined ? recordingThrottle().throttle : (options.throttle ?? undefined),
   });
   return runInTenant(options.tenantId ?? tenant, () => handler({ identity: { user: { id: userId } }, body }));
@@ -519,12 +577,18 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect(JSON.stringify(answer)).not.toContain(PASSWORD);
       // The user name defaults to the address as it was typed, and iCloud gets no host from the request.
       expect(verifier.calls).toEqual([
-        { provider: "icloud", address: "Owner@Example.test", username: "Owner@Example.test", password: PASSWORD },
+        {
+          provider: "icloud",
+          address: "Owner@Example.test",
+          username: "Owner@Example.test",
+          password: PASSWORD,
+          listFolders: true,
+        },
       ]);
       const id = answer.item.id;
       expect(await mailboxRows()).toEqual(oneWholeMailbox(id));
       expect(await storedMailbox(id)).toEqual({
-        settings: { mailboxItemId: id, ...ICLOUD_SETTINGS, username: "Owner@Example.test", caldavUrl: null },
+        settings: { mailboxItemId: id, ...ICLOUD_ENDPOINTS, username: "Owner@Example.test", caldavUrl: null },
         syncMode: "imap",
         providerAccountAddress: ADDRESS,
         credentialTypes: ["app_password"],
@@ -550,6 +614,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
           password: PASSWORD,
           imapHost: IMAP_HOST,
           smtpHost: SMTP_HOST,
+          listFolders: true,
         },
       ]);
       expect(await storedMailbox(answer.item.id)).toEqual({
@@ -624,6 +689,33 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect(await mailboxRows()).toEqual(NOTHING);
     });
 
+    it("verifies the mail login and the CalDAV address concurrently", async () => {
+      const verifier = overlappingVerifier();
+
+      const answer = await connect({ ...GENERIC_BODY, caldavUrl: CALDAV_URL }, { dependencies: verifier.dependencies });
+
+      expect(answer.status).toBe(201);
+      expect(verifier.settled).toEqual(["mail", "calDav"]);
+    });
+
+    it("answers the mail refusal before a CalDAV refusal once both settled, and logs the other without the password", async () => {
+      const verifier = overlappingVerifier({ mail: new MailAuthFailedError(), calDav: new CalDavAuthFailedError() });
+      const logged = recordLogCalls();
+
+      const error = await rejectionOf(
+        connect({ ...GENERIC_BODY, caldavUrl: CALDAV_URL }, { dependencies: verifier.dependencies }),
+      );
+
+      expect(error).toBeInstanceOf(ChokePointError);
+      expect(error).toMatchObject({ status: 400, code: "mail_auth_failed" });
+      // The CalDAV verification settled after the mail refusal, and the route still waited for it.
+      expect(verifier.settled).toEqual(["mail", "calDav"]);
+      expect(logged()).toContain("A login verification failed behind the failure the request reports");
+      expect(logged()).toContain("CalDavAuthFailedError");
+      expect(logged()).not.toContain(PASSWORD);
+      expect(await mailboxRows()).toEqual(NOTHING);
+    });
+
     it("stores an address and a user name with a character outside the Basic Multilingual Plane as they were sent", async () => {
       // U+1F4EC is a surrogate pair in UTF-16; only an unpaired surrogate is refused.
       const address = "owner-\u{1f4ec}@example.test";
@@ -647,9 +739,9 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
 
     it("stores port 143 with starttls when the generic server accepts IMAP only there", async () => {
       const imap = vi
-        .spyOn(connections, "verifyImapServerConnection")
-        .mockResolvedValueOnce("unreachable")
-        .mockResolvedValueOnce("success");
+        .spyOn(connections, "verifyImapServerConnectionAndListFolders")
+        .mockResolvedValueOnce({ attempt: "unreachable", folders: null })
+        .mockResolvedValueOnce({ attempt: "success", folders: [] });
       const smtp = vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
 
       const answer = await connect(GENERIC_BODY, { dependencies: PRODUCTION_VERIFICATION });
@@ -678,8 +770,9 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       ["a generic server without TLS", GENERIC_BODY, "tls", "mail_tls_failed"],
       ["a generic server that cannot be reached", GENERIC_BODY, "unreachable", "mail_server_unreachable"],
     ])("answers %s with 400 and its verification code, and stores nothing", async (_name, body, attempt, code) => {
-      vi.spyOn(connections, "verifyImapServerConnection").mockResolvedValue(attempt);
-      const smtp = vi.spyOn(connections, "verifySmtpServerConnection");
+      vi.spyOn(connections, "verifyImapServerConnectionAndListFolders").mockResolvedValue({ attempt, folders: null });
+      // SMTP is verified concurrently and accepts; the IMAP refusal is the one answered.
+      const smtp = vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
       const logged = recordLogCalls();
 
       const error = await rejectionOf(connect(body, { dependencies: PRODUCTION_VERIFICATION }));
@@ -689,7 +782,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect({ status: error.status, code: error.code }).toEqual({ status: 400, code });
       expect(errorText(error)).not.toContain(PASSWORD);
       expect(logged()).not.toContain(PASSWORD);
-      expect(smtp).not.toHaveBeenCalled();
+      expect(smtp).toHaveBeenCalled();
       expect(await mailboxRows()).toEqual(NOTHING);
     });
 
@@ -716,7 +809,10 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
     });
 
     it("lets an unknown verification failure propagate as the verification's fixed error, without the password", async () => {
-      vi.spyOn(connections, "verifyImapServerConnection").mockRejectedValue(new Error(`login ${PASSWORD} exploded`));
+      vi.spyOn(connections, "verifyImapServerConnectionAndListFolders").mockRejectedValue(
+        new Error(`login ${PASSWORD} exploded`),
+      );
+      vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
       const logged = recordLogCalls();
 
       const error = await rejectionOf(connect(GENERIC_BODY, { dependencies: PRODUCTION_VERIFICATION }));
@@ -744,7 +840,10 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
     });
 
     it("keeps the password out of the mail and database log calls of a successful connect", async () => {
-      vi.spyOn(connections, "verifyImapServerConnection").mockResolvedValue("success");
+      vi.spyOn(connections, "verifyImapServerConnectionAndListFolders").mockResolvedValue({
+        attempt: "success",
+        folders: [],
+      });
       vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
       const logged = recordLogCalls();
 
@@ -815,7 +914,9 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       "fails a request on %s with a configuration error, contacts no server and stores nothing",
       async (_name, dependencies) => {
         // The mail module's own verification would accept this login, so a mailbox here means the route ran it.
-        const imap = vi.spyOn(connections, "verifyImapServerConnection").mockResolvedValue("success");
+        const imap = vi
+          .spyOn(connections, "verifyImapServerConnectionAndListFolders")
+          .mockResolvedValue({ attempt: "success", folders: [] });
         const smtp = vi.spyOn(connections, "verifySmtpServerConnection").mockResolvedValue("success");
 
         // Mounted without a limiter too, so the first container is the empty one its name says.
@@ -1374,8 +1475,18 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect(await accountState(mailboxId)).toMatchObject({
         password: NEW_PASSWORD,
         credentialTypes: ["app_password"],
-        settings: { ...ICLOUD_SETTINGS, username: STORED_LOGIN, caldavUrl: null },
+        settings: { ...ICLOUD_ENDPOINTS, username: STORED_LOGIN, caldavUrl: null },
       });
+    });
+
+    it("verifies the new password on the mail servers and iCloud's CalDAV address concurrently", async () => {
+      const mailboxId = await passwordMailbox({ provider: "icloud", credential: null, calendarsEnabled: true });
+      const verifier = overlappingVerifier();
+
+      const answer = await replace(mailboxId, { password: NEW_PASSWORD }, { dependencies: verifier.dependencies });
+
+      expect(answer.status).toBe(200);
+      expect(verifier.settled).toEqual(["mail", "calDav"]);
     });
 
     it("contacts no CalDAV server and queues no calendar sync while Calendars is off", async () => {
