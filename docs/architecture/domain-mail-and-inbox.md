@@ -312,8 +312,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   at 6 hours. The base is 5 minutes, or for `MailConnectionLimitError` the provider's connection-limit backoff
   (`connectionLimitBackoffSecondsForProvider`, 5 or 10 minutes). The previous delay is read from the row
   (`next_expected_activity_at − last_activity_at` while `failing_since` is set); a successful pass ends the streak.
-  A connection-limit failure is not rethrown; other failures are, and graphile-worker retries them (`maxAttempts`
-  3).
+  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1): the
+  sweep queues the next pass once the backed-off `next_expected_activity_at` is due, so a failing server never sees
+  a burst of logins.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 

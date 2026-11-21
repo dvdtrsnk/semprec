@@ -669,7 +669,7 @@ describe("observability.checkSystem (issue #169)", () => {
             unusedStorage,
             { job: { id: "sync-reauthorization" } },
           ),
-        ).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
+        ).resolves.toBeUndefined();
       });
       expect(await mailProblems(mailboxItemId)).toMatchObject([
         { severity: "critical", occurrence_count: 3, resolved_at: null },

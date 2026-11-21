@@ -10,6 +10,6 @@ export async function enqueueMailAccountSync(client: Queryable, mailboxItemId: s
     client,
     CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC,
     { mailboxItemId },
-    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 3 },
+    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 1 },
   );
 }
