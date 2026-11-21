@@ -12,6 +12,7 @@ import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.OAuthOutcome
 import cz.semprec.app.domain.OAuthProvider
+import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -311,6 +312,22 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
         assertTrue(models.none { it.state.value.connecting })
         assertTrue(effects.all { it.isEmpty() })
         models.forEach { it.close() }
+    }
+
+    @Test fun `every failure kind of a connect maps to the failure it shows`() {
+        val shown = FailureKind.entries.associateWith { RepositoryResult.Failure(it).toProblem() }
+        assertEquals(
+            mapOf(
+                FailureKind.UNAVAILABLE to InternetConnectFailure.UNAVAILABLE,
+                FailureKind.INVALID_DATA to InternetConnectFailure.UNEXPECTED,
+                FailureKind.UNAUTHORIZED to InternetConnectFailure.UNEXPECTED,
+                FailureKind.NOT_FOUND to InternetConnectFailure.UNEXPECTED,
+                FailureKind.REJECTED to InternetConnectFailure.REFUSED,
+            ),
+            shown,
+        )
+        val unexpected: RepositoryResult.Failure? = null
+        assertEquals(InternetConnectFailure.UNEXPECTED, unexpected.toProblem())
     }
 
     @Test fun `every refusal the server names shows its own failure and keeps the form`() = runTest(dispatcher) {
