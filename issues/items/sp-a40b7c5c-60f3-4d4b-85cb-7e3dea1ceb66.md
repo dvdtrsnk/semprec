@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-a40b7c5c-60f3-4d4b-85cb-7e3dea1ceb66"
 title: "[internet-accounts] Choose the new item calendar in a sectioned list, keep titles on one line and present the delete confirmation accessibly"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-85e6cbc4-7de7-4385-81a9-a493c421b817"
 assignees: []
 milestone: null
 createdAt: "2026-11-21T11:43:55.694Z"
-updatedAt: "2026-11-21T11:44:05.861Z"
-closedAt: null
+updatedAt: "2026-11-21T13:24:31.969Z"
+closedAt: "2026-11-21T13:24:31.969Z"
 source: null
 approval: {"specSha256":"362bf9b07a4975ae6639ecba3d6ed34076b1f2f0f1699666971a89b3e823fcc3","source":"repository","actor":"claude-delegated-by-david: delegated by dvdtrsnk for the internet accounts fixes, 2026-11-21","at":"2026-11-21T11:44:05.861Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"6577964ade3666647894dd960ac0a6c96c71e6e6","at":"2026-11-21T13:24:31.969Z"}
 ---
 **Blocked by:** none
 **Model tier:** medium
