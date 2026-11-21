@@ -379,9 +379,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Thread refs
 
 - A `mailThread` Semp ref stores the id as given (thread id or alias); `mail/mailThreadRef.ts` resolves
-  aliases, label (latest live message subject, else `subject_hint`), state (`trashed` when no live copy or all
+  aliases, label (earliest live message subject, else `subject_hint`), state (`trashed` when no live copy or all
   live copies only in Trash folders; `purged` for unknown ids) and database key (always null) at read time,
   one statement per batch.
+- A thread's subject, wherever it is shown (thread list and detail, ref label, global search), is its earliest
+  live message's: a reply or a bounce threaded later does not rename the conversation. Order, `lastMessageAt`,
+  `lastSender` and the preview follow the newest message.
 
 ## People linking
 

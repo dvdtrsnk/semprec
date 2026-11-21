@@ -125,6 +125,10 @@ export function mailThreadCopyCtes(
   SELECT thread_id, bool_or(attached) AS has_attachment, bool_or(flagged) AS flagged,
     bool_or(received AND NOT is_read) AS unread
   FROM copies GROUP BY thread_id
+), thread_subject AS (
+  -- The conversation's subject is its earliest message's, so a reply or a bounce threaded later does not rename it.
+  SELECT DISTINCT ON (thread_id) thread_id, subject
+  FROM copies ORDER BY thread_id, activity ASC NULLS LAST, item_id ASC
 )`;
 }
 
@@ -296,7 +300,7 @@ WITH ${mailThreadCopyCtes(9)}, thread_project AS (
   ORDER BY l.activity DESC NULLS LAST, l.thread_id DESC LIMIT $3
 )
 SELECT jsonb_build_object(
-  'threadId', p.thread_id, 'subject', p.subject,
+  'threadId', p.thread_id, 'subject', ts.subject,
   'lastMessageAt', to_char(p.activity AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
   'lastSender', jsonb_build_object('name', COALESCE(p.envelope->'from'->>'name', ''), 'address', COALESCE(p.envelope->'from'->>'address', ''), 'personId', person.id),
   'participants', COALESCE(parts.value, '[]'::jsonb), 'messageCount', p.message_count,
@@ -307,6 +311,7 @@ SELECT jsonb_build_object(
 ) AS thread,
   (SELECT mt.item_id FROM mail_threads mt WHERE mt.tenant_id = app_tenant_default() AND mt.id = p.thread_id) AS thread_item_id
 FROM page p
+JOIN thread_subject ts ON ts.thread_id = p.thread_id
 ${threadRelationNameJoin("project", "projects")}
 ${threadRelationNameJoin("company", "companies")}
 LEFT JOIN person_email_index pei ON pei.tenant_id = app_tenant_default() AND pei.email = lower(btrim(p.envelope->'from'->>'address', E' \\t\\n\\r'))

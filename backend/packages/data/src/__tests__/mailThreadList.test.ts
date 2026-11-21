@@ -14,7 +14,8 @@ import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
-import { createMailThreadListRouteHandler } from "../mail/mailThreadRoutes.js";
+import { resolveMailThreadRefTargets } from "../mail/mailThreadRef.js";
+import { createMailThreadDetailRouteHandler, createMailThreadListRouteHandler } from "../mail/mailThreadRoutes.js";
 import { reindexPersonEmails } from "../mail/personEmailIndexStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -93,6 +94,7 @@ describe("mail thread list", () => {
       folder?: string;
       id: string;
       refs?: string[];
+      subject?: string;
       from?: string;
       date?: Date;
       body?: string;
@@ -109,11 +111,11 @@ describe("mail thread list", () => {
           folderItemId: input.folder ?? folders.inbox.id,
           messageId: input.id,
           references: input.refs ?? [],
-          subject: "Re: Website proposal",
+          subject: input.subject ?? "Re: Website proposal",
           date: input.date,
           envelope: {
             from: {
-              name: input.from === "me@example.test" ? "Me" : "Sender",
+              name: input.from === "me@example.test" ? "Me" : input.from === undefined ? "Sender" : "",
               address: input.from ?? "sender@example.test",
             },
             to: [{ name: "Me", address: "me@example.test" }],
@@ -233,6 +235,62 @@ describe("mail thread list", () => {
       );
       // Neither draft changes an aggregated value; the Semp draft only sets the thread's flag.
       expect((await list()).body.threads[0]).toEqual({ ...row, hasSempDraft: true });
+    });
+  });
+  it("keeps the subject of the conversation's first message after a reply and after a bounce", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      await f.ingest({
+        id: "<m1@example.test>",
+        subject: "[x] M1 hello",
+        from: "me@example.test",
+        folder: f.folders.sent.id,
+        date: new Date("2026-03-01T10:00:00Z"),
+      });
+      const detail = createMailThreadDetailRouteHandler(runtime);
+      const shown = async () => {
+        // The conversation began in Sent, so it is listed by that folder whatever arrives in the Inbox.
+        const [thread] = (await list(`/api/mail/threads?folderId=${f.folders.sent.id}`)).body.threads;
+        if (!thread) throw new Error("No thread listed");
+        const { threadId } = thread;
+        const header = (await detail({ req: { url: `/api/mail/threads/${threadId}` }, params: { threadId } })).body;
+        const [ref] = await withTransaction(runtime, (client) => resolveMailThreadRefTargets(client, [threadId]));
+        return {
+          list: [thread.subject, thread.lastSender.address, thread.messageCount],
+          detail: [header.subject, header.lastSender.address, header.lastMessageAt],
+          label: ref?.label,
+        };
+      };
+      expect(await shown()).toEqual({
+        list: ["[x] M1 hello", "me@example.test", 1],
+        detail: ["[x] M1 hello", "me@example.test", "2026-03-01T10:00:00.000000Z"],
+        label: "[x] M1 hello",
+      });
+
+      await f.ingest({
+        id: "<reply@example.test>",
+        refs: ["<m1@example.test>"],
+        subject: "Re: [x] M1 hello",
+        date: new Date("2026-03-02T10:00:00Z"),
+      });
+      expect(await shown()).toEqual({
+        list: ["[x] M1 hello", "sender@example.test", 2],
+        detail: ["[x] M1 hello", "sender@example.test", "2026-03-02T10:00:00.000000Z"],
+        label: "[x] M1 hello",
+      });
+
+      await f.ingest({
+        id: "<dsn@mail.example.test>",
+        refs: ["<m1@example.test>"],
+        subject: "Undelivered Mail Returned to Sender",
+        from: "MAILER-DAEMON@mail.example.test",
+        date: new Date("2026-03-03T10:00:00Z"),
+      });
+      expect(await shown()).toEqual({
+        list: ["[x] M1 hello", "MAILER-DAEMON@mail.example.test", 3],
+        detail: ["[x] M1 hello", "MAILER-DAEMON@mail.example.test", "2026-03-03T10:00:00.000000Z"],
+        label: "[x] M1 hello",
+      });
     });
   });
   it("does not count an own sent-only message as unread", async () => {
