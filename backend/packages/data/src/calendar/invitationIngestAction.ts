@@ -35,7 +35,9 @@ import { invitationEventFields } from "./invitationEventFields.js";
 import { lockInvitationOfUid, notifyInvitation } from "./invitationRows.js";
 import { logger } from "./logger.js";
 
-export const CALENDAR_INGEST_INVITATION_ACTION_ID = "calendar.ingestInvitation";
+import { CALENDAR_INGEST_INVITATION_ACTION_ID } from "./invitationActionKeys.js";
+
+export { CALENDAR_INGEST_INVITATION_ACTION_ID } from "./invitationActionKeys.js";
 
 /** Both database ids are resolved once at seed time. */
 const configSchema = z.object({ emailsDatabaseId: z.uuid(), invitationsDatabaseId: z.uuid() });

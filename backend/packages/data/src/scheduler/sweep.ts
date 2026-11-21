@@ -90,6 +90,10 @@ export async function handleHeartbeatSweepTask(
   });
 }
 
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "string");
+}
+
 /** Fails loudly when a job landed on the wrong runtime's fire task instead of running it there. */
 function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity): void {
   const resolvedTaskName = resolveHeartbeatFireTaskName(actionId);
@@ -104,8 +108,10 @@ function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity):
 
 /**
  * On the final attempt (of 3), a failure of the handler or its setup is recorded with a `heartbeat_error`
- * notification. `payload` carries exactly one of `occurrenceId`, `itemId`, `triggeredByRunId`,
- * `triggeredByUserId`, `retryOfRunId`; otherwise `validation_failed`.
+ * notification. `payload` carries exactly one of `occurrenceId`, `itemId`, `itemIds`, `triggeredByRunId`,
+ * `triggeredByUserId`, `retryOfRunId`; otherwise `validation_failed`. For `itemIds` the handler runs once per item in
+ * order; a failing item does not stop the others, the job then fails with the first error and a retry runs every
+ * item again.
  */
 function createHeartbeatFireTaskForAffinity(
   pool: Pool,
@@ -133,6 +139,10 @@ function createHeartbeatFireTaskForAffinity(
     if (rawItemId !== undefined && typeof rawItemId !== "string") {
       throw new Error("heartbeat fire job payload field 'itemId' must be a string when present");
     }
+    const rawItemIds: unknown = record?.itemIds;
+    if (rawItemIds !== undefined && !isNonEmptyStringArray(rawItemIds)) {
+      throw new Error("heartbeat fire job payload field 'itemIds' must be a non-empty string array when present");
+    }
     const rawTriggeredByRunId = record?.triggeredByRunId;
     if (rawTriggeredByRunId !== undefined && typeof rawTriggeredByRunId !== "string") {
       throw new Error("heartbeat fire job payload field 'triggeredByRunId' must be a string when present");
@@ -148,20 +158,21 @@ function createHeartbeatFireTaskForAffinity(
     const discriminators = [
       rawOccurrenceId,
       rawItemId,
+      rawItemIds,
       rawTriggeredByRunId,
       rawTriggeredByUserId,
       rawRetryOfRunId,
     ].filter((v) => v !== undefined);
     if (discriminators.length !== 1) {
       throw new ValidationError(
-        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId', 'triggeredByUserId', 'retryOfRunId'",
+        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'itemIds', 'triggeredByRunId', 'triggeredByUserId', 'retryOfRunId'",
       );
     }
     const payload = {
       heartbeatId,
       occurrenceId: rawOccurrenceId,
       generation: rawGeneration as number | undefined,
-      itemId: rawItemId,
+      itemIds: rawItemIds === undefined ? [rawItemId] : rawItemIds,
       triggeredByRunId: rawTriggeredByRunId,
       triggeredByUserId: rawTriggeredByUserId,
       retryOfRunId: rawRetryOfRunId,
@@ -205,15 +216,23 @@ function createHeartbeatFireTaskForAffinity(
       assertActionAffinity(heartbeat.actionId, expectedAffinity);
       const handler = registry.get(heartbeat.actionId);
       if (!handler) throw new Error(`No handler registered for heartbeat action '${heartbeat.actionId}'`);
-      await handler(heartbeat.actionConfig, {
-        heartbeatId: heartbeat.id,
-        projectItemId: heartbeat.projectItemId,
-        itemId: payload.itemId,
-        triggeredByRunId: payload.triggeredByRunId,
-        triggeredByUserId: payload.triggeredByUserId,
-        retryOfRunId: payload.retryOfRunId,
-        isFinalAttempt,
-      });
+      let failure: { error: unknown } | undefined;
+      for (const itemId of payload.itemIds) {
+        try {
+          await handler(heartbeat.actionConfig, {
+            heartbeatId: heartbeat.id,
+            projectItemId: heartbeat.projectItemId,
+            itemId,
+            triggeredByRunId: payload.triggeredByRunId,
+            triggeredByUserId: payload.triggeredByUserId,
+            retryOfRunId: payload.retryOfRunId,
+            isFinalAttempt,
+          });
+        } catch (error) {
+          failure ??= { error };
+        }
+      }
+      if (failure) throw failure.error;
       await withTransaction(pool, (client) => recordHeartbeatHandlerSuccess(client, heartbeat));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

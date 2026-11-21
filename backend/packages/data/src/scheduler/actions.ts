@@ -17,6 +17,11 @@ import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
+import {
+  CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
+  CALENDAR_INGEST_INVITATION_ACTION_ID,
+} from "../calendar/invitationActionKeys.js";
+import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID } from "../mail/personLinkingKeys.js";
 import { ValidationError } from "../errors.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 import { logger } from "./logger.js";
@@ -25,7 +30,7 @@ import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderK
 export interface ActionContext {
   heartbeatId: string;
   projectItemId: string;
-  /** Set for a rule fired via onItemEvent. */
+  /** Set for a rule fired via onItemEvent; a batched fire calls the handler once per item. */
   itemId?: string;
   /** The agent run that fired this heartbeat via `heartbeat.trigger`; becomes the new run's `parent_run_id`. */
   triggeredByRunId?: string;
@@ -303,6 +308,17 @@ export function resolveHeartbeatFireTaskName(actionId: string): CoreTaskName | A
     ? AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
     : CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
 }
+
+/**
+ * Deterministic `onItemEvent` actions on every new Email whose fires of one transaction share one job: a mail sync
+ * batch creates many Emails at once, and for most of them these actions find nothing to do. Their handlers are
+ * idempotent per item, as a queue retry already requires.
+ */
+export const ITEM_EVENT_BATCH_ACTION_IDS: ReadonlySet<string> = new Set([
+  MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
+  CALENDAR_INGEST_INVITATION_ACTION_ID,
+  CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
+]);
 
 const AGENT_RUN_LANE = "agent-run";
 

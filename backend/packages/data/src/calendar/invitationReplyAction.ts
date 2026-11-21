@@ -18,7 +18,9 @@ import { EVENT_PEOPLE_PROPERTY_KEY, readEventParticipantMetadata } from "./event
 import { parseICalendar } from "./icalendarParser.js";
 import { logger } from "./logger.js";
 
-export const CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID = "calendar.applyInvitationReply";
+import { CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID } from "./invitationActionKeys.js";
+
+export { CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID } from "./invitationActionKeys.js";
 
 /** The database ids are resolved once at seed time. */
 const configSchema = z.object({

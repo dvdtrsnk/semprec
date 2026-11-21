@@ -1,10 +1,11 @@
+import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";
 import { getSystemTimezone } from "../systemSettings.js";
-import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, TransactionLocal, withTransaction } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInvalidation.js";
 import { computeNextFireAt } from "./nextFireAt.js";
@@ -19,6 +20,7 @@ import {
 import {
   CORE_AGENT_RUN_ACTION_ID,
   createActionQueueAffinity,
+  ITEM_EVENT_BATCH_ACTION_IDS,
   resolveAgentRunLane,
   resolveHeartbeatFireTaskName,
   type ActionQueueAffinity,
@@ -463,7 +465,7 @@ export async function recordHeartbeatFailure(client: Pool | PoolClient, id: stri
   await client.query(`UPDATE project_heartbeats SET last_error = $2 WHERE id = $1`, [id, error]);
 }
 
-/** `suffix` is an `itemId` for an `onItemEvent` fire; distinct suffixes never replace each other's job. */
+/** `suffix` is an `itemId` or a batch for an `onItemEvent` fire; distinct suffixes never replace each other's job. */
 export function heartbeatFireJobKey(heartbeatId: string, suffix?: string): string {
   return suffix ? `heartbeat-fire:${heartbeatId}:${suffix}` : `heartbeat-fire:${heartbeatId}`;
 }
@@ -517,7 +519,18 @@ export async function hasWaitingHeartbeatFireJob(client: Pool | PoolClient, hear
   return requireSingleRow(rows, "heartbeat fire job lookup").waiting;
 }
 
-/** Runs in the item write's transaction. These heartbeats keep `next_fire_at` NULL, invisible to the sweep. */
+/**
+ * Per managed transaction and heartbeat, the key and the item ids of its batched fire job. A savepoint rolled back
+ * after an item was added leaves that id in the batch; the handlers treat an item that is gone as no work, as they do
+ * for one deleted before its fire.
+ */
+const itemEventBatches = new TransactionLocal(() => new Map<string, { jobKey: string; itemIds: string[] }>());
+
+/**
+ * Runs in the item write's transaction. These heartbeats keep `next_fire_at` NULL, invisible to the sweep. An action in
+ * `ITEM_EVENT_BATCH_ACTION_IDS` gets one job per heartbeat and transaction carrying every item id (re-enqueued under
+ * the same key, so the uncommitted job's payload grows); every other action one job per item.
+ */
 export async function triggerOnItemEventHeartbeats(
   client: PoolClient,
   databaseId: string,
@@ -536,17 +549,29 @@ export async function triggerOnItemEventHeartbeats(
   );
   for (const row of rows) {
     const baseLane = queueAffinity.get(row.action_id);
+    const queueName =
+      resolveAgentRunLane(row.action_id) ?? (baseLane === undefined ? undefined : (tenantLane(baseLane) ?? baseLane));
+    const batches = ITEM_EVENT_BATCH_ACTION_IDS.has(row.action_id) ? itemEventBatches.get(client) : undefined;
+    if (batches) {
+      let batch = batches.get(row.id);
+      if (!batch) {
+        batch = { jobKey: heartbeatFireJobKey(row.id, `batch:${randomUUID()}`), itemIds: [] };
+        batches.set(row.id, batch);
+      }
+      if (!batch.itemIds.includes(itemId)) batch.itemIds.push(itemId);
+      await enqueueJob(
+        client,
+        resolveHeartbeatFireTaskName(row.action_id),
+        { heartbeatId: row.id, itemIds: [...batch.itemIds] },
+        { jobKey: batch.jobKey, maxAttempts: 3, queueName },
+      );
+      continue;
+    }
     await enqueueJob(
       client,
       resolveHeartbeatFireTaskName(row.action_id),
       { heartbeatId: row.id, itemId },
-      {
-        jobKey: heartbeatFireJobKey(row.id, itemId),
-        maxAttempts: 3,
-        queueName:
-          resolveAgentRunLane(row.action_id) ??
-          (baseLane === undefined ? undefined : (tenantLane(baseLane) ?? baseLane)),
-      },
+      { jobKey: heartbeatFireJobKey(row.id, itemId), maxAttempts: 3, queueName },
     );
   }
 }

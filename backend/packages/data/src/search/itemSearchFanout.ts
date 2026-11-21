@@ -144,10 +144,11 @@ export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPaylo
   });
 }
 
-/** Both ends' documents; for a project's `area` edge also the project's items. */
+/**
+ * Both ends' documents, except an Email end, whose row mail writes (`indexItem` skips it); for a project's `area` edge
+ * also the project's items.
+ */
 export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
-  await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemA });
-  await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemB });
   const { rows } = await context.client.query<{ owner_module_id: string | null; key: string; is_a: boolean }>(
     `SELECT d.owner_module_id, p.key, rd.property_id_a = p.id AS is_a
      FROM relation_definitions rd
@@ -156,6 +157,9 @@ export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context
      WHERE rd.tenant_id = app_tenant_default() AND rd.id = $1 AND d.system`,
     [context.relationDefinitionId],
   );
+  const isEmailEnd = (isA: boolean) => rows.some((row) => row.is_a === isA && row.owner_module_id === EMAILS_MODULE_ID);
+  if (!isEmailEnd(true)) await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemA });
+  if (!isEmailEnd(false)) await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemB });
   const areaSide = rows.find((row) => row.owner_module_id === PROJECTS_MODULE_ID && row.key === "area");
   if (areaSide)
     await enqueueItemSearchReindex(context.client, {
