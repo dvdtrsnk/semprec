@@ -168,6 +168,7 @@ class HttpMailboxRepositoryTest {
     }
 
     private val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
+    private val unavailable = RepositoryResult.Failure(FailureKind.UNAVAILABLE)
 
     /** Each answer of the server and what the password routes make of it. */
     private val refusals = listOf<Triple<HttpStatusCode, String, RepositoryResult<MailConnectOutcome>>>(
@@ -214,7 +215,13 @@ class HttpMailboxRepositoryTest {
         Triple(HttpStatusCode.BadRequest, "not json", rejected),
         Triple(HttpStatusCode.BadRequest, """{"error":"text"}""", rejected),
         Triple(HttpStatusCode.NotFound, errorBody("not_found"), RepositoryResult.Failure(FailureKind.NOT_FOUND)),
-        Triple(HttpStatusCode.BadGateway, "", RepositoryResult.Failure(FailureKind.UNAVAILABLE)),
+        Triple(
+            HttpStatusCode.PayloadTooLarge,
+            errorBody("payload_too_large"),
+            RepositoryResult.Failure(FailureKind.INVALID_DATA),
+        ),
+        Triple(HttpStatusCode.InternalServerError, errorBody("internal_error"), unavailable),
+        Triple(HttpStatusCode.BadGateway, "", unavailable),
     )
 
     private fun errorBody(code: String) = """{"error":{"code":"$code","message":"m"}}"""
@@ -235,7 +242,10 @@ class HttpMailboxRepositoryTest {
 
     @Test
     fun aPasswordSignInAgainPutsThePasswordAndAGivenUserName() = runTest {
-        val server = MailTestServer { ok("""{"item":{"id":"$BOX"}}""") }
+        // The answer is the item; its sync status reads the old state until the queued sync has run.
+        val server = MailTestServer {
+            ok("""{"id":"$BOX","databaseId":"d","properties":{"syncStatus":"needsReauthorization"},"version":"9"}""")
+        }
         val mailboxes = server.mailboxes()
 
         assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected), mailboxes.updatePassword(BOX, "pw", null))
