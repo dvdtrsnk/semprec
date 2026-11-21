@@ -189,5 +189,7 @@ enum CalendarKotlin {
         )
     }
 
-    static let icloud = SharedSDK.NewItemAccount(id: "m1", name: "iCloud", address: "david@tresnak.cc")
+    static var icloud: SharedSDK.NewItemAccount {
+        SharedSDK.NewItemAccount(id: "m1", name: "iCloud", address: "david@tresnak.cc")
+    }
 }
