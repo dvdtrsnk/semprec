@@ -214,8 +214,8 @@ async function sentFolderPathOf(
 
 /**
  * Gmail and Graph file sent mail themselves; an IMAP server does not, so the raw message is appended
- * with `\Seen`. The connection goes through the outbound address policy and holds the account's IMAP
- * connection slot at the sync worker's limit. It opens while the submission runs; the APPEND waits for
+ * with `\Seen`. The connection goes through the outbound address policy and holds an IMAP connection
+ * slot of the account, at the sync worker's limit, and of the server host. It opens while the submission runs; the APPEND waits for
  * `accepted` and is skipped, the connection closed, when the server refused the message. No Sent folder
  * yet logs `no_sent_folder` for an accepted message and keeps no copy.
  */
@@ -256,7 +256,13 @@ export function createSentCopySaver(
       return;
     }
 
-    await limiter.run(mailboxItemId, connectionLimit, async () => {
+    const target = {
+      accountId: mailboxItemId,
+      accountLimit: connectionLimit,
+      host: stored.imap.host,
+      kind: "work" as const,
+    };
+    await limiter.run(target, async () => {
       // A submission refused before the slot was free needs no connection.
       if (decision === false) return;
       const imap = await openImap(imapSettings, credential);

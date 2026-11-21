@@ -1334,4 +1334,28 @@ describe("openImapFlow", () => {
       client.close();
     }
   });
+
+  it("admits the login under the server host's login rate before it connects, and connects nothing when the wait ends", async () => {
+    useMailHost();
+    trustCertificate(mailCertificate);
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    const admitted: string[] = [];
+    const client = await openImapFlow(settingsFor("mail.test", server.port), credential, {
+      loginAdmission: {
+        admitLogin: async (host) => {
+          admitted.push(host);
+          expect(server.connections()).toBe(0);
+        },
+      },
+    });
+    client.close();
+    expect(admitted).toEqual(["mail.test"]);
+
+    const ended = new Error("the lifecycle stopped");
+    const refused = openImapFlow(settingsFor("mail.test", server.port), credential, {
+      loginAdmission: { admitLogin: () => Promise.reject(ended) },
+    });
+    await expect(refused).rejects.toBe(ended);
+    expect(server.connections()).toBe(1);
+  });
 });

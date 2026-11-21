@@ -36,7 +36,6 @@ import { listMailThreads } from "../mail/mailThreadListQuery.js";
 import { removeMailbox } from "../mail/mailboxRemoval.js";
 import { handleMailboxRemovalTask } from "../mail/mailboxRemovalJob.js";
 import { GOOGLE_TOKEN_URL } from "../mail/oauthTokenExchange.js";
-import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -1161,13 +1160,10 @@ describe("mailbox restore hook (gh-2032)", () => {
       mailboxId,
     ]);
 
-    // Two passes, as two sweeps queue them. Neither finds a credential, and neither reaches the provider.
+    // Two passes, as two sweeps queue them. The first finds no credential and records it without a retry; the
+    // second ends at the recorded failure kind. Neither reaches the provider.
     const gmail = gmailAccount([]);
-    for (let pass = 0; pass < 2; pass += 1) {
-      const failed = syncPass(mailboxId, gmail.client);
-      await expect(failed).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
-      await expect(failed).rejects.toThrow("has no stored credential");
-    }
+    for (let pass = 0; pass < 2; pass += 1) await syncPass(mailboxId, gmail.client);
     expect(gmail.calls).toEqual([]);
 
     // The mailbox is still waiting for the sign-in: that is what the status, the failure kind, the
@@ -1178,7 +1174,7 @@ describe("mailbox restore hook (gh-2032)", () => {
     expect(waiting[0]).toMatchObject({ sync_mode: "gmail_api", last_failure_kind: "reauthorization" });
     expect(waiting[0]?.failing_since).not.toBeNull();
     expect(await notificationKindsOf(mailboxId)).toEqual([]);
-    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 2, resolved: false }]);
+    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 1, resolved: false }]);
     const summary = await runInTenant(tenant, () => createMailSummaryRouteHandler(runtime)());
     expect(summary.body.accountsNeedingReauth).toEqual([{ id: mailboxId, name: "Work" }]);
 
@@ -1193,7 +1189,7 @@ describe("mailbox restore hook (gh-2032)", () => {
       failing_since: null,
     });
     expect(await notificationKindsOf(mailboxId)).toEqual([]);
-    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 2, resolved: true }]);
+    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 1, resolved: true }]);
   });
 
   it("lets the user sign in again after the restore: sync resumes with the new token and duplicates neither the restored messages nor their folders", async () => {

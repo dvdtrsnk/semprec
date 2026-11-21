@@ -40,7 +40,7 @@ import {
   type MailServerEndpoint,
 } from "@semprec/data";
 import {
-  connectionLimitOf,
+  imapConnectionTargetOf,
   createGmailPubSubDispatcherFor,
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
@@ -219,7 +219,7 @@ function createFakeIdleTransport(
 function imapIdleOver(transport: ImapIdleTransport): MailLiveSyncLifecycleFactory {
   return createBoundedImapIdleLifecycleFactory(pool, transport, {
     getCredential: async () => APP_PASSWORD,
-    getConnectionLimit: () => 5,
+    getConnectionTarget: () => ({ accountLimit: 5, host: "imap.example.test" }),
     reconnectBaseDelayMs: 5,
     reconnectMaxDelayMs: 10,
     onError: (mailboxItemId, folderPath, err) => {
@@ -259,6 +259,14 @@ async function insertMailbox(
     }),
   );
 }
+
+const TARGET_IMAP_HOST = "imap.target.test";
+const storeImapSettings = (client: PoolClient, itemId: string) =>
+  upsertMailServerSettings(client, itemId, {
+    imap: { host: TARGET_IMAP_HOST, port: 993, security: "tls" },
+    smtp: { host: "smtp.target.test", port: 465, security: "tls" },
+    username: "owner@target.test",
+  });
 
 const storeAppPassword = (client: PoolClient, itemId: string) =>
   storeCredential(client, { itemId, credentialType: "app_password", plaintext: APP_PASSWORD });
@@ -535,16 +543,20 @@ describe("mail live-sync lifecycles by sync mode", () => {
     expect(Object.keys(error as Error)).toEqual([]);
   });
 
-  it("reads the mailbox's configured connection limit, then its provider's, then the default, also for an unknown mailbox", async () => {
-    const configured = await insertMailbox("icloud", { properties: { connectionLimit: 4 } });
-    const icloud = await insertMailbox("icloud");
-    const generic = await insertMailbox("generic");
+  it("reads the mailbox's configured connection limit, then its provider's, then the default, with its IMAP host", async () => {
+    const withSettings = {
+      then: (client: PoolClient, _databaseId: string, id: string) => storeImapSettings(client, id),
+    };
+    const configured = await insertMailbox("icloud", { properties: { connectionLimit: 4 }, ...withSettings });
+    const icloud = await insertMailbox("icloud", withSettings);
+    const generic = await insertMailbox("generic", withSettings);
+    const unconfigured = await insertMailbox("generic");
 
     await inTenantZero(async () => {
-      expect(await connectionLimitOf(pool, configured)).toBe(4);
-      expect(await connectionLimitOf(pool, icloud)).toBe(3);
-      expect(await connectionLimitOf(pool, generic)).toBe(2);
-      expect(await connectionLimitOf(pool, randomUUID())).toBe(2);
+      expect(await imapConnectionTargetOf(pool, configured)).toEqual({ accountLimit: 4, host: TARGET_IMAP_HOST });
+      expect(await imapConnectionTargetOf(pool, icloud)).toEqual({ accountLimit: 3, host: TARGET_IMAP_HOST });
+      expect(await imapConnectionTargetOf(pool, generic)).toEqual({ accountLimit: 2, host: TARGET_IMAP_HOST });
+      await expect(imapConnectionTargetOf(pool, unconfigured)).rejects.toThrow("has no IMAP server settings");
     });
   });
 });

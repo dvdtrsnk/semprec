@@ -14,6 +14,7 @@ interface CapturedLine {
 function createFakes(
   options: {
     mailLiveSyncStop?: () => Promise<void>;
+    imapSessionsClose?: () => Promise<void>;
     listenerClose?: () => Promise<void>;
     voiceClose?: () => Promise<void>;
   } = {},
@@ -60,6 +61,12 @@ function createFakes(
       calls.push("queueRuntime.stop");
     },
   };
+  const imapSessions = {
+    close: async () => {
+      calls.push("imapSessions.close");
+      await options.imapSessionsClose?.();
+    },
+  };
   const pool = {
     end: async () => {
       calls.push("pool.end");
@@ -76,7 +83,17 @@ function createFakes(
   return {
     calls,
     lines,
-    deps: { server, tenantDeactivationListener, syncServer, voiceServer, mailLiveSync, queueRuntime, pool, logger },
+    deps: {
+      server,
+      tenantDeactivationListener,
+      syncServer,
+      voiceServer,
+      mailLiveSync,
+      queueRuntime,
+      imapSessions,
+      pool,
+      logger,
+    },
   };
 }
 
@@ -94,6 +111,7 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
       "drained",
       "mailLiveSync.stop",
       "queueRuntime.stop",
+      "imapSessions.close",
       "pool.end",
     ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([]);
@@ -133,12 +151,35 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
     expect(calls.slice(calls.indexOf("mailLiveSync.stop"))).toEqual([
       "mailLiveSync.stop",
       "queueRuntime.stop",
+      "imapSessions.close",
       "pool.end",
     ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([
       { level: "error", obj: { err: stopError, signal: "SIGTERM" }, msg: "mailLiveSync.stop() failed" },
     ]);
     expect(lines.at(-1)).toMatchObject({ level: "info", obj: { signal: "SIGTERM", timedOut: false } });
+  });
+});
+
+describe("semprec-api graceful shutdown closes the kept IMAP sync sessions", () => {
+  it("closes them after the queue runtime stopped and before the pool ends, logging a failure by its name", async () => {
+    const failure = new Error("private logout failure");
+    const { calls, lines, deps } = createFakes({
+      imapSessionsClose: async () => {
+        throw failure;
+      },
+    });
+
+    await createGracefulShutdown(deps)("SIGTERM");
+
+    expect(calls.slice(calls.indexOf("queueRuntime.stop"))).toEqual([
+      "queueRuntime.stop",
+      "imapSessions.close",
+      "pool.end",
+    ]);
+    expect(lines.filter((line) => line.level === "error")).toEqual([
+      { level: "error", obj: { errorName: "Error", signal: "SIGTERM" }, msg: "imapSessions.close() failed" },
+    ]);
   });
 });
 
@@ -173,6 +214,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       "drained",
       "mailLiveSync.stop",
       "queueRuntime.stop",
+      "imapSessions.close",
       "pool.end",
     ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([
@@ -202,6 +244,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       "drained",
       "mailLiveSync.stop",
       "queueRuntime.stop",
+      "imapSessions.close",
       "pool.end",
     ]);
     expect(lines.filter((line) => line.level === "error")).toEqual([

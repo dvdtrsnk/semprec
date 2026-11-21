@@ -287,7 +287,11 @@ async function graphTarget(
   return found.rowCount === 1 && typeof id === "string" && id.length > 0 && id.length <= 1024 ? id : null;
 }
 
-/** Runs an IMAP move on a separately opened, exclusively owned connection. */
+/**
+ * Runs the pending IMAP moves on an exclusively owned connection, one after another on the same one. A move after
+ * which the connection is not known to be clean (`isReusable` is not `true`: an operation failed, timed out or answered
+ * unexpectedly, or the client cannot tell) closes it, and the next move opens another.
+ */
 export async function drainImapMoves(
   pool: Pool,
   mailboxItemId: string,
@@ -297,6 +301,57 @@ export async function drainImapMoves(
   folderRelationPropertyId: string,
 ): Promise<void> {
   const rows = await withTransaction(pool, (client) => listPendingMoves(client, mailboxItemId));
+  let open: ImapMailClient | undefined;
+  try {
+    await drainImapMoveRows(
+      pool,
+      mailboxItemId,
+      rows,
+      async () => (open ??= await createClient()),
+      () => {
+        open = undefined;
+      },
+      foldersDatabaseId,
+      mailboxFolderPropertyId,
+      folderRelationPropertyId,
+    );
+  } catch (error) {
+    if (open) {
+      const connection = open;
+      open = undefined;
+      try {
+        await connection.close();
+      } catch (cleanupError) {
+        // The drain's own failure is the one reported; the cleanup failure stays private.
+        void cleanupError;
+      }
+    }
+    throw error;
+  }
+  if (open) {
+    const connection = open;
+    open = undefined;
+    try {
+      await connection.close();
+    } catch (cleanupError) {
+      void cleanupError;
+      // The private provider boundary cannot expose a secret-bearing cause.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("IMAP move provider cleanup failed unexpectedly");
+    }
+  }
+}
+
+async function drainImapMoveRows(
+  pool: Pool,
+  mailboxItemId: string,
+  rows: Awaited<ReturnType<typeof listPendingMoves>>,
+  connection: () => Promise<ImapMailClient>,
+  forgetConnection: () => void,
+  foldersDatabaseId: string,
+  mailboxFolderPropertyId: string,
+  folderRelationPropertyId: string,
+): Promise<void> {
   for (const row of rows) {
     if (
       row.source_evidence.provider !== "imap" ||
@@ -305,7 +360,7 @@ export async function drainImapMoves(
     )
       continue;
     const source = row.source_evidence;
-    const imap = await createClient();
+    const imap = await connection();
     let providerFailure: { value: unknown } | undefined;
     let operationFailure: { value: unknown } | undefined;
     let cleanupFailure: { value: unknown } | undefined;
@@ -491,7 +546,9 @@ export async function drainImapMoves(
       await perform();
     } catch (error) {
       operationFailure = { value: error };
-    } finally {
+    }
+    if (operationFailure || imap.isReusable?.() !== true) {
+      forgetConnection();
       try {
         await imap.close();
       } catch (error) {

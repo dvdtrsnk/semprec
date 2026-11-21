@@ -189,7 +189,7 @@ export class FakeImapAccount {
           targetUidValidity: String(this.folder(targetPath).uidValidity),
         };
       },
-    } satisfies Omit<Required<ImapMailClient>, "close">;
+    } satisfies Omit<Required<ImapMailClient>, "close" | "isReusable" | "ping">;
     // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not.
     const logged =
       <A extends unknown[], R>(method: string, fn: (...args: A) => Promise<R>) =>

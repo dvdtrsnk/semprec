@@ -7,7 +7,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createUser } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError } from "../errors.js";
-import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapFolderRef } from "../mail/imapReconcile.js";
 import { logger as mailLogger } from "../mail/logger.js";
 import { createMailboxPasswordConnectRouteHandler } from "../mail/mailboxPasswordRouteHandlers.js";
@@ -218,8 +217,6 @@ describe("a password mailbox, right after POST /api/mail/mailboxes", () => {
           { createImapClient: () => connectLoopbackImapClient(port) },
           moduleIds,
           noAttachmentStorage,
-          undefined,
-          createImapConnectionLimiter(),
         );
       });
       const folders = await foldersOf(mailboxId);

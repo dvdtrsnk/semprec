@@ -5,15 +5,17 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
   createBoundedImapIdleLifecycleFactory,
-  reconnectBackoffDelayMs,
   type ImapIdleConnection,
   type ImapIdleFolderTarget,
   type ImapIdleTransport,
 } from "../mail/imapIdleLifecycle.js";
 import { createImapFlowIdleTransport } from "../mail/imapIdleClient.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 
 let pool: Pool;
+
+const IMAP_HOST = "imap.example.test";
 
 async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
@@ -123,19 +125,6 @@ function createFakeTransport(options: FakeTransportOptions = {}): {
   return { transport, connections, connectAttempts };
 }
 
-describe("bounded IMAP IDLE reconnect backoff (issue #196)", () => {
-  it("grows exponentially, capped at the configured maximum", () => {
-    expect(reconnectBackoffDelayMs(1, 1000, 60_000)).toBe(1000);
-    expect(reconnectBackoffDelayMs(2, 1000, 60_000)).toBe(2000);
-    expect(reconnectBackoffDelayMs(3, 1000, 60_000)).toBe(4000);
-    expect(reconnectBackoffDelayMs(10, 1000, 60_000)).toBe(60_000);
-  });
-
-  it("never goes below the base delay even for attempt 0", () => {
-    expect(reconnectBackoffDelayMs(0, 1000, 60_000)).toBe(1000);
-  });
-});
-
 describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -155,7 +144,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     const { transport, connections } = createFakeTransport();
     const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 5,
+      getConnectionTarget: () => ({ accountLimit: 5, host: IMAP_HOST }),
     });
     const lifecycle = factory({ mailboxItemId: "mailbox-1", syncMode: "imap" });
 
@@ -180,7 +169,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     const errors: Array<{ folderPath: string }> = [];
     const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 5,
+      getConnectionTarget: () => ({ accountLimit: 5, host: IMAP_HOST }),
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 2,
       onError: (_mailboxItemId, folderPath) => errors.push({ folderPath }),
@@ -200,7 +189,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     const { transport, connections } = createFakeTransport();
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 5,
+      getConnectionTarget: () => ({ accountLimit: 5, host: IMAP_HOST }),
       hardCycleDeadlineMs: 30,
     })({ mailboxItemId: "mailbox-3", syncMode: "imap" });
     await lifecycle.start();
@@ -216,7 +205,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     });
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 5,
+      getConnectionTarget: () => ({ accountLimit: 5, host: IMAP_HOST }),
       reconnectBaseDelayMs: 5,
       reconnectMaxDelayMs: 20,
     })({ mailboxItemId: "mailbox-4", syncMode: "imap" });
@@ -232,7 +221,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     });
     const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 5,
+      getConnectionTarget: () => ({ accountLimit: 5, host: IMAP_HOST }),
     });
     const lifecycle = factory({ mailboxItemId: "mailbox-5", syncMode: "imap" });
 
@@ -268,7 +257,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "app-password",
-      getConnectionLimit: () => 1, // budget of one — Inbox and All Mail must never both hold a slot at once
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }), // budget of one — Inbox and All Mail must never both hold a slot at once
     });
     const lifecycle = factory({ mailboxItemId: "mailbox-6", syncMode: "imap" });
 
@@ -289,7 +278,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
         if (stored === null) throw new MailReauthorizationRequiredError("Mailbox has no stored credential");
         return stored;
       },
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       reconnectBaseDelayMs: 1,
       reconnectMaxDelayMs: 1,
       onError: (_id, _folder, error) => errors.push(error),
@@ -325,7 +314,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
         if (++attempts === 1) throw refusal;
         return "password";
       },
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       reconnectBaseDelayMs: 1,
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "discovery-retry", syncMode: "imap" });
@@ -341,9 +330,9 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     const { transport, connections } = createFakeTransport();
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => {
+      getConnectionTarget: () => {
         if (++attempts === 1) throw new Error("private limit");
-        return 1;
+        return { accountLimit: 1, host: IMAP_HOST };
       },
       reconnectBaseDelayMs: 1,
       onError: () => {},
@@ -369,7 +358,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
     })({ mailboxItemId: "discovery-stop", syncMode: "imap" });
     const starting = lifecycle.start();
     await ready;
@@ -405,7 +394,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       if (stage === "connect") transport.connect = failAtStage;
       const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
         getCredential: () => (stage === "credential" ? failAtStage() : Promise.resolve("password")),
-        getConnectionLimit: () => (stage === "limit" ? failAtStage() : 1),
+        getConnectionTarget: () => (stage === "limit" ? failAtStage() : { accountLimit: 1, host: IMAP_HOST }),
         onError: (_id, _folder, error) => errors.push(error),
       })({ mailboxItemId: `stop-${stage}`, syncMode: "imap" });
       await lifecycle.start();
@@ -432,7 +421,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "connection-and-cleanup", syncMode: "imap" });
     await lifecycle.start();
@@ -470,7 +459,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "stop-during-cleanup", syncMode: "imap" });
     await lifecycle.start();
@@ -508,7 +497,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "end-during-stop-cleanup", syncMode: "imap" });
     await lifecycle.start();
@@ -548,7 +537,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     };
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "late-undefined", syncMode: "imap" });
     await lifecycle.start();
@@ -578,7 +567,7 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
     });
     const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
       getCredential: async () => "password",
-      getConnectionLimit: () => 1,
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
       reconnectBaseDelayMs: 1,
       onError: (_id, _folder, error) => errors.push(error),
     })({ mailboxItemId: "retry-composed", syncMode: "imap" });
@@ -638,9 +627,9 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       });
       const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
         getCredential: async () => "password",
-        getConnectionLimit: () => 1,
+        getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
         connectionLimiter: {
-          async run(_id, _limit, work) {
+          async run(_target, work) {
             heldSlots++;
             try {
               return await work();
@@ -648,6 +637,8 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
               heldSlots--;
             }
           },
+          acquire: () => Promise.reject(new Error("the IDLE lifecycle only runs tasks under a slot")),
+          admitLogin: () => Promise.reject(new Error("the fake transport signs nothing in")),
         },
         onError: (_id, _folder, error) => errors.push(error),
       })({ mailboxItemId: `held-close-${closeMode}`, syncMode: "imap" });
@@ -711,4 +702,129 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       if (cleanup) throw cleanup.value;
     },
   );
+
+  /** How often the account's pass was queued: the job's key folds repeats into one row and counts them. */
+  async function mailSyncEnqueues(mailboxItemId: string): Promise<number> {
+    const { rows } = await pool.query<{ revision: number }>(
+      "SELECT revision FROM graphile_worker._private_jobs WHERE key = $1",
+      [`mail-account-sync:${mailboxItemId}`],
+    );
+    return rows[0] === undefined ? 0 : rows[0].revision + 1;
+  }
+
+  it.each(["folder lookup", "folder connection"] as const)(
+    "ends after one report when the server refuses the login of the %s, having queued the account's pass once",
+    async (stage) => {
+      const { transport } = createFakeTransport();
+      let logins = 0;
+      const refuse = async (): Promise<never> => {
+        logins++;
+        throw new MailReauthorizationRequiredError("The IMAP server rejected the stored login");
+      };
+      if (stage === "folder lookup") transport.resolveFolders = refuse;
+      else transport.connect = refuse;
+      const errors: unknown[] = [];
+      const mailboxItemId = `refused-${stage === "folder lookup" ? "lookup" : "connect"}`;
+      const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+        getCredential: async () => "password",
+        getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
+        reconnectBaseDelayMs: 1,
+        reconnectMaxDelayMs: 1,
+        onError: (_id, _folder, error) => errors.push(error),
+      })({ mailboxItemId, syncMode: "imap" });
+
+      await lifecycle.start();
+      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      // A retry at the 1 ms delay would have logged in again by now.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(logins).toBe(1);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(MailReauthorizationRequiredError);
+      expect(await mailSyncEnqueues(mailboxItemId)).toBe(1);
+      await lifecycle.stop();
+    },
+  );
+
+  it("queues the account's pass once per start however often the folder lookup is retried", async () => {
+    const { transport, connections } = createFakeTransport();
+    let lookups = 0;
+    transport.resolveFolders = async () => {
+      if (++lookups < 3) throw new Error("server unavailable");
+      return [{ path: "INBOX" }];
+    };
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
+      reconnectBaseDelayMs: 1,
+      reconnectMaxDelayMs: 1,
+      onError: () => {},
+    })({ mailboxItemId: "lookup-retries", syncMode: "imap" });
+
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    expect(lookups).toBe(3);
+    expect(await mailSyncEnqueues("lookup-retries")).toBe(1);
+    await lifecycle.stop();
+  });
+
+  it("waits a jittered, growing delay from the injected random source before each reconnect", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { transport, connections, connectAttempts } = createFakeTransport({
+      onConnect: (_folder, attempt) => (attempt <= 2 ? "reject" : new FakeConnection(() => {})),
+    });
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
+      reconnectBaseDelayMs: 1000,
+      reconnectMaxDelayMs: 60_000,
+      // The top of each draw: three times the previous delay, starting from the base.
+      random: () => 1,
+      onError: () => {},
+    })({ mailboxItemId: "jittered-reconnect", syncMode: "imap" });
+    const attempts = () => connectAttempts.get("INBOX") ?? 0;
+    // `vi.waitFor` would advance the fake clock itself; this waits on real I/O (the enqueue) only.
+    const until = async (condition: () => boolean) => {
+      for (let turn = 0; turn < 100_000 && !condition(); turn++) await new Promise((resolve) => setImmediate(resolve));
+      expect(condition()).toBe(true);
+    };
+
+    await lifecycle.start();
+    await until(() => attempts() === 1);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(attempts()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => attempts() === 2);
+    await vi.advanceTimersByTimeAsync(8999);
+    expect(attempts()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => connections.get("INBOX")?.length === 1);
+    await lifecycle.stop();
+  });
+
+  it("ends a wait for a connection slot when it stops", async () => {
+    const { transport } = createFakeTransport();
+    const limiter = createImapConnectionLimiter();
+    // Another connection of the account holds its only slot for as long as the test runs.
+    let releaseHolder!: () => void;
+    const holder = limiter.run(
+      { accountId: "slot-wait", accountLimit: 1, host: IMAP_HOST, kind: "work" },
+      () => new Promise<void>((resolve) => (releaseHolder = resolve)),
+    );
+    const errors: unknown[] = [];
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "password",
+      getConnectionTarget: () => ({ accountLimit: 1, host: IMAP_HOST }),
+      connectionLimiter: limiter,
+      onError: (_id, _folder, error) => errors.push(error),
+    })({ mailboxItemId: "slot-wait", syncMode: "imap" });
+
+    await lifecycle.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await lifecycle.stop();
+
+    expect(errors).toEqual([]);
+    releaseHolder();
+    await holder;
+  });
 });

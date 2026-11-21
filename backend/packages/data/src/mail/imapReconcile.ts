@@ -135,6 +135,13 @@ export interface ImapMailClient {
   appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void>;
   /** Never rejects: callers invoke it during cleanup, possibly after a failure. */
   close(): Promise<void>;
+  /**
+   * `true` while the connection is open and nothing it ran failed or was left in doubt, so a later caller can use it
+   * again (a pooled sync session, the next move of a drain). Absent: the client cannot tell, and is never reused.
+   */
+  isReusable?(): boolean;
+  /** One round trip (NOOP) proving a connection kept open between uses still answers; `false` if it does not. */
+  ping?(): Promise<boolean>;
 }
 
 export interface ReconcileImapFolderParams {

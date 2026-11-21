@@ -335,6 +335,7 @@ export {
   type MailServerSettingsInput,
 } from "./mail/mailServerSettingsStore.js";
 export {
+  classifyImapConnectFailure,
   createSmtpTransporter,
   openImapConnection,
   openImapFlow,
@@ -356,6 +357,7 @@ export {
   type ImapIdleFlowOptions,
 } from "./mail/imapIdleClient.js";
 export { imapConnectionLimitForProvider, sharedImapConnectionLimiter } from "./mail/imapConnectionLimiter.js";
+export { sharedImapSessionPool, type ImapSessionPool } from "./mail/imapSessionPool.js";
 export { getDecryptedCredential } from "./credentials/externalCredentialsStore.js";
 export {
   MailConnectionLimitError,

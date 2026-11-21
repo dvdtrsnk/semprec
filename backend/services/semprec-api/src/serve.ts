@@ -13,6 +13,7 @@ import {
   noopPasswordResetMailer,
   resolveDocHistoryRetentionDays,
   resolveModuleRuleKinds,
+  sharedImapSessionPool,
   startProcessHeartbeat,
   startTenantDeactivationListener,
   verifyCalDavServer,
@@ -79,8 +80,9 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
   return "missingEnv" in client ? undefined : client;
 }
 
-// The live-sync root is created after the dispatcher and bound to this control there.
-const mailLiveSyncControl = createMailLiveSyncControl();
+// The live-sync root is created after the dispatcher and bound to this control there. A restart or
+// stop through it also closes the account's kept IMAP sync session.
+const mailLiveSyncControl = createMailLiveSyncControl(sharedImapSessionPool);
 
 const customRouteDependencies: CustomRouteDependencies = {
   // The password routes verify a login, and the connect lists the account's folders, only through these members.
@@ -234,6 +236,7 @@ const shutdown = createGracefulShutdown({
   queueRuntime,
   gmailPubSubDispatcher,
   mailLiveSync,
+  imapSessions: sharedImapSessionPool,
   pool,
   logger,
 });

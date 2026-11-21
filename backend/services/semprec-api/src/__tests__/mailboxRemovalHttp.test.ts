@@ -22,6 +22,9 @@ import { createDispatcher } from "../app.js";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createMailLiveSyncControl, type MailLiveSyncControlBinding } from "../mailLiveSyncControl.js";
 
+/** These tests host no IMAP sync session to close. */
+const keptNoImapSessions = { closeAccount: async () => {} };
+
 /**
  * Mailbox removal through the production composition: the real dispatcher mounts the removal route with a container
  * whose `mailLiveSync` is bound to the live-sync root as `serve.ts` binds it. Cleanup branches and the control are
@@ -197,7 +200,7 @@ afterAll(async () => {
 
 describe("DELETE /api/mail/mailboxes/:id behind the REST adapter (issue gh-2030)", () => {
   it("stops the mailbox's hosted lifecycle through the bound control and revokes its stored token before it answers", async () => {
-    const control = createMailLiveSyncControl();
+    const control = createMailLiveSyncControl(keptNoImapSessions);
     const baseUrl = await listen(dependenciesWith(control));
     const mailboxId = await connectGmailMailbox(baseUrl);
     const hosting = recordingRoot();
@@ -220,7 +223,7 @@ describe("DELETE /api/mail/mailboxes/:id behind the REST adapter (issue gh-2030)
   });
 
   it("answers 200 and still revokes the token when the control is not bound to a root", async () => {
-    const baseUrl = await listen(dependenciesWith(createMailLiveSyncControl()));
+    const baseUrl = await listen(dependenciesWith(createMailLiveSyncControl(keptNoImapSessions)));
     const mailboxId = await connectGmailMailbox(baseUrl);
 
     const answer = await request(baseUrl, "DELETE", `/api/mail/mailboxes/${mailboxId}`);

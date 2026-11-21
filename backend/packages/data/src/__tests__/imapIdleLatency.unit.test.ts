@@ -3,6 +3,8 @@ import { ImapFlow } from "imapflow";
 import { afterEach, describe, expect, it } from "vitest";
 import { createImapFlowIdleTransport, type CreateIdleTunedImapFlowClient } from "../mail/imapIdleClient.js";
 
+const neverAborted = new AbortController().signal;
+
 /**
  * A loopback IMAP server with one INBOX that, like a real server, reports a new message only inside IDLE (or in the
  * response to a command): a delivery while the connection is not idling is announced when IDLE starts.
@@ -111,8 +113,12 @@ describe("IMAP IDLE signal latency right after connecting", () => {
     const signal = new Promise<void>((resolve) => {
       signalled = resolve;
     });
-    const connection = await createImapFlowIdleTransport(createClient).connect("mailbox", "secret", "INBOX", () =>
-      signalled(),
+    const connection = await createImapFlowIdleTransport(createClient).connect(
+      "mailbox",
+      "secret",
+      "INBOX",
+      () => signalled(),
+      neverAborted,
     );
     try {
       const delivered = performance.now();
