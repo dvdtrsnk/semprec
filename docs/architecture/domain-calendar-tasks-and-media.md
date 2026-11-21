@@ -360,9 +360,10 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   or `unexpected`, and raises the account's Semp problem `calendarSyncError` (`calendar:<account>`, category `mail`,
   critical for the first two). Calendars and Events stay as they were. Only `error` is rethrown for the queue's retry.
 - **Triggers.** An account created with Calendars on or switched on queues a pass; the sweep
-  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
-  last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for
-  another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
+  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, `never` or
+  `error`, or `ok` and last synced 4 min ago or more; a `needsReauthorization` or `needsConsent` account is left out
+  until a new sign-in (a replaced password or OAuth grant) sets it back to `never` and queues its pass;
+  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
   dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
   under the account row's share lock. With none in the last 60 s the pass runs now; a request inside the window of a
   pass that started queues one at the window's end; while that one is still ahead it serves the request too. The

@@ -40,7 +40,7 @@ import {
   type VerifyCalDavServerInput,
 } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
 import { enqueueCalendarAccountSync } from "../calendar/sync/calendarAccountSyncEnqueue.js";
-import { clearCalendarSyncReauthorization } from "../calendar/sync/calendarSyncStore.js";
+import { clearCalendarSyncCredentialRefusal } from "../calendar/sync/calendarSyncStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { ensureComposeFolders, type ProviderFolder } from "./folderDiscovery.js";
 import { imapProviderFolder } from "./imapReconcile.js";
@@ -479,7 +479,7 @@ async function replaceMailboxPassword(client: PoolClient, replacement: PasswordR
     caldavUrl: account.settings.caldavUrl,
   });
   await clearMailSyncFailure(client, mailboxItemId);
-  await clearCalendarSyncReauthorization(client, mailboxItemId);
+  await clearCalendarSyncCredentialRefusal(client, mailboxItemId);
   await enqueueMailAccountSync(client, mailboxItemId);
   if (areCalendarsEnabled(account.mailbox.properties)) await enqueueCalendarAccountSync(client, mailboxItemId);
   const item = await getItemById(client, mailboxesDatabaseId, mailboxItemId);

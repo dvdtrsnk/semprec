@@ -113,13 +113,14 @@ export async function recordCalendarSyncFailure(
 }
 
 /**
- * After the account's credential was replaced: a `needsReauthorization` status becomes `never` (no pass with the new
- * credential yet) and its failure record is cleared. Any other status, or no row, is left as it is.
+ * After the account's credential or grant was replaced: a `needsReauthorization` or `needsConsent` status becomes
+ * `never` (no pass with the new credential yet), which the due sweep picks up again, and its failure record is
+ * cleared. Any other status, or no row, is left as it is.
  */
-export async function clearCalendarSyncReauthorization(client: Queryable, accountItemId: string): Promise<void> {
+export async function clearCalendarSyncCredentialRefusal(client: Queryable, accountItemId: string): Promise<void> {
   await client.query(
     `UPDATE calendar_account_sync_state SET status = 'never', failing_since = NULL, last_error_code = NULL
-      WHERE account_item_id = $1 AND status = 'needsReauthorization'`,
+      WHERE account_item_id = $1 AND status IN ('needsReauthorization', 'needsConsent')`,
     [accountItemId],
   );
 }
@@ -167,8 +168,9 @@ export async function recordManualCalendarSyncRequest(
 }
 
 /**
- * Live Mailboxes items with Calendars on that have no state row, are not `ok`, or last synced at least
- * `minAgeSeconds` ago.
+ * Live Mailboxes items with Calendars on that have no state row, are `never` or `error`, or are `ok` and last synced
+ * at least `minAgeSeconds` ago. A `needsReauthorization` or `needsConsent` account is left out: only a new sign-in
+ * changes its outcome, and that clears the status and queues its pass itself.
  */
 export async function listCalendarAccountsDueForSync(client: Queryable, minAgeSeconds: number): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
@@ -178,8 +180,8 @@ export async function listCalendarAccountsDueForSync(client: Queryable, minAgeSe
        LEFT JOIN calendar_account_sync_state s ON s.tenant_id = i.tenant_id AND s.account_item_id = i.id
       WHERE i.tenant_id = app_tenant_default() AND d.system AND d.owner_module_id = $1 AND i.deleted_at IS NULL
         AND i.properties->'calendarsEnabled' = 'true'::jsonb
-        AND (s.account_item_id IS NULL OR s.status <> 'ok'
-             OR s.last_successful_sync_at <= now() - make_interval(secs => $2))
+        AND (s.account_item_id IS NULL OR s.status IN ('never', 'error')
+             OR (s.status = 'ok' AND s.last_successful_sync_at <= now() - make_interval(secs => $2)))
       ORDER BY i.id`,
     [MAILBOXES_MODULE_ID, minAgeSeconds],
   );

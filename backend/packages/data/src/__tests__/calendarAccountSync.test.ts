@@ -755,6 +755,17 @@ describe("calendar sync of internet accounts", () => {
     const off = await createAccount();
     const failing = await enableAndSync(provider());
     await admin.query("UPDATE calendar_account_sync_state SET status = 'error' WHERE account_item_id = $1", [failing]);
+    // Long past due, but only a new sign-in can change what a pass of these would answer.
+    const refused: string[] = [];
+    for (const status of ["needsReauthorization", "needsConsent"]) {
+      const accountId = await enableAndSync(provider());
+      await admin.query(
+        `UPDATE calendar_account_sync_state SET status = $2, last_successful_sync_at = now() - interval '1 day'
+          WHERE account_item_id = $1`,
+        [accountId, status],
+      );
+      refused.push(accountId);
+    }
     await clearJobs();
 
     await handleCalendarAccountSyncSweepTask(runtime);
@@ -763,6 +774,7 @@ describe("calendar sync of internet accounts", () => {
     expect(await jobKeys(failing)).toEqual([calendarAccountSyncJobKey(failing)]);
     expect(await jobKeys(synced)).toEqual([]);
     expect(await jobKeys(off)).toEqual([]);
+    for (const accountId of refused) expect(await jobKeys(accountId)).toEqual([]);
     // As if the last success were five minutes ago.
     await admin.query(
       "UPDATE calendar_account_sync_state SET last_successful_sync_at = now() - interval '5 minutes' WHERE account_item_id = $1",

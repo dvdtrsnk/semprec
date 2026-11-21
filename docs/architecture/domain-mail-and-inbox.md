@@ -127,11 +127,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   transaction: unlocked sanity read → `ensureMailAccountSyncState` → lock sync state row → lock Mailboxes item →
   re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
   (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected
-  activity), `clearCalendarSyncReauthorization` (`needsReauthorization` → `never`), enqueue `mailAccountSync` and,
-  with Calendars on, `calendarAccountSync`. After the commit the route awaits `mailLiveSync.restartAccount`; a
-  failed restart is logged (`mailboxItemId`, `errorName`) and the route still answers 200, because the replacement
-  is committed and the queued pass reads the new password. Refusals answer 400 with the connect's codes and change
-  nothing. `syncStatus` is left to the queued pass.
+  activity), `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueue
+  `mailAccountSync` and, with Calendars on, `calendarAccountSync`. After the commit the route awaits
+  `mailLiveSync.restartAccount`; a failed restart is logged (`mailboxItemId`, `errorName`) and the route still
+  answers 200, because the replacement is committed and the queued pass reads the new password. Refusals answer 400
+  with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
 
 ### OAuth connect and reauthorization
 
@@ -181,8 +181,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
   property) must match the state's provider (`gmail_api`↔`gmail`, `graph_api`↔`outlook`). A different stored
-  account address is 400 `mail_reauth_wrong_account`. It replaces the token, enqueues a sync, and does not write
-  `syncStatus` or the watch address.
+  account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes,
+  `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
+  and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
 - After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
   restart is a 500 although the token was replaced.
 
