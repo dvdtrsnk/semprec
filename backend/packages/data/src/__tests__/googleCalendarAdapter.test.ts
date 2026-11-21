@@ -720,6 +720,26 @@ describe("Google Calendar adapter", () => {
       expect(google.requests.map((request) => request.query.get("sendUpdates"))).toEqual(["none", "none"]);
     });
 
+    it.each([404, 410])(
+      "an update of an event Google no longer has (%i) is a conflict, and reading it back finds it gone",
+      async (status) => {
+        google
+          .on("PATCH", `/calendars/${PRIMARY}/events/standup`, () => ({ status }))
+          .on("GET", `/calendars/${PRIMARY}/events/standup`, () => ({ status }));
+        const run = adapterIn(await createGoogleAccount(GRANT));
+        const ref = { remoteId: "standup", href: null, etag: '"e-1"' };
+
+        await expect(run((adapter) => adapter.putEvent(calendar, { ref, fields }, signal()))).rejects.toBeInstanceOf(
+          CalendarSyncEventConflictError,
+        );
+        expect(
+          await run((adapter) =>
+            adapter.getEvent(calendar, ref, { window: { start: "2026-11-01", end: "2026-12-31" }, signal: signal() }),
+          ),
+        ).toBeNull();
+      },
+    );
+
     it("an override is patched without recurrence lines", async () => {
       google.on("PATCH", `/calendars/${PRIMARY}/events/standup_20261125T140000Z`, () => ({
         status: 200,

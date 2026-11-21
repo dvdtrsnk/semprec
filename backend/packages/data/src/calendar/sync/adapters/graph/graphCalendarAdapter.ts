@@ -14,6 +14,7 @@ import { refreshAndPersistAccessToken } from "../../../../mail/mailOAuthAccess.j
 import { MICROSOFT_TOKEN_URL } from "../../../../mail/oauthTokenExchange.js";
 import { parseRecurrenceRule, recurrenceDatesInZone, shiftDays } from "../../../recurrenceExpansion.js";
 import {
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   type CalendarChanges,
   type CalendarSyncAdapter,
@@ -26,7 +27,7 @@ import {
   type RemoteEvent,
   type RemoteEventRef,
 } from "../../adapter.js";
-import { GRAPH_API_ROOT, GraphCalendarHttp } from "./graphCalendarHttp.js";
+import { GRAPH_API_ROOT, GraphCalendarHttp, type GraphRequest } from "./graphCalendarHttp.js";
 import {
   graphEventBodyOf,
   graphEventSchema,
@@ -158,6 +159,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     await this.eachPage(
       `${GRAPH_API_ROOT}/me/calendars?$top=${PAGE_SIZE}&$select=id,name,color,hexColor,canEdit`,
       signal,
+      { forbiddenMeansConsent: true },
       (item) => {
         const calendar = parseOrInvalid(calendarSchema, item);
         calendars.push({
@@ -202,9 +204,14 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
           url: eventPath(ref.remoteId),
           body,
           ...(ref.etag !== null ? { headers: { "If-Match": ref.etag } } : {}),
+          tolerate: [404, 410],
         },
         signal,
       );
+      // Deleted at Microsoft since the last sync: the caller reads it again and lets the deletion win.
+      if (response.status === 404 || response.status === 410) {
+        throw new CalendarSyncEventConflictError("The Event is gone at Microsoft since it was last synced");
+      }
       saved = parseOrInvalid(graphEventSchema, response.json);
     } else if (fields.recurrenceId !== null) {
       // Microsoft makes an override by changing the occurrence the series has at that start.
@@ -325,16 +332,17 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
   private async eachPage(
     firstUrl: string,
     signal: AbortSignal,
+    options: Pick<GraphRequest, "tolerate" | "forbiddenMeansConsent">,
     onItem: (item: unknown) => void,
-    tolerate?: readonly number[],
   ): Promise<{ status: number; deltaLink: string | null }> {
+    const { tolerate } = options;
     let url: string | null = firstUrl;
     let deltaLink: string | null = null;
     let items = 0;
     for (let pages = 0; url !== null; pages += 1) {
       if (pages >= MAX_PAGES) throw invalidResponse();
       const response = await this.http.send(
-        { method: "GET", url, prefer: `odata.maxpagesize=${PAGE_SIZE}`, ...(tolerate ? { tolerate } : {}) },
+        { method: "GET", url, prefer: `odata.maxpagesize=${PAGE_SIZE}`, ...options },
         signal,
       );
       if (tolerate?.includes(response.status)) return { status: response.status, deltaLink: null };
@@ -358,27 +366,22 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
       removedIds: new Set(),
       deltaLink: "",
     };
-    const { status, deltaLink } = await this.eachPage(
-      url,
-      signal,
-      (item) => {
-        const event = parseOrInvalid(graphEventSchema, item);
-        if (event["@removed"]) {
-          round.removedIds.add(event.id);
-        } else if (event.type === "seriesMaster") {
-          round.seriesIds.add(event.id);
-        } else if (event.type === "occurrence" || event.type === "exception") {
-          if (!event.seriesMasterId) throw invalidResponse();
-          round.seriesIds.add(event.seriesMasterId);
-          if (event.type === "occurrence") round.occurrenceIds.add(event.id);
-        } else if (event.isCancelled) {
-          round.cancelledIds.add(event.id);
-        } else {
-          round.singles.push(event);
-        }
-      },
-      [410],
-    );
+    const { status, deltaLink } = await this.eachPage(url, signal, { tolerate: [410] }, (item) => {
+      const event = parseOrInvalid(graphEventSchema, item);
+      if (event["@removed"]) {
+        round.removedIds.add(event.id);
+      } else if (event.type === "seriesMaster") {
+        round.seriesIds.add(event.id);
+      } else if (event.type === "occurrence" || event.type === "exception") {
+        if (!event.seriesMasterId) throw invalidResponse();
+        round.seriesIds.add(event.seriesMasterId);
+        if (event.type === "occurrence") round.occurrenceIds.add(event.id);
+      } else if (event.isCancelled) {
+        round.cancelledIds.add(event.id);
+      } else {
+        round.singles.push(event);
+      }
+    });
     if (status === 410) return null;
     if (deltaLink === null) throw invalidResponse();
     round.deltaLink = deltaLink;
@@ -457,8 +460,8 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     const listed = await this.eachPage(
       `${eventPath(seriesId)}/instances?${windowRange(window)}`,
       signal,
+      { tolerate: [404] },
       (item) => instances.push(parseOrInvalid(graphEventSchema, item)),
-      [404],
     );
     if (listed.status === 404) return { upserts: [], deletions: [seriesId] };
 
@@ -523,6 +526,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     await this.eachPage(
       `${eventPath(seriesId)}/instances?${windowRange({ start: day, end: day })}&$select=id,type,originalStart,start,isCancelled`,
       signal,
+      {},
       (item) => {
         const instance = parseOrInvalid(graphEventSchema, item);
         const original = originalStartOf(instance);
@@ -549,6 +553,7 @@ export class GraphCalendarAdapter implements CalendarSyncAdapter {
     await this.eachPage(
       `${eventPath(master.id)}/instances?${range}&$select=id,type,originalStart,start`,
       signal,
+      {},
       (item) => {
         const instance = parseOrInvalid(graphEventSchema, item);
         const original = originalStartOf(instance);

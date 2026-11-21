@@ -9,6 +9,7 @@ import { GOOGLE_TOKEN_URL } from "../../../../mail/oauthTokenExchange.js";
 import { logger } from "../../../logger.js";
 import { shiftDays } from "../../../recurrenceExpansion.js";
 import {
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncWriteUnsupportedError,
   type CalendarChanges,
@@ -323,18 +324,24 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     signal: AbortSignal,
   ): Promise<RemoteEventRef> {
     const query = new URLSearchParams({ sendUpdates: "none" });
-    const { body } = await this.http.request(
-      write.method === "POST"
-        ? { method: "POST", path: `${calendarPath(calendar)}/events`, query, body: write.body }
-        : {
+    const patch = write.method === "PATCH";
+    const { status, body } = await this.http.request(
+      patch
+        ? {
             method: "PATCH",
             path: `${calendarPath(calendar)}/events/${encodeURIComponent(write.eventId)}`,
             query,
             body: write.body,
             ifMatch: write.ifMatch,
-          },
+          }
+        : { method: "POST", path: `${calendarPath(calendar)}/events`, query, body: write.body },
       signal,
+      patch ? [404, 410] : [],
     );
+    // Deleted at Google since the last sync: the caller reads it again and lets the deletion win.
+    if (status === 404 || status === 410) {
+      throw new CalendarSyncEventConflictError("Google Calendar no longer has the Event the update was written to");
+    }
     return refOfWritten(body);
   }
 

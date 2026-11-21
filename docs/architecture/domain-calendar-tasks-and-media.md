@@ -208,14 +208,15 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   the tracked calendars before the fetch), `putEvent` (a new override names its series' `seriesRef`),
   `deleteEvent`, `getEvent` (one Event as the provider has it now) and the optional `moveEvent`, each honouring the
   pass's deadline signal
-  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
-  `CalendarSyncEventConflictError` of every adapter; a new Event's `icalUid` becomes its Google `iCalUID` or CalDAV
-  `UID` (Graph assigns its own). A new Event also carries its local Event's id (`createKey`): Google gets an event id
-  (base32hex of a hash of calendar, Event and a generation; a 409 for a live event there writes the fields onto it
-  with `If-Match`, a deleted one moves to the next generation) and CalDAV a resource name (and, without an `icalUid`,
-  a UID) from it, so a create repeated after a lost answer finds what the first one made and writes onto it; Graph's
-  `transactionId` repeats only for the same Event with the same fields. The factory gets the account and the tenant's
-  zone. An adapter holds no database
+  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag), and an update of an
+  Event the provider no longer has (404, 410), is the one `CalendarSyncEventConflictError` of every adapter, so the
+  push reads the provider's version and a provider deletion wins; a delete of an Event already gone succeeds. A new
+  Event's `icalUid` becomes its Google `iCalUID` or CalDAV `UID` (Graph assigns its own). A new Event also carries its
+  local Event's id (`createKey`): Google gets an event id (base32hex of a hash of calendar, Event and a generation; a
+  409 for a live event there writes the fields onto it with `If-Match`, a deleted one moves to the next generation)
+  and CalDAV a resource name (and, without an `icalUid`, a UID) from it, so a create repeated after a lost answer
+  finds what the first one made and writes onto it; Graph's `transactionId` repeats only for the same Event with the
+  same fields. The factory gets the account and the tenant's zone. An adapter holds no database
   client; it does network and OAuth refreshes. The registry
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
@@ -261,8 +262,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   RRULE, a rule occurrence of the window without an instance or a cancelled one an exception date, an `exception`
   instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`), the tenant's zone when it
   shares the Windows id (a Prague tenant reads "Central Europe Standard Time" as `Europe/Prague`); an unknown one is
-  `Etc/UTC`. Writes: `PATCH /me/events/{id}` with `If-Match` (412 is `CalendarSyncEventConflictError`), `POST
-  /me/calendars/{id}/events` with a `transactionId` derived from calendar, local Event and fields; an Event without its own zone is
+  `Etc/UTC`. Every request refuses a redirect (`redirect: "error"`), so the bearer token stays on Graph. A 403 is
+  `CalendarSyncConsentRequiredError` (`needsConsent`) only for the account's own calendar listing or with an
+  `insufficient_scope` challenge; any other 403 (one shared calendar or Event) is `GraphCalendarRequestError`
+  (`unexpected`). Writes: `PATCH /me/events/{id}` with `If-Match` (412, 404 and 410 are
+  `CalendarSyncEventConflictError`), `POST /me/calendars/{id}/events` with a `transactionId` derived from calendar,
+  local Event and fields; an Event without its own zone is
   written in the tenant's; RRULEs no Graph pattern expresses and a new override are refused
   (`GraphCalendarWriteUnsupportedError`).
 - **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3

@@ -61,6 +61,7 @@ interface Recorded {
   url: URL;
   headers: Headers;
   body: unknown;
+  redirect: RequestInit["redirect"];
 }
 
 type Route = (url: URL, recorded: Recorded) => Response | Promise<Response>;
@@ -84,6 +85,7 @@ class FakeGraph {
       url,
       headers: new Headers(init?.headers),
       body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : (init?.body ?? null),
+      redirect: init?.redirect,
     };
     this.requests.push(recorded);
     if (url.href === MICROSOFT_TOKEN_URL) {
@@ -155,6 +157,15 @@ describe("Microsoft Graph calendar adapter", () => {
       const [request] = graph.graphRequests();
       expect(request?.headers.get("authorization")).toBe("Bearer graph-access");
       expect(request?.headers.get("prefer")).toContain('outlook.timezone="UTC"');
+    });
+
+    it("asks fetch to refuse a redirect on every request, so the bearer token never leaves Graph", async () => {
+      const graph = new FakeGraph(workRoutes());
+      const adapter = adapterOn(graph);
+      await adapter.fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+      await adapter.listCalendars(signal());
+      expect(graph.graphRequests().length).toBeGreaterThan(2);
+      expect(new Set(graph.graphRequests().map((request) => request.redirect))).toEqual(new Set(["error"]));
     });
   });
 
@@ -501,6 +512,22 @@ describe("Microsoft Graph calendar adapter", () => {
       );
     });
 
+    it.each([404, 410])(
+      "an update of an Event Microsoft no longer has (%i) is a conflict, and reading it back finds it gone",
+      async (status) => {
+        const graph = new FakeGraph({
+          "PATCH /me/events/AAMkEv-review": () => json({ error: { code: "ErrorItemNotFound" } }, status),
+          "GET /me/events/AAMkEv-review": () => json({ error: { code: "ErrorItemNotFound" } }, 404),
+        });
+        const adapter = adapterOn(graph);
+        const ref = { remoteId: "AAMkEv-review", href: null, etag: 'W/"r1"' };
+        await expect(adapter.putEvent(WORK, { ref, fields }, signal())).rejects.toBeInstanceOf(
+          CalendarSyncEventConflictError,
+        );
+        expect(await adapter.getEvent(WORK, ref, { window: WINDOW, signal: signal() })).toBeNull();
+      },
+    );
+
     it("writes a timed Event without a zone of its own in the tenant's zone", async () => {
       const graph = new FakeGraph({
         "POST /me/calendars/AAMkCal-work/events": () => saved("AAMkEv-new", 'W/"n1"'),
@@ -744,6 +771,31 @@ describe("Microsoft Graph calendar adapter", () => {
       expect(matches(error)).toBe(true);
       // No error text carries what Graph sent.
       expect(error instanceof Error ? error.message : "").not.toMatch(/html|graph\.microsoft\.com/);
+    });
+
+    it.each<[string, () => Response, (error: unknown) => boolean]>([
+      [
+        "a 403 for one calendar as that request's failure, not as missing consent",
+        () => json({ error: { code: "ErrorAccessDenied" } }, 403),
+        (error) => error instanceof GraphCalendarRequestError && error.status === 403,
+      ],
+      [
+        "a 403 with a scope challenge as missing consent",
+        () =>
+          json({ error: { code: "ErrorAccessDenied" } }, 403, {
+            "WWW-Authenticate": 'Bearer realm="", error="insufficient_scope"',
+          }),
+        (error) => error instanceof CalendarSyncConsentRequiredError,
+      ],
+    ])("maps %s", async (_case, answer, matches) => {
+      const graph = new FakeGraph({ "GET /me/calendars/AAMkCal-work/calendarView/delta": answer });
+      const error = await adapterOn(graph)
+        .fetchChanges(WORK, null, { window: WINDOW, signal: signal() })
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(matches(error)).toBe(true);
     });
 
     it("waits out a short Retry-After and retries", async () => {
