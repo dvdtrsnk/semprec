@@ -24,7 +24,7 @@ import {
   type SmtpTransporterOpener,
 } from "../mail/mailTransport.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
-import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import type { ImapConnectionLimiter, ImapConnectionTarget } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import type { SyncMode } from "../mail/mailAccountSyncStateStore.js";
@@ -991,12 +991,16 @@ function recordingSmtp(events: string[]): SmtpTransporterOpener {
   };
 }
 
+/** Records the target of the one slot the saver holds; the saver takes no lease of its own nor admits a login. */
 function recordingLimiter(events: string[]): ImapConnectionLimiter {
+  const unused = () => Promise.reject(new Error("the Sent-copy saver only runs a task under a slot"));
   return {
-    run<T>(accountId: string, limit: number, task: () => Promise<T>): Promise<T> {
-      events.push(`limit:${accountId}:${limit}`);
+    run<T>(target: ImapConnectionTarget, task: () => Promise<T>): Promise<T> {
+      events.push(`limit:${target.accountId}:${target.accountLimit}:${target.host}:${target.kind}`);
       return task();
     },
+    acquire: unused,
+    admitLogin: unused,
   };
 }
 
@@ -1271,7 +1275,12 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
 
     await createSentCopySaver(pool, mailboxId, credential, imap.open, recordingLimiter(events))(rawMessage, ACCEPTED);
 
-    expect(events).toEqual([`limit:${mailboxId}:2`, "imap-open", "imap-append", "imap-close"]);
+    expect(events).toEqual([
+      `limit:${mailboxId}:2:${imapEndpoint.host}:work`,
+      "imap-open",
+      "imap-append",
+      "imap-close",
+    ]);
   });
 
   it("appends under the limit the mailbox itself sets", async () => {
@@ -1294,7 +1303,12 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
       recordingLimiter(events),
     )(rawMessage, ACCEPTED);
 
-    expect(events).toEqual([`limit:${limitedMailboxId}:1`, "imap-open", "imap-append", "imap-close"]);
+    expect(events).toEqual([
+      `limit:${limitedMailboxId}:1:${imapEndpoint.host}:work`,
+      "imap-open",
+      "imap-append",
+      "imap-close",
+    ]);
   });
 
   it("the production factory keeps no copy of a send the outbound policy refuses", async () => {

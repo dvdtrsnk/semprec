@@ -9,6 +9,8 @@ import {
 } from "../mail/imapIdleClient.js";
 import { logger } from "../mail/logger.js";
 
+const neverAborted = new AbortController().signal;
+
 /**
  * Just enough of imapflow's `ImapFlow` surface for this transport; no real socket. The factory hands it
  * over already connected, as `openImapFlow` does, so `connectCalls` must stay 0.
@@ -76,7 +78,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient, idleOptionsSeen } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const folders = await transport.resolveFolders("mailbox-1", "cred");
+    const folders = await transport.resolveFolders("mailbox-1", "cred", neverAborted);
 
     expect(folders.map((f) => f.path).sort()).toEqual(["INBOX", "[Gmail]/All Mail"].sort());
     expect(client.connectCalls).toBe(0);
@@ -94,7 +96,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const folders = await transport.resolveFolders("mailbox-1", "cred");
+    const folders = await transport.resolveFolders("mailbox-1", "cred", neverAborted);
 
     expect(folders).toEqual([{ path: "INBOX" }]);
   });
@@ -105,7 +107,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(createClient);
 
     let signals = 0;
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++, neverAborted);
 
     expect(client.openedMailbox).toBe("INBOX");
     expect(client.connectCalls).toBe(0);
@@ -127,7 +129,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(createClient);
 
     let signals = 0;
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++, neverAborted);
 
     await connection.close();
 
@@ -139,7 +141,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => {});
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => {}, neverAborted);
     const boom = new Error("socket reset");
     const ended = connection.waitForEnd();
     client.emit("error", boom);
@@ -160,7 +162,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(makeFactory([client]).createClient);
     let observed: unknown;
     try {
-      await transport.resolveFolders("mailbox-1", "credential");
+      await transport.resolveFolders("mailbox-1", "credential", neverAborted);
     } catch (error) {
       observed = error;
     }
@@ -177,7 +179,11 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     };
     let observed: unknown;
     try {
-      await createImapFlowIdleTransport(makeFactory([client]).createClient).resolveFolders("mailbox-1", "credential");
+      await createImapFlowIdleTransport(makeFactory([client]).createClient).resolveFolders(
+        "mailbox-1",
+        "credential",
+        neverAborted,
+      );
     } catch (error) {
       observed = error;
     }
@@ -195,6 +201,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "credential",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", shared);
@@ -224,6 +231,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "credential",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", original);
@@ -250,6 +258,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "cred",
       "INBOX",
       () => {},
+      neverAborted,
     );
     let settled = false;
     const closing = connection.close().then(() => {
@@ -289,6 +298,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "cred",
         "INBOX",
         () => {},
+        neverAborted,
       );
       outcome = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -316,6 +326,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "private-folder",
         () => {},
+        neverAborted,
       );
       await connection.close();
       expect(close).toHaveBeenCalledTimes(1);
@@ -345,6 +356,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -384,6 +396,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "private-folder",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -423,6 +436,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       if (alreadyClosed) client.emit("close");
       let settled = false;
@@ -457,6 +471,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -497,6 +512,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -539,6 +555,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       pending = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -564,6 +581,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "cred",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", undefined);

@@ -1,4 +1,4 @@
-import type { MailLiveSyncRoot } from "@semprec/data";
+import type { ImapSessionPool, MailLiveSyncRoot } from "@semprec/data";
 import { CustomRouteConfigurationError, type MailLiveSyncControl } from "./adapter/customRouteMount.js";
 
 type ControlledMailLiveSyncRoot = Pick<MailLiveSyncRoot, "restartAccount" | "stopMailbox">;
@@ -13,11 +13,15 @@ export interface MailLiveSyncControlBinding {
  * The composition root creates the live-sync root after the request dispatcher, so the dispatcher
  * gets this control first and the root is bound afterwards.
  *
- * `restartAccount` and `stopMailbox` forward to the bound root. Before binding, both refuse with a
- * configuration error (a generic 500 through the adapter; the removed-mailbox cleanup reports it as
- * a failed step). `startMailbox` always refuses: the root has no single-mailbox start.
+ * `restartAccount` and `stopMailbox` forward to the bound root, and then close the account's kept
+ * IMAP sync session (`imapSessions`), hosted or not: both follow a replaced sign-in, Mail switched
+ * off or a removal. Before binding, both refuse with a configuration error (a generic 500 through
+ * the adapter; the removed-mailbox cleanup reports it as a failed step). `startMailbox` always
+ * refuses: the root has no single-mailbox start.
  */
-export function createMailLiveSyncControl(): MailLiveSyncControlBinding {
+export function createMailLiveSyncControl(
+  imapSessions: Pick<ImapSessionPool, "closeAccount">,
+): MailLiveSyncControlBinding {
   let boundRoot: ControlledMailLiveSyncRoot | undefined;
   return {
     control: {
@@ -32,7 +36,11 @@ export function createMailLiveSyncControl(): MailLiveSyncControlBinding {
             'custom route dependency "mailLiveSync.stopMailbox" was called before the mail live-sync root exists',
           );
         }
-        await boundRoot.stopMailbox(tenantId, mailboxItemId);
+        try {
+          await boundRoot.stopMailbox(tenantId, mailboxItemId);
+        } finally {
+          await imapSessions.closeAccount(mailboxItemId);
+        }
       },
       async restartAccount(mailboxItemId) {
         if (boundRoot === undefined) {
@@ -40,7 +48,11 @@ export function createMailLiveSyncControl(): MailLiveSyncControlBinding {
             'custom route dependency "mailLiveSync.restartAccount" was called before the mail live-sync root exists',
           );
         }
-        await boundRoot.restartAccount(mailboxItemId);
+        try {
+          await boundRoot.restartAccount(mailboxItemId);
+        } finally {
+          await imapSessions.closeAccount(mailboxItemId);
+        }
       },
     },
     bind(root) {

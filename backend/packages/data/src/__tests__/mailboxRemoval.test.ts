@@ -12,7 +12,6 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import type { GmailMailClient } from "../mail/gmailReconcile.js";
 import type { GraphMailClient } from "../mail/graphReconcile.js";
-import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import {
   deleteMailAccountSyncState,
@@ -256,14 +255,10 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
   };
 }
 
-function syncPass(
-  mailboxItemId: string,
-  adapters: MailSyncAdapterFactory,
-  limiter?: ImapConnectionLimiter,
-): Promise<void> {
+function syncPass(mailboxItemId: string, adapters: MailSyncAdapterFactory): Promise<void> {
   return runInTenant(tenant, async () => {
     const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
-    await handleSyncMailAccountTask(runtime, { mailboxItemId }, adapters, moduleIds, unusedStorage, undefined, limiter);
+    await handleSyncMailAccountTask(runtime, { mailboxItemId }, adapters, moduleIds, unusedStorage);
   });
 }
 
@@ -610,7 +605,7 @@ describe("mailbox removal (gh-1690)", () => {
 
     /**
      * One IMAP pass of `mailbox` during which `change` happens after the pass read the mailbox, its sync
-     * state and credential and before its first transaction (the connection limiter grants the slot in
+     * state and credential and before its first transaction (the pass waits for its IMAP connection in
      * between). Returns the provider calls and the mailbox's rows right after `change`.
      */
     async function passAfter(
@@ -618,16 +613,18 @@ describe("mailbox removal (gh-1690)", () => {
       change: () => Promise<void>,
     ): Promise<{ calls: string[]; changed: MailboxSnapshot }> {
       const providers = stubProviders({ folders: ["inbox", "archive"] });
+      const createImapClient = providers.adapters.createImapClient;
+      if (!createImapClient) throw new Error("the stub providers have no IMAP client");
       let changed: MailboxSnapshot | undefined;
-      const limiter: ImapConnectionLimiter = {
-        async run<T>(_accountId: string, _limit: number, task: () => Promise<T>): Promise<T> {
+      await syncPass(mailbox.id, {
+        ...providers.adapters,
+        async createImapClient(mailboxItemId, credential, accountLimit) {
           await change();
           changed = await snapshot(mailbox);
-          return task();
+          return createImapClient(mailboxItemId, credential, accountLimit);
         },
-      };
-      await syncPass(mailbox.id, providers.adapters, limiter);
-      if (changed === undefined) throw new Error("the pass never asked for its connection slot");
+      });
+      if (changed === undefined) throw new Error("the pass never asked for its IMAP connection");
       return { calls: providers.calls, changed };
     }
 

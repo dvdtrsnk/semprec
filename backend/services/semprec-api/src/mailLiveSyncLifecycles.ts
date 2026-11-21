@@ -10,6 +10,7 @@ import {
   createGraphWebhookLifecycleFactory,
   createImapFlowIdleTransport,
   createNoopMailLiveSyncLifecycleFactory,
+  classifyImapConnectFailure,
   getDecryptedCredential,
   getItemById,
   getMailServerSettings,
@@ -48,20 +49,30 @@ export function createMailLiveSyncLifecycleFactory(
 }
 
 /**
- * Each connection opens through `openImapFlow`, the address-checked connect step, with the
- * mailbox's stored server settings and the IDLE options. The transport never connects the client it
- * receives; `createClient` opens it.
+ * Opens an IDLE connection through `openImapFlow`, the address-checked connect step, with the
+ * mailbox's stored server settings and the IDLE options. Its failure is classified as a sync pass's
+ * is (`classifyImapConnectFailure`), so a refused login ends the lifecycle's retries.
  */
-export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycleFactory {
-  const createClient: CreateIdleTunedImapFlowClient = async (mailboxItemId, password, idleOptions) => {
+export function createIdleImapFlowClient(pool: Pool): CreateIdleTunedImapFlowClient {
+  return async (mailboxItemId, password, idleOptions, signal) => {
     const settings = await getMailServerSettings(pool, mailboxItemId);
     const endpoint = settings?.imap ?? null;
     if (settings === null || endpoint === null) {
       throw new Error(`Mailbox ${mailboxItemId} has no IMAP server settings; set the IMAP host before syncing it`);
     }
-    return openImapFlow({ endpoint, username: settings.username }, { password }, idleOptions);
+    try {
+      return await openImapFlow({ endpoint, username: settings.username }, { password }, { ...idleOptions, signal });
+    } catch (error) {
+      // The lifecycle's stop ended the wait for a login: it is not a connect failure.
+      if (signal.aborted && error === signal.reason) throw error;
+      throw classifyImapConnectFailure(error);
+    }
   };
-  return createBoundedImapIdleLifecycleFactory(pool, createImapFlowIdleTransport(createClient), {
+}
+
+/** The transport never connects the client it receives; `createIdleImapFlowClient` opens it. */
+export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycleFactory {
+  return createBoundedImapIdleLifecycleFactory(pool, createImapFlowIdleTransport(createIdleImapFlowClient(pool)), {
     // Passed `pool`, not a transaction: the access-log insert commits on its own.
     getCredential: async (mailboxItemId) => {
       const credential = await getDecryptedCredential(pool, {
@@ -74,23 +85,31 @@ export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycl
       }
       return credential;
     },
-    getConnectionLimit: (mailboxItemId) => connectionLimitOf(pool, mailboxItemId),
+    getConnectionTarget: (mailboxItemId) => imapConnectionTargetOf(pool, mailboxItemId),
     onError: (mailboxItemId) => {
       logger.warn({ mailboxItemId, stage: "idle", category: "failure" }, "IMAP IDLE lifecycle failed");
     },
   });
 }
 
-/** Read the way mailSyncJob.ts reads it. */
-export async function connectionLimitOf(pool: Pool, mailboxItemId: string): Promise<number> {
+/** The connection budget read the way mailSyncJob.ts reads it, and the stored IMAP host. */
+export async function imapConnectionTargetOf(
+  pool: Pool,
+  mailboxItemId: string,
+): Promise<{ accountLimit: number; host: string }> {
   const mailbox = await withTransaction(pool, async (client) => {
     const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
     return getItemById(client, mailboxesDatabaseId, mailboxItemId);
   });
+  const settings = await getMailServerSettings(pool, mailboxItemId);
+  const host = settings?.imap?.host;
+  if (host === undefined) {
+    throw new Error(`Mailbox ${mailboxItemId} has no IMAP server settings; set the IMAP host before syncing it`);
+  }
   // A mailbox that is gone takes the default budget; the live-sync root stops its lifecycle on the
   // next pass.
   const provider = typeof mailbox?.properties.provider === "string" ? mailbox.properties.provider : undefined;
-  return imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit);
+  return { accountLimit: imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit), host };
 }
 
 /** The only thing a lifecycle failure log carries about the error. */

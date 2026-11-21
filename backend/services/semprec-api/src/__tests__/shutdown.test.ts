@@ -130,6 +130,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
+      imapSessions: { close: async () => {} },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -170,6 +171,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop: async () => {} },
       mailLiveSync: { stop: async () => {} },
+      imapSessions: { close: async () => {} },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -203,6 +205,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
+      imapSessions: { close: async () => {} },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -230,6 +233,7 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
+      imapSessions: { close: async () => {} },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -293,6 +297,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       voiceServer,
       queueRuntime: { stop: async () => {} },
       mailLiveSync: { stop: async () => {} },
+      imapSessions: { close: async () => {} },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -414,6 +419,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
             poolEndedAtRootStop = dedicatedPool.ended;
           },
         },
+        imapSessions: { close: async () => {} },
         pool: dedicatedPool,
         logger,
       })("SIGTERM");
@@ -565,6 +571,7 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         voiceServer,
         queueRuntime: { stop: async () => {} },
         mailLiveSync: { stop: async () => {} },
+        imapSessions: { close: async () => {} },
         pool: dedicatedPool,
         logger,
       })("SIGTERM");

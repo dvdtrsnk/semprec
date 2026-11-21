@@ -29,12 +29,14 @@ export interface ImapIdleFlowOptions {
 /**
  * Returns a connected, authenticated client built by the composition root with the IDLE options;
  * the transport never connects a client itself (see
- * docs/architecture/domain-mail-and-inbox.md#server-settings-and-outbound-connections).
+ * docs/architecture/domain-mail-and-inbox.md#server-settings-and-outbound-connections). `signal`
+ * aborts once the lifecycle stops and ends a wait for the login admission.
  */
 export type CreateIdleTunedImapFlowClient = (
   mailboxItemId: string,
   credential: string,
   idleOptions: ImapIdleFlowOptions,
+  signal: AbortSignal,
 ) => Promise<ImapFlow>;
 
 const SPECIAL_USE_INBOX = "\\Inbox";
@@ -216,12 +218,17 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
 
 export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlowClient): ImapIdleTransport {
   return {
-    async resolveFolders(mailboxItemId, credential): Promise<ImapIdleFolderTarget[]> {
-      const client = await createClient(mailboxItemId, credential, {
-        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
-        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
-        autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
-      });
+    async resolveFolders(mailboxItemId, credential, signal): Promise<ImapIdleFolderTarget[]> {
+      const client = await createClient(
+        mailboxItemId,
+        credential,
+        {
+          maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+          socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+          autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+        },
+        signal,
+      );
       const ended = endPromiseFor(client);
       let targets: ImapIdleFolderTarget[];
       try {
@@ -241,12 +248,17 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       return targets.length > 0 ? targets : [{ path: "INBOX" }];
     },
 
-    async connect(mailboxItemId, credential, folderPath, onSignal): Promise<ImapIdleConnection> {
-      const client = await createClient(mailboxItemId, credential, {
-        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
-        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
-        autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
-      });
+    async connect(mailboxItemId, credential, folderPath, onSignal, signal): Promise<ImapIdleConnection> {
+      const client = await createClient(
+        mailboxItemId,
+        credential,
+        {
+          maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+          socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+          autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+        },
+        signal,
+      );
       const ended = endPromiseFor(client);
       try {
         await client.mailboxOpen(folderPath);

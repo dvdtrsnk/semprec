@@ -7,11 +7,10 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
-import { createImapConnectionLimiter, type ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
-import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
 import { FakeImapAccount } from "./fakeImapAccount.js";
@@ -62,14 +61,11 @@ export function plainMessage(
 export interface ImapMailboxFixture {
   mailboxId: string;
   /** One `mailAccountSync` run through the production handler, with the given provider client factory. */
-  sync(createImapClient: () => Promise<ImapMailClient>): Promise<void>;
+  sync(createImapClient: NonNullable<MailSyncAdapterFactory["createImapClient"]>): Promise<void>;
 }
 
 /** A connected generic IMAP mailbox (item, address, sync state, credential) in the current tenant scope. */
-export async function createImapMailboxFixture(
-  runtime: Pool,
-  limiter: ImapConnectionLimiter = createImapConnectionLimiter(),
-): Promise<ImapMailboxFixture> {
+export async function createImapMailboxFixture(runtime: Pool): Promise<ImapMailboxFixture> {
   const databases = await createChokePoint(runtime).listDatabases();
   const mailboxesDatabaseId = databases.find((row) => row.ownerModuleId === "mailboxes")?.id;
   if (!mailboxesDatabaseId) throw new Error("Missing mailboxes database");
@@ -97,8 +93,6 @@ export async function createImapMailboxFixture(
         { createImapClient },
         moduleIds,
         noAttachmentStorage,
-        undefined,
-        limiter,
       );
     },
   };

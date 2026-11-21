@@ -26,6 +26,8 @@ export interface CreateGracefulShutdownOptions {
    */
   gmailPubSubDispatcher?: { stop(): Promise<void> };
   mailLiveSync: { stop(): Promise<void> };
+  /** The kept IMAP sync sessions; closed after the queue runtime, whose sync passes check them out. */
+  imapSessions: { close(): Promise<void> };
   pool: Pool;
   logger: Logger;
   /** Lets a test shrink the drain bound below the integration `testTimeout`. */
@@ -148,7 +150,9 @@ function closeListener(listener: { close(): Promise<void> }, logger: Logger, sig
  * 5. Mail live-sync root, before the queue runtime, because a lifecycle's `start()` enqueues a
  * `mailAccountSync` job that must not race the runner's stop.
  * 6. Queue runtime.
- * 7. Pool.
+ * 7. Kept IMAP sync sessions: no pass runs any more to check one out, and each closes with a bounded
+ * LOGOUT.
+ * 8. Pool.
  * This ordering is specific to this service and has no heartbeat step
  * (docs/architecture/agents-approvals-and-ai.md#process-lifecycle).
  */
@@ -161,6 +165,7 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     queueRuntime,
     gmailPubSubDispatcher,
     mailLiveSync,
+    imapSessions,
     pool,
     logger,
   } = options;
@@ -209,6 +214,12 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       await queueRuntime.stop();
     } catch (err) {
       logger.error({ err, signal }, "queueRuntime.stop() failed");
+    }
+
+    try {
+      await imapSessions.close();
+    } catch (err) {
+      logger.error({ errorName: err instanceof Error ? err.name : typeof err, signal }, "imapSessions.close() failed");
     }
 
     await endPool(pool, logger, signal);

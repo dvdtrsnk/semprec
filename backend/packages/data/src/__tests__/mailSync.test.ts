@@ -80,6 +80,7 @@ import {
   recordGmailActivity,
   recordGraphActivity,
   recordSyncError,
+  clearMailSyncFailure,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
@@ -97,6 +98,7 @@ import {
   isImapConnectionLimitError,
 } from "../mail/imapFlowClient.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import { createImapSessionPool } from "../mail/imapSessionPool.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
 import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
@@ -387,7 +389,7 @@ async function runSync(
   storage: BlobStorageWriter = noopStorage,
   ...rest: [
     helpers?: Parameters<typeof handleSyncMailAccountTask>[5],
-    limiter?: Parameters<typeof handleSyncMailAccountTask>[6],
+    random?: Parameters<typeof handleSyncMailAccountTask>[6],
   ]
 ): Promise<void> {
   await handleSyncMailAccountTask(pool, { mailboxItemId }, adapters, await moduleIds(), storage, ...rest);
@@ -2846,18 +2848,23 @@ describe("mail sync job error handling", () => {
         lastFailureKind: "other",
       });
 
-      await expect(runSync(mailbox, failing(new MailReauthorizationRequiredError("revoked")))).rejects.toThrow();
-      expect(await syncState(mailbox)).toMatchObject({
-        failingSince: afterFirstFailure?.failingSince,
-        lastFailureKind: "reauthorization",
-        lastSuccessfulSyncAt: second?.lastSuccessfulSyncAt,
-      });
-
       await runSync(mailbox, failing(new MailConnectionLimitError("Too many simultaneous connections.")));
       expect(await syncState(mailbox)).toMatchObject({
         failingSince: afterFirstFailure?.failingSince,
         lastFailureKind: "connectionLimit",
       });
+
+      await runSync(mailbox, failing(new MailReauthorizationRequiredError("revoked")));
+      const refused = await syncState(mailbox);
+      expect(refused).toMatchObject({
+        failingSince: afterFirstFailure?.failingSince,
+        lastFailureKind: "reauthorization",
+        lastSuccessfulSyncAt: second?.lastSuccessfulSyncAt,
+      });
+      // Only a sign-in again lets the next pass reach the provider.
+      await runSync(mailbox, healthy);
+      expect(await syncState(mailbox)).toEqual(refused);
+      await withTransaction(pool, (client) => clearMailSyncFailure(client, mailbox));
 
       await runSync(mailbox, healthy);
       const recovered = await syncState(mailbox);
@@ -2884,7 +2891,9 @@ describe("mail sync job error handling", () => {
     };
 
     const errorSpy = vi.spyOn(logger, "error");
-    await expect(runSync(mailbox, adapters)).rejects.toThrow("provider-auth-exchange-secret");
+    // Recorded, not rethrown: graphile-worker's retries would only be refused again.
+    await runSync(mailbox, adapters);
+    expect((await syncState(mailbox))?.lastError).toContain("provider-auth-exchange-secret");
     const logArguments = JSON.stringify(errorSpy.mock.calls);
     expect(logArguments).not.toContain("provider-auth-exchange-secret");
     expect(logArguments).toContain("reauthorizationRequired");
@@ -2961,11 +2970,10 @@ describe("mail sync job error handling", () => {
         mailbox,
       ]);
 
-      const failed = runSync(mailbox, counting);
-      await expect(failed).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
-      await expect(failed).rejects.toThrow("has no stored credential");
+      await runSync(mailbox, counting);
 
       expect(connects).toBe(0);
+      expect((await syncState(mailbox))?.lastError).toContain("has no stored credential");
       expect(await syncStatusOf(mailbox)).toBe("needsReauthorization");
       expect(await syncState(mailbox)).toMatchObject({ lastFailureKind: "reauthorization" });
       expect(JSON.stringify(errorSpy.mock.calls)).toContain("reauthorizationRequired");
@@ -3148,13 +3156,7 @@ describe("bounded IMAP sync passes", () => {
       const fetchMessagesSince = overtaken.fetchMessagesSince.bind(overtaken);
       overtaken.fetchMessagesSince = async (path, sinceUid, limit) => {
         // Another pass of the same mailbox runs to completion while this one is fetching.
-        await runSync(
-          mailbox,
-          { createImapClient: async () => account() },
-          noopStorage,
-          undefined,
-          createImapConnectionLimiter(),
-        );
+        await runSync(mailbox, { createImapClient: async () => account() });
         return fetchMessagesSince(path, sinceUid, limit);
       };
       await pool.query("DELETE FROM graphile_worker._private_jobs");
@@ -3236,9 +3238,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
     await createOwner();
     const mailboxId = await createSyncMailbox();
 
-    await expect(
-      syncPass(mailboxId, failingWith(new MailReauthorizationRequiredError("token revoked"))),
-    ).rejects.toThrow("token revoked");
+    await syncPass(mailboxId, failingWith(new MailReauthorizationRequiredError("token revoked")));
 
     expect(await mailProblems(mailboxId)).toMatchObject([
       { severity: "critical", occurrence_count: 1, resolved_at: null },
@@ -3248,7 +3248,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("does not count an older retried job after a different job reported the same failure", async () => {
     await createOwner();
-    const mailboxId = await createSyncMailbox({ credential: null });
+    const mailboxId = await createSyncMailbox();
     const ids = await moduleIds();
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     await runWithCleanup(
@@ -3257,10 +3257,10 @@ describe("mailbox Semp problem raised by the sync job", () => {
         inTenantZero(async () => {
           for (const jobId of ["job-a", "job-b", "job-a"]) {
             await expect(
-              handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, {}, ids, noopStorage, {
+              handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, unexpectedlyFailing, ids, noopStorage, {
                 job: { id: jobId },
               }),
-            ).rejects.toThrow("has no stored credential");
+            ).rejects.toThrow(UNEXPECTED_FAILURE);
           }
           const result = await withTransaction(runtime, (client) =>
             client.query<{ occurrence_count: number; resolved_at: Date | null }>(
@@ -3276,7 +3276,8 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("raises no problem before any user account exists", async () => {
     const mailboxId = await createSyncMailbox({ credential: null });
-    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+    await syncPass(mailboxId, {}, "job-1");
+    expect((await syncState(mailboxId))?.lastError).toContain("has no stored credential");
     expect(await mailProblems(mailboxId)).toEqual([]);
   });
 
@@ -3900,104 +3901,6 @@ describe("ImapFlowMailClient", () => {
   });
 });
 
-describe("per-account IMAP concurrency limiter", () => {
-  it("bounds each account's concurrency by its own limit, never another account's", async () => {
-    const limiter = createImapConnectionLimiter();
-    const active = new Map<string, number>();
-    const maxActive = new Map<string, number>();
-    const task = (accountId: string, limit: number) =>
-      limiter.run(accountId, limit, async () => {
-        active.set(accountId, (active.get(accountId) ?? 0) + 1);
-        maxActive.set(accountId, Math.max(maxActive.get(accountId) ?? 0, active.get(accountId)!));
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        active.set(accountId, active.get(accountId)! - 1);
-      });
-
-    await Promise.all([
-      ...Array.from({ length: 3 }, () => task("account-a", 1)),
-      ...Array.from({ length: 5 }, () => task("account-b", 3)),
-    ]);
-
-    expect(Object.fromEntries(maxActive)).toEqual({ "account-a": 1, "account-b": 3 });
-  });
-
-  it("wakes a queued task immediately when a later call raises the account's limit, instead of waiting for an unrelated task to finish", async () => {
-    const limiter = createImapConnectionLimiter();
-    let releaseFirst: () => void = () => {};
-    const first = limiter.run("account-raise", 1, () => new Promise<void>((resolve) => (releaseFirst = resolve)));
-
-    let secondStarted = false;
-    const second = limiter.run("account-raise", 1, async () => {
-      secondStarted = true;
-    });
-
-    expect(secondStarted).toBe(false); // still queued behind `first` at the original limit of 1
-
-    // A later call for the same account raises the limit to 2, so `second` is released right away.
-    await limiter.run("account-raise", 2, async () => {});
-    expect(secondStarted).toBe(true);
-
-    releaseFirst();
-    await Promise.all([first, second]);
-  });
-
-  it("rejects a queued task that waits past the per-account timeout instead of hanging on a stalled connection forever", async () => {
-    vi.useFakeTimers();
-    try {
-      const limiter = createImapConnectionLimiter();
-      void limiter.run("account-stalled", 1, () => new Promise<void>(() => {})); // never resolves — a stuck connection
-      const queued = limiter.run("account-stalled", 1, async () => {});
-      const expectation = expect(queued).rejects.toThrow(/Timed out/);
-
-      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 1);
-      await expectation;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("bounds a limit raise's wake-up to the capacity that actually freed up, not every queued waiter", async () => {
-    // Resolves once pending microtasks (a woken waiter's `run()` continuation) settled, without advancing
-    // real time.
-    const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
-
-    const limiter = createImapConnectionLimiter();
-    let concurrent = 0;
-    let maxConcurrent = 0;
-    const releasers: Array<() => void> = [];
-
-    const runTask = (limit: number) =>
-      limiter.run("account-bounded-raise", limit, async () => {
-        concurrent++;
-        maxConcurrent = Math.max(maxConcurrent, concurrent);
-        await new Promise<void>((resolve) => releasers.push(resolve));
-        concurrent--;
-      });
-
-    // One task runs under limit 1; three more queue up behind it.
-    const results = [runTask(1), runTask(1), runTask(1), runTask(1)];
-    await flushMicrotasks();
-    expect(concurrent).toBe(1);
-
-    // Raising the limit to 3 frees exactly two more slots (3 - 1 active), not all three waiters.
-    const raised = runTask(3);
-    await flushMicrotasks();
-    expect(concurrent).toBe(3);
-    expect(maxConcurrent).toBe(3);
-
-    // Release the first task: every queued task eventually runs and the limit is never exceeded.
-    for (let i = 0; i < 10 && releasers.length > 0; i++) {
-      releasers.splice(0).forEach((release) => release());
-      await flushMicrotasks();
-      expect(concurrent).toBeLessThanOrEqual(3);
-    }
-
-    await Promise.all([...results, raised]);
-    expect(maxConcurrent).toBe(3);
-    expect(concurrent).toBe(0);
-  });
-});
-
 describe("mail sync connection-limit backoff", () => {
   useSeededDatabase();
 
@@ -4019,8 +3922,8 @@ describe("mail sync connection-limit backoff", () => {
 
     const state = await syncState(mailbox);
     expect(state?.lastError).toBe("Too many simultaneous connections.");
-    // Gmail's provider-aware backoff (10 minutes) is well past the generic 15-minute window's
-    // midpoint, distinguishing it from `recordSyncError`'s fixed backoff.
+    // Gmail's provider-aware base (10 minutes) puts the first retry at least that far out, past the 5-minute
+    // base of `recordSyncError`.
     expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 8 * 60 * 1000);
     // Mail is not syncing, so syncStatus reflects it like any failure and clears to 'ok' on the next
     // successful pass.
@@ -4030,20 +3933,19 @@ describe("mail sync connection-limit backoff", () => {
   it.each([
     ["Gmail's provider default", { name: "M", provider: "gmail" }, 5],
     ["Mailboxes.connectionLimit over the provider default", { name: "M", provider: "gmail", connectionLimit: 1 }, 1],
-  ])("routes a real IMAP connection attempt through the per-account limiter with %s", (_name, properties, limit) =>
+  ])("opens the pass's IMAP connection under the account's budget with %s", (_name, properties, limit) =>
     inTenantZero(async () => {
       const mailbox = await createSyncMailbox({ properties });
-      const runCalls: Array<{ accountId: string; limit: number }> = [];
-      const recordingLimiter = {
-        run: <T>(accountId: string, accountLimit: number, task: () => Promise<T>) => {
-          runCalls.push({ accountId, limit: accountLimit });
-          return task();
+      const opened: Array<{ accountId: string; limit: number }> = [];
+
+      await runSync(mailbox, {
+        createImapClient: async (accountId, _credential, accountLimit) => {
+          opened.push({ accountId, limit: accountLimit });
+          return fakeImap();
         },
-      };
+      });
 
-      await runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, recordingLimiter);
-
-      expect(runCalls).toEqual([{ accountId: mailbox, limit }]);
+      expect(opened).toEqual([{ accountId: mailbox, limit }]);
     }),
   );
 
@@ -4052,13 +3954,15 @@ describe("mail sync connection-limit backoff", () => {
     // with a free slot it would never wait and this test would pass vacuously.
     const mailbox = await createSyncMailbox({ properties: { name: "M", connectionLimit: 1 } });
     const limiter = createImapConnectionLimiter();
+    const sessions = createImapSessionPool(limiter);
+    const host = "imap.example.test";
 
     let releaseSlot: () => void = () => {};
     let resolveSlotTaken: () => void = () => {};
     const slotTaken = new Promise<void>((resolve) => {
       resolveSlotTaken = resolve;
     });
-    const holder = limiter.run(mailbox, 1, async () => {
+    const holder = limiter.run({ accountId: mailbox, accountLimit: 1, host, kind: "idle" }, async () => {
       resolveSlotTaken();
       await new Promise<void>((resolve) => {
         releaseSlot = resolve;
@@ -4069,14 +3973,28 @@ describe("mail sync connection-limit backoff", () => {
     const checkedOut = () => pool.totalCount - pool.idleCount;
     const baseline = checkedOut();
 
-    const pass = runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, limiter);
+    let opened = false;
+    const pass = runSync(mailbox, {
+      createImapClient: (mailboxItemId, credential, accountLimit) =>
+        sessions.checkout({
+          mailboxItemId,
+          accountLimit,
+          host,
+          signIn: credential,
+          connect: async () => {
+            opened = true;
+            return fakeImap();
+          },
+        }),
+    });
 
-    // Waits until the pass's credential fetch (before it calls the limiter) has been logged, so it is calling or
-    // blocked in `imapConnectionLimiter.run`.
+    // Waits until the pass's credential fetch (before it asks for its connection) has been logged, so it is asking or
+    // blocked in the limiter.
     while ((await countRows("credential_access_log WHERE item_id = $1", [mailbox])) < 1)
       await new Promise((resolve) => setTimeout(resolve, 5));
-    // One more tick so the pass's synchronous `imapConnectionLimiter.run(...)` call has run.
+    // One more tick so the pass's checkout has reached the limiter.
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opened).toBe(false);
 
     // The pass is queued behind the holder and must not have checked out a database connection while it waits:
     // the write transaction opens after the limiter wait.
@@ -4085,7 +4003,110 @@ describe("mail sync connection-limit backoff", () => {
     releaseSlot();
     await holder;
     await pass;
+    expect(opened).toBe(true);
+    await sessions.close();
   });
+});
+
+describe("mail sync failure backoff", () => {
+  useSeededDatabase();
+
+  const failingWith = (error: Error): MailSyncAdapterFactory => ({
+    createImapClient: async () => {
+      throw error;
+    },
+  });
+  /** The delay the last failure recorded: both columns are written from the same `now()`. */
+  const recordedDelayMinutes = async (mailbox: string) => {
+    const state = await syncState(mailbox);
+    const delayMs = new Date(state!.nextExpectedActivityAt!).getTime() - new Date(state!.lastActivityAt!).getTime();
+    return delayMs / 60_000;
+  };
+
+  it.each([
+    // Decorrelated jitter: uniform between the 5-minute base and three times the previous delay, capped at 6 hours.
+    ["the low end", () => 0, [5, 5, 5, 5, 5]],
+    ["the high end", () => 1, [15, 45, 135, 360, 360]],
+    ["the middle", () => 0.5, [10, 17.5, 28.75, 45.625, 70.9375]],
+  ])(
+    "pushes an ordinary failure's next pass out further with each failure of the streak, at %s of the jitter",
+    (_name, random, expectedMinutes) =>
+      inTenantZero(async () => {
+        const mailbox = await createSyncMailbox();
+        const recorded: number[] = [];
+        for (let failure = 0; failure < expectedMinutes.length; failure++) {
+          await expect(
+            runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, random),
+          ).rejects.toThrow("boom");
+          recorded.push(await recordedDelayMinutes(mailbox));
+        }
+        expect(recorded).toEqual(expectedMinutes);
+      }),
+  );
+
+  it("starts a new streak at the base after a pass succeeded", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      const high = () => 1;
+      for (let failure = 0; failure < 2; failure++) {
+        await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
+      }
+      expect(await recordedDelayMinutes(mailbox)).toBe(45);
+      await runSync(mailbox, { createImapClient: async () => fakeImap() });
+      await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
+      expect(await recordedDelayMinutes(mailbox)).toBe(15);
+    }));
+
+  it("jitters a connection-limit backoff over the provider's base and grows it over the streak", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox({ properties: { name: "M", provider: "gmail" } });
+      const limited = failingWith(new MailConnectionLimitError("Too many simultaneous connections."));
+      const recorded: number[] = [];
+      for (let failure = 0; failure < 3; failure++) {
+        await runSync(mailbox, limited, noopStorage, undefined, () => 0.5);
+        recorded.push(await recordedDelayMinutes(mailbox));
+      }
+      // Gmail's base is 10 minutes: 10 + 0.5 * (30 - 10), then from 20 and from 35 minutes.
+      expect(recorded).toEqual([20, 35, 57.5]);
+    }));
+});
+
+describe("mail sync of an account whose sign-in the provider refused", () => {
+  useSeededDatabase();
+
+  it("ends every later pass without reading the credential or calling the provider, until a sign-in clears it", () =>
+    inTenantZero(async () => {
+      await createOwner();
+      const mailbox = await createSyncMailbox();
+      const refused = {
+        createImapClient: async () => {
+          throw new MailReauthorizationRequiredError("The IMAP server rejected the stored login");
+        },
+      };
+      // Resolves: a refused login is recorded, and graphile-worker does not retry it.
+      await runSync(mailbox, refused);
+      const recorded = await syncState(mailbox);
+      expect(recorded?.lastFailureKind).toBe("reauthorization");
+      const credentialReads = await countRows("credential_access_log WHERE item_id = $1", [mailbox]);
+      const jobs = await countRows("graphile_worker._private_jobs");
+
+      const createImapClient = vi.fn(async () => fakeImap());
+      for (let pass = 0; pass < 2; pass++) await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).not.toHaveBeenCalled();
+      expect(await countRows("credential_access_log WHERE item_id = $1", [mailbox])).toBe(credentialReads);
+      expect(await syncState(mailbox)).toEqual(recorded);
+      expect(await syncStatusOf(mailbox)).toBe("needsReauthorization");
+      expect(await countRows("graphile_worker._private_jobs")).toBe(jobs);
+
+      // What both sign-in routes write before they queue the next pass.
+      await withTransaction(pool, (client) => clearMailSyncFailure(client, mailbox));
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).toHaveBeenCalledTimes(1);
+      expect(await syncStatusOf(mailbox)).toBe("ok");
+      expect((await syncState(mailbox))?.lastFailureKind).toBeNull();
+    }));
 });
 
 describe("mail flag write-back", () => {

@@ -34,6 +34,7 @@ import {
   MailReauthorizationRequiredError,
   MailServerUnreachableError,
   seedSystem,
+  sharedImapSessionPool,
   upsertMailServerSettings,
   withTransaction,
 } from "@semprec/data";
@@ -44,6 +45,7 @@ import { createClientIpThrottle } from "../clientIpThrottle.js";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import {
+  createIdleImapFlowClient,
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
   resolveGmailWatchHosting,
@@ -1527,6 +1529,8 @@ describe("IMAP-mode accounts", () => {
   let stub: DnsLookupStub | undefined;
   let restorePolicy: (() => void) | undefined;
   let savedGatewayToken: string | undefined;
+  // Mailboxes whose sync session the process-wide pool may keep, closed before their server.
+  const keptSessions: string[] = [];
 
   beforeAll(() => {
     imapCertificate = makeTlsCertificate(IMAP_HOST);
@@ -1546,6 +1550,7 @@ describe("IMAP-mode accounts", () => {
   afterEach(async () => {
     await runtime?.stop();
     runtime = undefined;
+    for (const mailboxId of keptSessions.splice(0)) await sharedImapSessionPool.closeAccount(mailboxId);
     stub?.restore();
     stub = undefined;
     restorePolicy?.();
@@ -1589,23 +1594,31 @@ describe("IMAP-mode accounts", () => {
     },
     password = IMAP_PASSWORD,
   ): Promise<string> {
-    return createMailbox({
-      name,
-      provider: "imap",
-      syncMode: "imap",
-      credentialType: "app_password",
-      secret: password,
-      configure: async (client, itemId) => {
-        if (endpoints !== null)
-          await upsertMailServerSettings(client, itemId, { ...endpoints, username: IMAP_USERNAME });
-      },
-    });
+    return trackedForSessions(
+      createMailbox({
+        name,
+        provider: "imap",
+        syncMode: "imap",
+        credentialType: "app_password",
+        secret: password,
+        configure: async (client, itemId) => {
+          if (endpoints !== null)
+            await upsertMailServerSettings(client, itemId, { ...endpoints, username: IMAP_USERNAME });
+        },
+      }),
+    );
+  }
+
+  async function trackedForSessions(created: Promise<string>): Promise<string> {
+    const mailboxId = await created;
+    keptSessions.push(mailboxId);
+    return mailboxId;
   }
 
   function openImapClient(mailboxId: string, password = IMAP_PASSWORD): Promise<Error> {
     const create = createMailSyncAdapters({ pool, env: {} }).createImapClient;
     if (!create) throw new Error("Missing IMAP factory");
-    return inTenantZero(() => rejectionOf(create(mailboxId, password)));
+    return inTenantZero(() => rejectionOf(create(mailboxId, password, 2)));
   }
 
   /** Across every mailbox; a refused or failed pass must leave this at zero. */
@@ -1646,7 +1659,7 @@ describe("IMAP-mode accounts", () => {
     expect(JSON.stringify(result)).not.toContain("IMAP-PRIVATE-SENTINEL");
   });
 
-  it("a pass downloads the messages of an IMAP mailbox from its stored settings, then closes the socket", async () => {
+  it("a pass downloads the messages of an IMAP mailbox from its stored settings, and keeps its connection until the account's session is closed", async () => {
     const server = await reachableFakeImap();
     const mailboxId = await createImapMailbox("IMAP sync");
     await syncThroughRuntime(mailboxId);
@@ -1658,7 +1671,27 @@ describe("IMAP-mode accounts", () => {
     expect(rows.map((row) => row.message_id)).toEqual(IMAP_MESSAGES.map((message) => message.messageId));
     expect(await syncErrorOf(mailboxId)).toBeNull();
     expect(server.unsupported).toEqual([]);
-    await waitFor(async () => server.accepted() > 0 && server.closed() === server.accepted());
+    expect([server.accepted(), server.closed()]).toEqual([1, 0]);
+
+    // What a restart, Mail switched off or a removal does through the live-sync control.
+    await sharedImapSessionPool.closeAccount(mailboxId);
+    await waitFor(async () => server.closed() === 1);
+  });
+
+  it("classifies the IDLE connection's rejected login as a pass does, so the IDLE lifecycle stops retrying", async () => {
+    const server = await reachableFakeImap();
+    const mailboxId = await createImapMailbox("Revoked IDLE", undefined, IMAP_WRONG_PASSWORD);
+    const createClient = createIdleImapFlowClient(pool);
+    const idleOptions = { maxIdleTime: 25 * 60_000, socketTimeout: 35 * 60_000, autoIdleDelay: 0 };
+
+    const error = await inTenantZero(() =>
+      rejectionOf(createClient(mailboxId, IMAP_WRONG_PASSWORD, idleOptions, new AbortController().signal)),
+    );
+
+    expect(error).toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(error.message).toBe("The IMAP server rejected the stored login; reauthorize the mailbox");
+    expectNoneContained([error.message, JSON.stringify(error)], [IMAP_WRONG_PASSWORD]);
+    expect(server.accepted()).toBe(1);
   });
 
   it("a mailbox connected through the password route downloads its mail without further action", async () => {

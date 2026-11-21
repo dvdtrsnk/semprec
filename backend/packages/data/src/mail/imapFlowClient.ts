@@ -40,6 +40,9 @@ const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 // APPEND sends a whole message in one command; bounds a Sent copy the server never acknowledges.
 const IMAP_APPEND_TIMEOUT_MS = 60_000;
 
+// A connection kept open between passes that does not answer a NOOP within this is given up and replaced.
+const IMAP_PING_TIMEOUT_MS = 10_000;
+
 // iCloud Mail Drop needs no special case: the server already stores a small download-link body,
 // with no placeholder MIME part to fetch.
 
@@ -125,8 +128,44 @@ export class ImapFlowMailClient implements ImapMailClient {
   private moveExpired = false;
   private moveFailureRecorded = false;
   private moveCleanupFailed = false;
+  /** Set by any failed or timed-out provider operation: the connection's state is then unknown. */
+  private failed = false;
 
   constructor(private readonly client: ImapFlow) {}
+
+  /** Moves count only when nothing of theirs was observed: a late or unexpected answer leaves the connection in doubt. */
+  isReusable(): boolean {
+    return (
+      this.client.usable === true &&
+      !this.failed &&
+      !this.moveExpired &&
+      !this.moveCleanupFailed &&
+      this.moveObserved.length === 0
+    );
+  }
+
+  async ping(): Promise<boolean> {
+    if (!this.isReusable()) return false;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.client.noop(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP NOOP timed out after ${IMAP_PING_TIMEOUT_MS}ms`)),
+            IMAP_PING_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      this.failed = true;
+      imapDiagnostic("operation", [error]);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+    return this.client.usable === true;
+  }
 
   private async ownedMoveOperation<T>(operation: () => Promise<T>): Promise<{ expired: boolean; value: T }> {
     if (this.moveExpired) throw new Error("IMAP move connection is closed");
@@ -213,6 +252,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     try {
       return await operation();
     } catch (error) {
+      this.failed = true;
       const observed: unknown[] = [error];
       imapDiagnostic("operation", observed);
       void observed;
@@ -228,6 +268,7 @@ export class ImapFlowMailClient implements ImapMailClient {
     try {
       iterator = source()[Symbol.asyncIterator]();
     } catch (error) {
+      this.failed = true;
       observed.push(error);
       imapDiagnostic("operation", observed);
       // The private provider boundary cannot expose a secret-bearing cause.
@@ -242,6 +283,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         try {
           step = await iterator.next();
         } catch (error) {
+          this.failed = true;
           observed.push(error);
           imapDiagnostic("operation", observed);
           // The original is retained until iterator cleanup; it cannot cross the privacy boundary.
@@ -261,6 +303,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       try {
         if (!completed) await iterator.return?.();
       } catch (cleanupError) {
+        this.failed = true;
         observed.push(cleanupError);
         imapDiagnostic("stream_close", observed);
         if (!primary) {
@@ -356,6 +399,7 @@ export class ImapFlowMailClient implements ImapMailClient {
       completed = true;
       return;
     } catch (err) {
+      this.failed = true;
       observed.push(err);
       // A cap violation is rethrown, not retried by the fallback (it would hit the same cap).
       let capExceeded = false;
@@ -412,6 +456,9 @@ export class ImapFlowMailClient implements ImapMailClient {
           );
         }),
       ]);
+    } catch (error) {
+      this.failed = true;
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -646,6 +693,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
       }
     } catch (error) {
+      this.failed = true;
       primary = { value: error };
       throw error;
     } finally {
@@ -690,6 +738,9 @@ export class ImapFlowMailClient implements ImapMailClient {
           );
         }),
       ]);
+    } catch (error) {
+      this.failed = true;
+      throw error;
     } finally {
       clearTimeout(timer);
     }

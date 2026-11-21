@@ -19,6 +19,8 @@ import {
 } from "../testSupport/imapMailboxFixture.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
+const neverAborted = new AbortController().signal;
+
 const LATENCY_MS = 40;
 
 /** The capabilities of the Purelymail account the production evidence came from (no LIST-STATUS). */
@@ -223,6 +225,7 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
       "app-password",
       "INBOX",
       () => passes.push(runInTenant(tenant, () => mailbox.mailbox.sync(mailbox.overWire))),
+      neverAborted,
     );
     cleanups.push(async () => {
       await Promise.allSettled(passes);

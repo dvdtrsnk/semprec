@@ -23,11 +23,13 @@ import { logger as mailLogger } from "../mail/logger.js";
 import {
   ensureMailAccountSyncState,
   findMailboxByProviderAccountAddress,
+  getMailAccountSyncState,
   getProviderAccountAddress,
   recordGmailActivity,
   recordGmailWatchEmailAddress,
   recordGraphActivity,
   recordProviderAccountAddress,
+  recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import { createMailLiveSyncRoot, type MailLiveSyncLifecycleFactory } from "../mail/mailLiveSyncRoot.js";
 import { createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
@@ -1493,6 +1495,40 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     // The exchange presented this state's verifier, as a new sign-in does.
     expect(provider.calls.map((call) => call.url)).toEqual([GOOGLE_TOKEN_URL, GMAIL_PROFILE_URL, GMAIL_SEND_AS_URL]);
     expect(s256(provider.calls[0]?.form?.get("code_verifier") ?? "")).toBe(url.searchParams.get("code_challenge"));
+  });
+
+  it("clears the refused sign-in before the queued sync and the restart, so both reach the provider again", async () => {
+    const mailboxId = await existingMailbox(caller.tenantId);
+    await inTenant(caller.tenantId, (client) =>
+      recordSyncError(client, mailboxId, "The refresh token was revoked", "reauthorization"),
+    );
+    const failureRecord = () =>
+      inTenant(caller.tenantId, async (client) => {
+        const state = await getMailAccountSyncState(client, mailboxId);
+        return {
+          lastError: state?.lastError,
+          lastFailureKind: state?.lastFailureKind,
+          failingSince: state?.failingSince,
+          nextExpectedActivityAt: state?.nextExpectedActivityAt,
+        };
+      });
+    expect((await failureRecord()).lastFailureKind).toBe("reauthorization");
+    let seenAtRestart: Awaited<ReturnType<typeof failureRecord>> | undefined;
+    const liveSync = liveSyncSpy(async () => {
+      seenAtRestart = await failureRecord();
+    });
+
+    const result = await completeReauthorization(
+      stateOf(await reauthorize(mailboxId)),
+      fakeProvider(googleRoutes()),
+      liveSync.control,
+    );
+
+    expect(result).toEqual({ status: 200, body: { mailboxId } });
+    const cleared = { lastError: null, lastFailureKind: null, failingSince: null, nextExpectedActivityAt: null };
+    expect(await failureRecord()).toEqual(cleared);
+    expect(seenAtRestart).toEqual(cleared);
+    expect((await storedMailbox(caller.tenantId, mailboxId)).jobs).toEqual([`mail-account-sync:${mailboxId}`]);
   });
 
   it("replaces the refresh token of an Outlook mailbox and keeps its delta link", async () => {

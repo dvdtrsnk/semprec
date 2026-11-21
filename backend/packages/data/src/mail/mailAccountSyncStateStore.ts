@@ -3,6 +3,12 @@ import { assertKnownValue } from "../dbRowValidation.js";
 import { ChokePointError, ValidationError } from "../errors.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { PoolClient } from "pg";
+import {
+  decorrelatedJitterDelayMs,
+  MAIL_SYNC_FAILURE_BACKOFF_BASE_MS,
+  MAIL_SYNC_FAILURE_BACKOFF_CAP_MS,
+  type RandomSource,
+} from "./mailBackoff.js";
 
 export const SYNC_MODES = ["imap", "gmail_api", "graph_api"] as const;
 export type SyncMode = (typeof SYNC_MODES)[number];
@@ -600,24 +606,54 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
   requireAffectedRows(result, `IMAP activity of item ${input.itemId}`);
 }
 
-/** Also pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */
-export async function recordSyncError(
+/**
+ * Records a failure and the delay before the sweep makes the account due again, jittered and growing over a failure
+ * streak (`decorrelatedJitterDelayMs`). The previous delay is the one the streak's last failure recorded: every failure
+ * write sets `last_activity_at` to now and `next_expected_activity_at` to now plus the delay, and every success clears
+ * `failing_since`. Returns the start of the streak, or `null` when the row is gone (a removal deleted it while the
+ * pass ran).
+ */
+async function recordFailureWithBackoff(
   client: Queryable,
   itemId: string,
   error: string,
   failureKind: MailSyncFailureKind,
+  baseMs: number,
+  random: RandomSource,
 ): Promise<Date | null> {
+  const previous = await client.query<{ previous_delay_ms: number | null }>(
+    `SELECT CASE WHEN failing_since IS NOT NULL
+                 THEN EXTRACT(EPOCH FROM next_expected_activity_at - last_activity_at)::double precision * 1000
+            END AS previous_delay_ms
+       FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId],
+  );
+  const row = previous.rows[0];
+  if (!row) return null;
+  const delayMs = decorrelatedJitterDelayMs(row.previous_delay_ms, baseMs, MAIL_SYNC_FAILURE_BACKOFF_CAP_MS, random);
   const result = await client.query<{ failing_since: Date }>(
     `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + interval '15 minutes',
-         failing_since = COALESCE(failing_since, now()), last_failure_kind = $3
+     SET last_error = $2, last_activity_at = now(),
+         next_expected_activity_at = now() + make_interval(secs => $3::double precision / 1000),
+         failing_since = COALESCE(failing_since, now()), last_failure_kind = $4
      WHERE item_id = $1
      RETURNING failing_since`,
-    [itemId, error, failureKind],
+    [itemId, error, delayMs, failureKind],
   );
-  // Zero rows: the state row was removed while the pass ran.
-  if (!result.rowCount) return null;
+  // The row is locked above, so the update finds it.
+  requireAffectedRows(result, `mail sync failure of item ${itemId}`);
   return result.rows[0]?.failing_since ?? null;
+}
+
+/** Pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */
+export function recordSyncError(
+  client: Queryable,
+  itemId: string,
+  error: string,
+  failureKind: MailSyncFailureKind,
+  random: RandomSource = Math.random,
+): Promise<Date | null> {
+  return recordFailureWithBackoff(client, itemId, error, failureKind, MAIL_SYNC_FAILURE_BACKOFF_BASE_MS, random);
 }
 
 /**
@@ -635,23 +671,18 @@ export async function clearMailSyncFailure(client: Queryable, itemId: string): P
 }
 
 /**
- * Like `recordSyncError` with a provider-aware delay. The caller returns instead of rethrowing, so
- * the retry comes only from the sweep, not also from graphile-worker.
+ * Like `recordSyncError` with the provider's delay as the base of the streak. The caller returns instead of rethrowing,
+ * so the retry comes only from the sweep, not also from graphile-worker.
  */
 export async function recordConnectionLimitBackoff(
   client: Queryable,
   itemId: string,
   error: string,
-  delaySeconds: number,
+  baseDelaySeconds: number,
   failureKind: MailSyncFailureKind,
+  random: RandomSource = Math.random,
 ): Promise<void> {
-  await client.query(
-    `UPDATE mail_account_sync_state
-     SET last_error = $2, last_activity_at = now(), next_expected_activity_at = now() + make_interval(secs => $3),
-         failing_since = COALESCE(failing_since, now()), last_failure_kind = $4
-     WHERE item_id = $1`,
-    [itemId, error, delaySeconds, failureKind],
-  );
+  await recordFailureWithBackoff(client, itemId, error, failureKind, baseDelaySeconds * 1000, random);
 }
 
 /** Repairs one bounded page of unclassified stored errors after the normal sweep enqueues. */
