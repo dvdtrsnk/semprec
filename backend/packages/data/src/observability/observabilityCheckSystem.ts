@@ -15,7 +15,6 @@ import {
 import {
   transitionObservabilityCheck,
   transitionTenantObservabilityCheck,
-  deleteOrphanedObservabilityChecks,
   deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
@@ -305,9 +304,7 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
 
 /**
  * Every-minute cron task. Global families write content-free `observability_checks` rows; mailbox
- * checks run per active tenant. Global `mail:`/`process:mailsync:` rows are purged first so no
- * tenant content can linger in the global table. A failing tenant rejects only after every tenant
- * was attempted.
+ * checks run per active tenant. A failing tenant rejects only after every tenant was attempted.
  *
  * State lives in Postgres, so a sustained fault notifies once per ok -> alerting transition, even
  * across restarts. Exception: a failed operator-alert write rolls the transition back, so the next
@@ -320,10 +317,6 @@ export async function handleObservabilityCheckSystemTask(
   await checkProcessHeartbeats(pool, helpers);
   await checkQueueBacklog(pool, helpers);
   await checkPermanentlyFailedJobs(pool, helpers);
-  await withTransaction(pool, (client) => deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, []));
-  await withTransaction(pool, (client) =>
-    deleteOrphanedObservabilityChecks(client, MAIL_SYNC_PROCESS_CHECK_PREFIX, []),
-  );
   await forEachActiveTenant(pool, async () => {
     await checkMailSync(pool, helpers);
     await checkMailSyncLiveness(pool, helpers);

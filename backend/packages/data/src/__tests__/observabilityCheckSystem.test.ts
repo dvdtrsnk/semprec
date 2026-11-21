@@ -398,18 +398,6 @@ describe("observability.checkSystem (issue #169)", () => {
     expect(await getTenantCheck(`mail:${mailboxItemId}`)).toBeUndefined();
   });
 
-  it("purges a legacy global mail: row that still carries a lastError", async () => {
-    await markAllProcessesFresh();
-    const legacyKey = `mail:${randomUUID()}`;
-    await pool.query(
-      `INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2::jsonb)`,
-      [legacyKey, JSON.stringify({ lastError: "boom" })],
-    );
-
-    await runCheck();
-    expect(await getCheck(legacyKey)).toBeUndefined();
-  });
-
   it("references the specific check row that transitioned as the notification's source", async () => {
     await createTestUser();
     await markAllProcessesFresh();
@@ -519,7 +507,7 @@ describe("observability.checkSystem (issue #169)", () => {
       expect(await notificationsFor(alerting!.id)).toHaveLength(2);
     });
 
-    it("removes the tenant row of a soft-deleted mailbox and purges legacy global mailsync rows", async () => {
+    it("removes the tenant row of a soft-deleted mailbox", async () => {
       await createTestUser();
       await markAllProcessesFresh();
       const mailboxId = await createActiveMailbox();
@@ -527,13 +515,10 @@ describe("observability.checkSystem (issue #169)", () => {
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeDefined();
 
       await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [mailboxId]);
-      const legacyKey = `process:mailsync:${randomUUID()}`;
-      await pool.query(`INSERT INTO observability_checks (check_key, status) VALUES ($1, 'alerting')`, [legacyKey]);
 
       await runCheck();
 
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeUndefined();
-      expect(await getCheck(legacyKey)).toBeUndefined();
     });
   });
 

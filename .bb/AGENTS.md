@@ -58,7 +58,7 @@ decision and needs no document. Load `adr-conventions` for the details.
 | `implement-issue` | starting any issue — the execution contract |
 | `adr-conventions` | changing an architectural rule (`docs/architecture/`), or adding or superseding a mobile/web ADR |
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
-| `db-migrations` | a schema change, constraint, index, or backfill |
+| `db-migrations` | a schema change, constraint, index, or the seed |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
@@ -110,9 +110,12 @@ errors (`error-handling`) follow.
 
 1. Every write to item/database state goes through the generic choke-point API.
 2. One owner, one writer — per the module contract's ownership model.
-3. Before the first production release the schema is a baseline that is
-   edited directly; expand/contract and data cutovers apply only after it
-   (`docs/architecture/migrations-and-seeding.md`).
+3. The backend handles no versions and no migrations: it always assumes it is
+   the first version. A schema change edits `0001_baseline.sql` and the seed
+   in place. No backfill, data cutover, reconcile of already seeded tenants
+   or compatibility branch for data an older version wrote; every database is
+   recreated from the baseline. Production rules arrive with the owner's first
+   production deployment (`docs/architecture/migrations-and-seeding.md`).
 4. Every AI/provider call goes through `semprec-ai-gateway`.
 5. Canonical stored keys are English camelCase (view types kebab-case); labels
    resolve through i18n and are never hardcoded.

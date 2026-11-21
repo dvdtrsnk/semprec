@@ -248,8 +248,6 @@ describe("Semp task references (issue #1771)", () => {
           },
         },
       });
-      // The legacy `persistent` flag of a stored template is never shown.
-      expect(JSON.stringify(context)).not.toContain("persistent");
     });
 
     it("gives a materialized occurrence's day the same series context", async () => {

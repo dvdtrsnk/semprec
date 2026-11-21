@@ -13,7 +13,7 @@ When the issue has `execution:batch-source`, it belongs to the program in
 `docs/architecture/delivery-and-operations.md`).
 You implement the sources of your chain in the given order, one contiguous
 commit segment per source, in your own worktree and branch. The base for your
-diff, for a rebase and for migration ordinals is the integration branch
+diff and for a rebase is the integration branch
 `feature/backend-parallel`, wherever the steps below name `origin/develop`. A
 blocker that the issue text marks as `Shared-file ordering` does not have to be
 delivered before you start; read its handover if it exists. If something the
@@ -90,7 +90,7 @@ means to "remember them as it goes" reliably does not.
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
 | `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
-| `db-migrations` | a schema change, constraint, index, or backfill |
+| `db-migrations` | a schema change, constraint, index, or the seed |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `adr-conventions` | changing a rule `docs/architecture/` states, or adding or superseding a mobile/web ADR |
@@ -147,8 +147,7 @@ that ends early.
 
 ## 4. Self-review, then verify
 
-Steps 1–4 in this order, because each is cheaper than the one after it; step 5
-comes last because anything committed after it can make it stale again:
+Steps 1–4 in this order, because each is cheaper than the one after it:
 
 1. **Read your own diff** (`git diff origin/develop`) in the role of a strict
    reviewer applying `review-rules/rules.md` and `review-rules/tasks/*.md` of
@@ -203,15 +202,6 @@ comes last because anything committed after it can make it stale again:
    leave that device-free run to Relay instead of duplicating it. Before a
    manual pull request, run the full pipeline with reserved devices as above.
    Report any device step you could not run as NOT RUN.
-5. **Take the migration ordinal last.** Before the first production release a
-   schema change edits the baseline (`db-migrations`). If the diff adds a migration, run
-   `git fetch origin` and compare your number against
-   `backend/packages/data/src/db/migrations/` on `origin/develop` after the
-   pipeline and any fixes it led to, right before your final commit. Renumber
-   only your own file if it collides, then re-run
-   `pnpm --filter @semprec/data run check-migration-numbering` in `backend/`. Why: parallel
-   issues pick the same next number, and the collision surfaces only after the
-   other pull request merges (see `db-migrations`).
 
 Fix what each step finds and commit it before moving on.
 

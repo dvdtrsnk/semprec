@@ -1,10 +1,7 @@
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
-import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
-import { createTenantWithId } from "../tenancy/tenantsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -87,7 +84,7 @@ export async function admitTenantInTransaction(client: PoolClient, caller: strin
 }
 
 /** Takes the per-tenant seed lock `(2331, hashtext(tenant id))`, then admits the tenant (seedSystem's order). */
-export async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
+async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
   const tenantId = await requireTenantId(client, caller);
   await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
   await admitTenant(client, tenantId, caller);
@@ -336,39 +333,4 @@ async function seedSystemInTransaction(
   // Three databases, one settings item, two default plans; `sleepSettings.area` needs Areas.
   await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
   return "created";
-}
-
-class ReferenceSeedRollback extends Error {
-  constructor() {
-    super("reference seed rolled back");
-  }
-}
-
-/**
- * Seeds a scratch tenant that exists only inside one transaction, passes that transaction to `read`, and rolls it
- * all back: the tenant row, its system databases, queued jobs and after-commit callbacks. Returns what `read`
- * returned. Runs outside any tenant scope.
- */
-export async function readFreshSystemSeed<T>(pool: Pool, read: (client: PoolClient) => Promise<T>): Promise<T> {
-  const viewTypeRegistry = createViewTypeRegistry();
-  const computedKeyRegistry = createComputedKeyRegistry();
-  const moduleRegistry = await prepareSeedRegistries(viewTypeRegistry, computedKeyRegistry);
-  const scratchTenantId = randomUUID();
-  const captured: { result?: { value: T } } = {};
-  try {
-    return await runInTenant(scratchTenantId, () =>
-      withTransaction(pool, async (client): Promise<never> => {
-        // The seed takes this lock after its first property inserts. Taken first, it is never an upgrade, so this
-        // transaction waits for a concurrent seed instead of deadlocking with it.
-        await client.query("LOCK TABLE properties IN EXCLUSIVE MODE");
-        await createTenantWithId(client, scratchTenantId, "provisioning");
-        await seedSystemInTransaction(client, viewTypeRegistry, computedKeyRegistry, moduleRegistry);
-        captured.result = { value: await read(client) };
-        throw new ReferenceSeedRollback();
-      }),
-    );
-  } catch (err) {
-    if (err instanceof ReferenceSeedRollback && captured.result) return captured.result.value;
-    throw err;
-  }
 }

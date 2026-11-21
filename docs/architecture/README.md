@@ -14,7 +14,7 @@ contradicts them is a defect, or the document is updated in the same pull reques
 | [domain-mail-and-inbox.md](domain-mail-and-inbox.md) | Mailboxes and provider connections, sync, threads, drafts and sending, Inbox capture, tick and proposal cards. |
 | [domain-calendar-tasks-and-media.md](domain-calendar-tasks-and-media.md) | Calendars, Events, recurrence, timeline, Tasks, Journal, Sleep, transcription and speakers, Library, blobs and uploads. |
 | [testing.md](testing.md) | Testing policy, backend test tiers, tenant isolation harness, fixtures. |
-| [migrations-and-seeding.md](migrations-and-seeding.md) | Baseline schema before the first production release, forward-only expand/contract after it, migration runner, seeding. |
+| [migrations-and-seeding.md](migrations-and-seeding.md) | One baseline schema with no versions or upgrades, migration runner, seeding. |
 | [delivery-and-operations.md](delivery-and-operations.md) | No speculative generality, repository layout, branches, releases, deploy, rollback, host security, issues, Relay, review, delivery program. |
 
 Mobile and web decisions remain ADRs in [`docs/adr/`](../adr/README.md). Operator procedures live in
@@ -43,13 +43,13 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-09-10-agent-identity-verified-against-projects-items` | [agents-approvals-and-ai.md — Actors and agent identity](agents-approvals-and-ai.md#actors-and-agent-identity) |  |
 | `2026-09-10-agent-writes-are-proposals-not-direct-writes` | [agents-approvals-and-ai.md — The rule](agents-approvals-and-ai.md#the-rule) |  |
 | `2026-09-10-ai-gateway-monopoly-on-provider-calls` | [agents-approvals-and-ai.md — Monopoly](agents-approvals-and-ai.md#monopoly) |  |
-| `2026-09-10-app-code-post-migration-steps` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
+| `2026-09-10-app-code-post-migration-steps` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-09-10-bracket-non-transactional-calls-with-staleness-checked-transactions` | [transactions-and-side-effects.md — Staleness-checked brackets](transactions-and-side-effects.md#staleness-checked-brackets) |  |
 | `2026-09-10-choke-point-api-for-state-writes` | [data-model-and-writes.md — One write path](data-model-and-writes.md#one-write-path) |  |
 | `2026-09-10-develop-main-branching-with-release-promotion` | [delivery-and-operations.md — Branches and pull requests](delivery-and-operations.md#branches-and-pull-requests) |  |
 | `2026-09-10-diagnostic-notifications-are-not-agent-proposals` | [agents-approvals-and-ai.md — Closed list of direct agent writes](agents-approvals-and-ai.md#closed-list-of-direct-agent-writes) |  |
 | `2026-09-10-english-canonical-keys-with-i18n-labels` | [data-model-and-writes.md — Canonical keys and reserved names](data-model-and-writes.md#canonical-keys-and-reserved-names) |  |
-| `2026-09-10-expand-contract-forward-only-migrations` | [migrations-and-seeding.md — After the first production release: forward-only, expand/contract](migrations-and-seeding.md#after-the-first-production-release-forward-only-expandcontract) |  |
+| `2026-09-10-expand-contract-forward-only-migrations` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-09-10-side-effects-follow-the-commit` | [transactions-and-side-effects.md — Side effects follow the commit](transactions-and-side-effects.md#side-effects-follow-the-commit) |  |
 | `2026-09-10-single-monorepo-for-the-whole-product` | [delivery-and-operations.md — Repository layout](delivery-and-operations.md#repository-layout) |  |
 | `2026-09-10-single-writer-ownership-model` | [data-model-and-writes.md — One owner, one writer](data-model-and-writes.md#one-owner-one-writer) |  |
@@ -96,7 +96,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-09-28-client-disconnect-propagation-in-the-ai-gateway` | [agents-approvals-and-ai.md — Request handling](agents-approvals-and-ai.md#request-handling) |  |
 | `2026-09-28-deploy-restarts-only-the-long-running-services` | [delivery-and-operations.md — Deploy](delivery-and-operations.md#deploy) |  |
 | `2026-09-28-module-transactional-side-effects-inline-at-choke-point` | [data-model-and-writes.md — Write-time registries (`data/chokePoint/hooks.ts`)](data-model-and-writes.md#write-time-registries-datachokepointhooksts) | dropped |
-| `2026-09-28-two-pass-skip-locked-module-data-migration` | [migrations-and-seeding.md — Module data migrations](migrations-and-seeding.md#module-data-migrations) |  |
+| `2026-09-28-two-pass-skip-locked-module-data-migration` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-09-29-exactly-once-execution-of-deferred-mcp-tool-calls` | [agents-approvals-and-ai.md — Execution: approved operations run exactly once](agents-approvals-and-ai.md#execution-approved-operations-run-exactly-once) |  |
 | `2026-09-29-withtransaction-is-the-sole-transaction-opener` | [transactions-and-side-effects.md — withTransaction is the sole transaction opener](transactions-and-side-effects.md#withtransaction-is-the-sole-transaction-opener) |  |
 | `2026-09-30-choke-point-domain-hooks-through-a-per-process-registry` | [data-model-and-writes.md — Write-time registries (`data/chokePoint/hooks.ts`)](data-model-and-writes.md#write-time-registries-datachokepointhooksts) |  |
@@ -156,7 +156,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-10-29-imap-idle-connections-through-the-shared-imap-connect-step` | [domain-mail-and-inbox.md — Server settings and outbound connections](domain-mail-and-inbox.md#server-settings-and-outbound-connections) |  |
 | `2026-10-29-item-pre-write-transforms-per-module-registry` | [data-model-and-writes.md — Pre-write transforms](data-model-and-writes.md#pre-write-transforms) |  |
 | `2026-10-29-mail-connections-through-the-outbound-address-policy` | [domain-mail-and-inbox.md — Server settings and outbound connections](domain-mail-and-inbox.md#server-settings-and-outbound-connections) |  |
-| `2026-10-29-module-data-migration-converter-context` | [migrations-and-seeding.md — Module data migrations](migrations-and-seeding.md#module-data-migrations) |  |
+| `2026-10-29-module-data-migration-converter-context` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-10-29-page-restore-joins-approval-gated-destructive-operations` | [agents-approvals-and-ai.md — Destructive generic operations](agents-approvals-and-ai.md#destructive-generic-operations) |  |
 | `2026-10-29-subpages-are-items-of-a-hidden-pages-database` | [data-model-and-writes.md — Subpages](data-model-and-writes.md#subpages) |  |
 | `2026-10-29-tasks-date-and-time-rules-in-pre-write-transform` | [domain-calendar-tasks-and-media.md — Pre-write transform](domain-calendar-tasks-and-media.md#pre-write-transform) |  |
@@ -164,7 +164,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-10-31-block-and-page-decision-rationale` | [data-model-and-writes.md — Block model (`shared/block-model/`, package `@semprec/block-model`)](data-model-and-writes.md#block-model-sharedblock-model-package-semprecblock-model) | dropped |
 | `2026-10-31-confirmed-proposal-update-preconditions` | [agents-approvals-and-ai.md — Envelope and confirm](agents-approvals-and-ai.md#envelope-and-confirm) |  |
 | `2026-10-31-item-origin-capture-time-provenance` | [data-model-and-writes.md — Reads](data-model-and-writes.md#reads) |  |
-| `2026-10-31-mail-database-key-cutover` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
+| `2026-10-31-mail-database-key-cutover` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-10-31-owner-delegated-backend-program-supervision` | [delivery-and-operations.md — Backend delivery program](delivery-and-operations.md#backend-delivery-program) |  |
 | `2026-10-31-sequential-backend-delivery-batches` | [delivery-and-operations.md — Backend delivery program](delivery-and-operations.md#backend-delivery-program) | dropped |
 | `2026-10-31-tenant-scoped-project-references-for-semp-problems` | [agents-approvals-and-ai.md — Agent runtime and Semp chat](agents-approvals-and-ai.md#agent-runtime-and-semp-chat) |  |
@@ -237,7 +237,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-05-derived-relation-creation-reserves-project-inputs` | [transactions-and-side-effects.md — Busy refusals](transactions-and-side-effects.md#busy-refusals) |  |
 | `2026-11-05-item-create-transforms-follow-idempotency-reservation` | [data-model-and-writes.md — Create (`createItemWithClient`)](data-model-and-writes.md#create-createitemwithclient) |  |
 | `2026-11-05-library-covers-stage-bytes-before-the-owned-item-transaction` | [domain-calendar-tasks-and-media.md — Library](domain-calendar-tasks-and-media.md#library) |  |
-| `2026-11-05-library-outcome-writers-require-a-compatible-reader-predecessor` | [migrations-and-seeding.md — After the first production release: forward-only, expand/contract](migrations-and-seeding.md#after-the-first-production-release-forward-only-expandcontract) |  |
+| `2026-11-05-library-outcome-writers-require-a-compatible-reader-predecessor` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-11-05-library-retries-require-a-supported-live-source-config` | [domain-calendar-tasks-and-media.md — Library](domain-calendar-tasks-and-media.md#library) |  |
 | `2026-11-05-mail-thread-item-merges-transfer-existing-relations` | [domain-mail-and-inbox.md — Merges and Threads relations](domain-mail-and-inbox.md#merges-and-threads-relations) |  |
 | `2026-11-05-monotonic-project-guidance-revisions` | [agents-approvals-and-ai.md — Agent runtime and Semp chat](agents-approvals-and-ai.md#agent-runtime-and-semp-chat) |  |
@@ -276,11 +276,11 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-06-voice-speech-bounds-pending-text-per-request` | [agents-approvals-and-ai.md — Voice and speech](agents-approvals-and-ai.md#voice-and-speech) |  |
 | `2026-11-06-voice-turns-share-authorized-run-watch-delivery` | [agents-approvals-and-ai.md — Voice and speech](agents-approvals-and-ai.md#voice-and-speech) |  |
 | `2026-11-07-agent-query-schemas-share-local-definitions` | [agents-approvals-and-ai.md — Request handling](agents-approvals-and-ai.md#request-handling) |  |
-| `2026-11-07-area-note-cutover-reserves-source-without-waiting` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
-| `2026-11-07-calendar-cutover-uses-bounded-transactions` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
+| `2026-11-07-area-note-cutover-reserves-source-without-waiting` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
+| `2026-11-07-calendar-cutover-uses-bounded-transactions` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-11-07-item-delete-and-restore-domain-hooks` | [tenancy-and-security.md — Trash restore locking](tenancy-and-security.md#trash-restore-locking) |  |
 | `2026-11-07-proposal-preparation-uses-trusted-tenant-timezone` | [agents-approvals-and-ai.md — Envelope and confirm](agents-approvals-and-ai.md#envelope-and-confirm) |  |
-| `2026-11-07-task-series-cutover-uses-bounded-owner-backfill` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
+| `2026-11-07-task-series-cutover-uses-bounded-owner-backfill` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-11-08-journal-restore-serializes-on-its-period-reservation` | [domain-calendar-tasks-and-media.md — Journal](domain-calendar-tasks-and-media.md#journal) |  |
 | `2026-11-08-nightly-task-rollover-writes-user-owned-schedule` | [domain-calendar-tasks-and-media.md — Nightly rollover](domain-calendar-tasks-and-media.md#nightly-rollover) |  |
 | `2026-11-08-restore-hooks-carry-exact-deletion-epochs` | [tenancy-and-security.md — Trash restore locking](tenancy-and-security.md#trash-restore-locking) |  |
@@ -307,7 +307,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch` | [domain-mail-and-inbox.md — Mailbox removal, restore and purge](domain-mail-and-inbox.md#mailbox-removal-restore-and-purge) |  |
 | `2026-11-10-calendar-timeline-merges-a-list-of-sources` | [domain-calendar-tasks-and-media.md — Calendar timeline](domain-calendar-tasks-and-media.md#calendar-timeline) |  |
 | `2026-11-10-custom-routes-are-matched-in-declaration-order` | [edges-io-and-errors.md — Custom routes](edges-io-and-errors.md#custom-routes) |  |
-| `2026-11-10-dismissed-guidance-findings-require-compatible-readers` | [migrations-and-seeding.md — After the first production release: forward-only, expand/contract](migrations-and-seeding.md#after-the-first-production-release-forward-only-expandcontract) |  |
+| `2026-11-10-dismissed-guidance-findings-require-compatible-readers` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-11-10-finished-transcripts-are-not-matched-or-suggested-again` | [domain-calendar-tasks-and-media.md — Pipeline locking](domain-calendar-tasks-and-media.md#pipeline-locking) |  |
 | `2026-11-10-guidance-write-transaction-exception` | [agents-approvals-and-ai.md — Agent runtime and Semp chat](agents-approvals-and-ai.md#agent-runtime-and-semp-chat) |  |
 | `2026-11-10-item-count-schema-shares-local-definitions` | [data-model-and-writes.md — Page operations](data-model-and-writes.md#page-operations) | dropped |
@@ -430,7 +430,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-14-retiring-an-outdated-semp-draft-takes-the-steps-of-a-discard-as-the-system` | [agents-approvals-and-ai.md — Cross-domain proposal rules](agents-approvals-and-ai.md#cross-domain-proposal-rules) |  |
 | `2026-11-14-speaker-suggestions-are-asked-again-when-the-event-or-its-participants-change` | [domain-calendar-tasks-and-media.md — Speakers](domain-calendar-tasks-and-media.md#speakers) |  |
 | `2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read` | [domain-calendar-tasks-and-media.md — Calendar timeline](domain-calendar-tasks-and-media.md#calendar-timeline) |  |
-| `2026-11-14-the-journal-method-cutover-converts-trashed-types-with-one-statement` | [migrations-and-seeding.md — Before the first production release: one editable baseline](migrations-and-seeding.md#before-the-first-production-release-one-editable-baseline) | dropped |
+| `2026-11-14-the-journal-method-cutover-converts-trashed-types-with-one-statement` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
 | `2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request` | [domain-mail-and-inbox.md — Agent sends and MCP mail tools](domain-mail-and-inbox.md#agent-sends-and-mcp-mail-tools) |  |
 | `2026-11-14-the-next-occurrence-date-of-an-event-is-a-stored-system-property` | [domain-calendar-tasks-and-media.md — Next occurrence date](domain-calendar-tasks-and-media.md#next-occurrence-date) |  |
 | `2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded` | [agents-approvals-and-ai.md — Undo, reopen, locked states](agents-approvals-and-ai.md#undo-reopen-locked-states) |  |

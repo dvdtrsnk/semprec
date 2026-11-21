@@ -1132,7 +1132,7 @@ const cases: Record<string, TaskCase> = {
         // Simulate an item predating indexing.
         const removed = await pool.query("DELETE FROM item_search_index WHERE item_id = $1", [item.id]);
         expect(removed.rowCount).toBe(1);
-        return { databaseId: database.id, onlyMissing: true };
+        return { databaseId: database.id };
       });
     },
     async expectDone(tenant, payload) {
@@ -1480,7 +1480,6 @@ const cases: Record<string, TaskCase> = {
             mailboxItemId: null,
             messageId: `<${randomUUID()}@example.test>`,
             envelope: { from: { address }, to: [{ address }] },
-            migrationStatus: "partial",
           });
           return person.id;
         }),

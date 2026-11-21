@@ -79,16 +79,10 @@ async function transitionCheckIn(
   };
 }
 
-/** Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. */
-export function deleteOrphanedObservabilityChecks(
-  client: PoolClient,
-  checkKeyPrefix: string,
-  currentCheckKeys: readonly string[],
-): Promise<number> {
-  return deleteOrphansIn(client, "observability_checks", checkKeyPrefix, currentCheckKeys);
-}
-
-/** Tenant-table variant; RLS limits it to the caller's tenant. */
+/**
+ * Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. RLS limits it to the
+ * caller's tenant.
+ */
 export function deleteOrphanedTenantObservabilityChecks(
   client: PoolClient,
   checkKeyPrefix: string,

@@ -188,7 +188,6 @@ describe("batch 34 entry-point contracts", () => {
             timeFrom: null,
             timeTo: null,
             notifications: false,
-            persistent: false,
             flagged: false,
             description: null,
           },

@@ -109,8 +109,7 @@ describe("PATCH /api/account/profile (issue #1704)", () => {
     return readJobPayloadsByIdentifier(adminPool, BACKFILL);
   }
 
-  const reindexOf = (account: Account) =>
-    expect.objectContaining({ tenantId: account.tenantId, payload: { onlyMissing: false } });
+  const reindexOf = (account: Account) => expect.objectContaining({ tenantId: account.tenantId, payload: {} });
 
   async function runReindexes(): Promise<void> {
     const backfill = createApiCoreTaskList(pool, createActionRegistry())[BACKFILL];

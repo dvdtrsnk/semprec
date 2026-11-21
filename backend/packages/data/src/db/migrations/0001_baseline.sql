@@ -1883,21 +1883,19 @@ CREATE TABLE public.mail_message_meta (
     delivered_to_address text,
     message_kind text DEFAULT 'message'::text NOT NULL,
     dsn_original_message_id text,
-    migration_status text DEFAULT 'stable'::text NOT NULL,
     mailbox_item_id uuid,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
-    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text]))),
-    CONSTRAINT mail_message_meta_migration_status_check CHECK ((migration_status = ANY (ARRAY['stable'::text, 'partial'::text, 'done'::text])))
+    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
 COMMENT ON TABLE public.mail_message_meta IS 'semprec:tenancy=tenant';
 
 COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview of the message body, whitespace collapsed, at most 200 characters.';
 
-COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim); backfilled rows use items.updated_at.';
+COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
 
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);

@@ -106,7 +106,6 @@ export function templateOf(properties: Record<string, unknown>): TaskRecurrenceT
     timeFrom: text(properties.timeFrom),
     timeTo: text(properties.timeTo),
     notifications: properties.notifications === true,
-    persistent: properties.persistent === true,
     flagged: properties.flagged === true,
     description: text(properties.description),
   };

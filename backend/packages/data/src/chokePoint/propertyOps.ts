@@ -35,17 +35,16 @@ import {
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
- * After a property changes, its database's search documents are rebuilt by the backfill
- * (`onlyMissing: false`) queued in this transaction, so existing values become searchable or stop
- * being. The job key names the database, so repeated writes collapse. Emails are not reindexed (mail
- * owns their rows). Outside a tenant scope the job cannot be keyed, so nothing is queued.
+ * After a property changes, its database's search documents are rebuilt by the backfill queued in
+ * this transaction, so existing values become searchable or stop being. The job key names the
+ * database, so repeated writes collapse. Emails are not reindexed (mail owns their rows). Outside a tenant scope the job cannot be keyed, so nothing is queued.
  */
 async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Iterable<string>): Promise<void> {
   if (currentTenantScope()?.kind !== "tenant") return;
   for (const databaseId of new Set(databaseIds)) {
     const database = await databasesStore.getDatabase(client, databaseId);
     if (!database || database.ownerModuleId === EMAILS_MODULE_ID) continue;
-    await enqueueItemSearchBackfill(client, { databaseId, onlyMissing: false });
+    await enqueueItemSearchBackfill(client, { databaseId });
   }
 }
 

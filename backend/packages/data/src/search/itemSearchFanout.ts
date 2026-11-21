@@ -54,7 +54,7 @@ export async function enqueueItemSearchReindex(client: PoolClient, payload: Item
 
 /** Rebuilds every search document of the tenant (e.g. a profile language change). Must run in a tenant scope. */
 export async function enqueueTenantSearchReindex(client: PoolClient): Promise<void> {
-  await enqueueItemSearchBackfill(client, { onlyMissing: false });
+  await enqueueItemSearchBackfill(client, {});
 }
 
 interface DependentRow {

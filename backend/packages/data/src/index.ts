@@ -889,7 +889,6 @@ export {
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export * from "./semp/sempTurnCancellation.js";
-export { reindexSempMessageSearch, type SempMessageSearchReindexOptions } from "./semp/sempMessageSearch.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
 export { listSleepNightReadItemIds } from "./semp/sempSleepNightContext.js";
