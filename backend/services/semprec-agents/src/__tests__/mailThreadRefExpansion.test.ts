@@ -162,9 +162,9 @@ describe("expansion of a mailThread ref for the agent", () => {
 
     const expanded = await expand(tenant, [{ kind: "mailThread", threadId: merged }]);
 
-    expect(expanded.text).toContain(`mailThread: Re: Budget talk\n{"threadId":"${survivor}"}`);
+    expect(expanded.text).toContain(`mailThread: Budget\n{"threadId":"${survivor}"}`);
     expect(expanded.text).not.toContain(merged);
-    expect(expanded.context).toEqual([{ kind: "mailThread", threadId: merged, label: "Re: Budget talk" }]);
+    expect(expanded.context).toEqual([{ kind: "mailThread", threadId: merged, label: "Budget" }]);
     expect(expanded.images).toEqual([]);
   });
 
