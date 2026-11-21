@@ -224,7 +224,11 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   builders and multistatus parser; every `tsdav` call gets the session fetch of `caldavHttp.ts`, built on
   `createOutboundHttp()`: the stored user name and password as Basic credentials, 20 s per request, a 10 MiB body cap,
   at most three redirects each vetted by the outbound policy, and a refused address and an unreachable server both
-  `providerUnavailable` with one message. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
+  `providerUnavailable` with one message. The credential is scoped (`caldavCredentialScope`) to the origin discovery
+  starts at and, for iCloud only, to https hosts under `icloud.com` on the default port, where Apple's discovery
+  delegates; a request, a redirect or an address in an answer (principal, calendar home, resource) outside it is
+  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. A server
+  whose well-known address redirects to another host is set up with its CalDAV address instead. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
   account's `caldav_url` (`mail_account_server_settings`) or `https://<address domain>/.well-known/caldav`:
   `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
   the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
@@ -239,7 +243,8 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
   the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
   the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
-  changed in the resource as the server has it now (read by a plain GET), adds a generated VTIMEZONE for a zone the resource lacks, and is
+  changed in the resource as the server has it now (read by a plain GET and read whole first: a value ical.js cannot
+  read makes the write `invalidResponse` before anything is sent), adds a generated VTIMEZONE for a zone the resource lacks, and is
   conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
   stored one is `CalendarSyncEventConflictError`, not a provider error, except a create's 412 at the resource named
   after the same local Event, which is read and replaced with the fields. Deleting an override cancels the occurrence

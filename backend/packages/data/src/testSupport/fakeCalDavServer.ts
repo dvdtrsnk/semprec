@@ -28,6 +28,8 @@ export interface FakeCalDavRequest {
   report: string | null;
   /** The resources a calendar-multiget asked for. */
   hrefs: string[];
+  /** Whether the request carried an `Authorization` header at all. */
+  withAuthorization: boolean;
 }
 
 const PRINCIPAL_PATH = "/principals/owner/";
@@ -74,6 +76,8 @@ export class FakeCalDavServer {
   refuseNextWrite = false;
   /** Delay before each request is answered, standing in for one network round trip. */
   latencyMs = 0;
+  /** The origin the principal's `calendar-home-set` names; this server's own when `null`. */
+  calendarHomeOrigin: string | null = null;
   private readonly calendars = new Map<string, StoredCalendar>();
   private etagCounter = 0;
   private server: Server | null = null;
@@ -199,7 +203,13 @@ export class FakeCalDavServer {
     const path = decodeURIComponent(new URL(req.url ?? "/", this.origin).pathname);
     const report =
       method === "REPORT" ? (/<(?:\w+:)?([a-z-]+)[\s>]/.exec(body.replace(/<\?xml[^>]*\?>/, ""))?.[1] ?? null) : null;
-    this.requests.push({ method, path, report, hrefs: report === "calendar-multiget" ? hrefsOf(body) : [] });
+    this.requests.push({
+      method,
+      path,
+      report,
+      hrefs: report === "calendar-multiget" ? hrefsOf(body) : [],
+      withAuthorization: req.headers.authorization !== undefined,
+    });
 
     const redirect = this.redirects.get(path);
     if (redirect !== undefined) return this.send(res, 302, "", { Location: redirect });
@@ -273,7 +283,10 @@ export class FakeCalDavServer {
         res,
         207,
         multistatus([
-          okResponse(path, `<c:calendar-home-set><d:href>${this.origin}${HOME_PATH}</d:href></c:calendar-home-set>`),
+          okResponse(
+            path,
+            `<c:calendar-home-set><d:href>${this.calendarHomeOrigin ?? this.origin}${HOME_PATH}</d:href></c:calendar-home-set>`,
+          ),
         ]),
       );
     }

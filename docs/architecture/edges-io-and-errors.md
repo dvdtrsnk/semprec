@@ -200,8 +200,8 @@ feature can avoid taking a URL at all, it does.
 - IP-literal hosts and non-`https:` protocols are refused by the client itself, and redirects are
   refused (`redirect: "error"`). A caller that must follow redirects asks for `redirect: "manual"`,
   gets the 3xx back unfollowed and requests the target through the same client, so every hop passes
-  the policy; only the CalDAV session (`calendar/sync/adapters/caldav/caldavHttp.ts`, at most three)
-  does.
+  the policy; only the CalDAV session (`calendar/sync/adapters/caldav/caldavHttp.ts`, at most three,
+  each inside the account's credential scope) does.
 - MCP maps a refusal to `McpConnectionError("address_not_allowed")`. Web push treats it as a
   permanent failure and revokes the subscription.
 - `allowLoopbackOutboundForTests()` throws unless `NODE_ENV=test` and is exported only from test

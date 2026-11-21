@@ -35,11 +35,12 @@ export async function verifyCalDavServer(
   options: { policy?: OutboundAddressPolicy } = {},
 ): Promise<void> {
   const signal = AbortSignal.timeout(VERIFICATION_TIMEOUT_MS);
+  const start = new URL(input.caldavUrl);
   try {
     await withCalDavSession(
       { username: input.username, password: input.password },
-      { signal, ...(options.policy ? { policy: options.policy } : {}) },
-      (session) => discoverCalendarHome(session, new URL(input.caldavUrl)),
+      { signal, start, ...(options.policy ? { policy: options.policy } : {}) },
+      (session) => discoverCalendarHome(session, start),
     );
   } catch (error) {
     if (error instanceof CalendarSyncReauthorizationRequiredError) throw new CalDavAuthFailedError();

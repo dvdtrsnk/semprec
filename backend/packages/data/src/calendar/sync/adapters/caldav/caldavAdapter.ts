@@ -235,7 +235,7 @@ export function createCalDavAdapter(
     address: account.primaryAddress ?? settings.username,
   });
   const session = <T>(signal: AbortSignal, fn: (session: CalDavSession) => Promise<T>): Promise<T> =>
-    withCalDavSession(login, { signal, ...(options.policy ? { policy: options.policy } : {}) }, fn);
+    withCalDavSession(login, { signal, start, ...(options.policy ? { policy: options.policy } : {}) }, fn);
 
   return {
     listCalendars: (signal) =>
