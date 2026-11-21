@@ -1,6 +1,7 @@
 // An in-process CalDAV server on 127.0.0.1 for the CalDAV adapter's tests: Basic authentication, a well-known
-// redirect, principal and calendar-home discovery, calendar listing, sync-collection (switchable), calendar-query,
-// calendar-multiget and conditional PUT and DELETE. It answers only what the adapter asks, in the XML real servers send.
+// redirect, principal and calendar-home discovery, calendar listing, a calendar's members by PROPFIND, sync-collection
+// (switchable), calendar-query, calendar-multiget and conditional PUT and DELETE. It answers only what the adapter asks,
+// in the XML real servers send. `behaveLikePurelymail()` switches it to the quirks of Purelymail's server.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 export interface FakeCalDavCalendar {
@@ -25,6 +26,8 @@ export interface FakeCalDavRequest {
   path: string;
   /** Which REPORT, for a REPORT. */
   report: string | null;
+  /** The resources a calendar-multiget asked for. */
+  hrefs: string[];
 }
 
 const PRINCIPAL_PATH = "/principals/owner/";
@@ -58,6 +61,15 @@ export class FakeCalDavServer {
   /** Paths answered with a redirect to the given location instead. */
   readonly redirects = new Map<string, string>();
   syncCollectionSupported = true;
+  /** `false`: no `getctag`, answered as a property the collection does not have. */
+  ctagSupported = true;
+  /**
+   * `false`: no `sync-token` property; sync-collection answers only an empty token, listing every resource with no
+   * token to continue from, and refuses any other.
+   */
+  syncTokensSupported = true;
+  /** `true`: a calendar-query whose VEVENT comp-filter has no time-range answers an empty multistatus. */
+  eventFilterNeedsTimeRange = false;
   /** Answers the next PUT or DELETE with 412, as a server whose resource changed after the client read it. */
   refuseNextWrite = false;
   private readonly calendars = new Map<string, StoredCalendar>();
@@ -102,6 +114,13 @@ export class FakeCalDavServer {
 
   addCalendar(name: string, calendar: FakeCalDavCalendar): void {
     this.calendars.set(name, { ...calendar, resources: new Map(), changes: [], version: 0, tokenEpoch: 0 });
+  }
+
+  /** Purelymail as observed: no ctag, no sync-token, and an empty answer to a VEVENT filter without a time-range. */
+  behaveLikePurelymail(): void {
+    this.ctagSupported = false;
+    this.syncTokensSupported = false;
+    this.eventFilterNeedsTimeRange = true;
   }
 
   /** A change at the provider: stores the resource with a new ETag. */
@@ -167,7 +186,7 @@ export class FakeCalDavServer {
     const path = decodeURIComponent(new URL(req.url ?? "/", this.origin).pathname);
     const report =
       method === "REPORT" ? (/<(?:\w+:)?([a-z-]+)[\s>]/.exec(body.replace(/<\?xml[^>]*\?>/, ""))?.[1] ?? null) : null;
-    this.requests.push({ method, path, report });
+    this.requests.push({ method, path, report, hrefs: report === "calendar-multiget" ? hrefsOf(body) : [] });
 
     const redirect = this.redirects.get(path);
     if (redirect !== undefined) return this.send(res, 302, "", { Location: redirect });
@@ -203,11 +222,27 @@ export class FakeCalDavServer {
       "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>",
       stored.displayName === null ? "" : `<d:displayname>${xmlEscape(stored.displayName)}</d:displayname>`,
       stored.color === null ? "" : `<ca:calendar-color>${stored.color}</ca:calendar-color>`,
-      `<cs:getctag>ctag-${stored.version}</cs:getctag>`,
+      this.ctagSupported ? `<cs:getctag>ctag-${stored.version}</cs:getctag>` : "",
       `<d:current-user-privilege-set>${privileges}</d:current-user-privilege-set>`,
       `<c:supported-calendar-component-set>${components}</c:supported-calendar-component-set>`,
-      this.syncCollectionSupported ? `<d:sync-token>${xmlEscape(this.syncToken(stored))}</d:sync-token>` : "",
+      this.syncCollectionSupported && this.syncTokensSupported
+        ? `<d:sync-token>${xmlEscape(this.syncToken(stored))}</d:sync-token>`
+        : "",
     ].join("");
+  }
+
+  /** The calendar's properties with the 404 propstat a server adds for the version properties it does not have. */
+  private calendarResponse(path: string, stored: StoredCalendar): string {
+    const missing = [
+      this.ctagSupported ? "" : "<cs:getctag/>",
+      this.syncCollectionSupported && this.syncTokensSupported ? "" : "<d:sync-token/>",
+    ].join("");
+    const ok = okResponse(path, this.calendarProps(stored));
+    if (missing === "") return ok;
+    return ok.replace(
+      "</d:response>",
+      `<d:propstat><d:prop>${missing}</d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>`,
+    );
   }
 
   private propfind(res: ServerResponse, path: string, depth: string | string[] | undefined): void {
@@ -233,7 +268,7 @@ export class FakeCalDavServer {
       const responses = [okResponse(HOME_PATH, "<d:resourcetype><d:collection/></d:resourcetype>")];
       if (depth === "1") {
         for (const [name, stored] of this.calendars) {
-          responses.push(okResponse(this.calendarPath(name), this.calendarProps(stored)));
+          responses.push(this.calendarResponse(this.calendarPath(name), stored));
         }
         responses.push(
           okResponse(`${HOME_PATH}inbox/`, "<d:resourcetype><d:collection/><c:schedule-inbox/></d:resourcetype>"),
@@ -243,7 +278,15 @@ export class FakeCalDavServer {
     }
     const located = this.locate(path);
     if (located === null || located.file !== null) return this.send(res, 404, "");
-    return this.send(res, 207, multistatus([okResponse(path, this.calendarProps(located.stored))]));
+    const responses = [this.calendarResponse(path, located.stored)];
+    if (depth === "1") {
+      for (const [file, resource] of located.stored.resources) {
+        responses.push(
+          okResponse(`${path}${file}`, `<d:resourcetype/><d:getetag>${xmlEscape(resource.etag)}</d:getetag>`),
+        );
+      }
+    }
+    return this.send(res, 207, multistatus(responses));
   }
 
   private report(res: ServerResponse, path: string, report: string | null, body: string): void {
@@ -254,6 +297,19 @@ export class FakeCalDavServer {
     if (report === "sync-collection") {
       if (!this.syncCollectionSupported) return this.send(res, 501, "");
       const token = /<(?:\w+:)?sync-token>([^<]*)</.exec(body)?.[1] ?? "";
+      if (!this.syncTokensSupported) {
+        if (token !== "") {
+          return this.send(
+            res,
+            403,
+            `<?xml version="1.0" encoding="utf-8"?><d:error xmlns:d="DAV:"><d:valid-sync-token/></d:error>`,
+          );
+        }
+        const all = [...stored.resources].map(([file, resource]) =>
+          okResponse(resourceHref(file), `<d:getetag>${xmlEscape(resource.etag)}</d:getetag>`),
+        );
+        return this.send(res, 207, multistatus(all));
+      }
       const [, epoch, version] = /\/sync\/(\d+)\/(\d+)$/.exec(token) ?? [];
       const since = Number(version ?? Number.NaN);
       if (Number(epoch) !== stored.tokenEpoch || !Number.isInteger(since) || since > stored.version) {
@@ -277,9 +333,15 @@ export class FakeCalDavServer {
       );
     }
     if (report === "calendar-query") {
-      const responses = [...stored.resources].map(([file, resource]) =>
-        okResponse(resourceHref(file), `<d:getetag>${xmlEscape(resource.etag)}</d:getetag>`),
-      );
+      const eventFilter = /<(?:\w+:)?comp-filter name="VEVENT"/.test(body);
+      if (eventFilter && this.eventFilterNeedsTimeRange && !/<(?:\w+:)?time-range/.test(body)) {
+        return this.send(res, 207, multistatus([]));
+      }
+      const responses = [...stored.resources]
+        .filter(([, resource]) => !eventFilter || resource.text.includes("BEGIN:VEVENT"))
+        .map(([file, resource]) =>
+          okResponse(resourceHref(file), `<d:getetag>${xmlEscape(resource.etag)}</d:getetag>`),
+        );
       return this.send(res, 207, multistatus(responses));
     }
     if (report === "calendar-multiget") {

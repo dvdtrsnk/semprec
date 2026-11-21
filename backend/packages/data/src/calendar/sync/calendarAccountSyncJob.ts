@@ -46,6 +46,7 @@ import {
 } from "./calendarSyncApply.js";
 import {
   listCalendarAccountsDueForSync,
+  listEventRemoteRefs,
   listSyncedAccountCalendars,
   recordCalendarSyncFailure,
   recordManualCalendarSyncRequest,
@@ -123,11 +124,16 @@ export async function handleCalendarAccountSyncTask(
     if (ids === null) return null;
     const account = await readCalendarSyncAccount(client, ids, accountItemId);
     if (account === null) return null;
+    const tracked = await listSyncedAccountCalendars(client, ids, accountItemId);
     return {
       ids,
       account,
       syncMode: account.syncMode,
-      tracked: await listSyncedAccountCalendars(client, ids, accountItemId),
+      tracked,
+      known: await listEventRemoteRefs(
+        client,
+        tracked.map((calendar) => calendar.calendarItemId),
+      ),
       window: syncWindow(account.tenantTimeZone, new Date()),
     };
   });
@@ -144,8 +150,9 @@ export async function handleCalendarAccountSyncTask(
     for (const calendar of parseRemoteCalendars(await adapter.listCalendars(signal))) {
       const stored = cursors.get(calendar.remoteId);
       const cursor = stored ? { syncToken: stored.syncToken, ctag: stored.ctag } : null;
+      const known = stored ? (prologue.known.get(stored.calendarItemId) ?? []) : [];
       const changes = parseCalendarChanges(
-        await adapter.fetchChanges(calendar, cursor, { window: prologue.window, signal }),
+        await adapter.fetchChanges(calendar, cursor, { window: prologue.window, signal, known }),
       );
       fetched.push({ calendar, changes });
     }

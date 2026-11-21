@@ -259,6 +259,39 @@ export async function listEventHrefs(
     .filter((url) => !sameCollection(url, calendar));
 }
 
+export interface ListedResource {
+  href: URL;
+  etag: string | null;
+}
+
+/**
+ * Every resource of the collection with its ETag, by PROPFIND `Depth: 1`: a plain WebDAV listing that every CalDAV
+ * server answers in full, with no filter of the server's to trust. Member collections are left out.
+ */
+export async function listResourceEtags(session: CalDavSession, calendar: URL): Promise<ListedResource[]> {
+  const responses = parseResponses(
+    await propfind({
+      url: calendar.href,
+      props: { "d:resourcetype": {}, "d:getetag": {} },
+      depth: "1",
+      fetch: session.fetch,
+    }),
+  );
+  const base = baseOf(session, calendar);
+  const listed: ListedResource[] = [];
+  for (const response of members(responses)) {
+    if (response.href === undefined) continue;
+    const href = resolve(response.href, base);
+    // A truncated listing would read as every resource it left out deleted.
+    if (response.status === 507) throw invalidResponse("The CalDAV server truncated the calendar's listing");
+    if (!response.ok || sameCollection(href, calendar)) continue;
+    if (elementNames(response.props?.resourcetype).includes("collection")) continue;
+    const etag = davText(response.props?.getetag);
+    listed.push({ href, etag: etag !== null && etag.length <= MAX_HREF_LENGTH ? etag : null });
+  }
+  return listed;
+}
+
 export interface CalendarResourceText {
   href: URL;
   etag: string | null;

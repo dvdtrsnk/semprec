@@ -1,6 +1,6 @@
 // The calendar sync adapter of iCloud and generic CalDAV accounts (sync mode `imap`): the account's stored password
 // over Basic authentication, discovery from iCloud's CalDAV root or the account's CalDAV address, changes by
-// sync-collection with a ctag fallback, and conditional writes.
+// sync-collection or, on a server without a sync-token, by the ctag and the resources' ETags, and conditional writes.
 import { randomUUID } from "node:crypto";
 import type { OutboundAddressPolicy } from "../../../../net/outboundAddressPolicy.js";
 import { logger } from "../../../logger.js";
@@ -26,6 +26,7 @@ import {
   invalidResponse,
   listCalendarCollections,
   listEventHrefs,
+  listResourceEtags,
   replaceResource,
   syncChanges,
   type CalendarResourceText,
@@ -87,9 +88,84 @@ function eventsOf(resources: readonly ParsedResource[]): RemoteEvent[] {
   return resources.flatMap((resource) => resource.events);
 }
 
-async function fullFetch(session: CalDavSession, url: URL, window: CalendarSyncWindow): Promise<CalendarChanges> {
+/** The address an href is compared by: a server may percent-encode a path differently from one answer to the next. */
+function resourceKey(href: URL): string {
+  try {
+    return `${href.origin}${decodeURIComponent(href.pathname)}`;
+  } catch (error) {
+    // A stray `%` that is no escape: the path is compared as sent.
+    if (error instanceof URIError) return href.href;
+    throw error;
+  }
+}
+
+interface KnownResource {
+  etags: Set<string | null>;
+  remoteIds: string[];
+}
+
+/** The stored Events by their resource; one resource holds a series' master and its overrides. */
+function knownResources(known: readonly RemoteEventRef[]): Map<string, KnownResource> {
+  const resources = new Map<string, KnownResource>();
+  for (const ref of known) {
+    if (ref.href === null) continue;
+    const key = resourceKey(new URL(ref.href));
+    const resource = resources.get(key) ?? { etags: new Set(), remoteIds: [] };
+    resource.etags.add(ref.etag);
+    resource.remoteIds.push(ref.remoteId);
+    resources.set(key, resource);
+  }
+  return resources;
+}
+
+/**
+ * The changes of a calendar whose server has no sync-token, by its ETags: every resource is listed with its ETag, only
+ * a new resource or one whose ETag differs from the stored Events' is fetched, and a stored Event whose resource is no
+ * longer listed, or no longer holds it, is deleted. A resource that holds no Event (a task, one ical.js cannot read)
+ * is never stored, so it is fetched again by every pass.
+ */
+async function reconcileByEtags(
+  session: CalDavSession,
+  url: URL,
+  known: readonly RemoteEventRef[],
+  version: CalendarSyncCursor,
+): Promise<CalendarChanges> {
+  const stored = knownResources(known);
+  const listed = await listResourceEtags(session, url);
+  const listedKeys = new Set<string>();
+  const changed: URL[] = [];
+  for (const resource of listed) {
+    const key = resourceKey(resource.href);
+    listedKeys.add(key);
+    const previous = stored.get(key);
+    const unchanged =
+      previous !== undefined &&
+      resource.etag !== null &&
+      previous.etags.size === 1 &&
+      previous.etags.has(resource.etag);
+    if (!unchanged) changed.push(resource.href);
+  }
+  const upserts = eventsOf(parseResources(await fetchResources(session, url, changed)));
+  const upserted = new Set(upserts.map((event) => event.remoteId));
+  const refetched = new Set(changed.map(resourceKey));
+  const deletions = new Set<string>();
+  for (const [key, resource] of stored) {
+    if (listedKeys.has(key) && !refetched.has(key)) continue;
+    for (const remoteId of resource.remoteIds) if (!upserted.has(remoteId)) deletions.add(remoteId);
+  }
+  return { full: false, upserts, deletions: [...deletions], nextSyncState: version };
+}
+
+/** A server with a sync-token lists the window's Events by a calendar-query; one without one is compared by ETags. */
+async function fullFetch(
+  session: CalDavSession,
+  url: URL,
+  window: CalendarSyncWindow,
+  known: readonly RemoteEventRef[],
+): Promise<CalendarChanges> {
   // Read before the listing, so a change made during it comes again with the next fetch.
   const version = await collectionVersion(session, url);
+  if (version.syncToken === null) return reconcileByEtags(session, url, known, version);
   const hrefs = await listEventHrefs(session, url, window);
   const resources = parseResources(await fetchResources(session, url, hrefs));
   return { full: true, upserts: eventsOf(resources), deletions: [], nextSyncState: version };
@@ -97,14 +173,14 @@ async function fullFetch(session: CalDavSession, url: URL, window: CalendarSyncW
 
 /**
  * Incremental when the delta names every Event it touches: sync-collection gives addresses only, so a deleted
- * resource, or a changed series whose overrides may have gone, is re-read by a full fetch instead. A server without
- * sync-collection is compared by its ctag; the adapter keeps no ETags of its own, so a changed ctag means a full fetch.
+ * resource, or a changed series whose overrides may have gone, is re-read by a full fetch instead. A server without a
+ * sync-token is skipped while its ctag stays the same, and otherwise compared by its resources' ETags.
  */
 async function fetchChanges(
   session: CalDavSession,
   calendar: RemoteCalendar,
   cursor: CalendarSyncCursor | null,
-  window: CalendarSyncWindow,
+  options: { window: CalendarSyncWindow; known: readonly RemoteEventRef[] },
 ): Promise<CalendarChanges> {
   const url = calendarUrl(calendar);
   if (cursor?.syncToken) {
@@ -120,12 +196,12 @@ async function fetchChanges(
         };
       }
     }
-    return fullFetch(session, url, window);
+    return fullFetch(session, url, options.window, options.known);
   }
   if (cursor !== null && cursor.ctag !== null && cursor.ctag === calendar.ctag) {
     return { full: false, upserts: [], deletions: [], nextSyncState: { syncToken: null, ctag: calendar.ctag } };
   }
-  return fullFetch(session, url, window);
+  return fullFetch(session, url, options.window, options.known);
 }
 
 function edited<T>(edit: () => T): T {
@@ -160,8 +236,8 @@ export function createCalDavAdapter(
     listCalendars: (signal) =>
       session(signal, async (s) => listCalendarCollections(s, await discoverCalendarHome(s, start))),
 
-    fetchChanges: (calendar, cursor, { window, signal }) =>
-      session(signal, (s) => fetchChanges(s, calendar, cursor, window)),
+    fetchChanges: (calendar, cursor, { window, signal, known }) =>
+      session(signal, (s) => fetchChanges(s, calendar, cursor, { window, known })),
 
     putEvent: (calendar, { ref: eventRef, fields, icalUid, seriesRef }, signal) =>
       session(signal, async (s) => {

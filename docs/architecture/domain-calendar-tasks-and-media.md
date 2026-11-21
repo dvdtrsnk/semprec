@@ -203,8 +203,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
 `event_remote_state` (`calendarSyncStore.ts` is their only writer), of `calendar_push_channels`
 (`calendarPushChannelsStore.ts`) and the only writer as `CALENDAR_SYNC_WRITER`.
 
-- **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window })` →
-  `{ full, upserts, deletions, nextSyncState }`, `putEvent` (a new override names its series' `seriesRef`),
+- **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window, known })` →
+  `{ full, upserts, deletions, nextSyncState }` (`known`: the calendar's stored remote ids, hrefs and ETags, read with
+  the tracked calendars before the fetch), `putEvent` (a new override names its series' `seriesRef`),
   `deleteEvent`, `getEvent` (one Event as the provider has it now) and the optional `moveEvent`, each honouring the
   pass's deadline signal
   (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
@@ -224,8 +225,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
   A fetch with a sync token uses sync-collection; a deletion or a changed series in the delta, an expired token or a
   server refusing the report makes it a full fetch (calendar-query of the window's ETags, then calendar-multiget in
-  batches of 50), because sync-collection names addresses only and an override that vanished cannot be named. Without
-  a token the ctag decides: unchanged is no change, changed a full fetch. Events are read and written with `ical.js`
+  batches of 50), because sync-collection names addresses only and an override that vanished cannot be named. A
+  server without a sync-token (Purelymail answers none, and no ctag either) is never asked to filter: an unchanged ctag
+  is no change, otherwise every resource is listed with its ETag by PROPFIND `Depth: 1` (a truncated listing is
+  `invalidResponse`), only a resource that is new or whose ETag differs from `known` is read by calendar-multiget, and
+  a stored Event whose resource is no longer listed, or no longer holds it, is a deletion (an incremental answer, so
+  the window does not bound it). A resource that holds no Event is stored nowhere and read again by every pass. Events are read and written with `ical.js`
   (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
   the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
   the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value

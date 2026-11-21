@@ -133,11 +133,14 @@ export interface PutRemoteEventInput {
  */
 export interface CalendarSyncAdapter {
   listCalendars(signal: AbortSignal): Promise<RemoteCalendar[]>;
-  /** A `null` cursor asks for a full fetch of `window`. */
+  /**
+   * A `null` cursor asks for a full fetch of `window`. `known` is the calendar's Events as `event_remote_state` holds
+   * them (remote id, href, ETag), for a provider that compares its resources' ETags against them.
+   */
   fetchChanges(
     calendar: RemoteCalendar,
     syncState: CalendarSyncCursor | null,
-    options: { window: CalendarSyncWindow; signal: AbortSignal },
+    options: { window: CalendarSyncWindow; signal: AbortSignal; known: readonly RemoteEventRef[] },
   ): Promise<CalendarChanges>;
   /**
    * Creates the Event, or replaces it when `ref` is set (conditional on `ref.etag` when the provider supports it). A

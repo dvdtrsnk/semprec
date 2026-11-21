@@ -14,14 +14,21 @@ import {
   type CalendarSyncAdapter,
   type RemoteCalendar,
   type RemoteEvent,
+  type RemoteEventRef,
 } from "../calendar/sync/adapter.js";
 import { CALENDAR_SYNC_ADAPTERS } from "../calendar/sync/adapters/index.js";
 import { createCalDavAdapter } from "../calendar/sync/adapters/caldav/caldavAdapter.js";
 import { verifyCalDavServer } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
 import { CalDavAuthFailedError, CalDavServerUnreachableError } from "../calendar/sync/adapters/caldav/caldavErrors.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
-import { resolveCalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
+import {
+  listEventRemoteStates,
+  listSyncedAccountCalendars,
+  resolveCalendarSyncIds,
+  type CalendarSyncIds,
+} from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
@@ -198,6 +205,8 @@ function adapter(overrides: Partial<CalendarSyncAccount> = {}, caldavUrl = `${se
 
 const signal = (): AbortSignal => AbortSignal.timeout(30_000);
 
+const fetchOptions = (known: readonly RemoteEventRef[] = []) => ({ window: WINDOW, signal: signal(), known });
+
 async function calendarNamed(caldav: CalendarSyncAdapter, name: string): Promise<RemoteCalendar> {
   const found = (await caldav.listCalendars(signal())).find((calendar) => calendar.name === name);
   if (!found) throw new Error(`no calendar ${name}`);
@@ -220,6 +229,21 @@ function propertyLines(text: string, names: string[]): string[] {
     .replace(/\r\n[ \t]/g, "")
     .split("\r\n")
     .filter((line) => names.some((name) => line.startsWith(`${name}:`) || line.startsWith(`${name};`)));
+}
+
+/** The resource without its last VEVENT, which in `STANDUP_ICS` is the override. */
+function withoutLastVevent(text: string): string {
+  const start = text.lastIndexOf("BEGIN:VEVENT\r\n");
+  const end = text.indexOf("END:VEVENT\r\n", start) + "END:VEVENT\r\n".length;
+  return text.slice(0, start) + text.slice(end);
+}
+
+function refsOf(events: readonly RemoteEvent[]): RemoteEventRef[] {
+  return events.map(({ remoteId, href, etag }) => ({ remoteId, href, etag }));
+}
+
+function multigetHrefsSince(index: number): string[] {
+  return server.requests.slice(index).flatMap((request) => request.hrefs);
 }
 
 function requestsSince(index: number): string[] {
@@ -294,7 +318,7 @@ describe("CalDAV adapter against a fake server", () => {
   it("reads a full calendar: the series with its zone, exclusions, alarm and people, its override, an all-day Event", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const changes = await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() });
+    const changes = await caldav.fetchChanges(work, null, fetchOptions());
     expect(changes.full).toBe(true);
     expect(changes.deletions).toEqual([]);
     expect(changes.nextSyncState).toEqual({ syncToken: expect.stringContaining("/sync/"), ctag: work.ctag });
@@ -323,7 +347,7 @@ describe("CalDAV adapter against a fake server", () => {
     });
 
     const holidays = await calendarNamed(caldav, "Holidays");
-    const allDay = await caldav.fetchChanges(holidays, null, { window: WINDOW, signal: signal() });
+    const allDay = await caldav.fetchChanges(holidays, null, fetchOptions());
     expect(allDay.upserts.map((event) => event.fields)).toEqual([
       expect.objectContaining({ name: "New Year", date: "2027-01-01", endDate: null, timeFrom: null, timeZone: null }),
     ]);
@@ -332,10 +356,10 @@ describe("CalDAV adapter against a fake server", () => {
   it("fetches a changed Event through sync-collection and multiget only", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const first = await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() });
+    const first = await caldav.fetchChanges(work, null, fetchOptions());
     server.putResource("work", "lunch.ics", singleIcs("lunch-uid", "Lunch with Peter"));
     const before = server.requests.length;
-    const changes = await caldav.fetchChanges(work, first.nextSyncState, { window: WINDOW, signal: signal() });
+    const changes = await caldav.fetchChanges(work, first.nextSyncState, fetchOptions());
     expect(changes.full).toBe(false);
     expect(changes.deletions).toEqual([]);
     expect(changes.upserts.map((event) => [event.remoteId, event.fields.name])).toEqual([
@@ -356,9 +380,9 @@ describe("CalDAV adapter against a fake server", () => {
   ])("reads the whole calendar again after %s", async (_label, change, masters) => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const first = await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() });
+    const first = await caldav.fetchChanges(work, null, fetchOptions());
     change();
-    const changes = await caldav.fetchChanges(work, first.nextSyncState, { window: WINDOW, signal: signal() });
+    const changes = await caldav.fetchChanges(work, first.nextSyncState, fetchOptions());
     expect(changes.full).toBe(true);
     expect(
       changes.upserts
@@ -368,15 +392,20 @@ describe("CalDAV adapter against a fake server", () => {
     ).toEqual(masters);
   });
 
-  it("falls back to the ctag and a full listing on a server without sync-collection", async () => {
+  it("falls back to the ctag and the resources' ETags on a server without sync-collection", async () => {
     server.syncCollectionSupported = false;
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const first = await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() });
+    const first = await caldav.fetchChanges(work, null, fetchOptions());
     expect(first.nextSyncState).toEqual({ syncToken: null, ctag: work.ctag });
+    expect(first.upserts.map((event) => event.remoteId).sort()).toEqual([
+      '["standup-uid","2026-11-25T09:00"]',
+      "lunch-uid",
+      "standup-uid",
+    ]);
 
     let before = server.requests.length;
-    const unchanged = await caldav.fetchChanges(work, first.nextSyncState, { window: WINDOW, signal: signal() });
+    const unchanged = await caldav.fetchChanges(work, first.nextSyncState, fetchOptions(refsOf(first.upserts)));
     expect(unchanged).toEqual({ full: false, upserts: [], deletions: [], nextSyncState: first.nextSyncState });
     expect(requestsSince(before)).toEqual([]);
 
@@ -384,21 +413,95 @@ describe("CalDAV adapter against a fake server", () => {
     const relisted = await calendarNamed(caldav, "Work");
     expect(relisted.ctag).not.toBe(work.ctag);
     before = server.requests.length;
-    const changed = await caldav.fetchChanges(relisted, first.nextSyncState, { window: WINDOW, signal: signal() });
-    expect(changed.full).toBe(true);
-    expect(eventNamed(changed.upserts, "Lunch moved").remoteId).toBe("lunch-uid");
-    expect(changed.nextSyncState).toEqual({ syncToken: null, ctag: relisted.ctag });
+    const changed = await caldav.fetchChanges(relisted, first.nextSyncState, fetchOptions(refsOf(first.upserts)));
+    expect(changed).toMatchObject({
+      full: false,
+      deletions: [],
+      nextSyncState: { syncToken: null, ctag: relisted.ctag },
+    });
+    expect(changed.upserts.map((event) => [event.remoteId, event.fields.name])).toEqual([["lunch-uid", "Lunch moved"]]);
     expect(requestsSince(before)).toEqual([
       "PROPFIND /calendars/owner/work/",
-      "REPORT calendar-query",
+      "PROPFIND /calendars/owner/work/",
       "REPORT calendar-multiget",
     ]);
+    // The task holds no Event and is stored nowhere, so it is read again with the changed resource.
+    expect(multigetHrefsSince(before)).toEqual(["/calendars/owner/work/lunch.ics", "/calendars/owner/work/todo.ics"]);
+  });
+
+  describe("on a server like Purelymail: no ctag, no sync-token, no VEVENT filter without a time-range", () => {
+    beforeEach(() => {
+      server.behaveLikePurelymail();
+      server.deleteResource("work", "todo.ics");
+    });
+
+    const SERIES_AND_LUNCH = ['["standup-uid","2026-11-25T09:00"]', "lunch-uid", "standup-uid"];
+
+    it("lists every resource by PROPFIND and reads it by multiget, asking the server to filter nothing", async () => {
+      const caldav = adapter();
+      const work = await calendarNamed(caldav, "Work");
+      expect(work.ctag).toBeNull();
+      const before = server.requests.length;
+      const first = await caldav.fetchChanges(work, null, fetchOptions());
+      expect(first).toMatchObject({ full: false, deletions: [], nextSyncState: { syncToken: null, ctag: null } });
+      expect(first.upserts.map((event) => event.remoteId).sort()).toEqual(SERIES_AND_LUNCH);
+      expect(requestsSince(before)).toEqual([
+        "PROPFIND /calendars/owner/work/",
+        "PROPFIND /calendars/owner/work/",
+        "REPORT calendar-multiget",
+      ]);
+    });
+
+    it("reads no resource again while every ETag is unchanged", async () => {
+      const caldav = adapter();
+      const work = await calendarNamed(caldav, "Work");
+      const first = await caldav.fetchChanges(work, null, fetchOptions());
+      const before = server.requests.length;
+      const again = await caldav.fetchChanges(work, first.nextSyncState, fetchOptions(refsOf(first.upserts)));
+      expect(again).toEqual({ full: false, upserts: [], deletions: [], nextSyncState: first.nextSyncState });
+      expect(requestsSince(before)).toEqual(["PROPFIND /calendars/owner/work/", "PROPFIND /calendars/owner/work/"]);
+    });
+
+    it.each([
+      [
+        "an Event created",
+        () => server.putResource("work", "dinner.ics", singleIcs("dinner-uid", "Dinner")),
+        { upserts: ["dinner-uid"], deletions: [], read: ["dinner.ics"] },
+      ],
+      [
+        "an Event changed",
+        () => server.putResource("work", "lunch.ics", singleIcs("lunch-uid", "Lunch moved")),
+        { upserts: ["lunch-uid"], deletions: [], read: ["lunch.ics"] },
+      ],
+      [
+        "an Event deleted",
+        () => server.deleteResource("work", "lunch.ics"),
+        { upserts: [], deletions: ["lunch-uid"], read: [] },
+      ],
+      [
+        "an override removed from its series",
+        () => server.putResource("work", "standup.ics", withoutLastVevent(STANDUP_ICS)),
+        { upserts: ["standup-uid"], deletions: ['["standup-uid","2026-11-25T09:00"]'], read: ["standup.ics"] },
+      ],
+    ])("finds %s on the server and reads only that resource", async (_label, change, expected) => {
+      const caldav = adapter();
+      const work = await calendarNamed(caldav, "Work");
+      const first = await caldav.fetchChanges(work, null, fetchOptions());
+      change();
+      const before = server.requests.length;
+      const changes = await caldav.fetchChanges(work, first.nextSyncState, fetchOptions(refsOf(first.upserts)));
+      expect(changes.full).toBe(false);
+      expect(changes.upserts.map((event) => event.remoteId)).toEqual(expected.upserts);
+      expect(changes.deletions).toEqual(expected.deletions);
+      expect(multigetHrefsSince(before)).toEqual(expected.read.map((file) => `/calendars/owner/work/${file}`));
+      expect(requestsSince(before).filter((request) => request.startsWith("GET"))).toEqual([]);
+    });
   });
 
   it("round-trips a zoned series with an exclusion and an override unchanged in every modelled field", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const fetched = (await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts;
+    const fetched = (await caldav.fetchChanges(work, null, fetchOptions())).upserts;
     const master = eventNamed(fetched, "Standup");
     const override = eventNamed(fetched, "Standup (late)");
 
@@ -415,7 +518,7 @@ describe("CalDAV adapter against a fake server", () => {
       propertyLines(STANDUP_ICS, ["ATTENDEE", "ORGANIZER", "X-CUSTOM-FLAG", "TZID"]),
     );
 
-    const refetched = byRemoteId((await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts);
+    const refetched = byRemoteId((await caldav.fetchChanges(work, null, fetchOptions())).upserts);
     expect(refetched.get(master.remoteId)?.fields).toEqual(master.fields);
     expect(refetched.get(override.remoteId)?.fields).toEqual(override.fields);
   });
@@ -436,7 +539,7 @@ describe("CalDAV adapter against a fake server", () => {
     const override = await caldav.putEvent(work, { ref: created, fields: LATE_STANDUP_FIELDS }, signal());
     expect(override.remoteId).toBe(JSON.stringify([created.remoteId, "2026-11-25T09:00"]));
 
-    const events = byRemoteId((await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts);
+    const events = byRemoteId((await caldav.fetchChanges(work, null, fetchOptions())).upserts);
     expect(events.get(created.remoteId)?.fields).toEqual(STANDUP_FIELDS);
     expect(events.get(override.remoteId)?.fields).toEqual(LATE_STANDUP_FIELDS);
   });
@@ -467,10 +570,7 @@ describe("CalDAV adapter against a fake server", () => {
   it("creates with If-None-Match and reports a 412 on a write as a conflict, not a failure", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const lunch = eventNamed(
-      (await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts,
-      "Lunch",
-    );
+    const lunch = eventNamed((await caldav.fetchChanges(work, null, fetchOptions())).upserts, "Lunch");
     const etagBefore = server.resource("work", "lunch.ics")?.etag;
 
     server.refuseNextWrite = true;
@@ -499,12 +599,12 @@ describe("CalDAV adapter against a fake server", () => {
   it("deletes a single Event with If-Match and cancels one occurrence inside its series", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const events = (await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts;
+    const events = (await caldav.fetchChanges(work, null, fetchOptions())).upserts;
     await caldav.deleteEvent(work, eventNamed(events, "Lunch"), signal());
     expect(server.resource("work", "lunch.ics")).toBeUndefined();
 
     await caldav.deleteEvent(work, eventNamed(events, "Standup (late)"), signal());
-    const after = byRemoteId((await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts);
+    const after = byRemoteId((await caldav.fetchChanges(work, null, fetchOptions())).upserts);
     expect([...after.keys()]).toEqual(["standup-uid"]);
     expect(after.get("standup-uid")?.fields.exceptionDates).toEqual(["2026-11-25T09:00", "2026-12-02T09:00"]);
   });
@@ -512,7 +612,7 @@ describe("CalDAV adapter against a fake server", () => {
   it("answers an invitation by writing the account attendee's PARTSTAT, conditional on the etag", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
-    const events = (await caldav.fetchChanges(work, null, { window: WINDOW, signal: signal() })).upserts;
+    const events = (await caldav.fetchChanges(work, null, fetchOptions())).upserts;
     const standup = eventNamed(events, "Standup");
     const etagBefore = server.resource("work", "standup.ics")?.etag;
     const answer = { response: "declined", attendeeEmails: ["OWNER@example.test"] } as const;
@@ -647,14 +747,20 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
     await runtime.end();
   });
 
-  it("reads the account's login and CalDAV address and syncs the calendars and Events", async () => {
+  const storedCaldavUrl = "https://caldav.example.test/dav/";
+
+  async function calendarSyncIds(): Promise<CalendarSyncIds> {
     const ids = await inTenant((client) => resolveCalendarSyncIds(client));
     if (ids === null) throw new Error("no calendar databases");
-    const storedCaldavUrl = "https://caldav.example.test/dav/";
-    const accountId = await inTenant(async (client) => {
+    return ids;
+  }
+
+  /** A generic password account with Calendars on, whose stored CalDAV address is `storedCaldavUrl`. */
+  async function createPasswordAccount(ids: CalendarSyncIds, name: string): Promise<string> {
+    return inTenant(async (client) => {
       const mailbox = await createChokePoint(runtime).createItem({
         databaseId: ids.mailboxesDatabaseId,
-        properties: { name: "Fastmail", provider: "generic", mailEnabled: true, calendarsEnabled: true },
+        properties: { name, provider: "generic", mailEnabled: true, calendarsEnabled: true },
       });
       const { mailboxesDatabaseId } = ids;
       await writeMailboxAddresses(client, { mailboxesDatabaseId, mailboxItemId: mailbox.id, address: LOGIN.username });
@@ -672,6 +778,19 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
       return mailbox.id;
     });
+  }
+
+  /** The stored address is https on a public name; the test server is the same login on loopback. */
+  function loopbackCalDav(given: CalendarSyncAccount): CalendarSyncAdapter {
+    return createCalDavAdapter(
+      { ...given, serverSettings: { username: LOGIN.username, caldavUrl: `${server.origin}/` } },
+      { policy: LOOPBACK_LITERAL_POLICY },
+    );
+  }
+
+  it("reads the account's login and CalDAV address and syncs the calendars and Events", async () => {
+    const ids = await calendarSyncIds();
+    const accountId = await createPasswordAccount(ids, "Fastmail");
 
     const seen: CalendarSyncAccount[] = [];
     const result = await runInTenant(tenant, () =>
@@ -682,11 +801,7 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
           adapters: {
             imap: (given) => {
               seen.push(given);
-              // The stored address is https on a public name; the test server is the same login on loopback.
-              return createCalDavAdapter(
-                { ...given, serverSettings: { username: LOGIN.username, caldavUrl: `${server.origin}/` } },
-                { policy: LOOPBACK_LITERAL_POLICY },
-              );
+              return loopbackCalDav(given);
             },
           },
         },
@@ -728,5 +843,48 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
       { name: null, remote_name: "Holidays", rule: null, zone: null },
       { name: null, remote_name: "Work", rule: null, zone: null },
     ]);
+  });
+
+  it("applies Events created and deleted on a server like Purelymail, and reads nothing again when none changed", async () => {
+    server.behaveLikePurelymail();
+    server.deleteResource("work", "todo.ics");
+    const ids = await calendarSyncIds();
+    const accountId = await createPasswordAccount(ids, "Purelymail");
+    const pass = () =>
+      runInTenant(tenant, () =>
+        handleCalendarAccountSyncTask(runtime, { accountItemId: accountId }, { adapters: { imap: loopbackCalDav } }),
+      );
+    const remoteIdsOf = (events: ReadonlyArray<{ remoteId: string }> | undefined) =>
+      (events ?? []).map((event) => event.remoteId).sort();
+
+    const first = await pass();
+    expect(first?.kind === "applied" ? remoteIdsOf(first.added) : null).toEqual([
+      '["standup-uid","2026-11-25T09:00"]',
+      "lunch-uid",
+      "new-year-uid",
+      "standup-uid",
+    ]);
+    const lunch = await inTenant(async (client) => {
+      const calendars = await listSyncedAccountCalendars(client, ids, accountId);
+      const work = calendars.find((calendar) => calendar.remoteId === "/calendars/owner/work/");
+      if (!work) throw new Error("no Work calendar");
+      expect(work).toMatchObject({ syncToken: null, ctag: null });
+      return (await listEventRemoteStates(client, work.calendarItemId)).find((event) => event.remoteId === "lunch-uid");
+    });
+    if (!lunch) throw new Error("no remote state of lunch");
+
+    server.putResource("work", "dinner.ics", singleIcs("dinner-uid", "Dinner"));
+    server.deleteResource("work", "lunch.ics");
+    const second = await pass();
+    expect(second).toMatchObject({ kind: "applied", changed: [] });
+    expect(second?.kind === "applied" ? remoteIdsOf(second.added) : null).toEqual(["dinner-uid"]);
+    expect(second?.kind === "applied" ? remoteIdsOf(second.cancelled) : null).toEqual(["lunch-uid"]);
+    const lunchItem = await inTenant((client) => getItemById(client, ids.eventsDatabaseId, lunch.eventItemId));
+    expect(lunchItem?.deletedAt ?? null).not.toBeNull();
+
+    const before = server.requests.length;
+    const third = await pass();
+    expect(third).toMatchObject({ kind: "applied", added: [], changed: [], cancelled: [] });
+    expect(server.requests.slice(before).filter((request) => request.method !== "PROPFIND")).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ import type { Queryable } from "../../db/pool.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { MAILBOXES_MODULE_ID } from "../../seed/emailModuleKeys.js";
 import { EVENTS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
+import type { RemoteEventRef } from "./adapter.js";
 
 export const CALENDAR_SYNC_STATUSES = ["ok", "error", "never", "needsReauthorization", "needsConsent"] as const;
 export type CalendarSyncStatus = (typeof CALENDAR_SYNC_STATUSES)[number];
@@ -362,6 +363,33 @@ export async function listEventRemoteStates(client: Queryable, calendarItemId: s
       deleted: row.deleted,
     };
   });
+}
+
+const eventRemoteRefRow = z.object({
+  calendar_item_id: z.uuid(),
+  remote_id: z.string(),
+  remote_href: z.string().nullable(),
+  etag: z.string().nullable(),
+});
+
+/** The provider address and ETag of every synced Event of `calendarItemIds`, by calendar. */
+export async function listEventRemoteRefs(
+  client: Queryable,
+  calendarItemIds: readonly string[],
+): Promise<Map<string, RemoteEventRef[]>> {
+  const refs = new Map<string, RemoteEventRef[]>(calendarItemIds.map((id) => [id, []]));
+  if (calendarItemIds.length === 0) return refs;
+  const { rows } = await client.query<Record<string, unknown>>(
+    `SELECT calendar_item_id, remote_id, remote_href, etag
+       FROM event_remote_state
+      WHERE calendar_item_id = ANY($1::uuid[])`,
+    [calendarItemIds],
+  );
+  for (const raw of rows) {
+    const row = eventRemoteRefRow.parse(raw);
+    refs.get(row.calendar_item_id)?.push({ remoteId: row.remote_id, href: row.remote_href, etag: row.etag });
+  }
+  return refs;
 }
 
 /** The calendar's remote state rows of `remoteIds`, by remote id. */
