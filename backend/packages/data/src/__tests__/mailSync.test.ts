@@ -416,7 +416,7 @@ function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => [],
-    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async () => [],
     fetchVanishedSince: async () => [],
     fetchAllUids: async () => [],
@@ -436,7 +436,7 @@ function fakeImapAccount(folders: Array<ImapFolderRef & { count: number }>): Ima
   const countOf = (path: string) => folders.find((folder) => folder.path === path)?.count ?? 0;
   return fakeImap({
     listFolders: async () => folders.map(({ path, specialUse }) => ({ path, ...(specialUse ? { specialUse } : {}) })),
-    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null }),
+    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (path, sinceUid, limit) =>
       Array.from({ length: countOf(path) }, (_, index) => index + 1)
         .filter((uid) => uid >= sinceUid)
@@ -1555,7 +1555,7 @@ describe("IMAP reconcile core", () => {
   const twoMessages = fakeImap({
     getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
     listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-    selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
+    selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5, messages: 2 }),
     fetchMessagesSince: async () => [
       fetched(1, "<one@x>", { subject: "First" }),
       fetched(2, "<two@x>", { envelope: { from: { address: "b@x.com" } }, subject: "Second" }),
@@ -1598,7 +1598,7 @@ describe("IMAP reconcile core", () => {
     await reconcile(
       fakeImap({
         ...twoMessages,
-        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
+        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 0 }),
         fetchMessagesSince: async (_path, sinceUid) => {
           sinceUids.push(sinceUid);
           return [];
@@ -1621,7 +1621,7 @@ describe("IMAP reconcile core", () => {
       await reconcile(
         fakeImap({
           ...twoMessages,
-          selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
+          selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 0 }),
           fetchMessagesSince: async () => [survivor(1)],
         }),
         params,
@@ -1643,7 +1643,12 @@ describe("IMAP reconcile core", () => {
     expect(await emailIds(params.emailsDatabaseId)).toHaveLength(2);
 
     await reconcile(
-      fakeImap({ ...twoMessages, fetchMessagesSince: async () => [], fetchVanishedSince: async () => [1] }),
+      fakeImap({
+        ...twoMessages,
+        selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 6, messages: 1 }),
+        fetchMessagesSince: async () => [],
+        fetchVanishedSince: async () => [1],
+      }),
       params,
     );
     expect(await folderEdges(params.folderRelationPropertyId)).toBe(1); // one of the two original edges was removed
@@ -1690,11 +1695,11 @@ describe("IMAP reconcile core", () => {
     "Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge",
     async () => {
       const params = { ...(await reconcileParams()), folderPaths: ["[Gmail]/All Mail"] };
-      const labeled = (gmailLabels: string[]) =>
+      const labeled = (gmailLabels: string[], uidnext = 2) =>
         fakeImap({
           ...twoMessages,
           listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
-          selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+          selectFolder: async () => ({ uidvalidity: 1, uidnext, highestModSeq: null, messages: 1 }),
           fetchMessagesSince: async () => [fetched(1, "<labeled@x>", { subject: "Labeled", gmailLabels })],
           fetchAllUids: async () => [1],
         });
@@ -1718,8 +1723,9 @@ describe("IMAP reconcile core", () => {
       expect(await folderEdges(params.folderRelationPropertyId, emailItemId)).toBe(3); // All Mail + \Inbox + Work
 
       // A second pass re-observing the message with one label dropped removes only that label's edge. The fake
-      // client ignores `sinceUid`, so it can re-report uid 1 with a narrowed label set.
-      await reconcile(labeled(["Work"]), params);
+      // client reports a higher UIDNEXT, so the pass searches for new UIDs, and ignores `sinceUid`, so it can
+      // re-report uid 1 with a narrowed label set.
+      await reconcile(labeled(["Work"], 3), params);
       expect(await folderEdges(params.folderRelationPropertyId, emailItemId)).toBe(2); // \Inbox's edge was dropped
     },
   );
@@ -2254,6 +2260,7 @@ describe("mail sync job error handling", () => {
                     uidvalidity: validity,
                     uidnext: path === "Source" ? "1" : "50",
                     highestmodseq: null,
+                    messageCount: "0",
                   });
                 }
                 return id;
@@ -2404,6 +2411,7 @@ describe("mail sync job error handling", () => {
                 uidvalidity: path === "Source" ? 11 : 12,
                 uidnext: 50,
                 highestModSeq: null,
+                messages: 0,
               }),
               fetchMessagesSince: async (path) => (path === "Source" ? [{ uid: 7, message: observedMessage }] : []),
               fetchVanishedSince: async () => null,
@@ -2577,7 +2585,7 @@ describe("mail sync job error handling", () => {
 
     const failingAfterFetch = fakeImap({
       ...inbox,
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [withAttachment(1, "<orphan@x>", "f.txt")],
       // No QRESYNC and a known uidvalidity: the non-CONDSTORE fallback, which diffs via fetchAllUids.
       fetchVanishedSince: async () => null,
@@ -2610,6 +2618,7 @@ describe("mail sync job error handling", () => {
       };
       const imap = fakeImap({
         listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Archive" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
         fetchMessagesSince: async (path) =>
           path === "INBOX"
             ? [withAttachment(1, "<kept@x>", "kept.txt")]
@@ -3076,7 +3085,7 @@ describe("bounded IMAP sync passes", () => {
       const downloading = gate();
       const imap = fakeImap({
         listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-        selectFolder: async () => ({ uidvalidity: 7, uidnext: 3, highestModSeq: null }),
+        selectFolder: async () => ({ uidvalidity: 7, uidnext: 3, highestModSeq: null, messages: 0 }),
         fetchMessagesSince: async () => {
           await fetching.wait();
           return [
@@ -4039,51 +4048,43 @@ describe("mail sync connection-limit backoff", () => {
   );
 
   tenantIt("holds no pooled database connection while a sync pass waits for an IMAP connection slot", async () => {
-    // connectionLimit: 1 forces contention between two concurrent passes; at the default limit of 2 they
-    // never wait and this test would pass vacuously.
+    // connectionLimit: 1 and another holder of the account's only slot (an IDLE session, a move) make the pass wait;
+    // with a free slot it would never wait and this test would pass vacuously.
     const mailbox = await createSyncMailbox({ properties: { name: "M", connectionLimit: 1 } });
     const limiter = createImapConnectionLimiter();
 
-    let releaseFirst: () => void = () => {};
-    let resolveFirstStarted: () => void = () => {};
-    const firstStarted = new Promise<void>((resolve) => {
-      resolveFirstStarted = resolve;
+    let releaseSlot: () => void = () => {};
+    let resolveSlotTaken: () => void = () => {};
+    const slotTaken = new Promise<void>((resolve) => {
+      resolveSlotTaken = resolve;
     });
-    const blockingImap = fakeImap({
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-      selectFolder: async () => {
-        resolveFirstStarted();
-        await new Promise<void>((resolve) => {
-          releaseFirst = resolve;
-        });
-        return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
-      },
+    const holder = limiter.run(mailbox, 1, async () => {
+      resolveSlotTaken();
+      await new Promise<void>((resolve) => {
+        releaseSlot = resolve;
+      });
     });
-
-    // The first pass takes the account's only slot and holds it (blocked in `selectFolder`, its write
-    // transaction's connection checked out) until `releaseFirst()`.
-    const firstPass = runSync(mailbox, { createImapClient: async () => blockingImap }, noopStorage, undefined, limiter);
-    await firstStarted;
+    await slotTaken;
 
     const checkedOut = () => pool.totalCount - pool.idleCount;
     const baseline = checkedOut();
 
-    const secondPass = runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, limiter);
+    const pass = runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, limiter);
 
-    // Waits until the second pass's credential fetch (before it calls the limiter) has been logged, so it is
-    // calling or blocked in `imapConnectionLimiter.run`.
-    while ((await countRows("credential_access_log WHERE item_id = $1", [mailbox])) < 2)
+    // Waits until the pass's credential fetch (before it calls the limiter) has been logged, so it is calling or
+    // blocked in `imapConnectionLimiter.run`.
+    while ((await countRows("credential_access_log WHERE item_id = $1", [mailbox])) < 1)
       await new Promise((resolve) => setTimeout(resolve, 5));
-    // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call has run.
+    // One more tick so the pass's synchronous `imapConnectionLimiter.run(...)` call has run.
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    // The second pass is queued behind the first and must not have checked out a database connection while
-    // it waits: the write transaction opens after the limiter wait.
+    // The pass is queued behind the holder and must not have checked out a database connection while it waits:
+    // the write transaction opens after the limiter wait.
     expect(checkedOut() - baseline).toBe(0);
 
-    releaseFirst();
-    await firstPass;
-    await secondPass;
+    releaseSlot();
+    await holder;
+    await pass;
   });
 });
 
@@ -4102,7 +4103,7 @@ describe("mail flag write-back", () => {
           { path: "INBOX", specialUse: "\\Inbox" },
           { path: "Archive", specialUse: "\\Archive" },
         ],
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
         fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
         fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       });
@@ -4139,9 +4140,8 @@ describe("mail flag write-back", () => {
       await patch({ read: true });
       await reconcile({
         ...initial,
-        fetchMessagesSince: async (path) => [
-          { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
-        ],
+        fetchMessagesSince: async () => [],
+        fetchFlagsChangedSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, flags: [IMAP_SEEN_FLAG] }],
         setMessageFlag: async () => {
           throw new Error("a provider observation matching desired state must not be echoed");
         },
@@ -4210,7 +4210,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
   const knownUidPass = (overrides: Partial<ImapMailClient>) =>
     fakeImap({
       listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
       fetchVanishedSince: async () => null,
       fetchAllUids: async () => [1],
       setMessageFlag: async () => {
@@ -4362,7 +4362,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       const { params } = await setUpFolder();
       const calls: Array<number | null> = [];
       const recording = {
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42, messages: 0 }),
         fetchFlagsChangedSince: async (_path: string, sinceModSeq: number | null) => {
           calls.push(sinceModSeq);
           return [];
@@ -4377,7 +4377,12 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       await reconcileImapFolder(pool, noCondstore, params);
       expect(calls).toEqual([null]);
 
-      const condstore = { ...noCondstore, getCapabilities: async () => new Set(["CONDSTORE"]) };
+      // A flag change since raised the folder's mod-sequence; an unchanged one would skip the fetch.
+      const condstore = {
+        ...noCondstore,
+        getCapabilities: async () => new Set(["CONDSTORE"]),
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 43, messages: 1 }),
+      };
       await reconcileImapFolder(pool, condstore, params);
       expect(calls).toEqual([null, 42]);
     },

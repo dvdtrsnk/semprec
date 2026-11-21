@@ -1725,6 +1725,9 @@ CREATE TABLE public.mail_account_sync_state (
     provider_account_address text,
     sync_paused_at timestamp with time zone,
     granted_scopes text[],
+    pass_lease_token uuid,
+    pass_lease_expires_at timestamp with time zone,
+    pass_rerun_requested boolean DEFAULT false NOT NULL,
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
@@ -1832,6 +1835,7 @@ CREATE TABLE public.mail_folder_sync_state (
     uidvalidity bigint,
     uidnext bigint,
     highestmodseq bigint,
+    message_count bigint,
     last_full_reconcile_at timestamp with time zone,
     last_error text,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL

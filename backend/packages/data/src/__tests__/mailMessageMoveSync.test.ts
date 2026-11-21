@@ -201,6 +201,7 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
         uidvalidity: folder.uidValidity,
         uidnext: folder.uidNext,
         highestmodseq: null,
+        messageCount: "0",
       });
       folderIds.push(id);
     }
@@ -1296,7 +1297,7 @@ describe("mail move intent store", () => {
     const reconcileClient = {
       getCapabilities: async () => new Set<string>(),
       listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
-      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null }),
+      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [],
       fetchVanishedSince: async () => null,
       fetchAllUids: async () => [23],

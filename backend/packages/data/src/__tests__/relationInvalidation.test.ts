@@ -233,7 +233,7 @@ describe("relation invalidations", () => {
           return [{ path: "All Mail", specialUse: "\\All" }];
         },
         async selectFolder() {
-          return { uidvalidity: 1, uidnext: 2, highestModSeq: null };
+          return { uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 };
         },
         async fetchMessagesSince() {
           return [

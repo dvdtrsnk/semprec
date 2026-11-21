@@ -70,7 +70,7 @@ function providerAccount(): ImapMailClient {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => PROVIDER_FOLDERS.map(({ path, specialUse }) => ({ path, specialUse })),
-    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null }),
+    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (path, sinceUid, limit) =>
       Array.from({ length: countOf(path) }, (_, index) => index + 1)
         .filter((uid) => uid >= sinceUid)

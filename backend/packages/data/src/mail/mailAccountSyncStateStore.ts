@@ -645,3 +645,86 @@ export async function listAllMailAccountSyncStates(client: Queryable): Promise<M
   const { rows } = await client.query<MailAccountSyncStateDbRow>(`SELECT ${COLUMNS} FROM mail_account_sync_state`);
   return rows.map(mapRow);
 }
+
+/** What `claimMailSyncPass` found: the lease is now this pass's, another live pass holds it, or there is no row. */
+export type MailSyncPassClaim = "claimed" | "busy" | "missing";
+
+/**
+ * Takes the account's pass lease for `token` until `leaseMs` from now, unless another pass holds an unexpired one;
+ * then that pass is asked for one more run (`pass_rerun_requested`) and `busy` is returned. Locks the sync state row,
+ * so a claim and `releaseMailSyncPass` never interleave: a trigger either reaches the running pass's rerun flag or
+ * finds the lease free. A claim clears the flag, because the claiming pass is the requested run.
+ */
+export async function claimMailSyncPass(
+  client: PoolClient,
+  itemId: string,
+  token: string,
+  leaseMs: number,
+): Promise<MailSyncPassClaim> {
+  const { rows } = await client.query<{ held: boolean }>(
+    `SELECT (pass_lease_token IS NOT NULL AND pass_lease_expires_at > now()) AS held
+       FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId],
+  );
+  const row = rows[0];
+  if (!row) return "missing";
+  if (row.held) {
+    await client.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [itemId]);
+    return "busy";
+  }
+  await client.query(
+    `UPDATE mail_account_sync_state
+        SET pass_lease_token = $2, pass_lease_expires_at = now() + make_interval(secs => $3::double precision / 1000),
+            pass_rerun_requested = false
+      WHERE item_id = $1`,
+    [itemId, token, leaseMs],
+  );
+  return "claimed";
+}
+
+/**
+ * Extends `token`'s lease, or takes it again when no live pass holds it (it expired, or the row was deleted and
+ * inserted again). `false` when another pass holds it now: this pass must stop.
+ */
+export async function renewMailSyncPass(
+  client: Queryable,
+  itemId: string,
+  token: string,
+  leaseMs: number,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+        SET pass_lease_token = $2,
+            pass_lease_expires_at = now() + make_interval(secs => $3::double precision / 1000)
+      WHERE item_id = $1
+        AND (pass_lease_token = $2 OR pass_lease_token IS NULL OR pass_lease_expires_at <= now())`,
+    [itemId, token, leaseMs],
+  );
+  return result.rowCount === 1;
+}
+
+/** Asks for one more pass once the running one releases its lease (an unfinished backfill). */
+export async function requestMailSyncRerun(client: Queryable, itemId: string, token: string): Promise<void> {
+  const result = await client.query(
+    "UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1 AND pass_lease_token = $2",
+    [itemId, token],
+  );
+  requireAffectedRows(result, `mail sync pass lease of ${itemId}`);
+}
+
+/**
+ * Gives up `token`'s lease and returns whether a rerun was requested while it was held. `false` with nothing changed
+ * when the lease is no longer `token`'s or the row is gone (a removal deleted it).
+ */
+export async function releaseMailSyncPass(client: PoolClient, itemId: string, token: string): Promise<boolean> {
+  const { rows } = await client.query<{ rerun: boolean }>(
+    `UPDATE mail_account_sync_state state
+        SET pass_lease_token = NULL, pass_lease_expires_at = NULL, pass_rerun_requested = false
+       FROM (SELECT item_id, pass_rerun_requested FROM mail_account_sync_state
+              WHERE item_id = $1 AND pass_lease_token = $2 FOR UPDATE) previous
+      WHERE state.item_id = previous.item_id
+      RETURNING previous.pass_rerun_requested AS rerun`,
+    [itemId, token],
+  );
+  return rows[0]?.rerun ?? false;
+}

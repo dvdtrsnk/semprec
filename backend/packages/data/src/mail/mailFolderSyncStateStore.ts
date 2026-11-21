@@ -5,6 +5,8 @@ export interface MailFolderSyncStateRow {
   uidvalidity: string | null;
   uidnext: string | null;
   highestmodseq: string | null;
+  /** The folder's message count at the last reconcile. */
+  messageCount: string | null;
   lastFullReconcileAt: string | null;
   lastError: string | null;
 }
@@ -14,6 +16,7 @@ type MailFolderSyncStateDbRow = {
   uidvalidity: string | null;
   uidnext: string | null;
   highestmodseq: string | null;
+  message_count: string | null;
   last_full_reconcile_at: Date | null;
   last_error: string | null;
 };
@@ -24,12 +27,13 @@ function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
     uidvalidity: row.uidvalidity,
     uidnext: row.uidnext,
     highestmodseq: row.highestmodseq,
+    messageCount: row.message_count,
     lastFullReconcileAt: row.last_full_reconcile_at?.toISOString() ?? null,
     lastError: row.last_error,
   };
 }
 
-const COLUMNS = "item_id, uidvalidity, uidnext, highestmodseq, last_full_reconcile_at, last_error";
+const COLUMNS = "item_id, uidvalidity, uidnext, highestmodseq, message_count, last_full_reconcile_at, last_error";
 
 export async function ensureMailFolderSyncState(client: Queryable, itemId: string): Promise<MailFolderSyncStateRow> {
   const inserted = await client.query<MailFolderSyncStateDbRow>(
@@ -75,7 +79,7 @@ export async function resetForUidvalidityChange(
   newUidvalidity: string,
 ): Promise<void> {
   await client.query(
-    `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, last_error = NULL WHERE item_id = $1`,
+    `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, message_count = NULL, last_error = NULL WHERE item_id = $1`,
     [itemId, newUidvalidity],
   );
 }
@@ -85,14 +89,16 @@ export interface RecordReconcileInput {
   uidvalidity: string;
   uidnext: string;
   highestmodseq?: string | null;
+  messageCount: string;
 }
 
 export async function recordReconcile(client: Queryable, input: RecordReconcileInput): Promise<void> {
   await client.query(
     `UPDATE mail_folder_sync_state
-     SET uidvalidity = $2, uidnext = $3, highestmodseq = $4, last_full_reconcile_at = now(), last_error = NULL
+     SET uidvalidity = $2, uidnext = $3, highestmodseq = $4, message_count = $5, last_full_reconcile_at = now(),
+         last_error = NULL
      WHERE item_id = $1`,
-    [input.itemId, input.uidvalidity, input.uidnext, input.highestmodseq ?? null],
+    [input.itemId, input.uidvalidity, input.uidnext, input.highestmodseq ?? null, input.messageCount],
   );
 }
 

@@ -217,7 +217,7 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
     selectFolder: async (path) => {
       calls.push(`selectFolder ${path}`);
       await options.onSelectFolder?.(path);
-      return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
+      return { uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 };
     },
     fetchMessagesSince: async () => called("fetchMessagesSince", []),
     fetchVanishedSince: async () => called("fetchVanishedSince", []),
@@ -599,9 +599,9 @@ describe("mailbox removal (gh-1690)", () => {
         await holder;
         expect(await removal).toBe(true);
         await pass;
-        // No folder was selected or fetched. The IMAP pass opens its connection and lists the folders before its
-        // first transaction, and closed the connection.
-        expect(providers.calls).toEqual(syncMode === "imap" ? NO_RECONCILE : []);
+        // The pass waited for the removal to claim its pass lease on the sync state row, found the row deleted and
+        // asked the provider nothing.
+        expect(providers.calls).toEqual([]);
         const after = await snapshot(mailbox);
         expect(after).toMatchObject(REMOVED);
         expectTrashedAsNeedsReauthorization(after);

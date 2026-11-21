@@ -40,12 +40,16 @@ export interface ImapFolderSelection {
   uidnext: number;
   /** null = no CONDSTORE. */
   highestModSeq: number | null;
+  /** How many messages the folder holds (`EXISTS`, or `MESSAGES` of a STATUS). */
+  messages: number;
 }
 
 export interface ImapFolderRef {
   path: string;
   /** RFC 6154 special-use attribute, when advertised. */
   specialUse?: string;
+  /** The folder's STATUS, listed with it; absent when the client did not ask for it or the server gave none. */
+  status?: ImapFolderSelection;
 }
 
 export interface ImapMailClient {
@@ -201,8 +205,12 @@ async function fetchImapFolder(
     : snapshot;
 
   const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
+  // No UID at or above the cursor exists while UIDNEXT has not moved past it.
+  const noNewUids = Number.isSafeInteger(selection.uidnext) && selection.uidnext > 0 && selection.uidnext <= sinceUid;
   // One more than the limit tells whether messages remain above this batch.
-  const fetched = (await imap.fetchMessagesSince(folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
+  const fetched = noNewUids
+    ? []
+    : (await imap.fetchMessagesSince(folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
   const complete = fetched.length <= limit;
   const batch: ImapFetchedMessage[] = [];
   for (const item of fetched.slice(0, limit)) {
@@ -212,16 +220,29 @@ async function fetchImapFolder(
     });
   }
 
+  // Under CONDSTORE every flag change raises HIGHESTMODSEQ, so with it as stored no known UID changed its flags.
+  const flagsUnchanged =
+    !uidvalidityChanged &&
+    capabilities.has("CONDSTORE") &&
+    selection.highestModSeq !== null &&
+    state.highestmodseq === String(selection.highestModSeq);
+  // An expunge lowers the message count and a delivery moves UIDNEXT; with both as stored nothing vanished.
+  const nothingVanished =
+    !uidvalidityChanged &&
+    state.uidnext === String(selection.uidnext) &&
+    snapshot.messageCount === String(selection.messages);
+
   // UIDs below sinceUid are never re-fetched, so their flags are refreshed here. Skipped on a
   // folder's first sync, where every message is ingested with its flags.
   let changedFlags: Array<{ uid: number; flags: string[] }> = [];
-  if (state.uidvalidity) {
+  if (state.uidvalidity && !flagsUnchanged) {
     const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
     changedFlags = await imap.fetchFlagsChangedSince(folderPath, sinceModSeq);
   }
 
   let vanishedUids: number[] | null = null;
-  if (capabilities.has("QRESYNC") && state.highestmodseq) {
+  if (nothingVanished) vanishedUids = [];
+  else if (capabilities.has("QRESYNC") && state.highestmodseq) {
     vanishedUids = await imap.fetchVanishedSince(folderPath, Number(state.highestmodseq));
   }
   let vanished: FetchedImapFolder["vanished"];
@@ -234,7 +255,26 @@ async function fetchImapFolder(
 }
 
 function sameFolderState(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
-  return a.uidvalidity === b.uidvalidity && a.uidnext === b.uidnext && a.highestmodseq === b.highestmodseq;
+  return (
+    a.uidvalidity === b.uidvalidity &&
+    a.uidnext === b.uidnext &&
+    a.highestmodseq === b.highestmodseq &&
+    a.messageCount === b.messageCount
+  );
+}
+
+/**
+ * The listed STATUS equals every stored cursor, so the folder holds nothing new, nothing vanished and no changed flag.
+ * Without a mod-sequence a flag change would not show, so such a folder never counts as unchanged.
+ */
+function unchangedSinceLastReconcile(snapshot: MailFolderSyncStateRow, status: ImapFolderSelection): boolean {
+  return (
+    status.highestModSeq !== null &&
+    snapshot.highestmodseq === String(status.highestModSeq) &&
+    snapshot.uidvalidity === String(status.uidvalidity) &&
+    snapshot.uidnext === String(status.uidnext) &&
+    snapshot.messageCount === String(status.messages)
+  );
 }
 
 /**
@@ -361,6 +401,7 @@ async function applyImapFolder(
     uidvalidity: String(fetched.selection.uidvalidity),
     uidnext: String(fetched.complete || !lastIngested ? fetched.selection.uidnext : lastIngested.uid + 1),
     highestmodseq: fetched.selection.highestModSeq !== null ? String(fetched.selection.highestModSeq) : null,
+    messageCount: String(fetched.selection.messages),
   });
   return { ingested: fetched.batch.length, complete: fetched.complete };
 }
@@ -478,7 +519,8 @@ async function inPassTransaction<T>(
 }
 
 /**
- * One pass over an account. Nothing the provider is asked runs inside a transaction: the folder list, each folder's
+ * One pass over an account. Nothing the provider is asked runs inside a transaction: the folder list (with each
+ * folder's STATUS where the client lists it, so an unchanged folder is skipped without a SELECT), each folder's
  * selection and fetches (attachment bytes spooled to temp files) and the flag write-back happen between short
  * transactions, each of which re-enters the pass under the mailbox guard and the tenant's mail-thread guard. A prepare
  * transaction discovers Folder items and reads their sync state; each folder's batch is one write transaction; the
@@ -533,6 +575,8 @@ export async function reconcileImapAccount(
   const spool = createAttachmentSpool();
   try {
     for (const { folder, folderItemId, snapshot } of prepared.value.folders) {
+      // Nothing to select, fetch or write; the budget check below would only defer it.
+      if (folder.status && unchangedSinceLastReconcile(snapshot, folder.status)) continue;
       if (budget === 0) {
         complete = false;
         continue;
