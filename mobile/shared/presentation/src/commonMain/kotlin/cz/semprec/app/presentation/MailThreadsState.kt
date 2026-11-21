@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 
 enum class MailThreadsPhase { LOADING, CONTENT, ERROR }
 
@@ -55,7 +56,8 @@ data class MailFacetsState(
 /**
  * The thread list. [search] is what the server was asked for, [areaName] and [projectName] name the chosen context.
  * A failed first load is [MailThreadsPhase.ERROR]; a failed refresh or "more" keeps the list and raises
- * [actionFailed]. [hasMore] says another page follows; [loadingMore] is `true` while it is fetched.
+ * [actionFailed]. [hasMore] says another page follows; [loadingMore] is `true` while it is fetched. [actionRefusal]
+ * names the reason the server gave for refusing a read mark.
  */
 data class MailThreadsState(
     val phase: MailThreadsPhase = MailThreadsPhase.LOADING,
@@ -77,6 +79,7 @@ data class MailThreadsState(
     val reauthorization: List<MailAccountNotice> = emptyList(),
     val facets: MailFacetsState = MailFacetsState(),
     val actionFailed: Boolean = false,
+    val actionRefusal: MailRefusal? = null,
 )
 
 sealed interface MailThreadsAction {

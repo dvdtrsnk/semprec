@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
@@ -18,6 +19,7 @@ import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailMessage
 import cz.semprec.app.domain.MailNamedRef
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPrefill
 import cz.semprec.app.domain.MailRemovalImpact
@@ -42,6 +44,14 @@ internal fun <T> mailContent(value: T): ScriptedStep<T> = { RepositoryResult.Con
 
 internal fun <T> mailFailure(kind: FailureKind): ScriptedStep<T> = { RepositoryResult.Failure(kind) }
 
+/** The answer of a scripted mail write the server carried out. */
+internal fun <T> mailDone(value: T): ScriptedStep<MailOutcome<T>> =
+    { RepositoryResult.Content(MailOutcome.Done(value)) }
+
+/** The answer of a scripted mail write the server refused with a known code. */
+internal fun <T> mailRefused(refusal: MailRefusal): ScriptedStep<MailOutcome<T>> =
+    { RepositoryResult.Content(MailOutcome.Refused(refusal)) }
+
 /** A scripted call: [script] answers, [calls] records what it was asked with. */
 internal class MailCall<A, T>(vararg steps: ScriptedStep<T>) {
     private val script = CallScript(steps.toList())
@@ -60,9 +70,9 @@ internal class ScriptedMailRepository(
     val facets: MailCall<Pair<String?, String?>, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
-    val read: MailCall<Pair<String, Boolean>, Boolean> = MailCall({ RepositoryResult.Content(false) }),
-    val flag: MailCall<Pair<String, Boolean>, Boolean> = MailCall({ RepositoryResult.Content(true) }),
-    val moves: MailCall<String, Unit> = MailCall(mailContent(Unit)),
+    val read: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(false)),
+    val flag: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(true)),
+    val moves: MailCall<String, MailOutcome<Unit>> = MailCall(mailDone(Unit)),
     val tasks: MailCall<String, MailNamedRef> = MailCall(mailContent(MailNamedRef("t9", "Zavolat"))),
 ) : MailRepository {
     val moved = mutableListOf<String>()
@@ -87,20 +97,21 @@ internal class ScriptedMailRepository(
 
     override suspend fun createTask(threadId: String) = tasks.answer(threadId)
 
-    private suspend fun move(action: String, threadId: String): RepositoryResult<Unit> {
+    private suspend fun move(action: String, threadId: String): RepositoryResult<MailOutcome<Unit>> {
         moved += "$action:$threadId"
         return moves.answer(threadId)
     }
 }
 
 internal class ScriptedMailDraftRepository(
-    val create: MailCall<Pair<MailDraftFields, String?>, MailDraft> = MailCall(mailContent(mailDraft())),
-    val prefilled: MailCall<MailPrefill, MailDraft> = MailCall(mailContent(mailDraft(mode = MailDraftMode.REPLY))),
+    val create: MailCall<Pair<MailDraftFields, String?>, MailOutcome<MailDraft>> = MailCall(mailDone(mailDraft())),
+    val prefilled: MailCall<MailPrefill, MailOutcome<MailDraft>> =
+        MailCall(mailDone(mailDraft(mode = MailDraftMode.REPLY))),
     val read: MailCall<String, MailDraft> = MailCall(mailContent(mailDraft())),
-    val update: MailCall<Triple<String, String, MailDraftFields>, MailDraft> =
-        MailCall({ RepositoryResult.Content(mailDraft(version = "v2")) }),
+    val update: MailCall<Triple<String, String, MailDraftFields>, MailOutcome<MailDraft>> =
+        MailCall(mailDone(mailDraft(version = "v2"))),
     val discard: MailCall<String, Unit> = MailCall(mailContent(Unit)),
-    val send: MailCall<String, MailSentDraft> = MailCall(mailContent(MailSentDraft("d1", "t1", "Gmail"))),
+    val send: MailCall<String, MailOutcome<MailSentDraft>> = MailCall(mailDone(MailSentDraft("d1", "t1", "Gmail"))),
     val contacts: MailCall<Pair<String, List<String>>, List<MailContact>> =
         MailCall(mailContent(listOf(MailContact("Petr Novák", "petr@novak.cz", "Klient")))),
 ) : MailDraftRepository {

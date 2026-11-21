@@ -1,11 +1,14 @@
 package cz.semprec.app.data
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
+import cz.semprec.app.core.MailRefusal.NO_RECEIVED_MESSAGE
 import cz.semprec.app.domain.MailBox
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailLinkBreaker
 import cz.semprec.app.domain.MailLinkKind
 import cz.semprec.app.domain.MailNamedRef
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
@@ -223,8 +226,8 @@ class HttpMailRepositoryTest {
         val unread = mail.setRead(THREAD, read = true)
         val flagged = mail.setFlagged(THREAD, flagged = true)
 
-        assertEquals(RepositoryResult.Content(false), unread)
-        assertEquals(RepositoryResult.Content(true), flagged)
+        assertEquals(RepositoryResult.Content(MailOutcome.Done(false)), unread)
+        assertEquals(RepositoryResult.Content(MailOutcome.Done(true)), flagged)
         assertEquals(listOf("""{"read":true}""", """{"flagged":true}"""), server.bodies)
         assertTrue(server.requests.all { it.method == HttpMethod.Post })
     }
@@ -234,9 +237,9 @@ class HttpMailRepositoryTest {
         val server = server(::routes)
         val mail = server.mail()
 
-        assertEquals(RepositoryResult.Content(Unit), mail.archive(THREAD))
-        assertEquals(RepositoryResult.Content(Unit), mail.trash(THREAD))
-        assertEquals(RepositoryResult.Content(Unit), mail.restore(THREAD))
+        assertEquals(RepositoryResult.Content(MailOutcome.Done(Unit)), mail.archive(THREAD))
+        assertEquals(RepositoryResult.Content(MailOutcome.Done(Unit)), mail.trash(THREAD))
+        assertEquals(RepositoryResult.Content(MailOutcome.Done(Unit)), mail.restore(THREAD))
         val task = mail.createTask(THREAD)
 
         assertEquals(
@@ -247,10 +250,34 @@ class HttpMailRepositoryTest {
     }
 
     @Test
-    fun aMoveTheServerRefusesIsARejection() = runTest {
-        val server = server { HttpStatusCode.Conflict to """{"error":{"code":"mail_archive_folder_missing"}}""" }
+    fun aThreadActionRefusedWithAKnownCodeAnswersItsRefusal() = runTest {
+        val cases = listOf<Triple<String, suspend HttpMailRepository.() -> Any, MailRefusal>>(
+            Triple("mail_thread_no_received_message", { setRead(THREAD, read = false) }, NO_RECEIVED_MESSAGE),
+            Triple("mail_thread_no_received_message", { setFlagged(THREAD, flagged = true) }, NO_RECEIVED_MESSAGE),
+            Triple("mail_archive_folder_missing", { archive(THREAD) }, MailRefusal.ARCHIVE_FOLDER_MISSING),
+            Triple("mail_move_source_unverified", { archive(THREAD) }, MailRefusal.MOVE_SOURCE_UNVERIFIED),
+            Triple("mail_trash_folder_missing", { trash(THREAD) }, MailRefusal.TRASH_FOLDER_MISSING),
+            Triple("mail_thread_already_trashed", { trash(THREAD) }, MailRefusal.ALREADY_TRASHED),
+            Triple("mail_inbox_folder_missing", { restore(THREAD) }, MailRefusal.INBOX_FOLDER_MISSING),
+            Triple("mail_sent_folder_missing", { restore(THREAD) }, MailRefusal.SENT_FOLDER_MISSING),
+            Triple("mail_thread_not_archived_or_trashed", { restore(THREAD) }, MailRefusal.NOT_ARCHIVED_OR_TRASHED),
+        )
+        for ((code, call, refusal) in cases) {
+            val server = server {
+                HttpStatusCode.Conflict to """{"error":{"code":"$code","message":"x","details":{"mailboxId":"m1"}}}"""
+            }
 
-        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), server.mail().archive(THREAD))
+            assertEquals(RepositoryResult.Content(MailOutcome.Refused(refusal)), server.mail().call(), code)
+        }
+    }
+
+    @Test
+    fun aMoveRefusedWithAnUnknownCodeOrAnUnreadableBodyIsARejection() = runTest {
+        val unknown = server { HttpStatusCode.Conflict to """{"error":{"code":"version_conflict"}}""" }
+        val unreadable = server { HttpStatusCode.Conflict to "<html>" }
+
+        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), unknown.mail().archive(THREAD))
+        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), unreadable.mail().trash(THREAD))
     }
 
     @Test

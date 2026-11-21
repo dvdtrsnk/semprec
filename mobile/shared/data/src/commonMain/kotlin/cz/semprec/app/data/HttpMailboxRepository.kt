@@ -21,7 +21,6 @@ import cz.semprec.app.domain.then
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.parseUrl
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
@@ -233,18 +232,6 @@ private fun ApiResponse.connectOutcome(): RepositoryResult<MailConnectOutcome> =
         } else {
             RepositoryResult.Content(MailConnectOutcome.Refused(refusal))
         }
-    }
-}
-
-/** The code of an error answer, or `null` when its body is missing or not an error document. */
-private fun ApiResponse.Failure.errorCode(): String? {
-    val text = body ?: return null
-    return try {
-        ApiJson.decodeFromString(ApiErrorDto.serializer(), text).let { it.error?.code ?: it.code }
-    } catch (_: SerializationException) {
-        null
-    } catch (_: IllegalArgumentException) {
-        null
     }
 }
 
