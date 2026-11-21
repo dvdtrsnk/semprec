@@ -132,7 +132,7 @@ describe("a quiet IMAP pass against a loopback server with 80 ms per command", (
       capabilities: ["SPECIAL-USE"],
       // One SELECT per folder, then the full flag fetch; no UID search.
       counts: { LOGIN: 1, LIST: 2, LSUB: 1, SELECT: 6, FETCH: 6, LOGOUT: 1 },
-      maxMs: 2_400,
+      maxMs: 2_000,
     },
   ])("sends only the commands a quiet pass needs on a server with $name", ({ capabilities, counts, maxMs }) =>
     runInTenant(tenant, async () => {
@@ -161,7 +161,7 @@ describe("a quiet IMAP pass against a loopback server with 80 ms per command", (
     const read = await createMailThreadReadRouteHandler(runtime)({
       params: { threadId },
       body: { read: true },
-      identity: { user: { id: USER_ID, locale: "en" } },
+      identity: { user: { id: USER_ID } },
     });
     expect(read.status).toBe(200);
 

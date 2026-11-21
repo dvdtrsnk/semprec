@@ -317,7 +317,7 @@ describe("one mail sync pass per mailbox", () => {
     await trigger();
     await archiveReached.promise;
 
-    // What the IDLE signal does: deliver to INBOX, then enqueue the account's coalesced pass.
+    // The server delivers to INBOX; the IDLE signal's only effect is the enqueue of the account's pass.
     account.deliver("INBOX", plainMessage("Signalled"));
     const signalledAt = performance.now();
     await trigger();

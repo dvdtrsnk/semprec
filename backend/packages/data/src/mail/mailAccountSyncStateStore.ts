@@ -668,17 +668,22 @@ export async function claimMailSyncPass(
   );
   const row = rows[0];
   if (!row) return "missing";
+  // The row is locked above, so each update below finds it.
   if (row.held) {
-    await client.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [itemId]);
+    requireAffectedRows(
+      await client.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [itemId]),
+      `mail sync pass rerun request of ${itemId}`,
+    );
     return "busy";
   }
-  await client.query(
+  const claimed = await client.query(
     `UPDATE mail_account_sync_state
         SET pass_lease_token = $2, pass_lease_expires_at = now() + make_interval(secs => $3::double precision / 1000),
             pass_rerun_requested = false
       WHERE item_id = $1`,
     [itemId, token, leaseMs],
   );
+  requireAffectedRows(claimed, `mail sync pass lease of ${itemId}`);
   return "claimed";
 }
 

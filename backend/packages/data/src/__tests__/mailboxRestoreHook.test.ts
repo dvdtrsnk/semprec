@@ -254,8 +254,8 @@ function syncStateRows(mailboxItemId: string, tenantId = tenant): Promise<Array<
 }
 
 /**
- * A default row as `ensureMailAccountSyncState` inserts it: mailbox, tenant and sync mode set, every
- * other column null.
+ * A default row as `ensureMailAccountSyncState` inserts it: mailbox, tenant and sync mode set,
+ * `pass_rerun_requested` false, every other column null.
  */
 async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, tenantId = tenant): Promise<void> {
   const rows = await syncStateRows(mailboxItemId, tenantId);
@@ -266,8 +266,10 @@ async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, t
     tenant_id: tenantId,
     sync_mode: syncMode,
   });
+  // No pass has run: no lease, and the rerun flag at its default.
+  expect(row.pass_rerun_requested).toBe(false);
   const set = Object.entries(row)
-    .filter(([, value]) => value !== null)
+    .filter(([column, value]) => value !== null && column !== "pass_rerun_requested")
     .map(([column]) => column);
   expect(set.sort()).toEqual(["item_id", "sync_mode", "tenant_id"]);
 }

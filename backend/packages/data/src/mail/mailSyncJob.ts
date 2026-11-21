@@ -182,10 +182,11 @@ export async function handleSyncMailAccountTask(
   /**
    * Takes the mailbox's sync guard, which a removal and the Mail switch take first, so neither runs until this
    * transaction ends, then re-reads the mailbox and renews the pass lease. `false` (trashed, gone, no sync state row,
-   * Mail switched off, or another pass holds the lease now) means the pass does nothing more. An IMAP pass runs it first in each of its transactions, so a removal or the Mail switch
-   * can run between them and ends the pass at its next one. The generic trash takes no guard and can still happen
-   * during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError`: another
-   * transaction of a pass, or a removal of this mailbox, is running, and the pass is skipped.
+   * Mail switched off, or another pass holds the lease now) means the pass does nothing more. An IMAP pass runs it
+   * first in each of its transactions, so a removal or the Mail switch can run between them and ends the pass at its
+   * next one. The generic trash takes no guard and can still happen during a pass. A guard still held after
+   * `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError`: a removal or the Mail switch of this mailbox, or a pass
+   * whose lease expired, is running, and the pass is skipped.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
     await lockMailboxSync(client, payload.mailboxItemId, { maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS });
