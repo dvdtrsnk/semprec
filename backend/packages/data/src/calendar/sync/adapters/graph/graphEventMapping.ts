@@ -64,8 +64,26 @@ export const graphEventSchema = z.object({
 });
 export type GraphEvent = z.infer<typeof graphEventSchema>;
 
-function invalidResponse(): CalendarSyncProviderError {
-  return new CalendarSyncProviderError("invalidResponse", "Microsoft Graph sent an unusable Event");
+/**
+ * One Event Graph sent cannot be read (its shape or one of its times). An `invalidResponse` provider error, so a read
+ * of that one Event fails as such; a fetch catches it and leaves that Event out.
+ */
+export class GraphEventUnreadableError extends CalendarSyncProviderError {
+  constructor() {
+    super("invalidResponse", "Microsoft Graph sent an unusable Event");
+    this.name = "GraphEventUnreadableError";
+  }
+}
+
+function invalidResponse(): GraphEventUnreadableError {
+  return new GraphEventUnreadableError();
+}
+
+/** An Event of a Graph answer; a value outside `graphEventSchema` is a `GraphEventUnreadableError`. */
+export function parseGraphEvent(value: unknown): GraphEvent {
+  const parsed = graphEventSchema.safeParse(value);
+  if (!parsed.success) throw invalidResponse();
+  return parsed.data;
 }
 
 function text(value: string | null | undefined, max: number): string | null {

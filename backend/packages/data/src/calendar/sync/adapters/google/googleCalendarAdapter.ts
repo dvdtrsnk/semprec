@@ -68,8 +68,9 @@ const calendarListPageSchema = z.object({
   nextPageToken: z.string().optional(),
 });
 
+/** Each item is read on its own (`readableEvents`): an item that is no readable event leaves only itself out. */
 const eventsPageSchema = z.object({
-  items: z.array(googleEventSchema).optional(),
+  items: z.array(z.unknown()).optional(),
   nextPageToken: z.string().optional(),
   nextSyncToken: z.string().optional(),
   timeZone: z.string().optional(),
@@ -440,7 +441,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       { method: "GET", path: `${calendarPath(calendar)}/events/${encodeURIComponent(seriesId)}/instances`, query },
       signal,
     );
-    const instance = (parseGoogleBody(eventsPageSchema, body).items ?? []).find(
+    const instance = this.readableEvents(parseGoogleBody(eventsPageSchema, body).items).find(
       (item) =>
         !isCancelled(item) &&
         item.originalStartTime !== undefined &&
@@ -514,7 +515,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       if (status === 410) return null;
       const page = parseGoogleBody(eventsPageSchema, body);
       context = { zone: validZone(page.timeZone), defaultReminders: page.defaultReminders ?? [] };
-      for (const event of page.items ?? []) events.set(event.id, event);
+      for (const event of this.readableEvents(page.items)) events.set(event.id, event);
       read += page.items?.length ?? 0;
       if (read > MAX_EVENTS_PER_CALENDAR) throw invalidResponse("The Google calendar has too many events to sync");
       pageToken = page.nextPageToken;
@@ -573,7 +574,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     for (const masterId of touchedSeries) {
       const listed = listing.events.get(masterId);
       const master =
-        listed !== undefined && !isCancelled(listed) ? listed : await this.readEvent(calendar, masterId, signal);
+        listed !== undefined && !isCancelled(listed) ? listed : await this.readListedMaster(calendar, masterId, signal);
       if (master === null || isCancelled(master) || master.recurringEventId !== undefined) continue;
       const cancelled = await this.cancelledInstances(calendar, masterId, window, signal);
       const mapped = this.masterEvent(master, listing.context, cancelled, window);
@@ -593,6 +594,26 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
   }
 
   private async readEvent(calendar: RemoteCalendar, eventId: string, signal: AbortSignal): Promise<GoogleEvent | null> {
+    const read = await this.readEventBody(calendar, eventId, signal);
+    return read.found ? parseGoogleBody(googleEventSchema, read.body) : null;
+  }
+
+  /** The master of a series an incremental listing touched; an unreadable one leaves the series out. */
+  private async readListedMaster(
+    calendar: RemoteCalendar,
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<GoogleEvent | null> {
+    const read = await this.readEventBody(calendar, eventId, signal);
+    return read.found ? (this.readableEvents([read.body])[0] ?? null) : null;
+  }
+
+  /** The event's body; not `found` when Google no longer has it (404, 410). */
+  private async readEventBody(
+    calendar: RemoteCalendar,
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<{ found: true; body: unknown } | { found: false }> {
     const { status, body } = await this.http.request(
       {
         method: "GET",
@@ -602,7 +623,18 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       signal,
       [404, 410],
     );
-    return status === 200 ? parseGoogleBody(googleEventSchema, body) : null;
+    return status === 200 ? { found: true, body } : { found: false };
+  }
+
+  /** The items that are Google events; each one that is not is logged and left out. */
+  private readableEvents(items: readonly unknown[] | undefined): GoogleEvent[] {
+    const events: GoogleEvent[] = [];
+    for (const item of items ?? []) {
+      const parsed = googleEventSchema.safeParse(item);
+      if (parsed.success) events.push(parsed.data);
+      else this.logSkipped("unreadableEvent");
+    }
+    return events;
   }
 
   private async cancelledInstances(
@@ -629,7 +661,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       );
       if (status !== 200) return [];
       const page = parseGoogleBody(eventsPageSchema, body);
-      for (const event of page.items ?? []) if (isCancelled(event)) cancelled.push(event);
+      for (const event of this.readableEvents(page.items)) if (isCancelled(event)) cancelled.push(event);
       read += page.items?.length ?? 0;
       if (read > MAX_INSTANCES_PER_SERIES) throw invalidResponse("A Google series has too many instances to sync");
       pageToken = page.nextPageToken;
@@ -698,7 +730,9 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     return mapped;
   }
 
-  private logSkipped(tag: "unreadableTimes" | "unreadableExceptionDate" | "unreadableOverride"): void {
+  private logSkipped(
+    tag: "unreadableEvent" | "unreadableTimes" | "unreadableExceptionDate" | "unreadableOverride",
+  ): void {
     logger.warn({ accountItemId: this.accountItemId, tag }, "Google Calendar sync left out part of an event");
   }
 }

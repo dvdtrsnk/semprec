@@ -29,6 +29,7 @@ import {
   type GraphRecurrence,
 } from "../calendar/sync/adapters/graph/graphRecurrence.js";
 import { graphZoneOfIanaZone, ianaZoneOfGraphZone } from "../calendar/sync/adapters/graph/graphTimeZones.js";
+import { logger as calendarLogger } from "../calendar/logger.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import { resolveCalendarSyncIds, type CalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -140,6 +141,10 @@ function cursorFor(deltaLink: string, window = WINDOW) {
 const STANDUP_RULE = "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;UNTIL=20261130T225959Z";
 
 describe("Microsoft Graph calendar adapter", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe("calendars", () => {
     it("lists name, colour and a calendar without canEdit as read-only", async () => {
       const graph = new FakeGraph(workRoutes());
@@ -244,6 +249,83 @@ describe("Microsoft Graph calendar adapter", () => {
       const graph = new FakeGraph(workRoutes());
       const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
       expect(changes.upserts.find((event) => event.remoteId === remoteId)?.fields).toMatchObject(expected);
+    });
+
+    it("leaves out an Event it cannot read and keeps every other Event of the round", async () => {
+      const warn = vi.spyOn(calendarLogger, "warn");
+      const page = z
+        .object({ value: z.array(z.unknown()) })
+        .loose()
+        .parse(fixture("deltaInitialPage1"));
+      const malformed = [
+        { id: "AAMkEv-new-kind", type: "somethingNew", subject: "Private" },
+        {
+          id: "AAMkEv-bad-time",
+          type: "singleInstance",
+          subject: "Private",
+          start: { dateTime: "not a time", timeZone: "UTC" },
+          end: { dateTime: "2026-11-21T10:00:00", timeZone: "UTC" },
+        },
+        { id: "AAMkEv-orphan", type: "occurrence", subject: "Private" },
+        { subject: "Private" },
+      ];
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/calendars/AAMkCal-work/calendarView/delta": (url) =>
+          url.searchParams.get("$skiptoken") === "page-2"
+            ? json(fixture("deltaInitialPage2"))
+            : json({ ...page, value: [...page.value, ...malformed] }),
+      });
+
+      const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+
+      expect(changes.upserts.map((event) => event.remoteId).sort()).toEqual(
+        [
+          "AAMkEv-call",
+          "AAMkEv-christmas",
+          "AAMkEv-party",
+          "AAMkEv-review",
+          "AAMkEv-trip",
+          "AAMkSeries-standup",
+          "AAMkSeries-standup-exc-1104",
+        ].sort(),
+      );
+      expect(warn).toHaveBeenCalledWith({ unreadable: 4 }, "Microsoft Graph Events left out of the calendar sync");
+    });
+
+    it("leaves out a series with an instance it cannot read, neither upserted nor deleted", async () => {
+      const instances = z
+        .object({ value: z.array(z.unknown()) })
+        .loose()
+        .parse(fixture("standupInstances"));
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/events/AAMkSeries-standup/instances": () =>
+          json({
+            ...instances,
+            value: [
+              ...instances.value,
+              { id: "AAMkSeries-standup-occ-bad", type: "occurrence", originalStart: "never" },
+            ],
+          }),
+      });
+
+      const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+
+      expect(changes.upserts.map((event) => event.remoteId).sort()).toEqual(
+        ["AAMkEv-call", "AAMkEv-christmas", "AAMkEv-party", "AAMkEv-review", "AAMkEv-trip"].sort(),
+      );
+      expect(changes.deletions).toEqual([]);
+    });
+
+    it("still fails a page whose envelope is not Graph's", async () => {
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/calendars/AAMkCal-work/calendarView/delta": () => json({ value: "not a list" }),
+      });
+      await expect(
+        adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() }),
+      ).rejects.toMatchObject({ code: "invalidResponse" });
     });
 
     it("asks the window a day wider in UTC, follows nextLink and stores the deltaLink with its window", async () => {

@@ -404,6 +404,47 @@ describe("Google Calendar adapter", () => {
     );
   });
 
+  it("leaves out an event of a page that is no readable Google event and syncs the rest of the calendar", async () => {
+    const warn = vi.spyOn(calendarLogger, "warn");
+    const withMalformed = z
+      .object({ items: z.array(z.unknown()) })
+      .loose()
+      .parse(fixture("primaryEventsPage1"));
+    google
+      .on("GET", "/users/me/calendarList", () => ({ status: 200, body: fixture("calendarList") }))
+      .on("GET", `/calendars/${PRIMARY}/events`, (request) => {
+        if (request.query.has("syncToken")) return undefined;
+        if (request.query.has("pageToken")) return { status: 200, body: fixture("primaryEventsPage2") };
+        const malformed = [
+          {
+            id: "fractional-reminder",
+            reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 1.5 }] },
+          },
+          { id: "negative-sequence", sequence: -1, summary: "Broken" },
+          { summary: "No id" },
+        ];
+        return { status: 200, body: { ...withMalformed, items: [...withMalformed.items, ...malformed] } };
+      })
+      .on("GET", `/calendars/${HOLIDAYS}/events`, (request) =>
+        request.query.has("syncToken") ? undefined : { status: 200, body: fixture("holidaysEvents") },
+      );
+    const accountId = await createGoogleAccount(GRANT);
+
+    const result = await runPass(accountId);
+
+    expect(result?.kind === "applied" ? result.added.map((event) => event.remoteId).sort() : null).toEqual([
+      "20270101_newyear",
+      "conf2026",
+      "lateshow",
+      "standup",
+      "standup_20261125T140000Z",
+    ]);
+    const skipped = warn.mock.calls.filter(([fields]) => JSON.stringify(fields).includes("unreadableEvent"));
+    expect(skipped).toHaveLength(3);
+    // The log names the account and the tag only, never what the item held.
+    expect(JSON.stringify(skipped)).not.toMatch(/Broken|fractional|negative/);
+  });
+
   it("an Event of a reader calendar is read-only in the app while one of an owned calendar is editable", async () => {
     firstPassRoutes(google);
     const accountId = await createGoogleAccount(GRANT);

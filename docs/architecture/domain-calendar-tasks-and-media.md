@@ -220,7 +220,11 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   client; it does network and OAuth refreshes. The registry
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
-  answer is the provider error `invalidResponse`.
+  answer is the provider error `invalidResponse`. Inside a fetch, an Event the provider sends that cannot be read
+  (a Graph or Google item outside its schema or with an unreadable time, a CalDAV resource ical.js cannot read) is
+  left out and logged without its content, and a Graph series with an unreadable master or instance is left out whole;
+  only an unusable page envelope fails the pass. A full fetch then treats a stored copy of a left-out Event as one the
+  provider no longer lists. Reading one Event (`getEvent`) still fails as `invalidResponse`.
 - **CalDAV** (`adapters/caldav/`, sync mode `imap`: iCloud and generic accounts). The protocol is `tsdav`'s request
   builders and multistatus parser; every `tsdav` call gets the session fetch of `caldavHttp.ts`, built on
   `createOutboundHttp()`: the stored user name and password as Basic credentials, 20 s per request, a 10 MiB body cap,
