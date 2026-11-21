@@ -15,6 +15,9 @@ struct NewItemFormView: View {
     /// The message of a failed save, shown above the fields.
     let failure: String?
 
+    // MARK: - State
+    @State private var isChoosingCalendar = false
+
     // MARK: - Body
     var body: some View {
         ScrollView {
@@ -121,39 +124,29 @@ private extension NewItemFormView {
         groups.flatMap(\.calendars)
     }
 
-    /// A menu with a section per source, the own calendars first, each calendar with its colour; the row shows the
-    /// chosen one's colour and name, and its source when another calendar has the same name.
+    /// The chosen calendar's colour and name, and its source when another calendar has the same name; a tap opens
+    /// the chooser, which lists the calendars by source.
     var calendarRow: some View {
-        NewItemRow(systemImage: "calendar", key: "newItem.calendar") {
-            Menu {
-                Picker(selection: calendar) {
-                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-                        Section(NewItemOptions.title(of: group)) {
-                            ForEach(group.calendars) { choice in
-                                Label {
-                                    Text(choice.name)
-                                } icon: {
-                                    dot(choice.color)
-                                }
-                                .tag(choice.id)
-                            }
-                        }
-                    }
-                } label: {
-                    Text("newItem.calendar", tableName: "Sheets", bundle: .module)
-                }
-                .pickerStyle(.inline)
-            } label: {
+        Button { isChoosingCalendar = true } label: {
+            NewItemRow(systemImage: "calendar", key: "newItem.calendar") {
                 HStack(spacing: 6) {
                     Circle().fill(chosenColor).frame(width: 12, height: 12)
                     Text(chosen.map(NewItemOptions.label(of:)) ?? "")
-                    Image(systemName: "chevron.up.chevron.down").font(.footnote.weight(.semibold))
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
                 }
                 .foregroundStyle(.secondary)
             }
-            .tint(.secondary)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityIdentifier(CalendarSheetIdentifiers.newItemCalendar)
+        .sheet(isPresented: $isChoosingCalendar) {
+            NewItemCalendarChooser(
+                choices: NewItemCalendarChoices(groups: groups, chosenId: calendar.wrappedValue),
+                onChoose: { calendar.wrappedValue = $0 }
+            )
+            .presentationDetents([.medium, .large])
+        }
     }
 
     var chosen: NewItemCalendar? {
@@ -162,13 +155,6 @@ private extension NewItemFormView {
 
     var chosenColor: Color {
         chosen.flatMap { Color(hex: $0.color) } ?? Theme.Colors.accent
-    }
-
-    /// A calendar's colour as a menu shows it: the palette mode keeps the colour a menu would otherwise drop.
-    func dot(_ hex: String) -> some View {
-        Image(systemName: "circle.fill")
-            .symbolRenderingMode(.palette)
-            .foregroundStyle(Color(hex: hex) ?? Theme.Colors.accent)
     }
 
     /// The chosen calendar; until the person picks one, the default calendar (or the first) shows as chosen.

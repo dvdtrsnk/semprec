@@ -3,8 +3,9 @@ import XCTest
 
 @testable import CalendarFeature
 
-/// The calendar picker of the new item sheet over the state a scripted model publishes: a section per source and a
-/// row label that names the source of a calendar whose name another calendar has too. The own calendars' title
+/// The calendar picker of the new item sheet over the state a scripted model publishes: the chooser's section per
+/// source, its rows with their colours and a check on the chosen calendar, and a row label that names the source of
+/// a calendar whose name another calendar has too. The own calendars' title
 /// depends on the test host's language, so it is compared with the title the own section gets.
 final class NewItemCalendarPickerTests: XCTestCase {
 
@@ -64,6 +65,42 @@ final class NewItemCalendarPickerTests: XCTestCase {
         )
         XCTAssertTrue(labels[5].hasPrefix("Osobní · "))
         XCTAssertEqual(Set(labels).count, labels.count, "Every calendar offered can be told apart")
+    }
+
+    @MainActor
+    func testTheChooserListsTheCalendarsBySourceWithACheckOnTheChosenOne() async throws {
+        let ownGroup = NewItemCalendarGroup(calendars: [own("personal", "Osobní", .own), own("work", "Práce")])
+        let viewModel = try await observed(
+            NewItemState(
+                phase: .editing,
+                groups: [
+                    ownGroup,
+                    NewItemCalendarGroup(account: icloud, calendars: [
+                        synced("g1", "Osobní", icloud, .accountName),
+                        synced("g2", "Work", icloud, .unqualified)
+                    ])
+                ],
+                defaultDay: "2026-10-16"
+            )
+        )
+        let choices = NewItemCalendarChoices(groups: viewModel.state.groups, chosenId: "g1")
+        XCTAssertEqual(choices.sections.map(\.id), ["own", "account.m1"])
+        XCTAssertEqual(
+            choices.sections.map(\.title),
+            [NewItemOptions.title(of: ownGroup), "iCloud · david@tresnak.cc"]
+        )
+        XCTAssertEqual(choices.sections.map { $0.rows.map(\.id) }, [["personal", "work"], ["g1", "g2"]])
+        let rows = choices.sections.flatMap(\.rows)
+        XCTAssertEqual(rows.map(\.name), ["Osobní", "Práce", "Osobní", "Work"])
+        XCTAssertEqual(rows.map(\.color), ["#007AFF", "#007AFF", "#0B8043", "#0B8043"])
+        XCTAssertEqual(
+            rows.map(\.label),
+            ["Osobní · " + NewItemOptions.title(of: ownGroup), "Práce", "Osobní · iCloud", "Work"],
+            "A row's spoken label tells a shared name apart without its section"
+        )
+        XCTAssertEqual(rows.filter(\.isChosen).map(\.id), ["g1"])
+        XCTAssertTrue(NewItemCalendarChoices(groups: viewModel.state.groups, chosenId: "").sections
+            .flatMap(\.rows).allSatisfy { !$0.isChosen })
     }
 
     // MARK: - Helpers

@@ -15,6 +15,7 @@ struct ProjectContent: View {
 
     // MARK: - State
     @State private var titleDraft = ""
+    @FocusState private var isEditingTitle: Bool
     @State private var isShowingSettings = false
 
     // MARK: - Body
@@ -56,7 +57,8 @@ private extension ProjectContent {
             statusButton
             TextField(text: $titleDraft, axis: .vertical) { Text("item.title.placeholder", bundle: .module) }
                 .font(.largeTitle.bold())
-                .onSubmit { send(.edit(.rename(titleDraft))) }
+                .focused($isEditingTitle)
+                .singleLineTitle($titleDraft) { renameTitle() }
                 .accessibilityIdentifier(CollectionsIdentifiers.itemTitle)
             HStack(spacing: 6) {
                 areaLink
@@ -65,6 +67,12 @@ private extension ProjectContent {
             .font(.subheadline)
             .foregroundStyle(Theme.Colors.secondaryText)
         }
+    }
+
+    /// Return in the title ends its editing and renames the item.
+    func renameTitle() {
+        isEditingTitle = false
+        send(.edit(.rename(titleDraft)))
     }
 
     @ViewBuilder var statusButton: some View {

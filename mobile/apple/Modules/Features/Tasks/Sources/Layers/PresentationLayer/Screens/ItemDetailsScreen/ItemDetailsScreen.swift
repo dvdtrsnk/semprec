@@ -141,6 +141,7 @@ private extension ItemDetailsScreen {
                 .strikethrough(state.done)
                 .foregroundStyle(state.done ? Theme.Colors.secondaryText : Color.primary)
                 .focused($focus, equals: .title)
+                .singleLineTitle(text(\.title, draft: $titleDraft)) { focus = nil }
                 .accessibilityIdentifier(TasksIdentifiers.detailsTitle)
             }
             if isEvent {
