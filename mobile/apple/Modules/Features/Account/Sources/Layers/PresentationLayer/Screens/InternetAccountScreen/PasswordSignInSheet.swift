@@ -38,7 +38,7 @@ struct PasswordSignInSheet: View {
             .navigationTitle(Text("internetAccount.signInAgain", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button { send(.cancel) } label: { Text("internetAccounts.add.cancel", bundle: .module) }
                         .disabled(signIn.submitting)
                 }

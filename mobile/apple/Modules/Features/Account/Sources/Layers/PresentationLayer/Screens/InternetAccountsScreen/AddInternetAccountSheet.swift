@@ -41,7 +41,7 @@ struct AddInternetAccountSheet: View {
                 InternetAccountSignInForm(provider: provider, state: state, signIn: signIn)
             }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                PlainToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: { Text("internetAccounts.add.cancel", bundle: .module) }
                 }
             }
