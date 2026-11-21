@@ -31,6 +31,7 @@ import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
 import { enqueueThreadLinkRulesForFirstInbound } from "./threadLinkRules.js";
 import { enqueueThreadProjectTriage } from "./threadProjectTriage.js";
+import type { MailArrival } from "./mailArrival.js";
 
 export function formatAddress(address: MailEnvelopeAddress): string {
   return address.name ? `${address.name} <${address.address}>` : address.address;
@@ -55,6 +56,8 @@ export interface IngestEmailMessageInput {
   /** IMAP only: the UID in this folder, stored on the relation edge. */
   folderUid?: number;
   messageId: string;
+  /** Stored on a new message only; one already ingested keeps its own. */
+  arrival: MailArrival;
   inReplyTo?: string | null;
   references?: string[];
   subject?: string;
@@ -103,7 +106,8 @@ export interface IngestEmailMessageResult {
  * Message-ID per mailbox (so read/flag state never leaks across mailboxes), resolves the thread,
  * always links the folder (a known message can appear in a new folder), ingests attachments and
  * reindexes search. Only a newly created message announces its thread after commit, triggers
- * first-inbound thread rules and triage, and (if the user's own) retires outdated Semp drafts.
+ * first-inbound thread rules, and (if the user's own) retires outdated Semp drafts; only a new live one
+ * also queues thread project triage.
  *
  * Must run in a transaction: the item and `mail_message_meta` writes must commit together so
  * person linking sees a consistent envelope.
@@ -186,6 +190,7 @@ export async function ingestEmailMessage(
         dsnOriginalMessageId,
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
         ingestedAt: new Date(),
+        arrival: input.arrival,
       });
 
       const { extractedTexts } = await ingestAttachments(client, {
@@ -272,10 +277,11 @@ export async function ingestEmailMessage(
   );
 
   // Needs the folder edge to tell inbound mail from own mail and drafts. Triage is delayed so the
-  // inherited company/project is set first.
+  // inherited company/project is set first, and is a model call, so backfilled history gets none.
   if (created) {
     const firstInboundThreadItemId = await enqueueThreadLinkRulesForFirstInbound(client, itemId);
-    if (firstInboundThreadItemId !== null) await enqueueThreadProjectTriage(client, firstInboundThreadItemId);
+    if (firstInboundThreadItemId !== null && input.arrival === "live")
+      await enqueueThreadProjectTriage(client, firstInboundThreadItemId);
   }
 
   return { itemId, created };

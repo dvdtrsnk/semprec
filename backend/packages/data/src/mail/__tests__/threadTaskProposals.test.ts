@@ -279,6 +279,7 @@ describe("mail.thread.proposeTask (issue gh-2035)", () => {
           { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
         );
         await upsertMailMessageMeta(client, {
+          arrival: "live",
           itemId: email.id,
           mailboxItemId: null,
           messageId: `<${randomUUID()}@example.test>`,

@@ -92,6 +92,7 @@ describe("mail preview and ingest time on ingest and send", () => {
     return runInTenant(getTenantZeroId(), () =>
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId,

@@ -139,6 +139,7 @@ function ingest(
 ): Promise<string> {
   const references = input.references ?? [];
   return ingestEmailMessage(client, {
+    arrival: "live",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,

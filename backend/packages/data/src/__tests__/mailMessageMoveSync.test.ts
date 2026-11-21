@@ -118,6 +118,7 @@ async function fixture(
     const providerMessageId = `fake-${randomUUID()}`;
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, {
+        arrival: "live",
         itemId: messageItemId,
         mailboxItemId,
         messageId: `<${randomUUID()}@example.test>`,
@@ -151,6 +152,7 @@ async function replaceProviderMessageId(messageItemId: string, mailboxItemId: st
     const existing = await getMailMessageMetaByItemId(client, messageItemId);
     if (!existing) throw new Error("missing fixture metadata");
     await upsertMailMessageMeta(client, {
+      arrival: "live",
       itemId: existing.itemId,
       mailboxItemId,
       messageId: existing.messageId,
@@ -183,7 +185,13 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
       { allowedSystemKeys: ["name"] },
     );
     const messageId = `<${randomUUID()}@example.test>`;
-    await upsertMailMessageMeta(client, { itemId: message.id, mailboxItemId: mailbox.id, messageId, envelope: {} });
+    await upsertMailMessageMeta(client, {
+      arrival: "live",
+      itemId: message.id,
+      mailboxItemId: mailbox.id,
+      messageId,
+      envelope: {},
+    });
     const folderIds: string[] = [];
     for (const folder of folders) {
       const id = await ensureFolderItem(client, {
@@ -200,6 +208,7 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
         itemId: id,
         uidvalidity: folder.uidValidity,
         uidnext: folder.uidNext,
+        liveFromUid: folder.uidNext,
         highestmodseq: null,
         messageCount: "0",
       });
@@ -1379,6 +1388,7 @@ describe("mail move intent store", () => {
     const observe = () =>
       inTenant((client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: fx.emailsDatabaseId,
           filesDatabaseId: randomUUID(),
           folderRelationPropertyId: fx.folderPropertyId,

@@ -113,6 +113,7 @@ async function ingestFrom(
   return runInTenant(tenantId, () =>
     withTransaction(dataPool, async (client) => {
       const result = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: mail.emailsId,
         filesDatabaseId: mail.filesId,
         folderRelationPropertyId: mail.folderPropertyId,

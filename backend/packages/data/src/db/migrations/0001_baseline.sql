@@ -1728,11 +1728,14 @@ CREATE TABLE public.mail_account_sync_state (
     pass_lease_token uuid,
     pass_lease_expires_at timestamp with time zone,
     pass_rerun_requested boolean DEFAULT false NOT NULL,
+    connected_at timestamp with time zone,
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
 
 COMMENT ON TABLE public.mail_account_sync_state IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_account_sync_state.connected_at IS 'Anchor of the account''s mail: set by the first sync pass that finds it NULL, cleared when Mail is switched off.';
 
 ALTER TABLE ONLY public.mail_account_sync_state
     ADD CONSTRAINT mail_account_sync_state_pkey PRIMARY KEY (item_id);
@@ -1838,10 +1841,13 @@ CREATE TABLE public.mail_folder_sync_state (
     message_count bigint,
     last_full_reconcile_at timestamp with time zone,
     last_error text,
-    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    live_from_uid bigint
 );
 
 COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.live_from_uid IS 'The folder''s UIDNEXT when its state was first established or reset after a UIDVALIDITY change; a message with a UID at or above it arrived live.';
 
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_pkey PRIMARY KEY (item_id);
@@ -1892,6 +1898,8 @@ CREATE TABLE public.mail_message_meta (
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
+    arrival text NOT NULL,
+    CONSTRAINT mail_message_meta_arrival_check CHECK ((arrival = ANY (ARRAY['live'::text, 'backfill'::text]))),
     CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
@@ -1900,6 +1908,8 @@ COMMENT ON TABLE public.mail_message_meta IS 'semprec:tenancy=tenant';
 COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview of the message body, whitespace collapsed, at most 200 characters.';
 
 COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
+
+COMMENT ON COLUMN public.mail_message_meta.arrival IS 'live = new mail after the account connected, backfill = imported history; decided once at ingest.';
 
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);

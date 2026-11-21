@@ -116,6 +116,7 @@ describe("expansion of a mailThread ref for the agent", () => {
       withTransaction(runtime, async (client) => {
         const references = (input.references ?? []).map((name) => `<${name}@example.test>`);
         const { itemId } = await ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: box.ids.emailsDatabaseId,
           filesDatabaseId: box.ids.filesDatabaseId,
           folderRelationPropertyId: box.folderProperty,

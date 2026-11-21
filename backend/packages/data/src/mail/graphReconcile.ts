@@ -12,10 +12,12 @@ import { createGraphMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
 import {
+  anchorMailAccountConnection,
   ensureMailAccountSyncState,
   invalidateGraphDeltaLink,
   recordGraphActivity,
 } from "./mailAccountSyncStateStore.js";
+import { mailArrivalOf } from "./mailArrival.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
@@ -95,7 +97,8 @@ export interface ReconcileGraphAccountParams {
 
 /**
  * Graph messages live in exactly one folder; one reappearing under a different `parentFolderId`
- * is a move, so its stale folder edge is dropped.
+ * is a move, so its stale folder edge is dropped. Messages of a delta round started from the stored
+ * delta link are reported as new; a delta from scratch (first pass, or after a 410) is backfill.
  *
  * Does not record its own failures: the pass runs in the caller's transaction, so such a write
  * would be rolled back with it. mailSyncJob.ts records sync failures.
@@ -117,6 +120,7 @@ export async function reconcileGraphAccount(
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
 
   const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "graph_api" });
+  const connectedAt = await anchorMailAccountConnection(dbClient, params.mailboxItemId);
 
   const folders = await graph.listFolders();
   const folderItemIdByGraphId = new Map<string, string>();
@@ -131,7 +135,9 @@ export async function reconcileGraphAccount(
   }
 
   let delta = await graph.fetchDelta(state.graphDeltaLink);
+  let reportedNew = state.graphDeltaLink !== null;
   if (delta.invalidated) {
+    reportedNew = false;
     await invalidateGraphDeltaLink(
       dbClient,
       params.mailboxItemId,
@@ -165,6 +171,7 @@ export async function reconcileGraphAccount(
     if (!folderItemId || !change.message) continue;
 
     const result = await ingestEmailMessage(dbClient, {
+      arrival: mailArrivalOf({ reportedNew, date: change.message.date, connectedAt }),
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
       folderRelationPropertyId: params.folderRelationPropertyId,

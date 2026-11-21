@@ -114,6 +114,7 @@ async function mailFixture(tenantId: string) {
     inTenant(tenantId, async (client) => {
       const references = input.references ?? [];
       const { itemId, created } = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: ids.emailFolderProperty,
@@ -340,6 +341,7 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
     const { received, draftId, threadId } = await threadWithSempDraft(f, "being-sent");
     await inTenant(tenant, (client) =>
       upsertMailMessageMeta(client, {
+        arrival: "live",
         itemId: draftId,
         mailboxItemId: f.mailboxId,
         messageId: ID("claim-of-the-send"),

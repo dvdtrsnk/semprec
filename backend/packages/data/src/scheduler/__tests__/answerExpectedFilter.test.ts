@@ -153,6 +153,7 @@ async function receive(t: MailTenant, options: Receive = {}): Promise<string> {
     };
     const { itemId } = await withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),

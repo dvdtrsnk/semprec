@@ -146,6 +146,7 @@ async function setupMail(tenantId: string): Promise<MailFixture> {
       await folder("sent");
       const inboxId = await folder("inbox");
       const received = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property(emailProperties, "folder"),
@@ -873,6 +874,7 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
       await inT(() =>
         withTransaction(runtime, (client) =>
           upsertMailMessageMeta(client, {
+            arrival: "live",
             itemId: draft.id,
             mailboxItemId: f.mailboxId,
             messageId: "<other-send@example.test>",

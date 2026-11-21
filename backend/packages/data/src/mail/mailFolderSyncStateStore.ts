@@ -1,4 +1,4 @@
-import type { Queryable } from "../db/pool.js";
+import { requireAffectedRows, type Queryable } from "../db/pool.js";
 
 export interface MailFolderSyncStateRow {
   itemId: string;
@@ -9,6 +9,8 @@ export interface MailFolderSyncStateRow {
   messageCount: string | null;
   lastFullReconcileAt: string | null;
   lastError: string | null;
+  /** UIDs at or above it arrived after the folder's state was established; `null` until its first reconcile. */
+  liveFromUid: string | null;
 }
 
 type MailFolderSyncStateDbRow = {
@@ -19,6 +21,7 @@ type MailFolderSyncStateDbRow = {
   message_count: string | null;
   last_full_reconcile_at: Date | null;
   last_error: string | null;
+  live_from_uid: string | null;
 };
 
 function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
@@ -30,10 +33,12 @@ function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
     messageCount: row.message_count,
     lastFullReconcileAt: row.last_full_reconcile_at?.toISOString() ?? null,
     lastError: row.last_error,
+    liveFromUid: row.live_from_uid,
   };
 }
 
-const COLUMNS = "item_id, uidvalidity, uidnext, highestmodseq, message_count, last_full_reconcile_at, last_error";
+const COLUMNS =
+  "item_id, uidvalidity, uidnext, highestmodseq, message_count, last_full_reconcile_at, last_error, live_from_uid";
 
 export async function ensureMailFolderSyncState(client: Queryable, itemId: string): Promise<MailFolderSyncStateRow> {
   const inserted = await client.query<MailFolderSyncStateDbRow>(
@@ -71,17 +76,20 @@ export async function lockMailFolderSyncState(
 
 /**
  * A `UIDVALIDITY` change invalidates the folder's whole UID cache. Resets `uidnext`/`highestmodseq` so the next pass
- * runs a full reconcile keyed by `Message-ID`.
+ * runs a full reconcile keyed by `Message-ID`, and `live_from_uid` so that reconcile establishes it anew.
  */
 export async function resetForUidvalidityChange(
   client: Queryable,
   itemId: string,
   newUidvalidity: string,
 ): Promise<void> {
-  await client.query(
-    `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, message_count = NULL, last_error = NULL WHERE item_id = $1`,
+  const result = await client.query(
+    `UPDATE mail_folder_sync_state SET uidvalidity = $2, uidnext = NULL, highestmodseq = NULL, message_count = NULL, last_error = NULL,
+       live_from_uid = NULL
+     WHERE item_id = $1`,
     [itemId, newUidvalidity],
   );
+  requireAffectedRows(result, `the UIDVALIDITY reset of folder ${itemId}`);
 }
 
 export interface RecordReconcileInput {
@@ -90,16 +98,25 @@ export interface RecordReconcileInput {
   uidnext: string;
   highestmodseq?: string | null;
   messageCount: string;
+  liveFromUid: string;
 }
 
 export async function recordReconcile(client: Queryable, input: RecordReconcileInput): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE mail_folder_sync_state
      SET uidvalidity = $2, uidnext = $3, highestmodseq = $4, message_count = $5, last_full_reconcile_at = now(),
-         last_error = NULL
+         last_error = NULL, live_from_uid = $6
      WHERE item_id = $1`,
-    [input.itemId, input.uidvalidity, input.uidnext, input.highestmodseq ?? null, input.messageCount],
+    [
+      input.itemId,
+      input.uidvalidity,
+      input.uidnext,
+      input.highestmodseq ?? null,
+      input.messageCount,
+      input.liveFromUid,
+    ],
   );
+  requireAffectedRows(result, `the reconcile of folder ${input.itemId}`);
 }
 
 export async function recordFolderSyncError(client: Queryable, itemId: string, error: string): Promise<void> {

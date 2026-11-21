@@ -121,6 +121,7 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     }) => {
       const result = await withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),

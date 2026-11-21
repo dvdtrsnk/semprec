@@ -594,6 +594,7 @@ async function ingestMessage(
     specialPurpose: "inbox",
   });
   const ingested = await ingestEmailMessage(client, {
+    arrival: "live",
     emailsDatabaseId: ids.emailsDatabaseId,
     filesDatabaseId: ids.filesDatabaseId,
     folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
@@ -1476,6 +1477,7 @@ const cases: Record<string, TaskCase> = {
             properties: { name: "Mail person", emails: address },
           });
           await upsertMailMessageMeta(client, {
+            arrival: "live",
             itemId,
             mailboxItemId: null,
             messageId: `<${randomUUID()}@example.test>`,

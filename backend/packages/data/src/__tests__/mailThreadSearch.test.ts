@@ -102,6 +102,7 @@ describe("mail thread list", () => {
     }) =>
       withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),

@@ -253,6 +253,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           runInTenant(getTenantZeroId(), () =>
             withTransaction(runtime, (client) =>
               ingestEmailMessage(client, {
+                arrival: "live",
                 emailsDatabaseId: emails,
                 filesDatabaseId: ids.filesDatabaseId,
                 folderRelationPropertyId: folderProperty.id,

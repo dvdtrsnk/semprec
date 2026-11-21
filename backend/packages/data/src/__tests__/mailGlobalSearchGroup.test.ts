@@ -145,6 +145,7 @@ async function setup() {
   const ingest = (input: IngestInput) =>
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),

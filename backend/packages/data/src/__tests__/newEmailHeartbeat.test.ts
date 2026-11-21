@@ -30,6 +30,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { hasWaitingHeartbeatFireJob } from "../scheduler/schedulerStore.js";
+import type { MailArrival } from "../mail/mailArrival.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -66,9 +67,15 @@ async function getNewEmailHeartbeatId(): Promise<string> {
   return rows[0].id;
 }
 
+/** How often the answer-expected gate asked the gateway in the current test. */
+let gatewayCalls = 0;
+
 /** The seeded heartbeat has the answer-expected gate; this gateway says every message expects one. */
 const answeringGateway: AiGatewayClientPort = {
-  complete: async () => ({ content: { expectsReply: true }, usage: { inputTokens: 1, outputTokens: 1 } }),
+  complete: async () => {
+    gatewayCalls += 1;
+    return { content: { expectsReply: true }, usage: { inputTokens: 1, outputTokens: 1 } };
+  },
 };
 
 function agentRunRegistry(runCalls: string[]) {
@@ -100,6 +107,7 @@ describe("newEmail heartbeat (issue #99)", () => {
     await resetDatabase(pool);
     await seedSystem(pool);
     await createUser();
+    gatewayCalls = 0;
     const peopleId = await databaseIdFor("people");
     const person = await chokePoint.createItem({
       databaseId: peopleId,
@@ -123,7 +131,13 @@ describe("newEmail heartbeat (issue #99)", () => {
     await pool?.end();
   });
 
-  async function ingestInto(specialPurposes: string[], messageId: string, sender = "alice@example.com", bulk = false) {
+  async function ingestInto(
+    specialPurposes: string[],
+    messageId: string,
+    sender = "alice@example.com",
+    bulk = false,
+    arrival: MailArrival = "live",
+  ) {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -147,6 +161,7 @@ describe("newEmail heartbeat (issue #99)", () => {
     const result = await inTenantZero(() =>
       withTransaction(pool, async (client) => {
         const ingestResult = await ingestEmailMessage(client, {
+          arrival,
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderProperty.id,
@@ -189,6 +204,23 @@ describe("newEmail heartbeat (issue #99)", () => {
     expect(runCalls).toHaveLength(1);
     expect(runCalls[0]).toContain(`Triggering item id: ${message.itemId}`);
     expect(runs[0]?.task).toContain(`Triggering item id: ${message.itemId}`);
+  });
+
+  it.each([
+    ["live", 1, 1],
+    ["backfill", 0, 0],
+  ] as const)("a %s Inbox message starts %i run(s) after %i model call(s)", async (arrival, runs, modelCalls) => {
+    const heartbeatId = await getNewEmailHeartbeatId();
+    const runCalls: string[] = [];
+    const registry = agentRunRegistry(runCalls);
+
+    await ingestInto(["inbox"], `<${arrival}@example.com>`, "alice@example.com", false, arrival);
+    await drainQueue(registry);
+
+    expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(runs);
+    expect(runCalls).toHaveLength(runs);
+    expect(gatewayCalls).toBe(modelCalls);
+    expect(await inTenantZero(() => hasWaitingHeartbeatFireJob(pool, heartbeatId))).toBe(false);
   });
 
   it("does not start a run for bulk, unknown or own sender", async () => {
@@ -328,6 +360,7 @@ describe("newEmail heartbeat (issue #99)", () => {
     );
 
     const input = {
+      arrival: "live" as const,
       emailsDatabaseId: emailsId,
       filesDatabaseId: filesId,
       folderRelationPropertyId: folderProperty.id,

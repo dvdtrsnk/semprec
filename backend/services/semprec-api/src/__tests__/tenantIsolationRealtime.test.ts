@@ -585,6 +585,7 @@ async function ingestMessageIn(tenantId: string): Promise<string> {
         specialPurpose: "inbox",
       });
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),

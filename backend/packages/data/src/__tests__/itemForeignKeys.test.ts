@@ -345,7 +345,7 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "noAction",
     insert: (c, id) =>
-      c.query("INSERT INTO mail_message_meta (item_id, message_id) VALUES ($1, $2)", [
+      c.query("INSERT INTO mail_message_meta (item_id, message_id, arrival) VALUES ($1, $2, 'live')", [
         id,
         `<${randomUUID()}@example.com>`,
       ]),

@@ -117,6 +117,7 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
     }) =>
       withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),

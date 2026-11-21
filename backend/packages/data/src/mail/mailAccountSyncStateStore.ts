@@ -1,4 +1,4 @@
-import { requireAffectedRows, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ChokePointError, ValidationError } from "../errors.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
@@ -42,6 +42,8 @@ export interface MailAccountSyncStateRow {
   lastFailureKind: MailSyncFailureKind | null;
   /** Set while the account's Mail is off; the sync pass, sweep, live-sync discovery and send skip or refuse it. */
   syncPausedAt: string | null;
+  /** Set by the first sync pass that finds it unset (`anchorMailAccountConnection`); cleared with the pause. */
+  connectedAt: string | null;
 }
 
 type MailAccountSyncStateDbRow = {
@@ -61,6 +63,7 @@ type MailAccountSyncStateDbRow = {
   initial_sync_completed_at: Date | null;
   last_failure_kind: string | null;
   sync_paused_at: Date | null;
+  connected_at: Date | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -84,11 +87,12 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
         ? null
         : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
     syncPausedAt: row.sync_paused_at?.toISOString() ?? null,
+    connectedAt: row.connected_at?.toISOString() ?? null,
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at, connected_at";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -238,10 +242,25 @@ export async function deleteMailAccountSyncState(client: Queryable, itemId: stri
 }
 
 /**
+ * The account's `connected_at`, set to now by the first caller that finds it unset. A message older than it (less a
+ * grace, mail/mailArrival.ts) never counts as live. The row must exist.
+ */
+export async function anchorMailAccountConnection(client: Queryable, itemId: string): Promise<Date> {
+  const result = await client.query<{ connected_at: Date }>(
+    `UPDATE mail_account_sync_state SET connected_at = COALESCE(connected_at, now()) WHERE item_id = $1
+     RETURNING connected_at`,
+    [itemId],
+  );
+  requireAffectedRows(result, `the connection anchor of mail account ${itemId}`);
+  return requireSingleRow(result.rows, `mail_account_sync_state row for item ${itemId}`).connected_at;
+}
+
+/**
  * Pauses the account's mail sync and resets it to a never-synced account: the cursors, the initial-sync mark, the
- * next expected activity and the failure record are cleared, so a resumed account syncs as a new one does and the
- * stall check finds nothing overdue. The routing address, provider account address, sync mode and Graph
- * subscription are kept. Seeds the row (with `syncMode`) when the account has none. `false` when it was paused already.
+ * connection anchor, the next expected activity and the failure record are cleared, so a resumed account syncs as a
+ * new one does and the stall check finds nothing overdue. The routing address, provider account address, sync mode
+ * and Graph subscription are kept. Seeds the row (with `syncMode`) when the account has none. `false` when it was
+ * paused already.
  */
 export async function pauseMailAccountSync(client: Queryable, itemId: string, syncMode: SyncMode): Promise<boolean> {
   const result = await client.query(
@@ -249,7 +268,7 @@ export async function pauseMailAccountSync(client: Queryable, itemId: string, sy
      ON CONFLICT (item_id) DO UPDATE
        SET sync_paused_at = now(), gmail_history_id = NULL, graph_delta_link = NULL, last_error = NULL,
            next_expected_activity_at = NULL, failing_since = NULL, last_failure_kind = NULL,
-           initial_sync_completed_at = NULL
+           initial_sync_completed_at = NULL, connected_at = NULL
      WHERE mail_account_sync_state.sync_paused_at IS NULL`,
     [itemId, syncMode],
   );

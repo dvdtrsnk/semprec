@@ -118,6 +118,7 @@ async function facetsFixture(tenantId: string, behavior: "folder" | "label" = "f
       const folderItemId = await folder(specialPurpose);
       const emailItemId = await inTenant(tenantId, async (client) => {
         const result = await ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: ids.emailsDatabaseId,
           filesDatabaseId: ids.filesDatabaseId,
           folderRelationPropertyId: ids.emailFolderProperty,

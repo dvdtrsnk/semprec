@@ -21,8 +21,8 @@ async function ingest(mailboxItemId: string, messageId: string, refs: string[] =
     await insertItemsWithIds(client, [itemId]);
     // Historical threading fixture uses mailbox ids without provisioning mailbox items; the message item is real.
     await client.query(
-      `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, envelope)
-     VALUES ($6, $1, $2, $3, $4, $5, '{}')`,
+      `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, envelope, arrival)
+     VALUES ($6, $1, $2, $3, $4, $5, '{}', 'live')`,
       [mailboxItemId, messageId, refs.at(-1) ?? null, refs, threadId, itemId],
     );
     return threadId;
@@ -83,9 +83,9 @@ describe("cross-mailbox threading of one message", () => {
       await insertItemsWithIds(client, [highItem, lowItem]);
       // Two existing copies already in different threads, a state ingest itself never leaves behind.
       await client.query(
-        `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, thread_id, envelope)
-         VALUES ($5, $1, '<duplicate@x>', $2, '{}'),
-                ($6, $3, '<duplicate@x>', $4, '{}')`,
+        `INSERT INTO mail_message_meta (item_id, mailbox_item_id, message_id, thread_id, envelope, arrival)
+         VALUES ($5, $1, '<duplicate@x>', $2, '{}', 'live'),
+                ($6, $3, '<duplicate@x>', $4, '{}', 'live')`,
         [mailboxA, high, mailboxB, low, highItem, lowItem],
       );
     });
@@ -158,6 +158,7 @@ describe("cross-mailbox threading through message ingest", () => {
     const ingestCopy = (mailboxItemId: string, folderItemId: string, messageId: string, references: string[] = []) =>
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: emailsId,
           filesDatabaseId: idFor("files"),
           folderRelationPropertyId: propertyId("folder"),

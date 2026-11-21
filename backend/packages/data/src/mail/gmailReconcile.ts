@@ -13,10 +13,12 @@ import { createGmailMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import { getMailMessageMetaByProviderMessageId } from "./mailMessageMetaStore.js";
 import {
+  anchorMailAccountConnection,
   ensureMailAccountSyncState,
   invalidateGmailHistory,
   recordGmailActivity,
 } from "./mailAccountSyncStateStore.js";
+import { mailArrivalOf } from "./mailArrival.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
@@ -110,7 +112,8 @@ export interface ReconcileGmailAccountParams {
 /**
  * One Gmail message keeps one id across all its labels, so it is ingested once (deduped by
  * Message-ID) and linked to every mapped label's Folder; edges for labels it no longer carries
- * are removed.
+ * are removed. Messages reached through `history.list` from the stored history id are reported
+ * as new; the full listing of a first pass or a resync after history invalidation is backfill.
  *
  * Does not record its own failures: the pass runs in the caller's transaction, so such a write
  * would be rolled back with it. mailSyncJob.ts records sync failures.
@@ -133,6 +136,7 @@ export async function reconcileGmailAccount(
     throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
 
   const state = await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "gmail_api" });
+  const connectedAt = await anchorMailAccountConnection(dbClient, params.mailboxItemId);
 
   const labels = await gmail.listLabels();
   const folderItemIdByLabel = new Map<string, string>();
@@ -162,6 +166,7 @@ export async function reconcileGmailAccount(
   let changedIds: string[];
   let removedIds: string[] = [];
   let newHistoryId: string;
+  let reportedNew = false;
 
   if (!state.gmailHistoryId) {
     // Capture the cursor before listing: a message arriving in between is then re-observed
@@ -182,6 +187,7 @@ export async function reconcileGmailAccount(
       changedIds = history.changedMessageIds;
       removedIds = history.removedMessageIds;
       newHistoryId = history.newHistoryId;
+      reportedNew = true;
     }
   }
 
@@ -196,8 +202,10 @@ export async function reconcileGmailAccount(
     if (!fetched.labelIds.some((labelId) => GMAIL_PLACEMENT_LABEL_IDS.includes(labelId)))
       mappedFolderIds.push(archiveFolderItemId);
     let itemId: string | null = null;
+    const arrival = mailArrivalOf({ reportedNew, date: fetched.message.date, connectedAt });
     for (const folderItemId of mappedFolderIds) {
       const result = await ingestEmailMessage(dbClient, {
+        arrival,
         emailsDatabaseId: params.emailsDatabaseId,
         filesDatabaseId: params.filesDatabaseId,
         folderRelationPropertyId: params.folderRelationPropertyId,

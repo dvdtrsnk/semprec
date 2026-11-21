@@ -25,6 +25,7 @@ import { reindexPersonEmails } from "../personEmailIndexStore.js";
 import { createCoreTaskList } from "../../worker.js";
 import type { BlobStorageWriter } from "../blobStorage.js";
 import { ingestEmailMessage } from "../ingest.js";
+import type { MailArrival } from "../mailArrival.js";
 import {
   enqueueThreadProjectTriage,
   handleMailTriageThreadProject,
@@ -73,6 +74,7 @@ interface IngestOptions {
   bodyHtml?: string;
   folder?: "inbox" | "sent";
   inReplyTo?: string;
+  arrival?: MailArrival;
 }
 
 let admin: Pool;
@@ -145,6 +147,7 @@ async function ingest(options: IngestOptions = {}, target = world): Promise<Test
     () =>
       withTransaction(data, async (client) => {
         const result = await ingestEmailMessage(client, {
+          arrival: options.arrival ?? "live",
           emailsDatabaseId: databaseId("emails", target),
           filesDatabaseId: databaseId("files", target),
           folderRelationPropertyId: target.properties.emailFolder,
@@ -309,6 +312,20 @@ describe("the thread project triage task (issue gh-1872)", () => {
       expect(delay).toBeLessThanOrEqual(THREAD_PROJECT_TRIAGE_DELAY_MS + 30_000);
     });
 
+    it("queues no task for the first inbound message of a backfilled thread, but still its link propagation", async () => {
+      const propagationJobs = async () => {
+        const { rows } = await admin.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = $1",
+          [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE],
+        );
+        return rows[0]?.n ?? -1;
+      };
+      const before = await propagationJobs();
+      await ingest({ arrival: "backfill" });
+      expect(await triageJobs()).toEqual([]);
+      expect(await propagationJobs()).toBeGreaterThan(before);
+    });
+
     it("queues nothing for a later message of a thread that has its first inbound message", async () => {
       const first = await ingest({ messageId: "<first@example.test>" });
       await ingest({ messageId: "<second@example.test>", inReplyTo: "<first@example.test>" });
@@ -326,6 +343,7 @@ describe("the thread project triage task (issue gh-1872)", () => {
         inTenant(() =>
           withTransaction(data, async (client) => {
             await ingestEmailMessage(client, {
+              arrival: "live",
               emailsDatabaseId: databaseId("emails"),
               filesDatabaseId: databaseId("files"),
               folderRelationPropertyId: world.properties.emailFolder,

@@ -233,6 +233,7 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
 
       await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: setup.emailsId,
           filesDatabaseId: setup.filesId,
           folderRelationPropertyId: setup.folderRelationPropertyId,

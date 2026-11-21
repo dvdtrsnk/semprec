@@ -105,6 +105,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
+import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 
 const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
   it(
@@ -276,6 +277,7 @@ async function ingestFixture(
       )
     ).id;
   return (messageId, overrides = {}) => ({
+    arrival: "live",
     emailsDatabaseId: emailsId,
     filesDatabaseId: filesId,
     folderRelationPropertyId,
@@ -695,7 +697,7 @@ describe("conversation threading", () => {
       const itemId = randomUUID();
       await insertItemsWithIds(client, [itemId]);
       await client.query(
-        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES ($1, $2, $3, $4, '{}')",
+        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope, arrival) VALUES ($1, $2, $3, $4, '{}', 'live')",
         [itemId, messageId, inReplyTo, threadId],
       );
     });
@@ -1070,7 +1072,13 @@ describe("provider_message_id uniqueness convergence", () => {
 
   it("fills a null provider_message_id via the message_id upsert's ON CONFLICT DO UPDATE", async () => {
     const itemId = randomUUID();
-    const meta = { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId: "<fill@x>", envelope: {} };
+    const meta = {
+      itemId,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
+      messageId: "<fill@x>",
+      envelope: {},
+      arrival: "live" as const,
+    };
     await withTransaction(pool, async (client) => {
       await insertItemsWithIds(client, [itemId]);
       await upsertMailMessageMeta(client, meta);
@@ -1970,6 +1978,242 @@ describe("Graph reconcile core", () => {
   );
 });
 
+describe("message arrival: live and backfill", () => {
+  useSeededDatabase();
+
+  /** Older than any `connected_at` a pass in this suite sets, less the one-day grace. */
+  const OLD_DATE = new Date("2001-01-01T00:00:00.000Z");
+
+  async function arrivals(mailboxItemId: string): Promise<Record<string, string>> {
+    const { rows } = await pool.query<{ message_id: string; arrival: string }>(
+      "SELECT message_id, arrival FROM mail_message_meta WHERE mailbox_item_id = $1 ORDER BY message_id",
+      [mailboxItemId],
+    );
+    return Object.fromEntries(rows.map((row) => [row.message_id, row.arrival]));
+  }
+
+  async function liveFromUidOf(mailboxItemId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ live_from_uid: string | null }>(
+      `SELECT s.live_from_uid FROM mail_folder_sync_state s
+         JOIN items f ON f.id = s.item_id
+        WHERE f.properties->>'providerId' = 'INBOX'
+          AND EXISTS (SELECT 1 FROM item_relations r
+                       WHERE (r.item_a = f.id AND r.item_b = $1) OR (r.item_b = f.id AND r.item_a = $1))`,
+      [mailboxItemId],
+    );
+    return rows[0]?.live_from_uid ?? null;
+  }
+
+  function rawMessage(messageId: string, date: Date): Buffer {
+    return Buffer.from(
+      [
+        `Message-ID: ${messageId}`,
+        "From: Sender <sender@example.test>",
+        "To: owner@example.test",
+        `Subject: ${messageId}`,
+        `Date: ${date.toUTCString()}`,
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "",
+      ].join("\r\n"),
+    );
+  }
+
+  const reconcileImap = async (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
+
+  tenantIt(
+    "IMAP: the initial backfill is backfill over every pass it takes; a delivery after the first pass is live unless its Date is old",
+    async () => {
+      const params = await reconcileParams();
+      const account = new FakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox" }]);
+      const history = Array.from({ length: IMAP_NEW_MESSAGES_PER_PASS + 2 }, (_, index) => `<history-${index}@x>`);
+      for (const messageId of history) account.deliver("INBOX", rawMessage(messageId, new Date()));
+
+      expect(await reconcileImap(account.client(), params)).toEqual({ ran: true, complete: false });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe(String(history.length + 1));
+      expect((await syncState(params.mailboxItemId))?.connectedAt).not.toBeNull();
+
+      account.deliver("INBOX", rawMessage("<new@x>", new Date()));
+      account.deliver("INBOX", rawMessage("<moved-in-old@x>", OLD_DATE));
+      expect(await reconcileImap(account.client(), params)).toEqual({ ran: true, complete: true });
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        ...Object.fromEntries(history.map((messageId) => [messageId, "backfill"])),
+        "<new@x>": "live",
+        "<moved-in-old@x>": "backfill",
+      });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe(String(history.length + 1));
+    },
+  );
+
+  tenantIt(
+    "IMAP: a UIDVALIDITY reset makes the folder's mail backfill and keeps the arrival of mail already ingested",
+    async () => {
+      const params = await reconcileParams();
+      const folder = (uidvalidity: number, uidnext: number, messages: Array<[number, string]>) =>
+        fakeImap({
+          listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+          selectFolder: async () => ({ uidvalidity, uidnext, highestModSeq: null, messages: messages.length }),
+          fetchMessagesSince: async (_path, sinceUid) =>
+            messages.filter(([uid]) => uid >= sinceUid).map(([uid, messageId]) => fetched(uid, messageId)),
+          fetchAllUids: async () => messages.map(([uid]) => uid),
+        });
+
+      await reconcileImap(
+        folder(111, 3, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+        ]),
+        params,
+      );
+      await reconcileImap(
+        folder(111, 4, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+        ]),
+        params,
+      );
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<one@x>": "backfill",
+        "<three@x>": "live",
+        "<two@x>": "backfill",
+      });
+
+      // The server rebuilt the folder: every message has a new UID, and one it never reported before is among them.
+      await reconcileImap(
+        folder(999, 5, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+          [4, "<four@x>"],
+        ]),
+        params,
+      );
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<four@x>": "backfill",
+        "<one@x>": "backfill",
+        "<three@x>": "live",
+        "<two@x>": "backfill",
+      });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe("5");
+
+      await reconcileImap(
+        folder(999, 6, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+          [4, "<four@x>"],
+          [5, "<five@x>"],
+        ]),
+        params,
+      );
+      expect((await arrivals(params.mailboxItemId))["<five@x>"]).toBe("live");
+    },
+  );
+
+  tenantIt(
+    "Gmail: the full listing is backfill, a message reached through history.list is live, and a resync after invalidation is backfill",
+    async () => {
+      const params = await reconcileParams();
+      const dates: Record<string, Date> = { "old-in-history": OLD_DATE };
+      const gmail = (sync: Pick<GmailMailClient, "listHistorySince" | "listAllMessageIds">): GmailMailClient => ({
+        getCurrentHistoryId: async () => "100",
+        fetchMessage: async (id) => ({
+          id,
+          threadId: `thread-${id}`,
+          labelIds: ["INBOX"],
+          message: {
+            messageId: `<${id}@x>`,
+            envelope: { from: { address: "a@x.com" } },
+            attachments: [],
+            date: dates[id] ?? new Date(),
+          },
+        }),
+        listLabels: async () => [{ id: "INBOX", name: "INBOX", type: "system" }],
+        modifyMessageLabels: async () => {},
+        ...sync,
+      });
+      const history = (changedMessageIds: string[], invalidated = false) => ({
+        listHistorySince: async () => ({ invalidated, newHistoryId: "101", changedMessageIds, removedMessageIds: [] }),
+      });
+      const reconcile = (client: GmailMailClient) =>
+        withTransaction(pool, (tx) => reconcileGmailAccount(tx, client, params));
+
+      await reconcile(gmail({ ...history([]), listAllMessageIds: async () => ["listed"] }));
+      const connectedAt = (await syncState(params.mailboxItemId))?.connectedAt;
+      expect(connectedAt).not.toBeNull();
+      await reconcile(
+        gmail({
+          ...history(["listed", "delivered", "old-in-history"]),
+          listAllMessageIds: async () => {
+            throw new Error("a pass with a valid history id must not list every message");
+          },
+        }),
+      );
+      await reconcile(gmail({ ...history([], true), listAllMessageIds: async () => ["listed", "resynced"] }));
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<delivered@x>": "live",
+        "<listed@x>": "backfill",
+        "<old-in-history@x>": "backfill",
+        "<resynced@x>": "backfill",
+      });
+      expect((await syncState(params.mailboxItemId))?.connectedAt).toBe(connectedAt);
+    },
+  );
+
+  tenantIt(
+    "Graph: a delta from scratch is backfill, a delta from the stored link is live, and the resync after a 410 is backfill",
+    async () => {
+      const params = await reconcileParams();
+      const change = (id: string, date: Date = new Date()): GraphChangedMessage => ({
+        id,
+        parentFolderId: "f1",
+        removed: false,
+        message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, attachments: [], date },
+      });
+      const graph = (fetchDelta: GraphMailClient["fetchDelta"]): GraphMailClient => ({
+        listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
+        fetchDelta,
+        patchMessage: async () => {},
+      });
+      const reconcile = (client: GraphMailClient) =>
+        withTransaction(pool, (tx) => reconcileGraphAccount(tx, client, params));
+
+      await reconcile(
+        graph(async () => ({ invalidated: false, newDeltaLink: "link-1", changes: [change("scratch")] })),
+      );
+      await reconcile(
+        graph(async (deltaLink) => {
+          expect(deltaLink).toBe("link-1");
+          return {
+            invalidated: false,
+            newDeltaLink: "link-2",
+            changes: [change("delivered"), change("old-in-delta", OLD_DATE)],
+          };
+        }),
+      );
+      await reconcile(
+        graph(async (deltaLink) =>
+          deltaLink === null
+            ? { invalidated: false, newDeltaLink: "link-3", changes: [change("resynced")] }
+            : { invalidated: true, newDeltaLink: "", changes: [] },
+        ),
+      );
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<delivered@x>": "live",
+        "<old-in-delta@x>": "backfill",
+        "<resynced@x>": "backfill",
+        "<scratch@x>": "backfill",
+      });
+    },
+  );
+});
+
 describe("mail sync job error handling", () => {
   afterEach(() => vi.restoreAllMocks());
   useSeededDatabase();
@@ -2022,6 +2266,7 @@ describe("mail sync job error handling", () => {
             await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
             await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
             await upsertMailMessageMeta(client, {
+              arrival: "live",
               itemId: message.id,
               mailboxItemId: mailbox.id,
               messageId: "<move-job@example.test>",
@@ -2237,6 +2482,7 @@ describe("mail sync job error handling", () => {
               });
               await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
               await upsertMailMessageMeta(client, {
+                arrival: "live",
                 itemId: message.id,
                 mailboxItemId: mailbox.id,
                 messageId: "<baseline@example.test>",
@@ -2259,6 +2505,7 @@ describe("mail sync job error handling", () => {
                     itemId: id,
                     uidvalidity: validity,
                     uidnext: path === "Source" ? "1" : "50",
+                    liveFromUid: path === "Source" ? "1" : "50",
                     highestmodseq: null,
                     messageCount: "0",
                   });

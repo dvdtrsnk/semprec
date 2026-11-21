@@ -18,7 +18,12 @@ import {
 } from "./mailFolderSyncStateStore.js";
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
-import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
+import {
+  anchorMailAccountConnection,
+  ensureMailAccountSyncState,
+  recordImapActivity,
+} from "./mailAccountSyncStateStore.js";
+import { mailArrivalOf } from "./mailArrival.js";
 import { deleteMailMessageMetaOfRemovedItem } from "./mailMessageMetaStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
@@ -363,12 +368,16 @@ async function withBatchStorage<T>(
  * The write half of a folder reconcile, in the caller's transaction under the mail-thread guard. The folder's sync
  * state row is locked and must still be the snapshot the fetch was computed from; otherwise another pass has moved
  * the folder on since, nothing is written and `null` is returned, so a cursor never moves backwards.
+ *
+ * A folder whose state is first established, or reset by a UIDVALIDITY change, takes the selected UIDNEXT as its
+ * `live_from_uid`: every message already in it is backfill, and only a UID at or above it is reported as new.
  */
 async function applyImapFolder(
   dbClient: PoolClient,
   fetched: FetchedImapFolder,
   params: ReconcileImapFolderParams,
   relationDefinitionId: string,
+  connectedAt: Date,
 ): Promise<AppliedImapFolder | null> {
   await lockMailThreadMutation(dbClient);
   const current = await lockMailFolderSyncState(dbClient, params.folderItemId);
@@ -382,9 +391,14 @@ async function applyImapFolder(
   if (fetched.uidvalidityChanged) {
     await resetForUidvalidityChange(dbClient, params.folderItemId, String(fetched.selection.uidvalidity));
   }
+  const liveFromUid =
+    fetched.uidvalidityChanged || current.liveFromUid === null
+      ? fetched.selection.uidnext
+      : Number(current.liveFromUid);
 
   for (const item of fetched.batch) {
     const result = await ingestEmailMessage(dbClient, {
+      arrival: mailArrivalOf({ reportedNew: item.uid >= liveFromUid, date: item.message.date, connectedAt }),
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
       folderRelationPropertyId: params.folderRelationPropertyId,
@@ -458,6 +472,7 @@ async function applyImapFolder(
     uidnext: String(fetched.complete || !lastIngested ? fetched.selection.uidnext : lastIngested.uid + 1),
     highestmodseq: fetched.selection.highestModSeq !== null ? String(fetched.selection.highestModSeq) : null,
     messageCount: String(fetched.selection.messages),
+    liveFromUid: String(liveFromUid),
   });
   return { ingested: fetched.batch.length, complete: fetched.complete, copiesRemovedFrom };
 }
@@ -515,9 +530,11 @@ export async function reconcileImapFolder(
   imap: ImapMailClient,
   params: ReconcileImapFolderParams,
 ): Promise<ReconcileImapFolderResult> {
-  const { snapshot, relationDefinitionId } = await withTransaction(pool, async (client) => {
+  const { snapshot, relationDefinitionId, connectedAt } = await withTransaction(pool, async (client) => {
     await lockMailThreadMutation(client);
+    await ensureMailAccountSyncState(client, { itemId: params.mailboxItemId, syncMode: "imap" });
     return {
+      connectedAt: await anchorMailAccountConnection(client, params.mailboxItemId),
       snapshot: await ensureMailFolderSyncState(client, params.folderItemId),
       relationDefinitionId: await requireFolderRelationDefinitionId(client, params.folderRelationPropertyId),
     };
@@ -535,7 +552,13 @@ export async function reconcileImapFolder(
     );
     const result = await withBatchStorage(params.storage, (storage) =>
       withTransaction(pool, async (client) => {
-        const applied = await applyImapFolder(client, fetched, { ...params, storage }, relationDefinitionId);
+        const applied = await applyImapFolder(
+          client,
+          fetched,
+          { ...params, storage },
+          relationDefinitionId,
+          connectedAt,
+        );
         if (applied)
           await removeEmailsWithoutFolderCopy(client, new Set(applied.copiesRemovedFrom), params, relationDefinitionId);
         return applied;
@@ -636,6 +659,7 @@ export async function reconcileImapAccount(
 
   const prepared = await inPassTransaction(pool, params.pass, async (client) => {
     await ensureMailAccountSyncState(client, { itemId: params.mailboxItemId, syncMode: "imap" });
+    const connectedAt = await anchorMailAccountConnection(client, params.mailboxItemId);
     const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
       getRelationDefinitionByPropertyId(client, params.folderRelationPropertyId),
       getRelationDefinitionByPropertyId(client, params.mailboxFolderRelationPropertyId),
@@ -654,13 +678,14 @@ export async function reconcileImapAccount(
       tracked.push({ folder, folderItemId, snapshot: await ensureMailFolderSyncState(client, folderItemId) });
     }
     return {
+      connectedAt,
       folders: tracked,
       folderRelationDefinitionId: folderRelationDefinition.id,
       mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
     };
   });
   if (!prepared) return ended;
-  const { folderRelationDefinitionId, mailboxFolderRelationDefinitionId } = prepared.value;
+  const { connectedAt, folderRelationDefinitionId, mailboxFolderRelationDefinitionId } = prepared.value;
 
   let budget = IMAP_NEW_MESSAGES_PER_PASS;
   let complete = true;
@@ -694,7 +719,7 @@ export async function reconcileImapAccount(
       };
       const written = await withBatchStorage(params.storage, (storage) =>
         inPassTransaction(pool, params.pass, (client) =>
-          applyImapFolder(client, fetched, { ...folderParams, storage }, folderRelationDefinitionId),
+          applyImapFolder(client, fetched, { ...folderParams, storage }, folderRelationDefinitionId, connectedAt),
         ),
       );
       if (!written) return ended;

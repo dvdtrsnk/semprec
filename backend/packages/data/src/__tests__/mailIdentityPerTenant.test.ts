@@ -76,6 +76,7 @@ async function insertMessage(
   } = {},
 ) {
   return upsertMailMessageMeta(client, {
+    arrival: "live",
     itemId: await newItemId(client),
     mailboxItemId: extra.mailboxItemId ?? randomUUID(),
     messageId,
@@ -123,8 +124,8 @@ describe("mail identities stay within a tenant", () => {
         const itemId = await newItemId(client);
         const error = await client
           .query(
-            `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id)
-             VALUES ($1, $2, '{}'::jsonb, $3)`,
+            `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id, arrival)
+             VALUES ($1, $2, '{}'::jsonb, $3, 'live')`,
             [itemId, "<u1@x>", row.mailboxItemId],
           )
           .then(

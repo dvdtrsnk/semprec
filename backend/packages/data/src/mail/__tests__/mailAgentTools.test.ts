@@ -206,6 +206,7 @@ async function receive(t: MailTenant, options: ReceiveOptions = {}): Promise<str
       return found.id;
     };
     const input: IngestEmailMessageInput = {
+      arrival: "live",
       emailsDatabaseId: db("emails"),
       filesDatabaseId: db("files"),
       folderRelationPropertyId: property("folder"),

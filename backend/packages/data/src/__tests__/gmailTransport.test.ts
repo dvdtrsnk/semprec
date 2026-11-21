@@ -197,8 +197,15 @@ describe("Gmail API mail transport (issue #1637)", () => {
         { databaseId: ids.foldersDatabaseId, properties: { name: "Sent", behavior: "folder", providerId: "SENT" } },
         { allowedSystemKeys: ["name", "behavior", "providerId"] },
       );
-      await upsertMailMessageMeta(client, { itemId: item.id, mailboxItemId: mailboxId, messageId, envelope: {} });
+      await upsertMailMessageMeta(client, {
+        arrival: "live",
+        itemId: item.id,
+        mailboxItemId: mailboxId,
+        messageId,
+        envelope: {},
+      });
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: folderProperty.id,

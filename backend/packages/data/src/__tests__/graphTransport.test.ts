@@ -360,12 +360,14 @@ describe("Graph mail transport (issue #1753)", () => {
           { allowedSystemKeys: ["name", "behavior", "providerId"] },
         );
         await upsertMailMessageMeta(client, {
+          arrival: "live",
           itemId: item.id,
           mailboxItemId: mailboxId,
           messageId: sentId,
           envelope: {},
         });
         const ingested = await ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: ids.emailsDatabaseId,
           filesDatabaseId: ids.filesDatabaseId,
           folderRelationPropertyId: folderProperty.id,

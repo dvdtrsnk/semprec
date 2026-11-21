@@ -178,6 +178,7 @@ function ingest(
   input: { mailboxId: string; folder: string; messageId: string },
 ): Promise<string> {
   return ingestEmailMessage(client, {
+    arrival: "live",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,

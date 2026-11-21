@@ -17,6 +17,8 @@ import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { propagateThreadAttachmentLinks, repointThreadAttachmentLinks } from "./threadAttachmentLinks.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { MAIL_ARRIVALS, type MailArrival } from "./mailArrival.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -55,6 +57,8 @@ export interface MailMessageMetaRow {
   ingestedAt: Date | null;
   /** Decided once at ingest (mail/bulkMail.ts). */
   isBulk: boolean;
+  /** Decided once at ingest (mail/mailArrival.ts); a send claim is `live`. */
+  arrival: MailArrival;
 }
 
 type MailMessageMetaDbRow = {
@@ -73,6 +77,7 @@ type MailMessageMetaDbRow = {
   preview_text: string | null;
   ingested_at: Date | null;
   is_bulk: boolean;
+  arrival: string;
 };
 
 function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
@@ -92,12 +97,13 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
     previewText: row.preview_text,
     ingestedAt: row.ingested_at,
     isBulk: row.is_bulk,
+    arrival: assertKnownValue(MAIL_ARRIVALS, row.arrival, "mail arrival"),
   };
 }
 
 const COLUMNS =
   'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
-  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk";
+  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk, arrival";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -117,6 +123,8 @@ export interface UpsertMailMessageMetaInput {
   ingestedAt?: Date | null;
   /** Written on insert only; a conflicting upsert keeps the stored value. Defaults to `false`. */
   isBulk?: boolean;
+  /** Written on insert only; a conflicting upsert keeps the stored value. */
+  arrival: MailArrival;
 }
 
 /**
@@ -142,8 +150,9 @@ export async function upsertMailMessageMeta(
   }
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
-                                     delivered_to_address, message_kind, dsn_original_message_id, mailbox_item_id, preview_text, ingested_at, is_bulk)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15)
+                                     delivered_to_address, message_kind, dsn_original_message_id, mailbox_item_id, preview_text, ingested_at, is_bulk,
+                                     arrival)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
      ON CONFLICT (mailbox_item_id, message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
@@ -169,6 +178,7 @@ export async function upsertMailMessageMeta(
       input.previewText ?? null,
       input.ingestedAt ?? null,
       input.isBulk ?? false,
+      input.arrival,
     ],
   );
   return mapRow(requireSingleRow(rows, "mail_message_meta row"));

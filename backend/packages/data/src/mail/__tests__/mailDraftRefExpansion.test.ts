@@ -138,6 +138,7 @@ function receivedMessage(t: MailTenant): Promise<string> {
       return rows[0].id;
     };
     const { itemId } = await ingestEmailMessage(client, {
+      arrival: "live",
       emailsDatabaseId: ids.emailsDatabaseId,
       filesDatabaseId: ids.filesDatabaseId,
       folderRelationPropertyId: await property("folder"),

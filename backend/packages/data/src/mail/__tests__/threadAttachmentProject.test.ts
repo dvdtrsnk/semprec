@@ -260,6 +260,7 @@ describe("Threads.attachments and the project of an attachment (issue gh-1898)",
         runInTenant(tenant, () =>
           withTransaction(runtime, (client) =>
             ingestEmailMessage(client, {
+              arrival: "live",
               emailsDatabaseId: world.databases.emails!,
               filesDatabaseId: world.databases.files!,
               folderRelationPropertyId: world.properties.emailFolder,

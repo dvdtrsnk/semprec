@@ -315,6 +315,7 @@ describe("internet account service switches", () => {
     const mailboxId = await connectAccount();
     const inbox = await inboxFolderId();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).not.toBeNull();
+    expect((await inTenant((client) => getMailAccountSyncState(client, mailboxId)))?.connectedAt).not.toBeNull();
     await clearJobs();
     const stops: Array<{ tenantId: string; mailboxItemId: string; committed: boolean }> = [];
     bindMailboxServiceLiveSyncStop(async (tenantId, mailboxItemId) => {
@@ -333,7 +334,12 @@ describe("internet account service switches", () => {
     }
 
     const state = await inTenant((client) => getMailAccountSyncState(client, mailboxId));
-    expect(state).toMatchObject({ syncMode: "imap", initialSyncCompletedAt: null, nextExpectedActivityAt: null });
+    expect(state).toMatchObject({
+      syncMode: "imap",
+      initialSyncCompletedAt: null,
+      nextExpectedActivityAt: null,
+      connectedAt: null,
+    });
     expect(state?.syncPausedAt).not.toBeNull();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).toBeNull();
     expect(await jobKeys()).toEqual([mailboxMailOffJobKey(mailboxId)]);

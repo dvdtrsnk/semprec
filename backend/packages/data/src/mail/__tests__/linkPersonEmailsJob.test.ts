@@ -102,6 +102,7 @@ describe("historical mail links for newly claimed addresses", () => {
     return runInTenant(tenant(), () =>
       withTransaction(runtime, async (client) => {
         const message = await ingestEmailMessage(client, {
+          arrival: "live",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderPropertyId,

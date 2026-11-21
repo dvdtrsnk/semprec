@@ -131,6 +131,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
         specialPurpose: "inbox",
       });
       const received = await ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property(emailProperties, "folder"),
@@ -284,6 +285,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
       const inbox = folders.rows[0];
       if (!inbox) throw new Error("Missing Inbox");
       return ingestEmailMessage(client, {
+        arrival: "live",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),

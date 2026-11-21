@@ -125,6 +125,7 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
       const result = await runInTenant(world.tenantId, () =>
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
+            arrival: "live",
             emailsDatabaseId: world.databases.emails!,
             filesDatabaseId: world.databases.files!,
             folderRelationPropertyId: world.properties.emailFolder,
