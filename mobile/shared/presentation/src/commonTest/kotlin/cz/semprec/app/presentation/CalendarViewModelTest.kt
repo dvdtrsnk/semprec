@@ -559,10 +559,12 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `delete asks for a confirmation that can be given or refused`() = runTest(dispatcher) {
+    @Test fun `delete closes the menu and asks a confirmation that can be given or refused`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
+        act(vm, CalendarAction.Gesture.Select("meeting"))
         act(vm, CalendarAction.Edit.RequestDelete("meeting"))
+        assertNull(vm.state.value.selectedItemId)
         val request = CalendarDeleteRequest("meeting", "Title meeting", CalendarItemKind.EVENT)
         assertEquals(request, vm.state.value.pendingDelete)
         act(vm, CalendarAction.Edit.CancelDelete)
@@ -572,19 +574,6 @@ class CalendarViewModelTest : MainDispatcherTest() {
         act(vm, CalendarAction.Edit.ConfirmDelete)
         assertTrue("delete meeting" in repository.calls)
         assertNull(vm.state.value.pendingDelete)
-        vm.close()
-    }
-
-    @Test fun `asking to delete the selected item closes its menu and keeps the question`() = runTest(dispatcher) {
-        serve(MEETING)
-        val vm = loaded()
-        act(vm, CalendarAction.Gesture.Select("meeting"))
-        assertEquals("meeting", vm.state.value.selectedItemId)
-        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
-        assertNull(vm.state.value.selectedItemId)
-        assertEquals("meeting", vm.state.value.pendingDelete?.itemId)
-        act(vm, CalendarAction.Edit.ConfirmDelete)
-        assertTrue("delete meeting" in repository.calls)
         vm.close()
     }
 

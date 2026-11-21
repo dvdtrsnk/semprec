@@ -14,7 +14,8 @@ internal object ItemDetailsChanges {
         field(action, item) ?: relation(action, item) ?: schedule(action, item)
 
     private fun field(action: ItemDetailsAction, item: WorkItem): ItemChange? = when (action) {
-        is ItemDetailsAction.SetTitle -> singleLineTitle(action.title).takeIf { it.isNotEmpty() }?.let { ItemChange.Title(it) }
+        is ItemDetailsAction.SetTitle ->
+            singleLineTitle(action.title).takeIf { it.isNotEmpty() }?.let { ItemChange.Title(it) }
         ItemDetailsAction.ToggleDone -> ItemChange.Done(item.status != TaskStatus.DONE)
         is ItemDetailsAction.SetDescription -> ItemChange.Description(action.text)
         is ItemDetailsAction.SetPlace -> ItemChange.Place(action.text)
