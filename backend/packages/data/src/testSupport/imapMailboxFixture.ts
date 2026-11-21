@@ -29,6 +29,11 @@ export const PURELYMAIL_FOLDERS = [
   { path: "Junk", specialUse: "\\Junk" },
 ] as const;
 
+/** The password connect's IMAP opener for a test: each call answers a client of a new in-memory Purelymail account. */
+export async function openPurelymailAccount(): Promise<ImapMailClient> {
+  return new FakeImapAccount([...PURELYMAIL_FOLDERS]).client();
+}
+
 const UNUSED_STORAGE = "the fixture's messages carry no attachments";
 export const noAttachmentStorage: BlobStorageWriter = {
   writeStream: () => Promise.reject(new Error(UNUSED_STORAGE)),

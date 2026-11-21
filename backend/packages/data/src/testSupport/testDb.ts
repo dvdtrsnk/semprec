@@ -24,6 +24,7 @@ export {
 export { insertItemsWithIds } from "./itemFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 export { recordingTransport, sendAdapters, transportFor } from "./mailSendFakes.js";
+export { openPurelymailAccount } from "./imapMailboxFixture.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
 export { createSeriesOccurrence, startTaskSeries } from "./taskSeriesFixtures.js";

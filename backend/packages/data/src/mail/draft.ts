@@ -122,6 +122,17 @@ export class MailAttachmentTooLargeError extends ChokePointError {
   }
 }
 
+/**
+ * Neither the connect nor a sync pass found a Drafts folder for the mailbox, so a draft has nowhere to be filed.
+ * 409 `mail_drafts_folder_missing`.
+ */
+export class MailDraftsFolderMissingError extends ChokePointError {
+  constructor(mailboxItemId: string) {
+    super(409, "mail_drafts_folder_missing", "The mailbox has no Drafts folder", { mailboxId: mailboxItemId });
+    this.name = "MailDraftsFolderMissingError";
+  }
+}
+
 /** No `mail_drafts` row: a provider-held draft is read-only here, like any other message. */
 export class MailDraftNotEditableError extends ChokePointError {
   constructor() {
@@ -243,8 +254,9 @@ export async function announceDraftThreadChanged(client: PoolClient, threadId: s
 
 /**
  * Unknown references (including another tenant's) are 404; a merged-away thread id is stored as
- * the absorbing thread. A mailbox without a discovered Drafts folder is 400. A second unsent agent
- * draft for a thread fails with `MailDraftThreadConflictError` (409); the caller must roll back.
+ * the absorbing thread. A mailbox without a discovered Drafts folder is 409 `mail_drafts_folder_missing`.
+ * A second unsent agent draft for a thread fails with `MailDraftThreadConflictError` (409); the caller
+ * must roll back.
  */
 export async function createEmailDraftInMailbox(
   client: PoolClient,
@@ -271,12 +283,7 @@ export async function createEmailDraftInMailbox(
     mailboxItemId: input.mailboxItemId,
     specialPurpose: "drafts",
   });
-  if (!draftsFolderItemId) {
-    throw new ValidationError(
-      `Mailbox ${input.mailboxItemId} has no Drafts folder yet - sync the account before drafting`,
-      { field: "mailboxId" },
-    );
-  }
+  if (!draftsFolderItemId) throw new MailDraftsFolderMissingError(input.mailboxItemId);
 
   const item = await createEmailDraft(client, {
     emailsDatabaseId: ids.emailsDatabaseId,

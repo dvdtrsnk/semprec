@@ -2,7 +2,9 @@ import type { PoolClient } from "pg";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { resolveMailModuleIds } from "./mailModuleIds.js";
 
 const FOLDERS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: FOLDERS_MODULE_ID };
 
@@ -64,8 +66,8 @@ export interface FindFolderBySpecialPurposeInput {
 }
 
 /**
- * Returns `null` until sync has discovered the folder. Read-only because only a sync pass can
- * supply the provider-specific `providerId`.
+ * Returns `null` until a connect or a sync pass has discovered the folder. Read-only because only the
+ * provider supplies the folder's `providerId`.
  */
 export async function findFolderBySpecialPurpose(
   client: PoolClient,
@@ -83,4 +85,34 @@ export async function findFolderBySpecialPurpose(
     [input.foldersDatabaseId, input.specialPurpose, input.mailboxRelationPropertyId, input.mailboxItemId],
   );
   return rows[0]?.id ?? null;
+}
+
+/** A provider folder as a sync pass would write it. */
+export type ProviderFolder = Pick<EnsureFolderItemInput, "providerId" | "name" | "behavior" | "specialPurpose">;
+
+/** A draft is filed in Drafts and a sent message moves to Sent. */
+const COMPOSE_FOLDER_PURPOSES: ReadonlySet<string> = new Set(["drafts", "sent"]);
+
+/**
+ * Writes the Drafts and Sent folders among `folders`, which a connect found, so a new account can draft and send
+ * before its first sync pass. That pass finds each by its `providerId`; it writes every other folder.
+ */
+export async function ensureComposeFolders(
+  client: PoolClient,
+  mailboxItemId: string,
+  folders: readonly ProviderFolder[],
+): Promise<void> {
+  const compose = folders.filter((folder) => COMPOSE_FOLDER_PURPOSES.has(folder.specialPurpose));
+  if (compose.length === 0) return;
+  const { foldersDatabaseId } = await resolveMailModuleIds(client);
+  const mailboxRelation = await getPropertyByKey(client, foldersDatabaseId, "mailbox");
+  if (!mailboxRelation) throw new Error("Email module schema is missing the Folders.mailbox relation property");
+  for (const folder of compose) {
+    await ensureFolderItem(client, {
+      ...folder,
+      foldersDatabaseId,
+      mailboxItemId,
+      mailboxRelationPropertyId: mailboxRelation.id,
+    });
+  }
 }

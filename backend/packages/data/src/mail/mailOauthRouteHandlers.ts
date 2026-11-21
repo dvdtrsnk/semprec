@@ -47,6 +47,10 @@ import {
   MailAuthorizationCodeRejectedError,
 } from "./providerTypes.js";
 import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
+import { ensureComposeFolders, type ProviderFolder } from "./folderDiscovery.js";
+import { GMAIL_SYSTEM_FOLDERS } from "./gmailReconcile.js";
+import { graphProviderFolder } from "./graphReconcile.js";
+import { logger } from "./logger.js";
 
 /**
  * Served without a session. The redirect URI is this path on the configured redirect base URL, identical in the
@@ -298,6 +302,12 @@ const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profil
 const GMAIL_SEND_AS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs";
 /** Graph returns `proxyAddresses` only when `$select` names it. */
 const GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,proxyAddresses";
+/** The Graph well-known names of the folders a new message needs. */
+const GRAPH_COMPOSE_FOLDERS = ["drafts", "sentitems"] as const;
+
+function graphWellKnownFolderUrl(wellKnownName: (typeof GRAPH_COMPOSE_FOLDERS)[number]): string {
+  return `https://graph.microsoft.com/v1.0/me/mailFolders/${wellKnownName}?$select=id,displayName`;
+}
 /** `SMTP:` on the primary address, `smtp:` on a secondary one. */
 const SMTP_PROXY_ADDRESS_PREFIX = /^smtp:/i;
 
@@ -402,9 +412,39 @@ async function fetchGraphIdentity(fetchImpl: typeof fetch, accessToken: string):
   return { address, aliases: aliases.slice(0, MAX_ALIASES) };
 }
 
+/**
+ * The account's Drafts and Sent folders as the first sync pass writes them. A folder whose read fails is left to that
+ * pass: the account is already signed in, and only a draft or send before the pass is refused meanwhile.
+ */
+async function fetchGraphComposeFolders(fetchImpl: typeof fetch, accessToken: string): Promise<ProviderFolder[]> {
+  const folders: ProviderFolder[] = [];
+  for (const wellKnownName of GRAPH_COMPOSE_FOLDERS) {
+    try {
+      const folder = await getProviderJson(
+        fetchImpl,
+        graphWellKnownFolderUrl(wellKnownName),
+        accessToken,
+        "Microsoft Graph folder",
+      );
+      if (typeof folder.id !== "string" || folder.id === "" || typeof folder.displayName !== "string") {
+        throw new Error("Microsoft Graph folder response holds no id and display name");
+      }
+      folders.push(graphProviderFolder({ id: folder.id, displayName: folder.displayName, wellKnownName }));
+    } catch (error) {
+      logger.warn(
+        { wellKnownName, errorName: error instanceof Error ? error.name : typeof error },
+        "The connect could not read a Microsoft Graph folder; the first sync pass discovers it",
+      );
+    }
+  }
+  return folders;
+}
+
 interface NewMailbox {
   provider: MailOauthProvider;
   identity: ProviderIdentity;
+  /** The account's folders found at connect. */
+  folders: readonly ProviderFolder[];
   refreshToken: string;
   grantedScopes: readonly string[];
   services: readonly MailAccountService[];
@@ -450,6 +490,7 @@ async function createConnectedMailbox(client: PoolClient, mailbox: NewMailbox): 
   if (mailbox.provider === "gmail") {
     await recordGmailWatchEmailAddress(client, item.id, mailbox.identity.address);
   }
+  await ensureComposeFolders(client, item.id, mailbox.folders);
   await enqueueMailAccountSync(client, item.id);
   return item.id;
 }
@@ -530,9 +571,11 @@ const completeBodySchema = z
  *    The state stays consumed whatever follows.
  * 2. Outside any transaction, exchange the code and fetch the account's addresses. `invalid_grant` is a 400; anything
  *    else but required admin consent propagates as a generic 500.
- * 3. Write the mailbox with the granted scopes; a duplicate provider address is decided by the unique index and
- *    answered 409 with the other mailbox's id. For a reauthorization state, `replaceMailboxCredential` runs instead,
- *    and after the commit the live-sync root restarts the hosted lifecycle so it reads the new token.
+ * 3. A new Outlook account's Drafts and Sent folders are read, still outside any transaction (Gmail's are fixed).
+ * 4. Write the mailbox with the granted scopes and those folders; a duplicate provider address is decided by the unique
+ *    index and answered 409 with the other mailbox's id. For a reauthorization state, `replaceMailboxCredential` runs
+ *    instead of 3 and 4, and after the commit the live-sync root restarts the hosted lifecycle so it reads the new
+ *    token.
  * No token, code or verifier is logged or returned.
  */
 export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
@@ -611,12 +654,15 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
       return { status: 200, body: { mailboxId: mailboxItemId } };
     }
 
+    const folders =
+      provider === "gmail" ? GMAIL_SYSTEM_FOLDERS : await fetchGraphComposeFolders(fetchImpl, tokens.accessToken);
     let mailboxId: string;
     try {
       mailboxId = await withTransaction(pool, (transaction) =>
         createConnectedMailbox(transaction, {
           provider,
           identity,
+          folders,
           refreshToken: tokens.refreshToken,
           grantedScopes,
           services: consumed.services,

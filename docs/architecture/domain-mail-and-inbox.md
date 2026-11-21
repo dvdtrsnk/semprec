@@ -79,7 +79,15 @@ described elsewhere and only referenced here:
   `provider_account_already_connected`) → throttle → `verifyMailCredentials` outside any transaction → for a
   generic body with `caldavUrl`, the `verifyCalDav` member (`verifyCalDavServer`, CalDAV discovery to the calendar
   home with the same login; 400 `caldav_auth_failed`, `caldav_server_unreachable` or `caldav_server_invalid`) →
-  `createPasswordMailbox` in one READ COMMITTED transaction that re-reads the duplicate rule before writing.
+  the folder listing outside any transaction → `createPasswordMailbox` in one READ COMMITTED transaction that re-reads
+  the duplicate rule before writing.
+- The folder listing opens one connection to the verified IMAP endpoint through the `mailServerClients.openImap`
+  member (`openImapConnection`), lists the folders and closes it, under a 15 s deadline spanning connect, login and
+  LIST. `createPasswordMailbox` writes the Drafts and Sent Folder items among them (`ensureComposeFolders`,
+  `mail/folderDiscovery.ts`) with the `providerId`, name and purpose the first sync pass derives
+  (`imapProviderFolder`), so the account drafts and sends before that pass, which finds them by `providerId`. A failed
+  or expired listing is logged (error name only) and the mailbox is connected without them. A mount without the
+  member fails each request before any login is verified.
 - An address is held when `mail_account_sync_state.provider_account_address` records it or a live Mailboxes
   item's `addresses` list names it (`mailboxHoldsAnyAddress`, `mail/mailboxAddresses.ts`). A trashed mailbox does not
   count: its removal deleted its sync state row, so its address can be connected again. The partial unique index
@@ -152,7 +160,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
    call. A state admits exactly one exchange; every later failure leaves it used and the user restarts.
 2. Code exchange and account/alias lookups run outside any transaction.
 3. Connect: `createConnectedMailbox` writes item, addresses, sealed refresh token, sync state with
-   `provider_account_address` and the first sync job in one READ COMMITTED transaction. The address unique
+   `provider_account_address`, the Drafts and Sent Folder items and the first sync job in one READ COMMITTED
+   transaction. Gmail's are the system labels `DRAFT` and `SENT` (`GMAIL_SYSTEM_FOLDERS`); Graph's are read before the
+   transaction (`GET /me/mailFolders/drafts` and `/sentitems`, with the identity reads' timeout and cap), and a failed
+   read is logged and leaves that folder to the first pass. The address unique
    index decides duplicates; after the rollback a separate read names the existing mailbox (409
    `provider_account_already_connected`, `details.mailboxId` possibly `null`).
 4. For Gmail the connect writes `gmail_watch_email_address` once, from `users.getProfile`
@@ -400,6 +411,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Drafts
 
 - A Semprec draft is an Emails item in Drafts plus a `mail_drafts` row (`mail/draft.ts`, `mail/mailDraftsStore.ts`).
+  A mailbox for which neither the connect nor a sync pass found a Drafts folder refuses a new draft with 409
+  `mail_drafts_folder_missing` (`details.mailboxId`) and writes nothing.
 - Every writer of an existing draft uses `lockUnsentDraft`: Emails item `FOR UPDATE`, then `mail_drafts` row.
   Refusals: 404 no live item; 409 `mail_draft_not_editable` (no row); 409 `mail_draft_already_sent` (`sent_at`
   set **or** a send claim exists); 409 `version_conflict` on `ifVersion` mismatch. Draft writers take no

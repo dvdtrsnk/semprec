@@ -2,7 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import type {
   HeartbeatRuleKindRegistry,
+  ImapMailClient,
   MailSendAdapterFactory,
+  MailServerConnectionSettings,
+  MailServerCredential,
   VerifiedMailServerSettings,
   VerifyCalDavServerInput,
   VerifyMailCredentialsInput,
@@ -39,6 +42,11 @@ export interface MailServerClients {
    * a configuration error.
    */
   verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<void>;
+  /**
+   * Opens the connection on which the password connect route lists the new account's folders. A mount without it
+   * fails each request of that route with a configuration error.
+   */
+  openImap?: (settings: MailServerConnectionSettings, credential: MailServerCredential) => Promise<ImapMailClient>;
   /**
    * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.

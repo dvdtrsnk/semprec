@@ -6,7 +6,7 @@ import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";
-import { ensureFolderItem } from "./folderDiscovery.js";
+import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { createGraphMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
@@ -67,6 +67,16 @@ function specialPurposeForGraphFolder(folder: GraphFolderRef): string {
   return (folder.wellKnownName && known[folder.wellKnownName.toLowerCase()]) ?? "none";
 }
 
+/** A Graph mail folder as its Folder item. */
+export function graphProviderFolder(folder: GraphFolderRef): ProviderFolder {
+  return {
+    providerId: folder.id,
+    name: folder.displayName,
+    behavior: "folder",
+    specialPurpose: specialPurposeForGraphFolder(folder),
+  };
+}
+
 export interface ReconcileGraphAccountParams {
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
@@ -115,10 +125,7 @@ export async function reconcileGraphAccount(
       foldersDatabaseId: params.foldersDatabaseId,
       mailboxItemId: params.mailboxItemId,
       mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
-      providerId: folder.id,
-      name: folder.displayName,
-      behavior: "folder",
-      specialPurpose: specialPurposeForGraphFolder(folder),
+      ...graphProviderFolder(folder),
     });
     folderItemIdByGraphId.set(folder.id, folderItemId);
   }

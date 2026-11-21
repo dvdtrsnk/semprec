@@ -17,7 +17,7 @@ import {
   type MailFolderSyncStateRow,
 } from "./mailFolderSyncStateStore.js";
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
-import { ensureFolderItem } from "./folderDiscovery.js";
+import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
 import { deleteMailMessageMetaOfRemovedItem } from "./mailMessageMetaStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
@@ -141,6 +141,16 @@ const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
   "\\Draft": "drafts",
   "\\All": "all",
 };
+
+/** A listed IMAP folder as its Folder item: named by its path, its purpose from its RFC 6154 special-use attribute. */
+export function imapProviderFolder(folder: ImapFolderRef): ProviderFolder {
+  return {
+    providerId: folder.path,
+    name: folder.path,
+    behavior: "folder",
+    specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
+  };
+}
 
 /**
  * Gmail over IMAP: derives label Folder edges from `X-GM-LABELS`, alongside the All Mail edge the
@@ -639,10 +649,7 @@ export async function reconcileImapAccount(
         foldersDatabaseId: params.foldersDatabaseId,
         mailboxItemId: params.mailboxItemId,
         mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
-        providerId: folder.path,
-        name: folder.path,
-        behavior: "folder",
-        specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
+        ...imapProviderFolder(folder),
       });
       tracked.push({ folder, folderItemId, snapshot: await ensureMailFolderSyncState(client, folderItemId) });
     }

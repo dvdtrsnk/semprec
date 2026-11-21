@@ -26,6 +26,7 @@ import {
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  openPurelymailAccount,
   reconcileGmailAccount,
   resetDatabase,
   setTenantAiBudget,
@@ -139,6 +140,7 @@ const MAILBOX_PASSWORD_DEPENDENCIES: CustomRouteDependencies = {
         smtp: { host: input.smtpHost ?? "smtp.mail.me.com", port: 465, security: "tls" },
       };
     },
+    openImap: openPurelymailAccount,
   },
   // The password replacement restarts the hosted live sync after its commit; this process hosts none.
   mailLiveSync: {

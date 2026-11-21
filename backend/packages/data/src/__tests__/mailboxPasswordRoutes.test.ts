@@ -57,6 +57,7 @@ import {
 } from "../calendar/sync/adapters/caldav/caldavErrors.js";
 import { getCalendarAccountSyncState, recordCalendarSyncFailure } from "../calendar/sync/calendarSyncStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { openPurelymailAccount } from "../testSupport/imapMailboxFixture.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
@@ -179,9 +180,16 @@ interface ConnectOptions {
   tenantId?: string;
 }
 
+/**
+ * Mail server clients that leave out the folder listing's opener get one listing an in-memory Purelymail account, so a
+ * case about the verification needs to name only the verification.
+ */
 function connect(body: unknown, options: ConnectOptions = {}): Promise<{ status: number; item: ItemRow }> {
+  const dependencies = options.dependencies ?? acceptingVerifier().dependencies;
+  const { mailServerClients } = dependencies;
   const handler = createMailboxPasswordConnectRouteHandler(runtime, {
-    ...(options.dependencies ?? acceptingVerifier().dependencies),
+    ...dependencies,
+    ...(mailServerClients ? { mailServerClients: { openImap: openPurelymailAccount, ...mailServerClients } } : {}),
     throttle: options.throttle === undefined ? recordingThrottle().throttle : (options.throttle ?? undefined),
   });
   return runInTenant(options.tenantId ?? tenant, () => handler({ identity: { user: { id: userId } }, body }));

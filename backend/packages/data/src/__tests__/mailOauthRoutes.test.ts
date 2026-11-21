@@ -58,6 +58,8 @@ import {
 const GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 const GMAIL_SEND_AS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs";
 const GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,proxyAddresses";
+const GRAPH_DRAFTS_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/drafts?$select=id,displayName";
+const GRAPH_SENT_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems?$select=id,displayName";
 const REDIRECT_URI = "https://app.example.test/api/mail/oauth/callback";
 
 /** Values that must never leave the server: every test reading a response, log or export looks for them. */
@@ -136,7 +138,12 @@ function googleRoutes(overrides: Record<string, ProviderRoute> = {}): Record<str
 }
 
 function microsoftRoutes(me: unknown): Record<string, ProviderRoute> {
-  return { [MICROSOFT_TOKEN_URL]: tokens, [GRAPH_ME_URL]: () => json(me) };
+  return {
+    [MICROSOFT_TOKEN_URL]: tokens,
+    [GRAPH_ME_URL]: () => json(me),
+    [GRAPH_DRAFTS_URL]: () => json({ id: "graph-drafts-id", displayName: "Drafts" }),
+    [GRAPH_SENT_URL]: () => json({ id: "graph-sent-id", displayName: "Sent Items" }),
+  };
 }
 
 interface Caller {
@@ -602,6 +609,8 @@ describe("POST /api/mail/mailboxes/oauth/complete", () => {
     expect(provider.calls.map((call) => [call.method, call.url, call.authorization])).toEqual([
       ["POST", MICROSOFT_TOKEN_URL, null],
       ["GET", GRAPH_ME_URL, `Bearer ${SECRETS.accessToken}`],
+      ["GET", GRAPH_DRAFTS_URL, `Bearer ${SECRETS.accessToken}`],
+      ["GET", GRAPH_SENT_URL, `Bearer ${SECRETS.accessToken}`],
     ]);
     expect(provider.calls[0]?.form?.get("client_secret")).toBe(SECRETS.graphClientSecret);
   });
@@ -2417,8 +2426,10 @@ describe("OAuth scopes per service", () => {
   it("switching Calendars on for a mail-only Google account keeps it on, needing consent, leaves mail sync alone and queues a calendar pass", async () => {
     const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
     expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
+    // The connect also queued the search reindex of the mailbox and of the Drafts and Sent folders it wrote.
     const jobsBefore = await queuedJobs();
-    expect(jobsBefore).toEqual([{ task: "mailAccountSync", key: `mail-account-sync:${mailboxId}` }]);
+    expect(jobsBefore).toContainEqual({ task: "mailAccountSync", key: `mail-account-sync:${mailboxId}` });
+    expect(jobsBefore.filter((job) => job.task !== "itemSearchReindexDependents")).toHaveLength(1);
 
     await switchCalendars(mailboxId, true);
 

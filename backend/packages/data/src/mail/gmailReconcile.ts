@@ -7,7 +7,7 @@ import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";
-import { ensureFolderItem } from "./folderDiscovery.js";
+import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { createGmailMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { listPendingProviderFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
@@ -63,6 +63,11 @@ const GMAIL_SYSTEM_FOLDER_PURPOSES: Record<string, string> = {
   TRASH: "trash",
   DRAFT: "drafts",
 };
+
+/** The system labels a pass writes as folders; Gmail names a system label by its id. */
+export const GMAIL_SYSTEM_FOLDERS: readonly ProviderFolder[] = Object.entries(GMAIL_SYSTEM_FOLDER_PURPOSES).map(
+  ([id, specialPurpose]) => ({ providerId: id, name: id, behavior: "label", specialPurpose }),
+);
 
 /** Provider id of the synthetic Archive folder (Gmail has no archive label: archived mail is mail without INBOX). */
 export const GMAIL_ARCHIVE_PROVIDER_ID = "semprec:archive";

@@ -33,6 +33,7 @@ import {
   MailConnectionLimitError,
   MailReauthorizationRequiredError,
   MailServerUnreachableError,
+  openImapConnection,
   seedSystem,
   upsertMailServerSettings,
   withTransaction,
@@ -1678,6 +1679,7 @@ describe("IMAP-mode accounts", () => {
           imap: IMAP_ENDPOINT,
           smtp: { host: "smtp.mail.test", port: 465, security: "tls" },
         }),
+        openImap: openImapConnection,
       },
       throttle: createClientIpThrottle(),
     };

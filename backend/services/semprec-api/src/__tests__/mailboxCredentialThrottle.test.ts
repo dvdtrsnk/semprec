@@ -6,7 +6,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem } from "@semprec/shared";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  openPurelymailAccount,
+  resetDatabase,
+} from "@semprec/data/testSupport";
 import {
   createUser,
   hashPassword,
@@ -76,6 +82,7 @@ async function serve(options: MountOptions = {}): Promise<Mount> {
           smtp: { host: input.smtpHost ?? "smtp.mail.me.com", port: 465, security: "tls" },
         };
       },
+      openImap: openPurelymailAccount,
     },
     ...(options.limiterOfDispatcher ? {} : { throttle: createClientIpThrottle({ now: () => nowMs }) }),
   };
