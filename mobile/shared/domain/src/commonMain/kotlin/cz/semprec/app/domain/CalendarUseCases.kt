@@ -81,22 +81,31 @@ class EditCalendarEntry(private val repository: CalendarRepository) {
         if (editable) RepositoryResult.Content(Unit) else RepositoryResult.Failure(FailureKind.REJECTED)
 }
 
+/** What creating a new item came to: the item, or a form the checks refused before the server was asked. */
+sealed interface NewCalendarItemOutcome {
+    data class Created(val itemId: String) : NewCalendarItemOutcome
+
+    /** No title, a kind that is neither an event nor a task, or an option out of its range. */
+    data object BreaksRules : NewCalendarItemOutcome
+}
+
 /** Creates a new event or task after the checks that need no server: a title and a schedule that fits its kind. */
 class CreateCalendarItem(private val repository: CalendarRepository) {
-    suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<String> {
+    suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<NewCalendarItemOutcome> {
         val kindFits = draft.kind == CalendarEntryKind.EVENT || draft.kind == CalendarEntryKind.TASK
         val title = draft.title.trim()
-        return if (kindFits && title.isNotEmpty() && draft.optionsFit()) {
-            repository.create(
-                draft.copy(
-                    title = title,
-                    place = draft.place?.trim()?.ifEmpty { null },
-                    notes = draft.notes?.trim()?.ifEmpty { null },
-                    url = draft.url?.trim()?.ifEmpty { null },
-                ),
-            )
-        } else {
-            RepositoryResult.Failure(FailureKind.REJECTED)
+        if (!kindFits || title.isEmpty() || !draft.optionsFit()) {
+            return RepositoryResult.Content(NewCalendarItemOutcome.BreaksRules)
+        }
+        val trimmed = draft.copy(
+            title = title,
+            place = draft.place?.trim()?.ifEmpty { null },
+            notes = draft.notes?.trim()?.ifEmpty { null },
+            url = draft.url?.trim()?.ifEmpty { null },
+        )
+        return when (val created = repository.create(trimmed)) {
+            is RepositoryResult.Failure -> created
+            is RepositoryResult.Content -> RepositoryResult.Content(NewCalendarItemOutcome.Created(created.value))
         }
     }
 }

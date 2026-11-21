@@ -337,25 +337,52 @@ class HttpCalendarRepositoryTest {
         assertEquals("/api/items/ev1", requests.single().path())
     }
 
-    @Test fun `a new event is created with its calendar linked afterwards`() = runTest {
+    @Test fun `a new event in a chosen calendar is one create naming the calendar and its key`() = runTest {
         val draft = NewCalendarItem(
             CalendarEntryKind.EVENT,
             "Lunch",
             CalendarSchedule(DAY, null, ClockTime(720), ClockTime(780)),
             "Cafe",
             "cal-w",
+            submissionKey = "key-1",
         )
         val result = repository { reads(it) }.create(draft)
         assertEquals(RepositoryResult.Content("new1"), result)
-        val create = requests.first { it.path() == "/api/databases/db-ev/items" }
-        assertEquals(HttpMethod.Post, create.method)
-        val properties = sent(requests.indexOf(create))["properties"]!!.jsonObject
+        val writes = requests.indices.filter { requests[it].method != HttpMethod.Get }
+        val create = writes.single()
+        assertEquals(HttpMethod.Post, requests[create].method)
+        assertEquals("/api/databases/db-ev/items", requests[create].path())
+        assertEquals("key-1", requests[create].headers["Idempotency-Key"])
+        val properties = sent(create)["properties"]!!.jsonObject
         assertEquals("Lunch", properties["name"]?.jsonPrimitive?.content)
         assertEquals("Cafe", properties["place"]?.jsonPrimitive?.content)
         assertEquals("12:00", properties["timeFrom"]?.jsonPrimitive?.content)
-        val link = requests.last()
-        assertEquals(HttpMethod.Put, link.method)
-        assertEquals("/api/items/new1/relations/calendar/cal-w", link.path())
+        assertEquals(
+            Json.parseToJsonElement("""[{"propertyKey":"calendar","targetItemIds":["cal-w"]}]"""),
+            sent(create)["relations"],
+        )
+        assertTrue(requests.none { it.method == HttpMethod.Put })
+        assertEquals(1, changes.revision.value)
+    }
+
+    @Test fun `a new event in the default calendar names no calendar`() = runTest {
+        val draft =
+            NewCalendarItem(EVENT, "Lunch", CalendarSchedule(DAY, null, null, null), null, null, submissionKey = "k")
+        assertEquals(RepositoryResult.Content("new1"), repository { reads(it) }.create(draft))
+        val create = requests.indexOfFirst { it.path() == "/api/databases/db-ev/items" }
+        assertTrue("relations" !in sent(create))
+        assertEquals("k", requests[create].headers["Idempotency-Key"])
+        assertTrue(requests.none { it.method == HttpMethod.Put })
+    }
+
+    @Test fun `each create sends the key of its submission`() = runTest {
+        val schedule = CalendarSchedule(DAY, null, null, null)
+        val repository = repository { reads(it) }
+        for (key in listOf("first", "first", "second")) {
+            repository.create(NewCalendarItem(EVENT, "Lunch", schedule, null, "cal-w", submissionKey = key))
+        }
+        val creates = requests.filter { it.path() == "/api/databases/db-ev/items" }
+        assertEquals(listOf("first", "first", "second"), creates.map { it.headers["Idempotency-Key"] })
     }
 
     @Test fun `a new task goes to the tasks database without a place or a calendar link`() = runTest {
@@ -366,6 +393,7 @@ class HttpCalendarRepositoryTest {
                 CalendarSchedule(DAY, DAY.plusDays(1), null, null),
                 "x",
                 "cal-w",
+                submissionKey = "k",
             )
         repository { reads(it) }.create(draft)
         val create = requests.indexOfFirst { it.path() == "/api/databases/db-task/items" }
@@ -373,6 +401,7 @@ class HttpCalendarRepositoryTest {
         assertEquals("Pay", properties["name"]?.jsonPrimitive?.content)
         assertTrue("place" !in properties)
         assertTrue("endDate" !in properties)
+        assertTrue("relations" !in sent(create))
         assertTrue(requests.none { it.method == HttpMethod.Put })
     }
 
@@ -397,6 +426,7 @@ class HttpCalendarRepositoryTest {
                 alertMinutes = 25,
                 travelMinutes = 45,
                 repeat = repeat,
+                submissionKey = "k",
             )
             repository { reads(it) }.create(draft)
             val create = requests.indexOfFirst { it.path() == "/api/databases/db-ev/items" }
@@ -420,6 +450,7 @@ class HttpCalendarRepositoryTest {
             notes = "Balcony",
             repeat = CalendarRepeat.WEEKDAYS,
             flagged = true,
+            submissionKey = "k",
         )
         val result = repository { reads(it) }.create(draft)
         assertEquals(RepositoryResult.Content("new1"), result)
@@ -443,6 +474,7 @@ class HttpCalendarRepositoryTest {
             null,
             null,
             repeat = CalendarRepeat.DAILY,
+            submissionKey = "k",
         )
         val refused =
             repository { if (it.method == HttpMethod.Put) json("{}", HttpStatusCode.BadRequest) else reads(it) }
@@ -450,19 +482,21 @@ class HttpCalendarRepositoryTest {
         assertEquals(0, changes.revision.value)
     }
 
-    @Test fun `a refused creation or link fails and a missing database is not found`() = runTest {
+    @Test fun `a refused creation fails and a missing database is not found`() = runTest {
         val draft =
-            NewCalendarItem(CalendarEntryKind.EVENT, "Lunch", CalendarSchedule(DAY, null, null, null), null, "cal-w")
-        val refused = repository { request ->
-            val creates = request.method == HttpMethod.Post && request.path().endsWith("/items")
-            if (creates) json("{}", HttpStatusCode.BadRequest) else reads(request)
+            NewCalendarItem(EVENT, "Lunch", CalendarSchedule(DAY, null, null, null), null, "cal-w", submissionKey = "k")
+        for (status in listOf(HttpStatusCode.BadRequest, HttpStatusCode.Conflict)) {
+            val refused = repository { request ->
+                val creates = request.method == HttpMethod.Post && request.path().endsWith("/items")
+                if (creates) json("""{"error":{"code":"cardinality_violation"}}""", status) else reads(request)
+            }
+            assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused.create(draft)).kind)
         }
-        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused.create(draft)).kind)
-        val unlinked =
-            repository { if (it.method == HttpMethod.Put) json("{}", HttpStatusCode.NotFound) else reads(it) }
-        assertEquals(FailureKind.NOT_FOUND, assertIs<RepositoryResult.Failure>(unlinked.create(draft)).kind)
         val noDatabase = repository { json("""{"databases":[]}""") }
         assertEquals(FailureKind.NOT_FOUND, assertIs<RepositoryResult.Failure>(noDatabase.create(draft)).kind)
+        assertTrue(requests.none { it.method == HttpMethod.Put })
         assertEquals(0, changes.revision.value)
     }
 }
+
+private val EVENT = CalendarEntryKind.EVENT

@@ -44,7 +44,10 @@ internal fun calendar(
     CalendarInfo(id, "Calendar $id", "#007AFF", true, hidden, isDefault, kind, null, "2026-10-16T08:00:00.000Z")
 
 /** Records the writes it is asked for and answers a scripted window. */
-internal class RecordingCalendarRepository(private val window: CalendarWindow? = null) : CalendarRepository {
+internal class RecordingCalendarRepository(
+    private val window: CalendarWindow? = null,
+    private val createAnswer: RepositoryResult<String> = RepositoryResult.Content("new"),
+) : CalendarRepository {
     val calls = mutableListOf<String>()
     var lastRange: Pair<CalendarDay, CalendarDay>? = null
 
@@ -80,8 +83,8 @@ internal class RecordingCalendarRepository(private val window: CalendarWindow? =
     }
 
     override suspend fun create(draft: NewCalendarItem): RepositoryResult<String> {
-        calls += "create ${draft.title}|${draft.place}"
-        return RepositoryResult.Content("new")
+        calls += "create ${draft.title}|${draft.place}|${draft.submissionKey}"
+        return createAnswer
     }
 }
 
@@ -207,11 +210,21 @@ class CalendarUseCasesTest {
         val repository = RecordingCalendarRepository()
         val create = CreateCalendarItem(repository)
         val schedule = CalendarSchedule(DAY, null, null, null)
-        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
-        assertEquals(refused, create(NewCalendarItem(CalendarEntryKind.EVENT, "  ", schedule, null, null)))
-        assertEquals(refused, create(NewCalendarItem(CalendarEntryKind.HOLIDAY, "Day", schedule, null, null)))
-        val task = NewCalendarItem(CalendarEntryKind.TASK, " Pay ", schedule, " ", null)
-        assertEquals(RepositoryResult.Content("new"), create(task))
-        assertEquals(listOf("create Pay|null"), repository.calls)
+        val breaks = RepositoryResult.Content(NewCalendarItemOutcome.BreaksRules)
+        assertEquals(breaks, create(NewCalendarItem(EVENT, "  ", schedule, null, null, submissionKey = "k1")))
+        assertEquals(breaks, create(NewCalendarItem(HOLIDAY, "Day", schedule, null, null, submissionKey = "k2")))
+        val task = NewCalendarItem(CalendarEntryKind.TASK, " Pay ", schedule, " ", null, submissionKey = "k3")
+        assertEquals(RepositoryResult.Content(NewCalendarItemOutcome.Created("new")), create(task))
+        assertEquals(listOf("create Pay|null|k3"), repository.calls)
+    }
+
+    @Test fun `a refusal by the server stays a failure and is not a form that breaks the rules`() = runTest {
+        val repository = RecordingCalendarRepository(createAnswer = RepositoryResult.Failure(FailureKind.REJECTED))
+        val schedule = CalendarSchedule(DAY, null, null, null)
+        val draft = NewCalendarItem(EVENT, "Lunch", schedule, null, "cal-w", submissionKey = "k")
+        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), CreateCalendarItem(repository)(draft))
     }
 }
+
+private val EVENT = CalendarEntryKind.EVENT
+private val HOLIDAY = CalendarEntryKind.HOLIDAY

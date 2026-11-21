@@ -201,6 +201,63 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a refusal by the server is an unexpected failure not the form message`() = runTest(dispatcher) {
+        val vm = loaded()
+        repository.writeResult = RepositoryResult.Failure(FailureKind.REJECTED)
+        vm.onAction(event())
+        runCurrent()
+        assertEquals(NewItemPhase.FAILED, vm.state.value.phase)
+        assertNull(vm.state.value.failure)
+        vm.close()
+    }
+
+    @Test fun `the same form sent again after a failure keeps its submission key`() = runTest(dispatcher) {
+        val vm = loaded()
+        val effects = effectsOf(vm)
+        val keys = mutableListOf<String?>()
+        val answers: List<RepositoryResult<Unit>> =
+            listOf(unavailable, RepositoryResult.Failure(FailureKind.REJECTED), RepositoryResult.Content(Unit))
+        for (answer in answers) {
+            repository.writeResult = answer
+            vm.onAction(event())
+            runCurrent()
+            keys += repository.lastDraft?.submissionKey
+        }
+        assertEquals(1, keys.distinct().size)
+        assertEquals(listOf(NewItemEffect.Created("new1")), effects)
+        vm.close()
+    }
+
+    @Test fun `an edit or a different form starts a new submission key`() = runTest(dispatcher) {
+        val vm = loaded()
+        repository.writeResult = unavailable
+        val keys = mutableListOf<String?>()
+        val sends = listOf(
+            listOf(event()),
+            listOf(NewItemAction.Edited, event()),
+            listOf(event(title = "Dinner")),
+            listOf(event(calendarId = "personal")),
+        )
+        for (actions in sends) {
+            actions.forEach(vm::onAction)
+            runCurrent()
+            keys += repository.lastDraft?.submissionKey
+        }
+        assertEquals(4, keys.filterNotNull().distinct().size)
+        vm.close()
+    }
+
+    @Test fun `a new sheet submits under a key of its own`() = runTest(dispatcher) {
+        val keys = List(2) {
+            val vm = loaded()
+            vm.onAction(event())
+            runCurrent()
+            vm.close()
+            repository.lastDraft?.submissionKey
+        }
+        assertEquals(2, keys.filterNotNull().distinct().size)
+    }
+
     @Test fun `a second create is ignored while the first is saved`() = runTest(dispatcher) {
         val vm = loaded()
         vm.onAction(event())

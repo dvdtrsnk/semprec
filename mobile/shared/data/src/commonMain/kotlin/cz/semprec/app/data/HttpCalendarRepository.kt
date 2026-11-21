@@ -23,7 +23,8 @@ import kotlinx.serialization.json.buildJsonObject
  * The calendar over the backend: the timeline (`GET /api/calendar/timeline`), the calendars and the count of new
  * invitations beside it, and the writes of an event or a task through the item routes. A series occurrence that is
  * not stored yet is stored first (`POST /api/events|tasks/series/:id/occurrences/:date`), and every write is made
- * against the version the timeline carried. Each successful write raises [changes].
+ * against the version the timeline carried. A new event is created together with its calendar, and every create
+ * sends its submission key as `Idempotency-Key`. Each successful write raises [changes].
  */
 class HttpCalendarRepository(
     private val api: AuthenticatedApi,
@@ -110,24 +111,25 @@ class HttpCalendarRepository(
         }
     }
 
+    /**
+     * Creates the item in one request. The chosen calendar of an event is an initial relation, because the server
+     * links an event created without one to the default calendar, and an event has one calendar only.
+     */
     private suspend fun createIn(databaseId: String, draft: NewCalendarItem): RepositoryResult<String> {
-        val body = ApiJson.encodeToString(CalendarCreateRequest(draft.toProperties()))
-        val created = api.send(HttpMethod.Post, "/api/databases/$databaseId/items", body = body)
-            .decode<CalendarStoredItem>()
+        val calendar = draft.calendarId.takeIf { draft.kind == CalendarEntryKind.EVENT }
+        val relations = calendar?.let { listOf(CalendarCreateRelation(CALENDAR_RELATION, listOf(it))) }
+        val body = ApiJson.encodeToString(CalendarCreateRequest(draft.toProperties(), relations))
+        val created = api.send(
+            HttpMethod.Post,
+            "/api/databases/$databaseId/items",
+            body = body,
+            extraHeaders = listOf(IDEMPOTENCY_KEY_HEADER to draft.submissionKey),
+        ).decode<CalendarStoredItem>()
         return when (created) {
             is RepositoryResult.Failure -> created
-            is RepositoryResult.Content -> {
-                val calendar = draft.calendarId.takeIf { draft.kind == CalendarEntryKind.EVENT }
-                val linked = if (calendar == null) {
-                    RepositoryResult.Content(Unit)
-                } else {
-                    api.send(HttpMethod.Put, "/api/items/${created.value.id}/relations/calendar/$calendar").ignoreBody()
-                }
-                val repeated = if (linked is RepositoryResult.Content) repeatTask(created.value.id, draft) else linked
-                when (repeated) {
-                    is RepositoryResult.Failure -> repeated
-                    is RepositoryResult.Content -> RepositoryResult.Content(created.value.id).alsoChanged()
-                }
+            is RepositoryResult.Content -> when (val repeated = repeatTask(created.value.id, draft)) {
+                is RepositoryResult.Failure -> repeated
+                is RepositoryResult.Content -> RepositoryResult.Content(created.value.id).alsoChanged()
             }
         }
     }
@@ -227,6 +229,11 @@ private fun eventRecurrence(repeat: CalendarRepeat, day: CalendarDay): JsonObjec
 }
 
 private const val WORKING_DAYS = 5
+
+/** The relation of an event to its one calendar. */
+private const val CALENDAR_RELATION = "calendar"
+
+private const val IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
 /** The server's preset for a repeating task, `null` for one that does not repeat. */
 private val CalendarRepeat.taskPreset: String?

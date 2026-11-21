@@ -107,6 +107,8 @@ interface CalendarRepository {
  * What a person types into the new item sheet; the schedule is judged by the server's write rules. [place],
  * [calendarId], [url], [alertMinutes] and [travelMinutes] belong to an event, [flagged] to a task; [notes] and
  * [repeat] to both. [alertMinutes] counts the minutes before the start, [travelMinutes] the travel before it.
+ * [submissionKey] names the person's submission: the server creates at most one item per key, so sending the same
+ * form again with the same key after a failure cannot create a second one.
  */
 data class NewCalendarItem(
     val kind: CalendarEntryKind,
@@ -120,6 +122,7 @@ data class NewCalendarItem(
     val travelMinutes: Int? = null,
     val repeat: CalendarRepeat = CalendarRepeat.NEVER,
     val flagged: Boolean = false,
+    val submissionKey: String,
 ) {
     companion object {
         /** An alert comes at most four weeks before the start, as the server allows. */

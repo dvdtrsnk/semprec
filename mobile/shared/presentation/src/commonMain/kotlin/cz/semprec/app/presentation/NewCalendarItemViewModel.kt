@@ -12,11 +12,14 @@ import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.CreateCalendarItem
 import cz.semprec.app.domain.NewCalendarItem
+import cz.semprec.app.domain.NewCalendarItemOutcome
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.ScheduleEditing
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 enum class NewItemPhase { LOADING, EDITING, SAVING, FAILED }
 
@@ -59,8 +62,9 @@ data class NewItemCalendarGroup(val account: NewItemAccount?, val calendars: Lis
  * The new item sheet. [groups] are the calendars a new event can be put on, by where they come from: the own ones
  * first, then the writable ones of each internet account in the order the list names them; no group is empty.
  * [calendars] are the same calendars in one list. [defaultDay] is the day the sheet was opened for.
- * [failure] explains [NewItemPhase.FAILED]: [FailureKind.REJECTED] is a form the server or the rules refused (no
- * title, an end before the start).
+ * [failure] explains [NewItemPhase.FAILED]: [FailureKind.REJECTED] is a form the rules refused before the server was
+ * asked (no title, an end before the start). The server refusing a form the rules let through says nothing about what
+ * to change, so it is an unexpected failure (`null`).
  */
 data class NewItemState(
     val phase: NewItemPhase,
@@ -112,6 +116,11 @@ sealed interface NewItemEffect {
  * The form that adds an event or a task to the calendar. What is typed stays in the native fields and is handed over
  * by [NewItemAction.Create]; the title, the kind and the schedule are checked by the domain before the server is
  * asked, so a form that cannot work fails at once.
+ *
+ * Each submission carries a key the server creates at most one item for. The same form handed over again after a
+ * failure keeps its key, so a retry after a lost answer cannot add the item twice; an edit or a different form starts
+ * a new submission. A created item stays in [NewItemPhase.SAVING] while the sheet closes, so no further create runs
+ * on this ViewModel.
  */
 class NewCalendarItemViewModel internal constructor(
     day: String,
@@ -122,6 +131,9 @@ class NewCalendarItemViewModel internal constructor(
 ) {
     private var job: Job? = null
 
+    /** The form of the current submission and its key; `null` until a form is handed over and after an edit. */
+    private var submission: Pair<NewItemAction.Create, String>? = null
+
     init {
         loadCalendars()
     }
@@ -130,8 +142,11 @@ class NewCalendarItemViewModel internal constructor(
         if (isClosed) return
         when (action) {
             is NewItemAction.Create -> if (state.value.phase != NewItemPhase.SAVING) save(action)
-            NewItemAction.Edited -> if (state.value.phase == NewItemPhase.FAILED) {
-                update { it.copy(phase = NewItemPhase.EDITING, failure = null) }
+            NewItemAction.Edited -> {
+                submission = null
+                if (state.value.phase == NewItemPhase.FAILED) {
+                    update { it.copy(phase = NewItemPhase.EDITING, failure = null) }
+                }
             }
         }
     }
@@ -156,7 +171,9 @@ class NewCalendarItemViewModel internal constructor(
     }
 
     private fun save(action: NewItemAction.Create) {
-        val draft = action.toDraft()
+        val key = submission?.takeIf { it.first == action }?.second ?: newSubmissionKey()
+        submission = action to key
+        val draft = action.toDraft(key)
         if (draft == null) {
             update { it.copy(phase = NewItemPhase.FAILED, failure = FailureKind.REJECTED) }
             return
@@ -167,8 +184,15 @@ class NewCalendarItemViewModel internal constructor(
             val result = guarded { create(draft) }
             ensureActive()
             when (result) {
-                is RepositoryResult.Content -> emit(NewItemEffect.Created(result.value))
-                is RepositoryResult.Failure -> update { it.copy(phase = NewItemPhase.FAILED, failure = result.kind) }
+                is RepositoryResult.Content -> when (val outcome = result.value) {
+                    is NewCalendarItemOutcome.Created -> emit(NewItemEffect.Created(outcome.itemId))
+                    NewCalendarItemOutcome.BreaksRules ->
+                        update { it.copy(phase = NewItemPhase.FAILED, failure = FailureKind.REJECTED) }
+                }
+                is RepositoryResult.Failure -> {
+                    val failure = result.kind.takeUnless { it == FailureKind.REJECTED }
+                    update { it.copy(phase = NewItemPhase.FAILED, failure = failure) }
+                }
                 null -> update { it.copy(phase = NewItemPhase.FAILED, failure = null) }
             }
         }
@@ -206,8 +230,11 @@ private fun newItemGroups(calendars: List<CalendarInfo>): List<NewItemCalendarGr
 
 private fun String.comparable(): String = trim().lowercase()
 
-/** The item the form describes, or `null` for a schedule that cannot be one. */
-private fun NewItemAction.Create.toDraft(): NewCalendarItem? {
+@OptIn(ExperimentalUuidApi::class)
+private fun newSubmissionKey(): String = Uuid.random().toString()
+
+/** The item the form describes as the submission [submissionKey], or `null` for a schedule that cannot be one. */
+private fun NewItemAction.Create.toDraft(submissionKey: String): NewCalendarItem? {
     val isEvent = kind == NewItemKind.EVENT
     return schedule(isEvent)?.let { schedule ->
         NewCalendarItem(
@@ -222,6 +249,7 @@ private fun NewItemAction.Create.toDraft(): NewCalendarItem? {
             travelMinutes = travelMinutes.takeIf { isEvent },
             repeat = repeat.toDomain(),
             flagged = flagged && !isEvent,
+            submissionKey = submissionKey,
         )
     }
 }

@@ -117,8 +117,15 @@ internal data class BadgeCountsResponse(val pendingInvites: Int = 0)
 @Serializable
 internal data class CalendarPatchRequest(val properties: JsonObject, val ifVersion: String? = null)
 
+/** A body that creates an item with [properties] and, in the same write, the edges of [relations]. */
 @Serializable
-internal data class CalendarCreateRequest(val properties: JsonObject)
+internal data class CalendarCreateRequest(
+    val properties: JsonObject,
+    val relations: List<CalendarCreateRelation>? = null,
+)
+
+@Serializable
+internal data class CalendarCreateRelation(val propertyKey: String, val targetItemIds: List<String>)
 
 @Serializable
 internal data class CancellationImpactDto(
