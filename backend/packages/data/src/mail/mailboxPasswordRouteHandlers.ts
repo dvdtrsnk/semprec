@@ -500,7 +500,8 @@ async function replaceMailboxPassword(client: PoolClient, replacement: PasswordR
  * 4. One transaction checks the account again on locked rows, replaces the sealed password and the server settings,
  *    clears the mail failure record and a calendar `needsReauthorization`, and queues a mail sync and, with Calendars
  *    on, a calendar sync.
- * 5. After the commit the hosted live sync restarts, so it reads the new password.
+ * 5. After the commit the hosted live sync restarts, so it reads the new password. A failed restart is logged and the
+ *    route still answers 200: the replacement is committed.
  *
  * The password is in no response and no log line. `syncStatus` is left to the queued pass, its one writer.
  */
@@ -559,7 +560,16 @@ export function createMailboxPasswordReplaceRouteHandler(pool: Pool, dependencie
     const item = await withTransaction(pool, (client) =>
       replaceMailboxPassword(client, { mailboxItemId: mailboxId.data, password, username, verified }),
     );
-    await liveSync.restartAccount(mailboxId.data);
+    // The new password is committed and the queued pass reads it; a restart that fails leaves the hosted live sync on
+    // the old password until its next reconnect, so the request still succeeded.
+    try {
+      await liveSync.restartAccount(mailboxId.data);
+    } catch (error) {
+      logger.error(
+        { mailboxItemId: mailboxId.data, errorName: error instanceof Error ? error.name : typeof error },
+        "Restarting the mail live sync after a password replacement failed",
+      );
+    }
     return { status: 200, item };
   };
 }

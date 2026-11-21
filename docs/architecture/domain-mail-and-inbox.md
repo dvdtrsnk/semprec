@@ -128,8 +128,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
   (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected
   activity), `clearCalendarSyncReauthorization` (`needsReauthorization` → `never`), enqueue `mailAccountSync` and,
-  with Calendars on, `calendarAccountSync`. After the commit the route awaits `mailLiveSync.restartAccount`.
-  Refusals answer 400 with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
+  with Calendars on, `calendarAccountSync`. After the commit the route awaits `mailLiveSync.restartAccount`; a
+  failed restart is logged (`mailboxItemId`, `errorName`) and the route still answers 200, because the replacement
+  is committed and the queued pass reads the new password. Refusals answer 400 with the connect's codes and change
+  nothing. `syncStatus` is left to the queued pass.
 
 ### OAuth connect and reauthorization
 
