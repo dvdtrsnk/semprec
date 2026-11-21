@@ -380,7 +380,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
   No automatic send retry.
 - Transports: SMTP (`createSmtpMailTransport`), Gmail and Graph REST clients. Once the provider accepted the
-  message, close/Sent-copy/response-cleanup failures keep the accepted result. A Graph failure before
+  message, close/Sent-copy/response-cleanup failures keep the accepted result. The send stays synchronous: the
+  IMAP connection for an SMTP account's Sent copy opens while SMTP submits, the APPEND runs only after acceptance,
+  and a refused submission closes that connection unused before the refusal is answered. A Graph failure before
   acceptance best-effort deletes the owned draft.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.
