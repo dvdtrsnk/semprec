@@ -49,7 +49,7 @@ struct MailThreadsScreen: View {
                 Text("mail.failure.title", bundle: .module),
                 isPresented: actionFailed,
                 actions: { dismissButton },
-                message: { Text("mail.failure.message", bundle: .module) }
+                message: { Text(MailRefusal.actionMessage(for: viewModel.state.actionRefusal)) }
             )
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(MailIdentifiers.threadsScreen)

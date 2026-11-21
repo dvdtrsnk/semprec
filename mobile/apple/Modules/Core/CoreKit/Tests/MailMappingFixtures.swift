@@ -16,7 +16,8 @@ extension XCTestCase {
         filter: SharedSDK.MailListFilter = .all,
         facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(
             phase: .idle, areaTotal: 0, projectTotal: 0, areas: [], projects: []
-        )
+        ),
+        actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadsState {
         SharedSDK.MailThreadsState(
             phase: phase,
@@ -37,7 +38,8 @@ extension XCTestCase {
             mailboxes: [SharedSDK.MailMailboxChip(id: "m1", name: "Gmail")],
             reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],
             facets: facets,
-            actionFailed: true
+            actionFailed: true,
+            actionRefusal: actionRefusal
         )
     }
 
@@ -49,7 +51,9 @@ extension XCTestCase {
         tasks: [SharedSDK.MailTaskItem] = [],
         draft: SharedSDK.MailSempDraft? = nil,
         sendPhase: SharedSDK.MailSendPhase = .idle,
-        sendFailure: SharedSDK.FailureKind? = nil
+        sendFailure: SharedSDK.FailureKind? = nil,
+        sendRefusal: SharedSDK.MailRefusal? = nil,
+        actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadState {
         SharedSDK.MailThreadState(
             phase: phase,
@@ -69,22 +73,27 @@ extension XCTestCase {
             draft: draft,
             sendPhase: sendPhase,
             sendFailure: sendFailure,
+            sendRefusal: sendRefusal,
             sentFrom: "Gmail",
             archivedOrTrashed: true,
             canReply: true,
             acting: true,
             creatingTask: true,
-            actionFailed: true
+            actionFailed: true,
+            actionRefusal: actionRefusal
         )
     }
 
     func composeState(
         _ phase: SharedSDK.MailComposePhase,
-        failure: SharedSDK.FailureKind? = nil
+        failure: SharedSDK.FailureKind? = nil,
+        refusal: SharedSDK.MailRefusal? = nil,
+        sendRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailComposeState {
         SharedSDK.MailComposeState(
             phase: phase,
             failure: failure,
+            refusal: refusal,
             senders: [SharedSDK.MailSender(mailboxId: "m1", name: "Gmail", address: "me@gmail.com")],
             senderId: "m1",
             to: [SharedSDK.MailRecipient(name: "Petr", address: "p@x.cz")],
@@ -95,6 +104,7 @@ extension XCTestCase {
             invalidAddress: true,
             sendPhase: .sent,
             sendFailure: .rejected,
+            sendRefusal: sendRefusal,
             sentFrom: "Gmail",
             discardFailed: true
         )

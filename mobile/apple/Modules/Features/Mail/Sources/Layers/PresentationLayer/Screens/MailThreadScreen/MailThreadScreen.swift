@@ -29,7 +29,7 @@ struct MailThreadScreen: View {
                 Text("mail.failure.title", bundle: .module),
                 isPresented: actionFailed,
                 actions: { dismissButton },
-                message: { Text("mail.failure.message", bundle: .module) }
+                message: { Text(MailRefusal.actionMessage(for: viewModel.state.actionRefusal)) }
             )
             .onChange(of: viewModel.closeRequests) { dismiss() }
             .accessibilityElement(children: .contain)

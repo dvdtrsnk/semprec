@@ -52,10 +52,12 @@ public enum MailComposePhase: Equatable, Sendable {
 }
 
 /// A message being written. The subject and the text belong to the screen's fields: `initialSubject` and
-/// `initialBody` seed them once when the draft is ready, and the fields come back with `send`.
+/// `initialBody` seed them once when the draft is ready, and the fields come back with `send`. `refusal` and
+/// `sendRefusal` name the reason the server gave for refusing the reply's draft or the send.
 public struct MailComposeState: Equatable, Sendable {
 
     public var phase: MailComposePhase
+    public var refusal: MailRefusal?
     public var senders: [MailSender]
     public var senderId: String?
     public var toRecipients: [MailRecipient]
@@ -66,11 +68,13 @@ public struct MailComposeState: Equatable, Sendable {
     public var invalidAddress: Bool
     public var sendPhase: MailSendPhase
     public var sendFailure: FailureKind?
+    public var sendRefusal: MailRefusal?
     public var sentFrom: String?
     public var discardFailed: Bool
 
     public init(
         phase: MailComposePhase = .loading,
+        refusal: MailRefusal? = nil,
         senders: [MailSender] = [],
         senderId: String? = nil,
         toRecipients: [MailRecipient] = [],
@@ -81,10 +85,12 @@ public struct MailComposeState: Equatable, Sendable {
         invalidAddress: Bool = false,
         sendPhase: MailSendPhase = .idle,
         sendFailure: FailureKind? = nil,
+        sendRefusal: MailRefusal? = nil,
         sentFrom: String? = nil,
         discardFailed: Bool = false
     ) {
         self.phase = phase
+        self.refusal = refusal
         self.senders = senders
         self.senderId = senderId
         self.toRecipients = toRecipients
@@ -95,6 +101,7 @@ public struct MailComposeState: Equatable, Sendable {
         self.invalidAddress = invalidAddress
         self.sendPhase = sendPhase
         self.sendFailure = sendFailure
+        self.sendRefusal = sendRefusal
         self.sentFrom = sentFrom
         self.discardFailed = discardFailed
     }

@@ -63,12 +63,14 @@ extension SharedMailThreadScreenModel {
             draft: state.draft.map { MailSempDraft(id: $0.id, body: $0.body, recipients: $0.recipients) },
             sendPhase: MailSendPhase(state.sendPhase),
             sendFailure: state.sendFailure.map(FailureKind.init),
+            sendRefusal: state.sendRefusal.map(\.refusal),
             sentFrom: state.sentFrom,
             archivedOrTrashed: state.archivedOrTrashed,
             canReply: state.canReply,
             acting: state.acting,
             creatingTask: state.creatingTask,
-            actionFailed: state.actionFailed
+            actionFailed: state.actionFailed,
+            actionRefusal: state.actionRefusal.map(\.refusal)
         )
     }
 

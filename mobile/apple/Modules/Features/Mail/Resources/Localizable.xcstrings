@@ -1089,6 +1089,278 @@
         }
       }
     },
+    "mail.refusal.alreadyTrashed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace už je v koši."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation is already in the trash."
+          }
+        }
+      }
+    },
+    "mail.refusal.archiveFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Archiv."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Archive folder."
+          }
+        }
+      }
+    },
+    "mail.refusal.attachmentTooLarge" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohy jsou větší, než tento účet dovoluje."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachments are larger than this account allows."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftAlreadySent" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle zpráva už byla odeslaná."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This message has already been sent."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftNotEditable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento koncept nejde v Semprecu upravit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This draft cannot be changed in Semprec."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftsFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu zatím nemá složku Koncepty, takže zprávu nejde uložit. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account's mail server has no Drafts folder yet, so the message cannot be saved. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.inboxFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Doručená pošta, kam by šla vrátit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Inbox folder to move it back to."
+          }
+        }
+      }
+    },
+    "mail.refusal.loginRejected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server odmítl přihlášení tohoto účtu. Zkontroluj jeho heslo v Internetových účtech."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server refused this account's login. Check its password in Internet accounts."
+          }
+        }
+      }
+    },
+    "mail.refusal.mailDisabled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošta je pro tento účet vypnutá. Zapni ji v Internetových účtech."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail is switched off for this account. Turn it on in Internet accounts."
+          }
+        }
+      }
+    },
+    "mail.refusal.moveSourceUnverified" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zprávu této konverzace se nepodařilo najít na poštovním serveru. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A message of this conversation could not be found on its mail server. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.noReceivedMessage" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace nemá žádnou přijatou zprávu, kterou by šlo změnit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation has no received message to change."
+          }
+        }
+      }
+    },
+    "mail.refusal.notArchivedOrTrashed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace není v archivu ani v koši."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation is neither in the archive nor in the trash."
+          }
+        }
+      }
+    },
+    "mail.refusal.reauthorizationRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Před odesláním se k tomuto účtu znovu přihlas, nic se neztratí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to this account again before sending; nothing is lost."
+          }
+        }
+      }
+    },
+    "mail.refusal.recipientRejected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server odmítl některého příjemce. Zkontroluj adresy; příjemci, které přijal, už zprávu možná mají."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server refused a recipient. Check the addresses; recipients it accepted may already have the message."
+          }
+        }
+      }
+    },
+    "mail.refusal.sentFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu zatím nemá složku Odeslané. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account's mail server has no Sent folder yet. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.serverUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu není dostupný. Zkus to později."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server of this account could not be reached. Try again later."
+          }
+        }
+      }
+    },
+    "mail.refusal.trashFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Koš."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Trash folder."
+          }
+        }
+      }
+    },
     "mail.reply" : {
       "localizations" : {
         "cs" : {

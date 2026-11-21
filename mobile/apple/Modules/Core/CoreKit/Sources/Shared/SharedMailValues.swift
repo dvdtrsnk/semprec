@@ -103,6 +103,33 @@ extension MailSendPhase {
     }
 }
 
+// MARK: - Refusals
+extension SharedSDK.MailRefusal {
+
+    /// The Swift value of the reason the server gave, case by case, so that a new Kotlin case fails the build here.
+    var refusal: CoreKit.MailRefusal {
+        switch self {
+        case .draftsFolderMissing: .draftsFolderMissing
+        case .sentFolderMissing: .sentFolderMissing
+        case .archiveFolderMissing: .archiveFolderMissing
+        case .trashFolderMissing: .trashFolderMissing
+        case .inboxFolderMissing: .inboxFolderMissing
+        case .reauthorizationRequired: .reauthorizationRequired
+        case .mailDisabled: .mailDisabled
+        case .recipientRejected: .recipientRejected
+        case .loginRejected: .loginRejected
+        case .serverUnreachable: .serverUnreachable
+        case .attachmentTooLarge: .attachmentTooLarge
+        case .draftAlreadySent: .draftAlreadySent
+        case .draftNotEditable: .draftNotEditable
+        case .noReceivedMessage: .noReceivedMessage
+        case .moveSourceUnverified: .moveSourceUnverified
+        case .alreadyTrashed: .alreadyTrashed
+        case .notArchivedOrTrashed: .notArchivedOrTrashed
+        }
+    }
+}
+
 // MARK: - Account status
 extension MailAccountStatus {
 
