@@ -6,7 +6,7 @@ import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 /** `lock_not_available`, raised when `lock_timeout` ends a wait. */
 const LOCK_NOT_AVAILABLE = "55P03";
 
-function isLockNotAvailable(error: unknown): boolean {
+export function isLockNotAvailable(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === LOCK_NOT_AVAILABLE;
 }
 

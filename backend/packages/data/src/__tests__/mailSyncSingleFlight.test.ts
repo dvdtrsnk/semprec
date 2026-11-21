@@ -7,7 +7,8 @@ import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
-import { claimMailSyncPass } from "../mail/mailAccountSyncStateStore.js";
+import { getItemById } from "../chokePoint/itemsStore.js";
+import { claimMailSyncPass, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { enqueueMailAccountSync, handleSyncMailAccountTask, mailAccountSyncJobKey } from "../mail/mailSyncJob.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
@@ -342,4 +343,99 @@ describe("one mail sync pass per mailbox", () => {
     // Eight client calls of 80 ms (three to finish the running pass, five of the follow-up) plus database work.
     expect(visibleAfterMs).toBeLessThan(2_000);
   }, 30_000);
+  /** What a failed pass records on the account: its error, the failure kind and the Mailboxes item's status. */
+  async function recordedOutcome(mailboxId: string) {
+    const { mailboxesDatabaseId } = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+    const state = await withTransaction(runtime, (client) => getMailAccountSyncState(client, mailboxId));
+    const item = await withTransaction(runtime, (client) => getItemById(client, mailboxesDatabaseId, mailboxId));
+    return {
+      lastError: state?.lastError ?? null,
+      lastFailureKind: state?.lastFailureKind ?? null,
+      syncStatus: item?.properties.syncStatus,
+    };
+  }
+
+  /**
+   * Holds the sync state row as a Gmail or Graph pass does: its lease claimed (or renewed) and its transaction open
+   * until `release` resolves.
+   */
+  async function holdSyncStateRow(mailboxId: string, pool: Pool = runtime) {
+    const release = deferred();
+    openHolds.push(release);
+    const locked = deferred();
+    const holder = withTransaction(pool, async (client) => {
+      await claimMailSyncPass(client, mailboxId, randomUUID(), 60_000);
+      locked.resolve();
+      await release.promise;
+    });
+    await locked.promise;
+    return {
+      release: async () => {
+        release.resolve();
+        await holder;
+      },
+    };
+  }
+
+  tenantIt(
+    "skips a trigger whose claim waits too long for a pass's sync state row, without a provider call or a recorded failure",
+    async () => {
+      const { account, mailbox } = await syncedAccount();
+      const { observed, createImapClient } = observedAccount(account);
+      const before = await recordedOutcome(mailbox.mailboxId);
+      const holder = await holdSyncStateRow(mailbox.mailboxId);
+
+      const startedAt = performance.now();
+      await mailbox.sync(createImapClient);
+      const waitedMs = performance.now() - startedAt;
+      await holder.release();
+
+      // The claim gives up after the pass's five-second wait, far below the pool's 60 s statement timeout.
+      expect(waitedMs).toBeGreaterThanOrEqual(4_500);
+      expect(waitedMs).toBeLessThan(15_000);
+      expect(observed.started).toBe(0);
+      expect(await recordedOutcome(mailbox.mailboxId)).toEqual(before);
+      expect(before).toEqual({ lastError: null, lastFailureKind: null, syncStatus: "ok" });
+    },
+    30_000,
+  );
+
+  tenantIt(
+    "records no failure for a job whose claim failed before it held the lease",
+    async () => {
+      const { account, mailbox } = await syncedAccount();
+      const { observed, createImapClient } = observedAccount(account);
+      // The pool's statement timeout ends the claim before its own wait does, as a slow database would.
+      const shortTimeout = await createRuntimeRolePool(admin, "semprec_data", { statementTimeoutMs: 1_500 });
+      try {
+        const holder = await holdSyncStateRow(mailbox.mailboxId);
+        const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+        const job = handleSyncMailAccountTask(
+          shortTimeout,
+          { mailboxItemId: mailbox.mailboxId },
+          { createImapClient },
+          moduleIds,
+          noAttachmentStorage,
+        );
+        const settled = job.then(
+          () => "resolved",
+          (error: unknown) => (error instanceof Error && "code" in error ? error.code : "rejected"),
+        );
+        // The row is free again once the claim failed, while the job could still record that failure.
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+        await holder.release();
+
+        expect(await settled).toBe("57014");
+        expect(observed.started).toBe(0);
+        expect(await recordedOutcome(mailbox.mailboxId)).toEqual({
+          lastError: null,
+          lastFailureKind: null,
+          syncStatus: "ok",
+        });
+      } finally {
+        await shortTimeout.end();
+      }
+    },
+    30_000,
+  );
 });

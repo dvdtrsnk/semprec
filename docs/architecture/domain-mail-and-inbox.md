@@ -207,6 +207,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
   pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
   When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
+  A Gmail or Graph pass keeps the row locked for its whole transaction, so the claim waits for the row lock at most
+  `MAILBOX_SYNC_PASS_WAIT_MS` (a transaction-local `lock_timeout`); then it throws `MailboxSyncBusyError` and the job
+  is skipped like one that finds the mailbox sync guard held. Only a job holding the lease records a failure: one
+  that fails before it holds the lease writes no error, status, problem or notification and rethrows for
+  graphile-worker's retry.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
   ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
   rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
