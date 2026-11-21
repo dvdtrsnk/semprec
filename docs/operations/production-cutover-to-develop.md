@@ -265,17 +265,19 @@ semprec-trash-purge.timer semprec-dead-man.timer`) and resume the external healt
 
 ### Reconnect mail accounts
 
-No credential was carried, so every mail account's sync fails with "no stored credential" until it
-signs in again. The dry run's count of sealed credentials is the number of accounts.
+No credential was carried, so every mail account reports "sign in again" (`needsReauthorization`) for
+mail and calendars until it signs in again. The dry run's count of sealed credentials is the number of accounts.
 
 - Google and Microsoft accounts: sign in again from the account (`POST
 /api/mail/mailboxes/:id/reauthorize`). This replaces the credential of the existing Mailboxes item,
-  so its mail, folders and threads stay. Confirm on the first one that the reauthorization accepts
-  an account that has no credential at all, not only an expired one; if it does not, remove and add
-  the account as below. To turn Calendars on, the OAuth clients must also list the calendar scopes
+  so its mail, folders and threads stay; an account with no credential at all is accepted like one
+  with an expired credential. To turn Calendars on, the OAuth clients must also list the calendar scopes
   (`deploy/shared/env/api.env.example`).
-- iCloud and other password accounts: develop has no route that replaces only the password. Remove
-  the account and add it again; the removal trashes its mail and the new account downloads it again.
+- iCloud and other password accounts: enter the password again on the existing account (the app's
+  "Sign in again" action, `PUT /api/mail/mailboxes/:id/password`). This replaces the credential of the
+  existing Mailboxes item, so its mail, folders and threads stay, and queues the mail and calendar sync.
+  iCloud takes an app-specific password, not the Apple Account password. An account that was removed
+  is added again with its address; its trashed mailbox can then no longer be restored.
 
 ### Verification checklist
 

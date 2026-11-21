@@ -581,6 +581,20 @@ export async function recordSyncError(
 }
 
 /**
+ * Clears the failure record after the account's credential was replaced, so the account is due at once and shows no
+ * failure until its next pass. The row must exist.
+ */
+export async function clearMailSyncFailure(client: Queryable, itemId: string): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+     SET last_error = NULL, last_failure_kind = NULL, failing_since = NULL, next_expected_activity_at = NULL
+     WHERE item_id = $1`,
+    [itemId],
+  );
+  requireAffectedRows(result, `mail sync failure of item ${itemId}`);
+}
+
+/**
  * Like `recordSyncError` with a provider-aware delay. The caller returns instead of rethrowing, so
  * the retry comes only from the sweep, not also from graphile-worker.
  */
@@ -613,11 +627,15 @@ export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Pro
     AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
 }
 
-/** A paused account is never due. */
+/**
+ * A paused account is never due, nor is one whose last pass needed reauthorization: only a new credential (a sign-in
+ * or a password entered again, each of which queues a pass) changes its outcome.
+ */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
     `SELECT ${COLUMNS} FROM mail_account_sync_state
-      WHERE sync_paused_at IS NULL AND (next_expected_activity_at IS NULL OR next_expected_activity_at <= now())`,
+      WHERE sync_paused_at IS NULL AND last_failure_kind IS DISTINCT FROM 'reauthorization'
+        AND (next_expected_activity_at IS NULL OR next_expected_activity_at <= now())`,
   );
   return rows.map(mapRow);
 }

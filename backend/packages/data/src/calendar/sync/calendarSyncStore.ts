@@ -92,6 +92,18 @@ export async function recordCalendarSyncFailure(
   return failingSince;
 }
 
+/**
+ * After the account's credential was replaced: a `needsReauthorization` status becomes `never` (no pass with the new
+ * credential yet) and its failure record is cleared. Any other status, or no row, is left as it is.
+ */
+export async function clearCalendarSyncReauthorization(client: Queryable, accountItemId: string): Promise<void> {
+  await client.query(
+    `UPDATE calendar_account_sync_state SET status = 'never', failing_since = NULL, last_error_code = NULL
+      WHERE account_item_id = $1 AND status = 'needsReauthorization'`,
+    [accountItemId],
+  );
+}
+
 /** Zero rows is a legitimate outcome: an account that never synced has none. */
 export async function deleteCalendarAccountSyncState(client: Queryable, accountItemId: string): Promise<number> {
   const result = await client.query("DELETE FROM calendar_account_sync_state WHERE account_item_id = $1", [

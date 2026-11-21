@@ -439,7 +439,6 @@ describe("mail live-sync lifecycles by sync mode", () => {
   });
 
   it.each<[string, (client: PoolClient, id: string) => Promise<unknown>, boolean]>([
-    ["has no stored credential", async () => undefined, false],
     ["has a credential but no IMAP settings", storeAppPassword, false],
     [
       "stores settings with only an SMTP endpoint",
@@ -482,6 +481,20 @@ describe("mail live-sync lifecycles by sync mode", () => {
       if (resolvesHost) expect(stub.calls).toContain(IMAP_HOST);
     },
   );
+
+  it("warns once and stops the discovery of an imap account without a stored credential", async () => {
+    root = composeRoot({ imap: createImapIdleLifecycleFactory(pool) });
+    const mailboxId = await insertMailbox("generic");
+
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    await root.start();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalled());
+
+    expect(lifecycleErrors).toHaveLength(0);
+    expect(warning.mock.calls).toEqual([
+      [{ mailboxItemId: mailboxId, stage: "idle", category: "failure" }, "IMAP IDLE lifecycle failed"],
+    ]);
+  });
 
   it("settles sibling IDLE cleanup before the root sees a safe stop failure", async () => {
     const secret = "private-stop-error-value";

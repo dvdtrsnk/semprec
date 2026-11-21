@@ -75,6 +75,7 @@ import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
   defaultSyncModeForProvider,
+  listAccountsDueForSync,
   recordImapActivity,
   recordGmailActivity,
   recordGraphActivity,
@@ -342,6 +343,14 @@ async function reconcileParams() {
     storageKeyPrefix: "test",
   };
 }
+
+/** An IMAP adapter whose connect fails with a plain error: an ordinary sync failure, not a reauthorization. */
+const UNEXPECTED_FAILURE = "IMAP connection failed unexpectedly";
+const unexpectedlyFailing: MailSyncAdapterFactory = {
+  createImapClient: async () => {
+    throw new Error(UNEXPECTED_FAILURE);
+  },
+};
 
 /** A Mailbox item with sync state and, unless `credential` is null, a stored app password. */
 async function createSyncMailbox(
@@ -2840,10 +2849,11 @@ describe("mail sync job error handling", () => {
 
   it("writes a mail_sync_error notification on failure, deduped by job id but not across distinct failing jobs", async () => {
     const user = await createOwner();
-    // No stored credential: reaches `recordSyncError` without a real adapter failure.
-    const mailbox = await createSyncMailbox({ credential: null });
+    const mailbox = await createSyncMailbox();
     const failWith = (jobId: string) =>
-      expect(runSync(mailbox, {}, noopStorage, { job: { id: jobId } })).rejects.toThrow("has no stored credential");
+      expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: jobId } })).rejects.toThrow(
+        UNEXPECTED_FAILURE,
+      );
 
     await failWith("job-1");
     const { rows: afterFirst } = await pool.query(
@@ -2868,19 +2878,55 @@ describe("mail sync job error handling", () => {
     expect(await notificationCount(mailbox)).toBe(2);
   });
 
-  it("sets syncStatus 'error' and records the error, but notifies nobody, when no credential is stored before any user exists", async () => {
-    // The "no stored credential" throw fires before the reconcile transaction opens, the same path a decrypt
-    // failure takes.
-    const mailbox = await createSyncMailbox({ credential: null });
+  it("sets syncStatus 'error' and records the error, but notifies nobody, when a pass fails before any user exists", async () => {
+    const mailbox = await createSyncMailbox();
 
-    await expect(runSync(mailbox, {}, noopStorage, { job: { id: "job-1" } })).rejects.toThrow(
-      "has no stored credential",
+    await expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: "job-1" } })).rejects.toThrow(
+      UNEXPECTED_FAILURE,
     );
 
     expect(await notificationCount(mailbox)).toBe(0);
-    expect((await syncState(mailbox))?.lastError).toContain("has no stored credential");
+    expect((await syncState(mailbox))?.lastError).toContain(UNEXPECTED_FAILURE);
     expect(await syncStatusOf(mailbox)).toBe("error");
   });
+
+  it.each([
+    ["no status yet", undefined],
+    ["status ok", "ok"],
+    ["status error", "error"],
+  ])(
+    "fails a password mailbox without a credential as a reauthorization from %s, and the sweep then leaves it alone",
+    async (_name, previousStatus) => {
+      await createOwner();
+      const mailbox = await createSyncMailbox({
+        credential: null,
+        properties: { name: "M", provider: "icloud", ...(previousStatus ? { syncStatus: previousStatus } : {}) },
+        allowedSystemKeys: ["syncStatus"],
+      });
+      const errorSpy = vi.spyOn(logger, "error");
+      let connects = 0;
+      const counting: MailSyncAdapterFactory = {
+        createImapClient: async () => {
+          connects += 1;
+          return fakeImap();
+        },
+      };
+      expect((await inTenantZero(() => withTransaction(pool, listAccountsDueForSync))).map((a) => a.itemId)).toEqual([
+        mailbox,
+      ]);
+
+      const failed = runSync(mailbox, counting);
+      await expect(failed).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
+      await expect(failed).rejects.toThrow("has no stored credential");
+
+      expect(connects).toBe(0);
+      expect(await syncStatusOf(mailbox)).toBe("needsReauthorization");
+      expect(await syncState(mailbox)).toMatchObject({ lastFailureKind: "reauthorization" });
+      expect(JSON.stringify(errorSpy.mock.calls)).toContain("reauthorizationRequired");
+      expect(await notificationCount(mailbox)).toBe(0);
+      expect(await inTenantZero(() => withTransaction(pool, listAccountsDueForSync))).toEqual([]);
+    },
+  );
 
   it.each([
     ["has been soft-deleted", true],
@@ -2997,12 +3043,12 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("raises one warning problem per mailbox, merging every failing pass and counting a retry of the same job once", async () => {
     await createOwner();
-    const mailboxId = await createSyncMailbox({ credential: null });
+    const mailboxId = await createSyncMailbox();
 
-    // No stored credential: each pass fails before any provider call, with the default severity. The last
-    // job-3 is a redelivery of the same report.
+    // Each pass fails at the provider with an ordinary error, so the default severity. The last job-3 is a
+    // redelivery of the same report.
     for (const jobId of ["job-1", "job-2", "job-3", "job-3"])
-      await expect(syncPass(mailboxId, {}, jobId)).rejects.toThrow("has no stored credential");
+      await expect(syncPass(mailboxId, unexpectedlyFailing, jobId)).rejects.toThrow(UNEXPECTED_FAILURE);
 
     const problems = await mailProblems(mailboxId);
     expect(problems).toMatchObject([
@@ -3158,17 +3204,19 @@ describe("mail_sync_error recipient in a tenant", () => {
       await withTransaction(runtimePool, (client) =>
         ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
       );
+      await withTransaction(runtimePool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
       return { mailboxItemId: mailbox.id, moduleIds: ids };
     });
 
-    // No stored credential: reaches `recordSyncError` without a real adapter failure.
     await expect(
       runInTenant(tenantB, () =>
-        handleSyncMailAccountTask(runtimePool, { mailboxItemId }, {}, moduleIds, noopStorage, {
+        handleSyncMailAccountTask(runtimePool, { mailboxItemId }, unexpectedlyFailing, moduleIds, noopStorage, {
           job: { id: "job-b" },
         }),
       ),
-    ).rejects.toThrow("has no stored credential");
+    ).rejects.toThrow(UNEXPECTED_FAILURE);
 
     const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
       `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,

@@ -15,6 +15,7 @@ import {
   getMailServerSettings,
   getProviderAccountAddress,
   imapConnectionLimitForProvider,
+  MailReauthorizationRequiredError,
   openImapFlow,
   refreshAndPersistAccessToken,
   resolveMailModuleIds,
@@ -68,7 +69,9 @@ export function createImapIdleLifecycleFactory(pool: Pool): MailLiveSyncLifecycl
         actorType: "sync_worker",
         purpose: "imap_idle",
       });
-      if (credential === null) throw new Error(`Mailbox ${mailboxItemId} has no stored credential`);
+      if (credential === null) {
+        throw new MailReauthorizationRequiredError(`Mailbox ${mailboxItemId} has no stored credential`);
+      }
       return credential;
     },
     getConnectionLimit: (mailboxItemId) => connectionLimitOf(pool, mailboxItemId),

@@ -4,6 +4,9 @@ import { discoverCalendarHome } from "./caldavClient.js";
 import { CalDavAuthFailedError, CalDavServerInvalidError, CalDavServerUnreachableError } from "./caldavErrors.js";
 import { withCalDavSession } from "./caldavHttp.js";
 
+/** Where an iCloud account's calendar discovery starts. */
+export const ICLOUD_CALDAV_URL = "https://caldav.icloud.com/";
+
 /** Discovery may take three requests and up to three redirects each. */
 const VERIFICATION_TIMEOUT_MS = 45_000;
 

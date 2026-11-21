@@ -12,7 +12,7 @@ import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { logger as dbLogger } from "../db/logger.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, RateLimitedError, ValidationError } from "../errors.js";
@@ -24,10 +24,12 @@ import {
   getProviderAccountAddress,
   ProviderAccountAlreadyConnectedError,
   recordProviderAccountAddress,
+  recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import {
   createMailboxPasswordConnectRouteHandler,
+  createMailboxPasswordReplaceRouteHandler,
   type MailboxPasswordRouteDependencies,
 } from "../mail/mailboxPasswordRouteHandlers.js";
 import {
@@ -36,8 +38,10 @@ import {
   type VerifyMailCredentialsInput,
 } from "../mail/mailCredentialVerification.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
+import { removeMailbox } from "../mail/mailboxRemoval.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import * as connections from "../mail/mailServerConnections.js";
-import { getMailServerSettings } from "../mail/mailServerSettingsStore.js";
+import { getMailServerSettings, upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import * as mailSyncEnqueue from "../mail/mailSyncEnqueue.js";
 import {
   MailAppPasswordRequiredError,
@@ -51,6 +55,7 @@ import {
   CalDavServerInvalidError,
   CalDavServerUnreachableError,
 } from "../calendar/sync/adapters/caldav/caldavErrors.js";
+import { getCalendarAccountSyncState, recordCalendarSyncFailure } from "../calendar/sync/calendarSyncStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
@@ -260,6 +265,13 @@ async function existingMailbox(
     await fill(client, { databaseId: mailboxesDatabaseId, id: item.id });
     return item.id;
   }, tenantId);
+}
+
+async function removeConnectedMailbox(mailboxId: string, tenantId = tenant): Promise<void> {
+  const removed = await runInTenant(tenantId, () =>
+    removeMailbox(runtime, mailboxId, { queueAffinity: createActionQueueAffinity() }),
+  );
+  if (!removed) throw new Error(`mailbox ${mailboxId} was not removed`);
 }
 
 function recordingProviderAddress(address: string) {
@@ -1041,13 +1053,37 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       expect((await connect({ ...GENERIC_BODY, address: "fourth@example.test" })).status).toBe(201);
     });
 
-    it("counts a trashed mailbox's address list, as the address index counts its sync state", async () => {
-      const trashed = await existingMailbox(listingAlias(ADDRESS));
-      const databaseId = await inTenant(async (client) => (await resolveMailModuleIds(client)).mailboxesDatabaseId);
-      const deleted = await runInTenant(tenant, () => createChokePoint(runtime).softDeleteItem(databaseId, trashed));
-      expect(deleted?.deletedAt).not.toBeNull();
+    it("connects the address of a removed mailbox again, and then refuses to restore the removed one", async () => {
+      const removed = (await connect(GENERIC_BODY)).item.id;
+      await removeConnectedMailbox(removed);
 
+      const again = await connect(GENERIC_BODY);
+
+      expect(again.status).toBe(201);
+      expect(again.item.id).not.toBe(removed);
+      expect(await storedMailbox(again.item.id)).toMatchObject({ providerAccountAddress: ADDRESS, password: PASSWORD });
+      const databaseId = await inTenant(async (client) => (await resolveMailModuleIds(client)).mailboxesDatabaseId);
+      expectAlreadyConnected(
+        await rejectionOf(runInTenant(tenant, () => createChokePoint(runtime).restoreItem(databaseId, removed))),
+      );
+      const trashed = await inTenant((client) =>
+        client.query<{ deleted: boolean }>("SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE id = $1", [
+          removed,
+        ]),
+      );
+      expect(trashed.rows).toEqual([{ deleted: true }]);
+      // A live duplicate is still refused.
       expectAlreadyConnected(await rejectionOf(connect(GENERIC_BODY)));
+    });
+
+    it("restores a removed mailbox whose address no live mailbox holds", async () => {
+      const removed = (await connect(GENERIC_BODY)).item.id;
+      await removeConnectedMailbox(removed);
+      const databaseId = await inTenant(async (client) => (await resolveMailModuleIds(client)).mailboxesDatabaseId);
+
+      const restored = await runInTenant(tenant, () => createChokePoint(runtime).restoreItem(databaseId, removed));
+
+      expect(restored?.deletedAt).toBeNull();
     });
 
     it("answers 409 and stores nothing when a mailbox comes to list the address while the login is verified", async () => {
@@ -1142,6 +1178,325 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       // The same address a second time is refused inside each tenant, so the 201 above is not what every request gets.
       expectAlreadyConnected(await rejectionOf(connect(GENERIC_BODY)));
       expectAlreadyConnected(await rejectionOf(connect(GENERIC_BODY, { tenantId: other })));
+    });
+  });
+
+  describe("PUT /api/mail/mailboxes/:id/password: sign a password mailbox in again", () => {
+    beforeEach(seedTenantZero);
+
+    const NEW_PASSWORD = `new-pw-sentinel-${randomUUID()}`;
+    const STORED_LOGIN = "stored-login";
+
+    interface PasswordMailboxFixture {
+      provider: "icloud" | "generic";
+      credential: string | null;
+      calendarsEnabled: boolean;
+      caldavUrl: string | null;
+    }
+
+    /** Written through the stores the connect uses, with no sync queued, so a test sees only what the route queues. */
+    async function passwordMailbox(fixture: Partial<PasswordMailboxFixture> = {}, tenantId = tenant): Promise<string> {
+      const { provider = "generic", credential = PASSWORD, calendarsEnabled = false, caldavUrl = null } = fixture;
+      return inTenant(async (client) => {
+        const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+        const item = await createItemWithClient(client, {
+          databaseId: mailboxesDatabaseId,
+          properties: { name: "Password", provider, mailEnabled: true, calendarsEnabled },
+        });
+        await writeMailboxAddresses(client, { mailboxesDatabaseId, mailboxItemId: item.id, address: ADDRESS });
+        if (credential !== null) {
+          await storeCredential(client, {
+            itemId: item.id,
+            credentialType: provider === "icloud" ? "app_password" : "plain_password",
+            plaintext: credential,
+          });
+        }
+        await upsertMailServerSettings(client, item.id, {
+          ...(provider === "icloud"
+            ? ICLOUD_SETTINGS
+            : {
+                imap: { host: IMAP_HOST, port: 143, security: "starttls" as const },
+                smtp: { host: SMTP_HOST, port: 587, security: "starttls" as const },
+              }),
+          username: STORED_LOGIN,
+          caldavUrl,
+        });
+        await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
+        await recordProviderAccountAddress(client, item.id, ADDRESS);
+        // The state a pass leaves behind for a refused or missing credential, on both services.
+        await recordSyncError(client, item.id, "no stored credential", "reauthorization");
+        await recordCalendarSyncFailure(client, item.id, "needsReauthorization", "reauthorizationRequired");
+        return item.id;
+      }, tenantId);
+    }
+
+    interface ReplaceOptions {
+      dependencies?: MailboxPasswordRouteDependencies;
+      tenantId?: string;
+      restarted?: string[];
+    }
+
+    function replace(
+      mailboxId: string,
+      body: unknown,
+      options: ReplaceOptions = {},
+    ): Promise<{ status: number; item: ItemRow }> {
+      const restarted = options.restarted ?? [];
+      const handler = createMailboxPasswordReplaceRouteHandler(runtime, {
+        ...(options.dependencies ?? acceptingVerifier().dependencies),
+        throttle: recordingThrottle().throttle,
+        mailLiveSync: {
+          restartAccount: async (id) => {
+            restarted.push(id);
+          },
+        },
+      });
+      return runInTenant(options.tenantId ?? tenant, () =>
+        handler({ identity: { user: { id: userId } }, params: { id: mailboxId }, body }),
+      );
+    }
+
+    const calendarJobEnvelope = z.object({ tenantId: z.string(), payload: z.object({ accountItemId: z.string() }) });
+
+    async function queuedCalendarSyncJobs(tenantId = tenant): Promise<string[]> {
+      const payloads = await readJobPayloadsByIdentifier(admin, CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC);
+      return payloads
+        .map((payload) => calendarJobEnvelope.parse(payload))
+        .filter((job) => job.tenantId === tenantId)
+        .map((job) => job.payload.accountItemId)
+        .sort();
+    }
+
+    async function accountState(mailboxId: string, tenantId = tenant) {
+      const stored = await storedMailbox(mailboxId, tenantId);
+      return inTenant(async (client) => {
+        const mail = await getMailAccountSyncState(client, mailboxId);
+        const calendar = await getCalendarAccountSyncState(client, mailboxId);
+        return {
+          password: stored.password,
+          credentialTypes: stored.credentialTypes,
+          settings: stored.settings,
+          mail: mail && {
+            lastError: mail.lastError,
+            lastFailureKind: mail.lastFailureKind,
+            failingSince: mail.failingSince,
+            nextExpectedActivityAt: mail.nextExpectedActivityAt,
+          },
+          calendar: calendar && {
+            status: calendar.status,
+            failingSince: calendar.failingSince,
+            lastErrorCode: calendar.lastErrorCode,
+          },
+          mailJobs: await queuedSyncJobs(tenantId),
+          calendarJobs: await queuedCalendarSyncJobs(tenantId),
+        };
+      }, tenantId);
+    }
+
+    it.each<[string, Partial<PasswordMailboxFixture>]>([
+      ["a generic mailbox without a stored credential", { credential: null }],
+      ["a generic mailbox whose stored password the server refuses", { credential: PASSWORD }],
+    ])(
+      "replaces the password of %s, clears both reauthorizations, queues both syncs and restarts the live sync",
+      async (_name, fixture) => {
+        const mailboxId = await passwordMailbox({ ...fixture, calendarsEnabled: true, caldavUrl: CALDAV_URL });
+        const verifier = acceptingVerifier();
+        const restarted: string[] = [];
+        const logs = recordLogCalls();
+
+        const answer = await replace(
+          mailboxId,
+          { password: NEW_PASSWORD, username: "new-login" },
+          { dependencies: verifier.dependencies, restarted },
+        );
+
+        expect(answer.status).toBe(200);
+        expect(answer.item.id).toBe(mailboxId);
+        expect(answer.item.properties).toMatchObject({ provider: "generic", addresses: ADDRESS });
+        expect(JSON.stringify(answer)).not.toContain(NEW_PASSWORD);
+        expect(logs()).not.toContain(NEW_PASSWORD);
+        // The stored hosts, the new login, and the stored CalDAV address with the same login.
+        expect(verifier.calls).toEqual([
+          {
+            provider: "generic",
+            address: ADDRESS,
+            username: "new-login",
+            password: NEW_PASSWORD,
+            imapHost: IMAP_HOST,
+            smtpHost: SMTP_HOST,
+          },
+        ]);
+        expect(verifier.calDavCalls).toEqual([
+          { caldavUrl: CALDAV_URL, username: "new-login", password: NEW_PASSWORD },
+        ]);
+        expect(await accountState(mailboxId)).toEqual({
+          password: NEW_PASSWORD,
+          credentialTypes: ["plain_password"],
+          // The endpoints that verified replace the stored ones.
+          settings: {
+            mailboxItemId: mailboxId,
+            imap: { host: IMAP_HOST, port: 993, security: "tls" },
+            smtp: { host: SMTP_HOST, port: 465, security: "tls" },
+            username: "new-login",
+            caldavUrl: CALDAV_URL,
+          },
+          mail: { lastError: null, lastFailureKind: null, failingSince: null, nextExpectedActivityAt: null },
+          calendar: { status: "never", failingSince: null, lastErrorCode: null },
+          mailJobs: [mailboxId],
+          calendarJobs: [mailboxId],
+        });
+        expect(restarted).toEqual([mailboxId]);
+      },
+    );
+
+    it("keeps the stored user name, verifies iCloud's CalDAV address with Calendars on, and seals an app password", async () => {
+      const mailboxId = await passwordMailbox({ provider: "icloud", credential: null, calendarsEnabled: true });
+      const verifier = acceptingVerifier();
+
+      expect(
+        (await replace(mailboxId, { password: NEW_PASSWORD }, { dependencies: verifier.dependencies })).status,
+      ).toBe(200);
+
+      expect(verifier.calls).toEqual([
+        { provider: "icloud", address: ADDRESS, username: STORED_LOGIN, password: NEW_PASSWORD },
+      ]);
+      expect(verifier.calDavCalls).toEqual([
+        { caldavUrl: "https://caldav.icloud.com/", username: STORED_LOGIN, password: NEW_PASSWORD },
+      ]);
+      expect(await accountState(mailboxId)).toMatchObject({
+        password: NEW_PASSWORD,
+        credentialTypes: ["app_password"],
+        settings: { ...ICLOUD_SETTINGS, username: STORED_LOGIN, caldavUrl: null },
+      });
+    });
+
+    it("contacts no CalDAV server and queues no calendar sync while Calendars is off", async () => {
+      const mailboxId = await passwordMailbox({ caldavUrl: CALDAV_URL });
+      const verifier = acceptingVerifier();
+
+      await replace(mailboxId, { password: NEW_PASSWORD }, { dependencies: verifier.dependencies });
+
+      expect(verifier.calls).toHaveLength(1);
+      expect(verifier.calDavCalls).toEqual([]);
+      expect(await accountState(mailboxId)).toMatchObject({ mailJobs: [mailboxId], calendarJobs: [] });
+    });
+
+    it.each<[string, Error, "mail" | "caldav"]>([
+      ["mail_auth_failed", new MailAuthFailedError(), "mail"],
+      ["mail_app_password_required", new MailAppPasswordRequiredError(), "mail"],
+      ["mail_server_unreachable", new MailServerUnreachableError(), "mail"],
+      ["mail_tls_failed", new MailTlsFailedError(), "mail"],
+      ["caldav_auth_failed", new CalDavAuthFailedError(), "caldav"],
+      ["caldav_server_unreachable", new CalDavServerUnreachableError(), "caldav"],
+      ["caldav_server_invalid", new CalDavServerInvalidError(), "caldav"],
+    ])("answers 400 %s for a refused login and changes nothing", async (code, refusal, protocol) => {
+      const mailboxId = await passwordMailbox({ calendarsEnabled: true, caldavUrl: CALDAV_URL });
+      const before = await accountState(mailboxId);
+      const accepting = acceptingVerifier().dependencies.mailServerClients;
+      const restarted: string[] = [];
+      const dependencies: MailboxPasswordRouteDependencies = {
+        mailServerClients: {
+          ...accepting,
+          ...(protocol === "mail"
+            ? {
+                verifyPassword: async () => {
+                  throw refusal;
+                },
+              }
+            : {
+                verifyCalDav: async () => {
+                  throw refusal;
+                },
+              }),
+        },
+      };
+
+      const error = await rejectionOf(replace(mailboxId, { password: NEW_PASSWORD }, { dependencies, restarted }));
+
+      expect(error).toBeInstanceOf(ChokePointError);
+      if (!(error instanceof ChokePointError)) throw new Error("expected a ChokePointError");
+      expect({ status: error.status, code: error.code }).toEqual({ status: 400, code });
+      expect(errorText(error)).not.toContain(NEW_PASSWORD);
+      expect(await accountState(mailboxId)).toEqual(before);
+      expect(before.password).toBe(PASSWORD);
+      expect(restarted).toEqual([]);
+    });
+
+    it("answers 409 mailbox_not_password for a mailbox that signs in through its provider, and verifies nothing", async () => {
+      const oauth = await existingMailbox(recordingProviderAddress("oauth@example.test"));
+      const verifier = acceptingVerifier();
+
+      const error = await rejectionOf(
+        replace(oauth, { password: NEW_PASSWORD }, { dependencies: verifier.dependencies }),
+      );
+
+      expect(error).toBeInstanceOf(ChokePointError);
+      if (!(error instanceof ChokePointError)) throw new Error("expected a ChokePointError");
+      expect({ status: error.status, code: error.code }).toEqual({ status: 409, code: "mailbox_not_password" });
+      expect(verifier.calls).toEqual([]);
+      expect(await storedMailbox(oauth)).toMatchObject({ password: null, settings: null, syncMode: "gmail_api" });
+    });
+
+    it.each<[string, (ownId: string) => Promise<{ id: string; tenantId: string }>]>([
+      ["an unknown id", async () => ({ id: randomUUID(), tenantId: tenant })],
+      ["a malformed id", async () => ({ id: "not-a-uuid", tenantId: tenant })],
+      [
+        "a removed mailbox",
+        async (ownId) => {
+          await removeConnectedMailbox(ownId);
+          return { id: ownId, tenantId: tenant };
+        },
+      ],
+      ["another tenant's mailbox", async (ownId) => ({ id: ownId, tenantId: await secondTenant() })],
+    ])("answers 404 for %s like for an unknown one, and verifies and changes nothing", async (_name, target) => {
+      const ownId = await passwordMailbox();
+      const { id, tenantId } = await target(ownId);
+      const before = await mailboxRows();
+      const verifier = acceptingVerifier();
+
+      const error = await rejectionOf(
+        replace(id, { password: NEW_PASSWORD }, { dependencies: verifier.dependencies, tenantId }),
+      );
+
+      expect(error).toBeInstanceOf(ChokePointError);
+      if (!(error instanceof ChokePointError)) throw new Error("expected a ChokePointError");
+      expect({ status: error.status, code: error.code }).toEqual({ status: 404, code: "not_found" });
+      expect(verifier.calls).toEqual([]);
+      expect(await mailboxRows()).toEqual(before);
+    });
+
+    it("replaces the password of the caller's own mailbox when another tenant holds one with the same address", async () => {
+      const other = await secondTenant();
+      const theirs = await passwordMailbox({}, other);
+      const ours = await passwordMailbox();
+
+      expect((await replace(ours, { password: NEW_PASSWORD })).status).toBe(200);
+
+      expect((await accountState(ours)).password).toBe(NEW_PASSWORD);
+      expect((await accountState(theirs, other)).password).toBe(PASSWORD);
+    });
+
+    it.each<[string, unknown, string | undefined]>([
+      ["null", null, undefined],
+      ["no password", { username: "login" }, "password"],
+      ["an empty password", { password: "" }, "password"],
+      ["a password above 1024 characters", { password: "x".repeat(1025) }, "password"],
+      ["a blank user name", { password: NEW_PASSWORD, username: "  " }, "username"],
+      ["a user name with a NUL character", { password: NEW_PASSWORD, username: "lo\u0000gin" }, "username"],
+      ["a key the route does not know", { password: NEW_PASSWORD, imapHost: IMAP_HOST }, undefined],
+    ])("refuses %s with validation_failed before any server is contacted", async (_name, body, field) => {
+      const mailboxId = await passwordMailbox();
+      const before = await accountState(mailboxId);
+      const verifier = acceptingVerifier();
+
+      const error = await rejectionOf(replace(mailboxId, body, { dependencies: verifier.dependencies }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      if (!(error instanceof ValidationError)) throw new Error("expected a ValidationError");
+      expect(error.details).toEqual(field === undefined ? undefined : { field });
+      expect(errorText(error)).not.toContain(NEW_PASSWORD);
+      expect(verifier.calls).toEqual([]);
+      expect(await accountState(mailboxId)).toEqual(before);
     });
   });
 

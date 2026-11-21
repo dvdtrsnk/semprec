@@ -78,8 +78,9 @@ described elsewhere and only referenced here:
   generic body with `caldavUrl`, the `verifyCalDav` member (`verifyCalDavServer`, CalDAV discovery to the calendar
   home with the same login; 400 `caldav_auth_failed`, `caldav_server_unreachable` or `caldav_server_invalid`) →
   `createPasswordMailbox` in one READ COMMITTED transaction that re-reads the duplicate rule before writing.
-- An address is held when `mail_account_sync_state.provider_account_address` records it or any Mailboxes
-  item's `addresses` list names it (trashed mailboxes count). The partial unique index
+- An address is held when `mail_account_sync_state.provider_account_address` records it or a live Mailboxes
+  item's `addresses` list names it (`mailboxHoldsAnyAddress`, `mail/mailboxAddresses.ts`). A trashed mailbox does not
+  count: its removal deleted its sync state row, so its address can be connected again. The partial unique index
   `mail_account_sync_state_tenant_provider_address_uq` decides concurrent connects; the reads take no row lock.
 - Throttle: action `mailboxCredentialVerification`, 10 verifications per 15 minutes **per user id**, in process
   memory (`services/semprec-api/src/clientIpThrottle.ts`), handed to custom routes as the `throttle` member.
@@ -96,6 +97,24 @@ described elsewhere and only referenced here:
   `mail_server_unreachable`. Across candidates: auth rejection, else definite TLS failure, else unreachable.
 - At its public boundary an unknown failure becomes a fresh fixed generic `Error` (no cause, no candidate
   continuation). Verification saves nothing.
+
+### Password sign-in again
+
+`PUT /api/mail/mailboxes/:id/password` (`createMailboxPasswordReplaceRouteHandler`) replaces the password of an
+existing iCloud or generic mailbox; its mail, folders and threads stay.
+
+- Body `{ password, username? }` (strict, same bounds as the connect); `username` defaults to the stored one. A
+  malformed, unknown, foreign or trashed id is 404 `not_found`. A mailbox whose `provider` is not `icloud`/`generic`,
+  that lacks stored IMAP or SMTP settings, or whose sync mode is not `imap` is 409 `mailbox_not_password`.
+- Order: read the account → throttle (`mailboxCredentialVerification`, as the connect) → `verifyMailCredentials`
+  against the stored hosts outside any transaction → with Calendars on, `verifyCalDav` at the CalDAV start
+  (`https://caldav.icloud.com/` for iCloud, else the stored `caldav_url`; none without one) → one READ COMMITTED
+  transaction: unlocked sanity read → `ensureMailAccountSyncState` → lock sync state row → lock Mailboxes item →
+  re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
+  (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected
+  activity), `clearCalendarSyncReauthorization` (`needsReauthorization` → `never`), enqueue `mailAccountSync` and,
+  with Calendars on, `calendarAccountSync`. After the commit the route awaits `mailLiveSync.restartAccount`.
+  Refusals answer 400 with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
 
 ### OAuth connect and reauthorization
 
@@ -177,8 +196,10 @@ described elsewhere and only referenced here:
   the pass with no provider call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
   removal still holds it, the pass is skipped and records nothing (no failure, status, problem or
   notification); the sweep re-enqueues an account that is still due.
-- A pass with no stored credential fails with `MailReauthorizationRequiredError` when the `syncStatus` it read
-  is `needsReauthorization`; otherwise it is an ordinary failure.
+- A pass with no stored credential fails with `MailReauthorizationRequiredError` (failure kind `reauthorization`,
+  `syncStatus` `needsReauthorization`), whatever the status it read: only the user can store one again.
+- The sweep (`listAccountsDueForSync`) leaves out an account whose last failure kind is `reauthorization`; the
+  sign-in again (OAuth reauthorization or the password route) queues its next pass.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 
@@ -199,7 +220,8 @@ described elsewhere and only referenced here:
   (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
 - The hosted IMAP lifecycle owns its discovery/startup task: policy refusals and transient errors go into the
-  bounded backoff; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
+  bounded backoff, while `MailReauthorizationRequiredError` (the composition root's `getCredential` throws it when no
+  credential is stored) ends the discovery after one report until `restartAccount` hosts a new lifecycle; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
   then public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
 - The Gmail Pub/Sub dispatcher (`createGmailPubSubDispatcher`, `mail/gmailWatchLifecycle.ts`) routes each
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
@@ -381,7 +403,9 @@ described elsewhere and only referenced here:
   Provider follows the sync mode, not `provider`. Google calls happen only when `getGmailAccountUse` says the
   mailbox is the `sole` recorder of the account. Microsoft tokens are not revoked. Steps are 10 s each, logged
   with a fixed classification only; nothing is retried or persisted.
-- Restore: `mailboxItemRestoreHook` (`mail/mailboxRestoreHook.ts`) seeds a default sync state if none
+- Restore: `mailboxItemRestoreHook` (`mail/mailboxRestoreHook.ts`) first refuses (409
+  `provider_account_already_connected`, rolling the restore back) a mailbox one of whose addresses another live
+  mailbox lists or records (`mailboxHoldsAnyAddress`), then seeds a default sync state if none
   (unlocked read + `ON CONFLICT DO NOTHING`, never waits on an existing row), and restores the Folders and Emails
   of the exact trash epoch in the same transaction. It takes no sync guard and does not write `syncStatus`.
 - Purge: `mailItemPurgeHook` (`mail/mailPurgeHook.ts`) acts on system Emails/Mailboxes items. Emails: the meta

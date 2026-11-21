@@ -30,6 +30,7 @@ import {
   syncChanges,
   type CalendarResourceText,
 } from "./caldavClient.js";
+import { ICLOUD_CALDAV_URL } from "./caldavConnectVerification.js";
 import { withCalDavSession, type CalDavLogin, type CalDavSession } from "./caldavHttp.js";
 import {
   CalendarResourceUnreadableError,
@@ -41,8 +42,6 @@ import {
   updateResource,
   type ParsedResource,
 } from "./caldavIcal.js";
-
-const ICLOUD_CALDAV_URL = "https://caldav.icloud.com/";
 
 const PARTSTATS = { accepted: "ACCEPTED", tentative: "TENTATIVE", declined: "DECLINED" } as const;
 

@@ -68,6 +68,7 @@ import {
   TRANSCRIPTION_OWNER_PROCESS,
   getOrCreateJournalItem,
   ensureJournalPeriodDoc,
+  getDecryptedCredential,
   hashPassword,
   handleObservabilityCheckSystemTask,
   handleAgentRunEventsRetentionTask,
@@ -123,6 +124,7 @@ const SETUP_TOKEN = "tenant-isolation-setup-token";
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 const MAILBOX_PASSWORD = "isolation-mailbox-password";
 const REFUSED_MAILBOX_PASSWORD = "isolation-refused-mailbox-password";
+const REPLACED_MAILBOX_PASSWORD = "isolation-replaced-mailbox-password";
 
 /**
  * The mail server accepts every login except `REFUSED_MAILBOX_PASSWORD`, so no case reaches a real
@@ -137,6 +139,12 @@ const MAILBOX_PASSWORD_DEPENDENCIES: CustomRouteDependencies = {
         smtp: { host: input.smtpHost ?? "smtp.mail.me.com", port: 465, security: "tls" },
       };
     },
+  },
+  // The password replacement restarts the hosted live sync after its commit; this process hosts none.
+  mailLiveSync: {
+    startMailbox: async () => {},
+    stopMailbox: async () => {},
+    restartAccount: async () => {},
   },
 };
 /**
@@ -2787,6 +2795,37 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(await mailboxesOf(a.member)).toContain(ofA);
     expect(await mailboxesOf(b.member)).not.toContain(ofA);
+  },
+  // A's mailbox answers B exactly like an unknown id and keeps its password; B's own mailbox signs in again.
+  "mailbox password replace": async () => {
+    const connect = (): Request =>
+      POST("/api/mail/mailboxes", {
+        provider: "generic",
+        address: `${randomUUID()}@isolation.example.test`,
+        password: MAILBOX_PASSWORD,
+        imapHost: "imap.isolation.example.test",
+        smtpHost: "smtp.isolation.example.test",
+      });
+    const replace = (mailboxId: string | undefined): Request =>
+      PUT(`/api/mail/mailboxes/${mailboxId}/password`, { password: REPLACED_MAILBOX_PASSWORD });
+    const passwordOf = (tenant: TenantFixture, mailboxId: string): Promise<string | null> =>
+      inTenantTransaction(tenant.tenantId, (client) =>
+        getDecryptedCredential(client, { itemId: mailboxId, actorType: "user", purpose: "test_read" }),
+      );
+    const ofA = readString(await sendOk(a.member, connect()), "id");
+    const ofB = readString(await sendOk(b.member, connect()), "id");
+
+    await leavesAUnchanged(async () => {
+      const own = await expectExcludesA(b.member, replace(ofB), [ofB], [ofA]);
+      expect(own.status).toBe(200);
+      expect(readString(own.text, "id")).toBe(ofB);
+      expectNoneOf(own.text, [REPLACED_MAILBOX_PASSWORD], "B's replaced mailbox");
+      await expectForeign404(b.member, [ofA], ([id]) => replace(id));
+    });
+    expect(await passwordOf(b, ofB)).toBe(REPLACED_MAILBOX_PASSWORD);
+    expect(await passwordOf(a, ofA)).toBe(MAILBOX_PASSWORD);
+    await sendOk(a.member, replace(ofA));
+    expect(await passwordOf(a, ofA)).toBe(REPLACED_MAILBOX_PASSWORD);
   },
   "mailbox removal impact": async () => {
     const own = await send(b.member, GET(entryPath("mailbox removal impact", b.mailboxItemId)));

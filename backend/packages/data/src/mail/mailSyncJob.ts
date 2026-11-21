@@ -228,13 +228,10 @@ export async function handleSyncMailAccountTask(
       actorType: "sync_worker",
       purpose: syncPurpose[state.syncMode],
     });
+    // Only the user can store a credential again (a sign-in or a password entered again), so a missing one fails the
+    // pass as a reauthorization case, whatever the status was.
     if (!credential) {
-      const missingCredential = `Mailbox ${payload.mailboxItemId} has no stored credential`;
-      // A removal writes `needsReauthorization` when it deletes the credential, and a restored mailbox returns with
-      // that status and no credential: the pass fails as a reauthorization case so the status is kept. With any other
-      // status a missing credential is an ordinary failure.
-      if (previousSyncStatus === "needsReauthorization") throw new MailReauthorizationRequiredError(missingCredential);
-      throw new Error(missingCredential);
+      throw new MailReauthorizationRequiredError(`Mailbox ${payload.mailboxItemId} has no stored credential`);
     }
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");

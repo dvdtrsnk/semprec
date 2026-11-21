@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 import { sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
+import { MailReauthorizationRequiredError } from "./providerTypes.js";
 
 export interface ImapIdleFolderTarget {
   path: string;
@@ -43,7 +44,10 @@ export function reconnectBackoffDelayMs(attempt: number, baseMs: number, maxMs: 
 }
 
 export interface CreateBoundedImapIdleLifecycleFactoryOptions {
-  /** Fetched fresh on every `start()`, never cached across restarts. */
+  /**
+   * Fetched fresh on every `start()`, never cached across restarts. `MailReauthorizationRequiredError` (no credential
+   * stored) ends the discovery without a retry: only a restart after the credential was replaced starts it again.
+   */
   getCredential: (mailboxItemId: string) => Promise<string>;
   /** Shared with reconcile passes: IDLE and reconcile connections count against one provider budget. */
   getConnectionLimit: (mailboxItemId: string) => Promise<number> | number;
@@ -243,6 +247,7 @@ export function createBoundedImapIdleLifecycleFactory(
               report("", err);
               if (stopped) return;
               if (ownedFailures.length > 0) return;
+              if (err instanceof MailReauthorizationRequiredError) return;
               attempt++;
               if (await backoffOrStop(attempt)) return;
             }
