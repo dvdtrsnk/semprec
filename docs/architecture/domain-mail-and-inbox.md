@@ -312,6 +312,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   copy's edge with its UID: archive and trash move the delivered copy, restore brings it back to the Inbox. A flag
   observation of that Sent copy is ignored while the item has a copy with a UID elsewhere
   (`applyObservedMailMessageFlags`), so the item's `read`/`flagged` follow the delivered copy.
+- An archive or trash desire records in `mail_message_move_sync_state.restore_purpose` whether the copy left an Inbox
+  or a Sent folder (an earlier record stays when it left neither); restore returns the copy there, and only a copy
+  without a record goes by received (Inbox) or own (Sent).
 
 ### Inherited values
 

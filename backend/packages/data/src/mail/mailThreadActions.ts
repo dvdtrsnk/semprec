@@ -127,6 +127,7 @@ const moveCopyRow = z.object({
   incoming: z.boolean(),
   draft: z.boolean(),
   purposes: z.array(z.string()),
+  movedFrom: z.enum(["inbox", "sent"]).nullable(),
 });
 
 /** A copy as the move routes see it; each copy is in its own mailbox. */
@@ -145,6 +146,8 @@ export interface MailThreadMoveCopy {
   draft: boolean;
   /** `none` for a folder without one. */
   purposes: ReadonlySet<string>;
+  /** The Inbox or Sent folder its last archive or trash took it out of; `null` when none is recorded. */
+  movedFrom: "inbox" | "sent" | null;
 }
 
 /** Classified like `listMailThreadActionMessages`, ordered by item id. */
@@ -157,7 +160,10 @@ SELECT jsonb_build_object(
   'purposes', p.purposes,
   'incoming', c.received AND NOT (p.purposes @> '"drafts"'::jsonb),
   'draft', p.purposes @> '"drafts"'::jsonb OR EXISTS (
-    SELECT 1 FROM mail_drafts d WHERE d.tenant_id = app_tenant_default() AND d.email_item_id = c.item_id AND d.sent_at IS NULL)
+    SELECT 1 FROM mail_drafts d WHERE d.tenant_id = app_tenant_default() AND d.email_item_id = c.item_id AND d.sent_at IS NULL),
+  'movedFrom', (
+    SELECT mv.restore_purpose FROM mail_message_move_sync_state mv
+    WHERE mv.tenant_id = app_tenant_default() AND mv.message_item_id = c.item_id)
 ) AS copy
 FROM copies c
 JOIN mail_message_meta meta ON meta.tenant_id = app_tenant_default() AND meta.item_id = c.item_id
@@ -331,6 +337,16 @@ async function resolveMoveSource(
 }
 
 /**
+ * The Inbox or Sent folder a move takes the copy out of, which a restore brings it back to; `null` when it leaves
+ * neither (already archived, trashed or elsewhere), so an earlier record stays. A kept Sent copy is not left.
+ */
+function restorePurposeLeft(copy: MailThreadMoveCopy, keepFolderIds: ReadonlySet<string>): "inbox" | "sent" | null {
+  if (copy.purposes.has("inbox")) return "inbox";
+  if (copy.purposes.has("sent") && keepFolderIds.size === 0) return "sent";
+  return null;
+}
+
+/**
  * Moves the planned copies under the caller's thread guard. All sources are resolved first, so nothing is written for
  * an unaddressable copy. Recording the desired move verifies an IMAP source against the current edge, so it must
  * precede the edge replacement; the new edge carries no metadata, so no old UID survives. The edges of a Sent copy the
@@ -355,6 +371,7 @@ export async function applyMailThreadMoves(client: PoolClient, plans: readonly M
       mailboxItemId: copy.mailboxItemId,
       desiredPurpose: purpose,
       source,
+      restorePurpose: restorePurposeLeft(copy, keepFolderIds),
     });
     for (const edge of await listRelationsForItem(client, definition.id, copy.itemId)) {
       if (keepFolderIds.has(otherSide(edge, copy.itemId))) continue;
@@ -394,11 +411,20 @@ export function selectMailThreadTrashMoves(copies: readonly MailThreadMoveCopy[]
   return counted.filter((copy) => !copy.purposes.has("trash")).map((copy) => ({ copy, purpose: "trash" }));
 }
 
-/** Restore: received copies to `inbox`, the user's own to `sent` so sent mail never lands in an Inbox. */
+/** Where a restored copy goes: back to the Inbox or Sent folder its move took it from, else by whether it was received. */
+function restorePurposeOf(copy: MailThreadMoveCopy): "inbox" | "sent" {
+  if (copy.movedFrom === "inbox" || copy.movedFrom === "sent") return copy.movedFrom;
+  return copy.incoming ? "inbox" : "sent";
+}
+
+/**
+ * Restore: each copy back to the Inbox or Sent folder it was archived or trashed from; otherwise received copies to
+ * `inbox` and the user's own to `sent`, so sent mail never lands in an Inbox.
+ */
 export function selectMailThreadRestoreMoves(copies: readonly MailThreadMoveCopy[]): MailThreadMoveSelection[] {
   const selected = copies
     .filter((copy) => !copy.draft && (copy.purposes.has("archive") || copy.purposes.has("trash")))
-    .map((copy) => ({ copy, purpose: copy.incoming ? ("inbox" as const) : ("sent" as const) }));
+    .map((copy) => ({ copy, purpose: restorePurposeOf(copy) }));
   if (selected.length === 0)
     throw new ConflictError(
       "The thread has no message in Archive or Trash",

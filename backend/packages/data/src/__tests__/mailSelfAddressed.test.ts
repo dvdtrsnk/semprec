@@ -333,6 +333,46 @@ describe("self-addressed mail of an IMAP account (Purelymail end-to-end findings
     });
   });
 
+  describe("restore to where it came from (F18)", () => {
+    // Mail to oneself sent by another client that keeps no Sent copy: one provider message, in INBOX only.
+    async function deliveredOnly(account: Account): Promise<{ emailId: string; threadId: string }> {
+      account.imap.deliver(
+        "INBOX",
+        Buffer.from(
+          `From: ${ACCOUNT}\r\nTo: ${ACCOUNT}\r\nSubject: From my phone\r\nMessage-ID: <phone@example.test>\r\n` +
+            "Date: Sat, 21 Nov 2026 10:00:00 +0000\r\n\r\nHello me\r\n",
+        ),
+      );
+      await account.sync();
+      const [row] = await inboxThreads();
+      if (!row) throw new Error("The delivered message is not listed");
+      const detail = await detailOf(row.threadId);
+      const [message] = detail.messages;
+      if (!message) throw new Error("The thread has no message");
+      return { emailId: message.emailId, threadId: row.threadId };
+    }
+
+    it.each(["trash", "archive"] as const)(
+      "restores mail to oneself moved to %s from INBOX back to INBOX on the server",
+      (kind) =>
+        runInTenant(tenant, async () => {
+          const account = await connectAccount();
+          const { emailId, threadId } = await deliveredOnly(account);
+          const move = kind === "trash" ? createMailThreadTrashRouteHandler : createMailThreadArchiveRouteHandler;
+          await move(runtime)(ctx({ threadId }, undefined));
+          await account.sync();
+          expect(account.imap.countIn(kind === "trash" ? "Trash" : "Archive")).toBe(1);
+
+          const restored = await createMailThreadRestoreRouteHandler(runtime)(ctx({ threadId }, undefined));
+          await account.sync();
+
+          expect(restored).toEqual({ status: 200, body: { threadId, moved: 1 } });
+          expect(FOLDERS.map(({ path }) => account.imap.countIn(path))).toEqual([1, 0, 0, 0, 0]);
+          expect(await folderPathsOf(emailId)).toEqual(["INBOX"]);
+        }),
+    );
+  });
+
   describe("reply threading (F16)", () => {
     tenantIt("threads a reply to a self-addressed message into its thread, one message per Message-ID", async () => {
       const account = await connectAccount();
