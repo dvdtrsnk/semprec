@@ -37,6 +37,8 @@ export interface MailServerConnectionOptions {
   maxIdleTime?: number;
   /** IMAP only, as `maxIdleTime`: how long the socket may stay silent before imapflow gives up on it. */
   socketTimeout?: number;
+  /** IMAP only, imapflow's `autoIdleDelay`: how long a selected connection stays inactive before it starts IDLE. */
+  autoIdleDelay?: number;
 }
 
 /** In each library and for the TCP connect of SMTP. */
@@ -181,6 +183,7 @@ function buildImapFlow(
     ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
+    ...(options.autoIdleDelay !== undefined ? { autoIdleDelay: options.autoIdleDelay } : {}),
     // ImapFlow's protocol logger can emit user content.
     logger: false,
   });

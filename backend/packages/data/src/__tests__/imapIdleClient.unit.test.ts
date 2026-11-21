@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   createImapFlowIdleTransport,
+  IMAP_IDLE_AUTO_IDLE_DELAY_MS,
   IMAP_IDLE_MAX_IDLE_TIME_MS,
   IMAP_IDLE_SOCKET_TIMEOUT_MS,
   type CreateIdleTunedImapFlowClient,
@@ -45,10 +46,10 @@ class FakeImapFlow extends EventEmitter {
 
 function makeFactory(clients: FakeImapFlow[]): {
   createClient: CreateIdleTunedImapFlowClient;
-  idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number }>;
+  idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number; autoIdleDelay: number }>;
 } {
   let index = 0;
-  const idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number }> = [];
+  const idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number; autoIdleDelay: number }> = [];
   const createClient: CreateIdleTunedImapFlowClient = async (_mailboxItemId, _credential, idleOptions) => {
     idleOptionsSeen.push(idleOptions);
     const client = clients[index++];
@@ -83,6 +84,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     expect(idleOptionsSeen[0]).toEqual({
       maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
       socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+      autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
     });
   });
 

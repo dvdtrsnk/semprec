@@ -65,7 +65,9 @@ described elsewhere and only referenced here:
   (`mail_server_unreachable`) without cause or address; a refused address is indistinguishable from an
   unreachable server. Authentication failures keep their own classification. imapflow's logger is disabled.
 - IMAP IDLE (`mail/imapIdleClient.ts`, `mail/imapIdleLifecycle.ts`) receives a connected client from
-  `openImapFlow()` with `maxIdleTime`/`socketTimeout` options; the IDLE transport never connects itself.
+  `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
+  itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
+  server reports a delivery unasked) starts at once instead of after imapflow's 15 s default.
 - Tests reach local fake servers only through `allowLoopbackOutboundForTests()`. Host egress filtering stays
   the second layer.
 
