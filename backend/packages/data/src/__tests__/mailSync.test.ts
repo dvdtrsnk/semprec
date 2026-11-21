@@ -104,6 +104,7 @@ import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
+import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
 
 const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
   it(
@@ -1562,7 +1563,7 @@ describe("IMAP reconcile core", () => {
     fetchAllUids: async () => [1, 2],
   });
   const reconcile = (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    withTransaction(pool, (tx) => reconcileImapAccount(tx, client, params));
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
   const folderEdges = async (folderRelationPropertyId: string, itemId?: string) =>
     countRows(`item_relations WHERE relation_definition_id = $1 ${itemId ? "AND (item_a = $2 OR item_b = $2)" : ""}`, [
       await relationDefinitionIdFor(folderRelationPropertyId),
@@ -1660,11 +1661,11 @@ describe("IMAP reconcile core", () => {
         )
       ).rows[0];
 
-    expect(await reconcile(account, params)).toEqual({ complete: false });
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: false });
     expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS);
     expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: null, due: true });
 
-    expect(await reconcile(account, params)).toEqual({ complete: true });
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: true });
     expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS + 3);
     expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: expect.any(Date), due: false });
   });
@@ -1676,7 +1677,7 @@ describe("IMAP reconcile core", () => {
       { path: "INBOX", specialUse: "\\Inbox", count: 2 },
     ]);
 
-    expect(await reconcile(account, params)).toEqual({ complete: false });
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: false });
     const { rows } = await pool.query<{ name: string }>(
       "SELECT properties->>'name' AS name FROM items WHERE database_id = $1 AND properties->>'name' LIKE 'INBOX %' ORDER BY 1",
       [params.emailsDatabaseId],
@@ -2544,54 +2545,90 @@ describe("mail sync job error handling", () => {
     },
   );
 
+  /** One fetched message with one attachment named `filename`. */
+  const withAttachment = (uid: number, messageId: string, filename: string) =>
+    fetched(uid, messageId, {
+      subject: "Has attachment",
+      attachments: [
+        {
+          filename,
+          contentType: "text/plain",
+          contentId: null,
+          disposition: "attachment",
+          openStream: () => Readable.from(Buffer.from(`${filename}-bytes`)),
+        },
+      ],
+    });
+
+  tenantIt("a provider failure after the messages were fetched writes no Email and no attachment bytes", async () => {
+    const mailbox = await createSyncMailbox();
+    const writtenKeys: string[] = [];
+    const deletedKeys: string[] = [];
+    const trackingStorage = blobStorage(writtenKeys, deletedKeys);
+    const inbox = { listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }] };
+
+    // A new folder's first reconcile pass never calls fetchVanishedSince/fetchAllUids (nothing to diff
+    // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
+    await runSync(
+      mailbox,
+      { createImapClient: async () => fakeImap({ ...inbox, fetchVanishedSince: async () => null }) },
+      trackingStorage,
+    );
+
+    const failingAfterFetch = fakeImap({
+      ...inbox,
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
+      fetchMessagesSince: async () => [withAttachment(1, "<orphan@x>", "f.txt")],
+      // No QRESYNC and a known uidvalidity: the non-CONDSTORE fallback, which diffs via fetchAllUids.
+      fetchVanishedSince: async () => null,
+      fetchAllUids: async () => {
+        throw new Error("boom after the messages were fetched");
+      },
+    });
+    await expect(
+      runSync(mailbox, { createImapClient: async () => failingAfterFetch }, trackingStorage),
+    ).rejects.toThrow("boom after the messages were fetched");
+
+    expect(writtenKeys).toEqual([]);
+    expect(await countRows("items WHERE database_id = $1", [await databaseIdFor("emails")])).toBe(0);
+  });
+
   tenantIt(
-    "cleans up an attachment already written to disk when a later step in the same pass aborts the transaction",
+    "a batch whose transaction fails deletes the attachment bytes it wrote and keeps an earlier committed batch's",
     async () => {
       const mailbox = await createSyncMailbox();
       const writtenKeys: string[] = [];
       const deletedKeys: string[] = [];
-      const trackingStorage = blobStorage(writtenKeys, deletedKeys);
-      const inbox = { listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }] };
+      const recording = blobStorage(writtenKeys, deletedKeys);
+      const failingStorage: BlobStorageWriter = {
+        ...recording,
+        async writeStream(storageKey, source) {
+          const result = await recording.writeStream(storageKey, source);
+          if (storageKey.endsWith("fails.txt")) throw new Error("disk full while writing the second batch");
+          return result;
+        },
+      };
+      const imap = fakeImap({
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Archive" }],
+        fetchMessagesSince: async (path) =>
+          path === "INBOX"
+            ? [withAttachment(1, "<kept@x>", "kept.txt")]
+            : [withAttachment(1, "<failed@x>", "fails.txt")],
+      });
 
-      // A new folder's first reconcile pass never calls fetchVanishedSince/fetchAllUids (nothing to diff
-      // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
-      await runSync(
-        mailbox,
-        { createImapClient: async () => fakeImap({ ...inbox, fetchVanishedSince: async () => null }) },
-        trackingStorage,
+      await expect(runSync(mailbox, { createImapClient: async () => imap }, failingStorage)).rejects.toThrow(
+        "disk full while writing the second batch",
       );
 
-      const failingAfterAttachment = fakeImap({
-        ...inbox,
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-        fetchMessagesSince: async () => [
-          fetched(1, "<orphan@x>", {
-            subject: "Has attachment",
-            attachments: [
-              {
-                filename: "f.txt",
-                contentType: "text/plain",
-                contentId: null,
-                disposition: "attachment",
-                openStream: () => Readable.from(Buffer.from("orphan-bytes")),
-              },
-            ],
-          }),
-        ],
-        // No QRESYNC and a known uidvalidity: imapReconcile.ts's non-CONDSTORE fallback, which diffs via
-        // fetchAllUids.
-        fetchVanishedSince: async () => null,
-        fetchAllUids: async () => {
-          throw new Error("boom after the attachment was already written");
-        },
-      });
-      await expect(
-        runSync(mailbox, { createImapClient: async () => failingAfterAttachment }, trackingStorage),
-      ).rejects.toThrow("boom after the attachment was already written");
-
-      expect(writtenKeys).toHaveLength(1);
-      expect(deletedKeys).toEqual(writtenKeys);
-      expect(await countRows("items WHERE database_id = $1", [await databaseIdFor("emails")])).toBe(0);
+      expect(writtenKeys).toHaveLength(2);
+      const [keptKey, failedKey] = writtenKeys;
+      expect(keptKey).toMatch(/kept\.txt$/);
+      expect(deletedKeys).toEqual([failedKey]);
+      const { rows } = await pool.query<{ name: string }>(
+        "SELECT properties->>'name' AS name FROM items WHERE database_id = $1",
+        [await databaseIdFor("emails")],
+      );
+      expect(rows).toEqual([{ name: "Has attachment" }]);
     },
   );
 
@@ -2985,23 +3022,143 @@ describe("bounded IMAP sync passes", () => {
       });
       try {
         await holding;
-        const reconciled = vi.fn();
+        // The folder list is fetched before the pass's first transaction; nothing after it runs.
+        const fetchedMessages = vi.fn(async () => []);
         await runSync(mailbox, {
           createImapClient: async () =>
             fakeImap({
-              listFolders: async () => {
-                reconciled();
-                return [];
-              },
+              listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+              fetchMessagesSince: fetchedMessages,
             }),
         });
-        expect(reconciled).not.toHaveBeenCalled();
+        expect(fetchedMessages).not.toHaveBeenCalled();
       } finally {
         release();
         await holder;
       }
       expect(await syncStatusOf(mailbox)).toBeUndefined();
       expect(await syncState(mailbox)).toMatchObject({ lastError: null, failingSince: null });
+    },
+    30_000,
+  );
+
+  /** Open transactions and advisory locks of other sessions on this worker's database. */
+  const heldDatabaseState = async () => {
+    const transactions = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid() AND xact_start IS NOT NULL`,
+    );
+    const advisoryLocks = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+        WHERE l.locktype = 'advisory' AND d.datname = current_database() AND l.pid <> pg_backend_pid()`,
+    );
+    return { transactions: transactions.rows[0]?.count, advisoryLocks: advisoryLocks.rows[0]?.count };
+  };
+
+  /** A promise the fake waits on, and a promise that resolves once the fake has started waiting. */
+  function gate() {
+    let open: () => void = () => {};
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    let arrive: () => void = () => {};
+    const arrived = new Promise<void>((resolve) => (arrive = resolve));
+    const wait = () => {
+      arrive();
+      return opened;
+    };
+    return { open, arrived, wait };
+  }
+
+  tenantIt(
+    "holds no transaction and no advisory lock while it fetches messages and downloads an attachment",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      const fetching = gate();
+      const downloading = gate();
+      const imap = fakeImap({
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+        selectFolder: async () => ({ uidvalidity: 7, uidnext: 3, highestModSeq: null }),
+        fetchMessagesSince: async () => {
+          await fetching.wait();
+          return [
+            fetched(1, "<slow-1@x>", {
+              subject: "Slow 1",
+              attachments: [
+                {
+                  filename: "slow.txt",
+                  contentType: "text/plain",
+                  contentId: null,
+                  disposition: "attachment",
+                  openStream: async () => {
+                    await downloading.wait();
+                    return Readable.from(Buffer.from("slow-bytes"));
+                  },
+                },
+              ],
+            }),
+            fetched(2, "<slow-2@x>", { subject: "Slow 2" }),
+          ];
+        },
+      });
+      const pass = runSync(mailbox, { createImapClient: async () => imap }, blobStorage());
+      try {
+        await fetching.arrived;
+        expect(await heldDatabaseState()).toEqual({ transactions: "0", advisoryLocks: "0" });
+        fetching.open();
+        await downloading.arrived;
+        expect(await heldDatabaseState()).toEqual({ transactions: "0", advisoryLocks: "0" });
+      } finally {
+        fetching.open();
+        downloading.open();
+        await pass;
+      }
+
+      const { rows } = await pool.query<{ message_id: string }>(
+        "SELECT message_id FROM mail_message_meta WHERE mailbox_item_id = $1 ORDER BY message_id",
+        [mailbox],
+      );
+      expect(rows.map((row) => row.message_id)).toEqual(["<slow-1@x>", "<slow-2@x>"]);
+      expect(await countRows("mail_attachments")).toBe(1);
+      expect(await syncStatusOf(mailbox)).toBe("ok");
+    },
+    30_000,
+  );
+
+  tenantIt(
+    "a pass whose folder another pass moved on during its fetch writes nothing for it and leaves the cursor as written",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      const folderCursor = async () =>
+        (
+          await pool.query<{ uidnext: string | null }>(
+            `SELECT s.uidnext FROM mail_folder_sync_state s JOIN items f ON f.id = s.item_id
+              WHERE f.properties->>'providerId' = 'INBOX'`,
+          )
+        ).rows.map((row) => row.uidnext);
+      const account = () => fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: 2 }]);
+      const overtaken = account();
+      const fetchMessagesSince = overtaken.fetchMessagesSince.bind(overtaken);
+      overtaken.fetchMessagesSince = async (path, sinceUid, limit) => {
+        // Another pass of the same mailbox runs to completion while this one is fetching.
+        await runSync(
+          mailbox,
+          { createImapClient: async () => account() },
+          noopStorage,
+          undefined,
+          createImapConnectionLimiter(),
+        );
+        return fetchMessagesSince(path, sinceUid, limit);
+      };
+      await pool.query("DELETE FROM graphile_worker._private_jobs");
+
+      await runSync(mailbox, { createImapClient: async () => overtaken });
+
+      expect(await folderCursor()).toEqual(["3"]);
+      expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
+      // Left incomplete, so the next pass is queued; it finds nothing new.
+      expect(await queuedSyncJobs(mailbox)).toBe("1");
+      await runSync(mailbox, { createImapClient: async () => account() });
+      expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
+      expect(await folderCursor()).toEqual(["3"]);
     },
     30_000,
   );
@@ -3938,7 +4095,7 @@ describe("mail flag write-back", () => {
     async () => {
       const params = await reconcileParams();
       const reconcile = (client: ImapMailClient) =>
-        withTransaction(pool, (tx) => reconcileImapAccount(tx, client, params));
+        reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_IMAP_PASS });
       const message = { messageId: "<writeback@x>", envelope: {}, attachments: [], flags: [] };
       const initial = fakeImap({
         listFolders: async () => [
@@ -4076,7 +4233,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       ],
       ...overrides,
     });
-    await withTransaction(pool, (client) => reconcileImapFolder(client, firstPass, params));
+    await reconcileImapFolder(pool, firstPass, params);
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
       params.emailsDatabaseId,
     ]);
@@ -4116,7 +4273,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: confirmed });
 
       const secondPass = knownUidPass({ fetchFlagsChangedSince: async () => [{ uid: 1, flags: observedFlags }] });
-      await withTransaction(pool, (client) => reconcileImapFolder(client, secondPass, params));
+      await reconcileImapFolder(pool, secondPass, params);
 
       expect(await readOf(emailItemId)).toBe(expectedRead);
       expect(await flagStateRowFor(emailItemId, "read")).toEqual({
@@ -4217,11 +4374,11 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       expect(calls).toEqual([]);
 
       const noCondstore = knownUidPass(recording);
-      await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstore, params));
+      await reconcileImapFolder(pool, noCondstore, params);
       expect(calls).toEqual([null]);
 
       const condstore = { ...noCondstore, getCapabilities: async () => new Set(["CONDSTORE"]) };
-      await withTransaction(pool, (client) => reconcileImapFolder(client, condstore, params));
+      await reconcileImapFolder(pool, condstore, params);
       expect(calls).toEqual([null, 42]);
     },
   );

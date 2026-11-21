@@ -1,26 +1,34 @@
+import type { Pool, PoolClient } from "pg";
 import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
-import type { PoolClient } from "pg";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { ingestEmailMessage } from "./ingest.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import {
   ensureMailFolderSyncState,
-  getMailFolderSyncState,
+  lockMailFolderSyncState,
   recordReconcile,
   resetForUidvalidityChange,
+  type MailFolderSyncStateRow,
 } from "./mailFolderSyncStateStore.js";
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { ensureFolderItem } from "./folderDiscovery.js";
 import { ensureMailAccountSyncState, recordImapActivity } from "./mailAccountSyncStateStore.js";
 import type { WritableImapFlag } from "./messageFlags.js";
-import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
+import {
+  listPendingImapFlagWrites,
+  recordConfirmedMailMessageFlag,
+  type PendingImapFlagWrite,
+} from "./mailMessageFlagSyncStore.js";
 import { createImapMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
+import { createAttachmentSpool, type AttachmentSpool } from "./imapAttachmentSpool.js";
+import { logger } from "./logger.js";
 
 export interface ImapFetchedMessage {
   uid: number;
@@ -94,10 +102,9 @@ export interface ReconcileImapFolderParams {
 }
 
 /**
- * New messages one pass ingests across all folders of an account. A pass is one transaction that holds the tenant's
- * mail-thread guard while it downloads bodies and attachments, so a mailbox with thousands of messages is backfilled
- * over many short passes, each committing its own batch. Kept small enough that a pass over a slow provider ends well
- * within the statement timeout of the writers waiting for that guard.
+ * New messages one pass ingests across all folders of an account. Everything a pass reads from the provider is
+ * fetched with no transaction open; each folder's batch is then written in one short transaction under the tenant's
+ * mail-thread guard, so a mailbox with thousands of messages is backfilled over many passes of small batches.
  */
 export const IMAP_NEW_MESSAGES_PER_PASS = 10;
 
@@ -161,42 +168,128 @@ async function syncGmailLabelFolders(
   }
 }
 
+/** What one folder's provider fetch returned, and the sync state it was computed from. */
+interface FetchedImapFolder {
+  snapshot: MailFolderSyncStateRow;
+  selection: ImapFolderSelection;
+  /** The selection's `UIDVALIDITY` differs from the stored one, so the fetch started over from UID 1. */
+  uidvalidityChanged: boolean;
+  sinceUid: number;
+  batch: ImapFetchedMessage[];
+  complete: boolean;
+  changedFlags: Array<{ uid: number; flags: string[] }>;
+  /** Vanished UIDs, or (without QRESYNC) every UID the folder holds now, diffed against the known ones on write. */
+  vanished: { kind: "uids"; uids: number[] } | { kind: "current"; uids: number[] };
+}
+
 /**
- * A changed `UIDVALIDITY` invalidates the UID cache, so cursors are always re-derived from the
- * (possibly reset) sync state. QRESYNC/CONDSTORE support is checked per call, not stored.
+ * The provider half of a folder reconcile, with no transaction open. A changed `UIDVALIDITY` invalidates the UID cache,
+ * so the cursors come from the reset state; QRESYNC/CONDSTORE support is checked per pass, not stored.
  */
-export async function reconcileImapFolder(
-  dbClient: PoolClient,
+async function fetchImapFolder(
   imap: ImapMailClient,
+  capabilities: Set<string>,
+  folderPath: string,
+  snapshot: MailFolderSyncStateRow,
+  limit: number,
+  spool: AttachmentSpool,
+): Promise<FetchedImapFolder> {
+  const selection = await imap.selectFolder(folderPath);
+  const uidvalidityChanged = snapshot.uidvalidity !== null && snapshot.uidvalidity !== String(selection.uidvalidity);
+  const state = uidvalidityChanged
+    ? { uidvalidity: String(selection.uidvalidity), uidnext: null, highestmodseq: null }
+    : snapshot;
+
+  const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
+  // One more than the limit tells whether messages remain above this batch.
+  const fetched = (await imap.fetchMessagesSince(folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
+  const complete = fetched.length <= limit;
+  const batch: ImapFetchedMessage[] = [];
+  for (const item of fetched.slice(0, limit)) {
+    batch.push({
+      uid: item.uid,
+      message: { ...item.message, attachments: await spool.spool(item.message.attachments) },
+    });
+  }
+
+  // UIDs below sinceUid are never re-fetched, so their flags are refreshed here. Skipped on a
+  // folder's first sync, where every message is ingested with its flags.
+  let changedFlags: Array<{ uid: number; flags: string[] }> = [];
+  if (state.uidvalidity) {
+    const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
+    changedFlags = await imap.fetchFlagsChangedSince(folderPath, sinceModSeq);
+  }
+
+  let vanishedUids: number[] | null = null;
+  if (capabilities.has("QRESYNC") && state.highestmodseq) {
+    vanishedUids = await imap.fetchVanishedSince(folderPath, Number(state.highestmodseq));
+  }
+  let vanished: FetchedImapFolder["vanished"];
+  if (vanishedUids !== null) vanished = { kind: "uids", uids: vanishedUids };
+  // Initial sync: nothing to diff against yet.
+  else if (!state.uidvalidity) vanished = { kind: "uids", uids: [] };
+  else vanished = { kind: "current", uids: await imap.fetchAllUids(folderPath) };
+
+  return { snapshot, selection, uidvalidityChanged, sinceUid, batch, complete, changedFlags, vanished };
+}
+
+function sameFolderState(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
+  return a.uidvalidity === b.uidvalidity && a.uidnext === b.uidnext && a.highestmodseq === b.highestmodseq;
+}
+
+/**
+ * Records every storage key a batch writes; when the batch's transaction fails they are deleted, best effort, since
+ * no committed row references them. Keys of a committed batch are never deleted here.
+ */
+async function withBatchStorage<T>(
+  storage: BlobStorageWriter,
+  fn: (tracked: BlobStorageWriter) => Promise<T>,
+): Promise<T> {
+  const written = new Set<string>();
+  const tracked: BlobStorageWriter = {
+    async writeStream(storageKey, source, options) {
+      // Recorded before the write: a mid-write failure (disk full) still leaves a partial file at this key.
+      written.add(storageKey);
+      return storage.writeStream(storageKey, source, options);
+    },
+    delete: (storageKey) => storage.delete(storageKey),
+    readStream: (storageKey, range) => storage.readStream(storageKey, range),
+  };
+  try {
+    return await fn(tracked);
+  } catch (err) {
+    const outcomes = await Promise.allSettled([...written].map((key) => storage.delete(key)));
+    const failed = outcomes.filter((outcome) => outcome.status === "rejected").length;
+    if (failed > 0) logger.warn({ failed }, "Deleting the attachment bytes of a failed mail sync batch failed");
+    throw err;
+  }
+}
+
+/**
+ * The write half of a folder reconcile, in the caller's transaction under the mail-thread guard. The folder's sync
+ * state row is locked and must still be the snapshot the fetch was computed from; otherwise another pass has moved
+ * the folder on since, nothing is written and `null` is returned, so a cursor never moves backwards.
+ */
+async function applyImapFolder(
+  dbClient: PoolClient,
+  fetched: FetchedImapFolder,
   params: ReconcileImapFolderParams,
-): Promise<ReconcileImapFolderResult> {
+  relationDefinitionId: string,
+): Promise<ReconcileImapFolderResult | null> {
   await lockMailThreadMutation(dbClient);
+  const current = await lockMailFolderSyncState(dbClient, params.folderItemId);
+  if (!current || !sameFolderState(current, fetched.snapshot)) return null;
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
     params.mailboxItemId,
     params.moveBaseline,
     params.protectedMoveMessageIds,
   );
-  const relationDefinition = await getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId);
-  if (!relationDefinition)
-    throw new ValidationError(`Folder relation property ${params.folderRelationPropertyId} has no relation definition`);
-
-  const capabilities = await imap.getCapabilities();
-  const selection = await imap.selectFolder(params.folderPath);
-
-  let state = await ensureMailFolderSyncState(dbClient, params.folderItemId);
-  if (state.uidvalidity !== null && state.uidvalidity !== String(selection.uidvalidity)) {
-    await resetForUidvalidityChange(dbClient, params.folderItemId, String(selection.uidvalidity));
-    state = (await getMailFolderSyncState(dbClient, params.folderItemId))!;
+  if (fetched.uidvalidityChanged) {
+    await resetForUidvalidityChange(dbClient, params.folderItemId, String(fetched.selection.uidvalidity));
   }
 
-  const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
-  const limit = params.maxNewMessages ?? IMAP_NEW_MESSAGES_PER_PASS;
-  // One more than the limit tells whether messages remain above this batch.
-  const fetched = (await imap.fetchMessagesSince(params.folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
-  const batch = fetched.slice(0, limit);
-  const complete = fetched.length <= limit;
-  for (const item of batch) {
+  for (const item of fetched.batch) {
     const result = await ingestEmailMessage(dbClient, {
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
@@ -213,58 +306,38 @@ export async function reconcileImapFolder(
     });
 
     if (
-      !protectedMoveMessageIds?.has(result.itemId) &&
+      !protectedMoveMessageIds.has(result.itemId) &&
       !(await hasUnsettledMailMove(dbClient, result.itemId)) &&
       item.message.gmailLabels
     ) {
-      await syncGmailLabelFolders(dbClient, params, relationDefinition.id, result.itemId, item.message.gmailLabels);
+      await syncGmailLabelFolders(dbClient, params, relationDefinitionId, result.itemId, item.message.gmailLabels);
     }
   }
 
-  // UIDs below sinceUid are never re-fetched, so their flags are refreshed here. Skipped on a
-  // folder's first sync, where every message was just ingested with its flags.
-  if (state.uidvalidity) {
-    const sinceModSeq = capabilities.has("CONDSTORE") && state.highestmodseq ? Number(state.highestmodseq) : null;
-    const changedFlags = await imap.fetchFlagsChangedSince(params.folderPath, sinceModSeq);
-    for (const { uid, flags } of changedFlags) {
-      if (uid >= sinceUid) continue; // already handled by the new-message loop above
-      const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
-      if (
-        !emailItemId ||
-        protectedMoveMessageIds?.has(emailItemId) ||
-        (await hasUnsettledMailMove(dbClient, emailItemId))
-      )
-        continue;
-      await applyObservedMailMessageFlags(dbClient, {
-        emailsDatabaseId: params.emailsDatabaseId,
-        messageItemId: emailItemId,
-        flags,
-      });
-    }
+  for (const { uid, flags } of fetched.changedFlags) {
+    if (uid >= fetched.sinceUid) continue; // already handled by the new-message loop above
+    const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinitionId, params.folderItemId, uid);
+    if (!emailItemId || protectedMoveMessageIds.has(emailItemId) || (await hasUnsettledMailMove(dbClient, emailItemId)))
+      continue;
+    await applyObservedMailMessageFlags(dbClient, {
+      emailsDatabaseId: params.emailsDatabaseId,
+      messageItemId: emailItemId,
+      flags,
+    });
   }
 
-  const supportsQresync = capabilities.has("QRESYNC");
-  let vanishedUids: number[] | null = null;
-  if (supportsQresync && state.highestmodseq) {
-    vanishedUids = await imap.fetchVanishedSince(params.folderPath, Number(state.highestmodseq));
+  let vanishedUids = fetched.vanished.uids;
+  if (fetched.vanished.kind === "current") {
+    const currentSet = new Set(fetched.vanished.uids);
+    vanishedUids = (await listKnownFolderUids(dbClient, relationDefinitionId, params.folderItemId)).filter(
+      (uid) => !currentSet.has(uid),
+    );
   }
-  if (vanishedUids === null && !state.uidvalidity) {
-    // Initial sync: nothing to diff against yet.
-    vanishedUids = [];
-  } else if (vanishedUids === null) {
-    const [known, current] = await Promise.all([
-      listKnownFolderUids(dbClient, relationDefinition.id, params.folderItemId),
-      imap.fetchAllUids(params.folderPath),
-    ]);
-    const currentSet = new Set(current);
-    vanishedUids = known.filter((uid) => !currentSet.has(uid));
-  }
-
   for (const uid of vanishedUids) {
-    const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinition.id, params.folderItemId, uid);
+    const emailItemId = await findEmailItemIdByFolderUid(dbClient, relationDefinitionId, params.folderItemId, uid);
     if (
       emailItemId &&
-      !protectedMoveMessageIds?.has(emailItemId) &&
+      !protectedMoveMessageIds.has(emailItemId) &&
       !(await hasUnsettledMailMove(dbClient, emailItemId))
     ) {
       await deleteRelationWithClient(
@@ -281,14 +354,60 @@ export async function reconcileImapFolder(
 
   // A partial batch resumes after its last UID. The modseq read at selection still bounds the flag and vanish
   // checks of the next pass: changes after it have a higher modseq.
-  const lastIngested = batch.at(-1);
+  const lastIngested = fetched.batch.at(-1);
   await recordReconcile(dbClient, {
     itemId: params.folderItemId,
-    uidvalidity: String(selection.uidvalidity),
-    uidnext: String(complete || !lastIngested ? selection.uidnext : lastIngested.uid + 1),
-    highestmodseq: selection.highestModSeq !== null ? String(selection.highestModSeq) : null,
+    uidvalidity: String(fetched.selection.uidvalidity),
+    uidnext: String(fetched.complete || !lastIngested ? fetched.selection.uidnext : lastIngested.uid + 1),
+    highestmodseq: fetched.selection.highestModSeq !== null ? String(fetched.selection.highestModSeq) : null,
   });
-  return { ingested: batch.length, complete };
+  return { ingested: fetched.batch.length, complete: fetched.complete };
+}
+
+async function requireFolderRelationDefinitionId(
+  client: PoolClient,
+  folderRelationPropertyId: string,
+): Promise<string> {
+  const definition = await getRelationDefinitionByPropertyId(client, folderRelationPropertyId);
+  if (!definition)
+    throw new ValidationError(`Folder relation property ${folderRelationPropertyId} has no relation definition`);
+  return definition.id;
+}
+
+/**
+ * One folder on its own, outside an account pass: the provider fetch with no transaction open, then one write
+ * transaction. A folder another pass moved on in between is left as that pass wrote it (`ingested: 0`, incomplete).
+ */
+export async function reconcileImapFolder(
+  pool: Pool,
+  imap: ImapMailClient,
+  params: ReconcileImapFolderParams,
+): Promise<ReconcileImapFolderResult> {
+  const { snapshot, relationDefinitionId } = await withTransaction(pool, async (client) => {
+    await lockMailThreadMutation(client);
+    return {
+      snapshot: await ensureMailFolderSyncState(client, params.folderItemId),
+      relationDefinitionId: await requireFolderRelationDefinitionId(client, params.folderRelationPropertyId),
+    };
+  });
+  const spool = createAttachmentSpool();
+  try {
+    const capabilities = await imap.getCapabilities();
+    const fetched = await fetchImapFolder(
+      imap,
+      capabilities,
+      params.folderPath,
+      snapshot,
+      params.maxNewMessages ?? IMAP_NEW_MESSAGES_PER_PASS,
+      spool,
+    );
+    const result = await withBatchStorage(params.storage, (storage) =>
+      withTransaction(pool, (client) => applyImapFolder(client, fetched, { ...params, storage }, relationDefinitionId)),
+    );
+    return result ?? { ingested: 0, complete: false };
+  } finally {
+    await spool.remove();
+  }
 }
 
 const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
@@ -300,6 +419,17 @@ const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
   "\\Archive": "archive",
   "\\All": "all",
 };
+
+/** How a pass enters and ends each of its transactions; supplied by the sync job. */
+export interface ImapSyncPass {
+  /**
+   * Runs first in every transaction of the pass. `false` (the mailbox is gone, in the trash or has Mail switched off)
+   * ends the pass with nothing more written.
+   */
+  enter(client: PoolClient): Promise<boolean>;
+  /** Runs last in the pass's final transaction, after the account activity is recorded. */
+  finish(client: PoolClient, result: { complete: boolean }): Promise<void>;
+}
 
 export interface ReconcileImapAccountParams {
   mailboxItemId: string;
@@ -317,10 +447,13 @@ export interface ReconcileImapAccountParams {
   folderPaths?: string[];
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
+  pass: ImapSyncPass;
 }
 
 export interface ReconcileImapAccountResult {
-  /** `false` when new messages are left for a later pass, which the caller must schedule. */
+  /** `false` when `pass.enter` ended the pass. */
+  ran: boolean;
+  /** `false` when new messages are left for a later pass, which `pass.finish` must schedule. */
   complete: boolean;
 }
 
@@ -330,109 +463,163 @@ function inboxFirst(folders: ImapFolderRef[]): ImapFolderRef[] {
   return [...folders.filter(isInbox), ...folders.filter((folder) => !isInbox(folder))];
 }
 
+/** Every write transaction of a pass: `pass.enter` first, then the mail-thread guard. `null` when the pass ended. */
+async function inPassTransaction<T>(
+  pool: Pool,
+  pass: ImapSyncPass,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<{ value: T } | null> {
+  return withTransaction(pool, async (client) => {
+    if (!(await pass.enter(client))) return null;
+    await lockMailThreadMutation(client);
+    return { value: await fn(client) };
+  });
+}
+
 /**
- * Discovers Folder items, then reconciles each folder within one pass's budget of new messages. Does not record its
- * own failures: the pass runs in the caller's transaction, so such a write would be rolled back with it.
- * mailSyncJob.ts records sync failures in a separate transaction.
+ * One pass over an account. Nothing the provider is asked runs inside a transaction: the folder list, each folder's
+ * selection and fetches (attachment bytes spooled to temp files) and the flag write-back happen between short
+ * transactions, each of which re-enters the pass under the mailbox guard and the tenant's mail-thread guard. A prepare
+ * transaction discovers Folder items and reads their sync state; each folder's batch is one write transaction; the
+ * write-back's confirmations are another; a final one records the activity and calls `pass.finish`. A failure ends
+ * the pass with the batches committed before it kept; recording it is the caller's job.
  */
 export async function reconcileImapAccount(
-  dbClient: PoolClient,
+  pool: Pool,
   imap: ImapMailClient,
   params: ReconcileImapAccountParams,
 ): Promise<ReconcileImapAccountResult> {
-  await lockMailThreadMutation(dbClient);
-  const protectedMoveMessageIds = await protectedMailMovesForPass(
-    dbClient,
-    params.mailboxItemId,
-    params.moveBaseline,
-    params.protectedMoveMessageIds,
-  );
-  await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "imap" });
+  const ended = { ran: false, complete: false };
+  const capabilities = await imap.getCapabilities();
   const allFolders = await imap.listFolders();
   const folders = inboxFirst(
     params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders,
   );
 
+  const prepared = await inPassTransaction(pool, params.pass, async (client) => {
+    await ensureMailAccountSyncState(client, { itemId: params.mailboxItemId, syncMode: "imap" });
+    const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
+      getRelationDefinitionByPropertyId(client, params.folderRelationPropertyId),
+      getRelationDefinitionByPropertyId(client, params.mailboxFolderRelationPropertyId),
+    ]);
+    if (!folderRelationDefinition || !mailboxFolderRelationDefinition) {
+      throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
+    }
+    const tracked: Array<{ folder: ImapFolderRef; folderItemId: string; snapshot: MailFolderSyncStateRow }> = [];
+    for (const folder of folders) {
+      const folderItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: params.foldersDatabaseId,
+        mailboxItemId: params.mailboxItemId,
+        mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+        providerId: folder.path,
+        name: folder.path,
+        behavior: "folder",
+        specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
+      });
+      tracked.push({ folder, folderItemId, snapshot: await ensureMailFolderSyncState(client, folderItemId) });
+    }
+    return {
+      folders: tracked,
+      folderRelationDefinitionId: folderRelationDefinition.id,
+      mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
+    };
+  });
+  if (!prepared) return ended;
+  const { folderRelationDefinitionId, mailboxFolderRelationDefinitionId } = prepared.value;
+
   let budget = IMAP_NEW_MESSAGES_PER_PASS;
   let complete = true;
-  for (const folder of folders) {
-    const folderItemId = await ensureFolderItem(dbClient, {
-      foldersDatabaseId: params.foldersDatabaseId,
-      mailboxItemId: params.mailboxItemId,
-      mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
-      providerId: folder.path,
-      name: folder.path,
-      behavior: "folder",
-      specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
-    });
-
-    if (budget === 0) {
-      complete = false;
-      continue;
+  const spool = createAttachmentSpool();
+  try {
+    for (const { folder, folderItemId, snapshot } of prepared.value.folders) {
+      if (budget === 0) {
+        complete = false;
+        continue;
+      }
+      const fetched = await fetchImapFolder(imap, capabilities, folder.path, snapshot, budget, spool);
+      const folderParams: ReconcileImapFolderParams = {
+        folderItemId,
+        folderPath: folder.path,
+        protectedMoveMessageIds: params.protectedMoveMessageIds,
+        moveBaseline: params.moveBaseline,
+        emailsDatabaseId: params.emailsDatabaseId,
+        filesDatabaseId: params.filesDatabaseId,
+        folderRelationPropertyId: params.folderRelationPropertyId,
+        attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
+        storage: params.storage,
+        storageKeyPrefix: params.storageKeyPrefix,
+        foldersDatabaseId: params.foldersDatabaseId,
+        mailboxItemId: params.mailboxItemId,
+        mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
+        mailboxAliases: params.mailboxAliases,
+      };
+      const written = await withBatchStorage(params.storage, (storage) =>
+        inPassTransaction(pool, params.pass, (client) =>
+          applyImapFolder(client, fetched, { ...folderParams, storage }, folderRelationDefinitionId),
+        ),
+      );
+      if (!written) return ended;
+      // Another pass moved this folder on since its state was read: this pass stops and leaves the rest to a later one.
+      if (!written.value) {
+        complete = false;
+        break;
+      }
+      budget -= written.value.ingested;
+      if (!written.value.complete) complete = false;
     }
-    const folderResult = await reconcileImapFolder(dbClient, imap, {
-      maxNewMessages: budget,
-      folderItemId,
-      folderPath: folder.path,
-      protectedMoveMessageIds,
-      emailsDatabaseId: params.emailsDatabaseId,
-      filesDatabaseId: params.filesDatabaseId,
-      folderRelationPropertyId: params.folderRelationPropertyId,
-      attachmentsRelationPropertyId: params.attachmentsRelationPropertyId,
-      storage: params.storage,
-      storageKeyPrefix: params.storageKeyPrefix,
-      foldersDatabaseId: params.foldersDatabaseId,
-      mailboxItemId: params.mailboxItemId,
-      mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
-      mailboxAliases: params.mailboxAliases,
-    });
-    budget -= folderResult.ingested;
-    if (!folderResult.complete) complete = false;
+  } finally {
+    await spool.remove();
   }
 
-  const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
-    getRelationDefinitionByPropertyId(dbClient, params.folderRelationPropertyId),
-    getRelationDefinitionByPropertyId(dbClient, params.mailboxFolderRelationPropertyId),
-  ]);
-  if (!folderRelationDefinition || !mailboxFolderRelationDefinition) {
-    throw new ValidationError("Mail folder relation definitions are missing from the email module schema");
-  }
   // Rows only exist where observed != desired, so provider changes are not echoed back.
-  const writeback = createImapMailFlagWritebackAdapter(imap);
-  const pendingWrites = await listPendingImapFlagWrites(dbClient, {
-    folderRelationDefinitionId: folderRelationDefinition.id,
-    mailboxFolderRelationDefinitionId: mailboxFolderRelationDefinition.id,
-    mailboxItemId: params.mailboxItemId,
+  const pending = await inPassTransaction(pool, params.pass, async (client) => {
+    const protectedMoveMessageIds = await protectedMailMovesForPass(
+      client,
+      params.mailboxItemId,
+      params.moveBaseline,
+      params.protectedMoveMessageIds,
+    );
+    const writes = await listPendingImapFlagWrites(client, {
+      folderRelationDefinitionId,
+      mailboxFolderRelationDefinitionId,
+      mailboxItemId: params.mailboxItemId,
+    });
+    const pendingByFlag = new Map<string, PendingImapFlagWrite[]>();
+    for (const write of writes) {
+      if (protectedMoveMessageIds.has(write.messageItemId) || (await hasUnsettledMailMove(client, write.messageItemId)))
+        continue;
+      const key = `${write.messageItemId}:${write.propertyKey}`;
+      const group = pendingByFlag.get(key) ?? [];
+      group.push(write);
+      pendingByFlag.set(key, group);
+    }
+    return [...pendingByFlag.values()];
   });
-  const pendingByFlag = new Map<string, typeof pendingWrites>();
-  for (const pending of pendingWrites) {
-    if (
-      protectedMoveMessageIds?.has(pending.messageItemId) ||
-      (await hasUnsettledMailMove(dbClient, pending.messageItemId))
-    )
-      continue;
-    const key = `${pending.messageItemId}:${pending.propertyKey}`;
-    const writes = pendingByFlag.get(key) ?? [];
-    writes.push(pending);
-    pendingByFlag.set(key, writes);
-  }
-  for (const writes of pendingByFlag.values()) {
-    const pending = writes[0]!;
+  if (!pending) return ended;
+  const writeback = createImapMailFlagWritebackAdapter(imap);
+  const confirmed: PendingImapFlagWrite[] = [];
+  for (const writes of pending.value) {
     let allApplied = true;
     for (const write of writes) {
-      const outcome = await writeback.write(write);
-      if (outcome !== "applied") allApplied = false;
+      if ((await writeback.write(write)) !== "applied") allApplied = false;
     }
-    if (!allApplied) continue;
-    await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
+    if (allApplied && writes[0]) confirmed.push(writes[0]);
   }
 
-  // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
-  // once, so the sweep resumes it even if the follow-up job is lost.
-  await recordImapActivity(dbClient, {
-    itemId: params.mailboxItemId,
-    nextExpectedActivityAt: complete ? new Date(Date.now() + 30 * 60 * 1000) : new Date(),
-    completesInitialSync: complete,
+  // The confirmation stores what the provider now holds; a desired state changed since stays pending.
+  const finished = await inPassTransaction(pool, params.pass, async (client) => {
+    for (const write of confirmed) {
+      await recordConfirmedMailMessageFlag(client, write.messageItemId, write.propertyKey, write.desiredState);
+    }
+    // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
+    // once, so the sweep resumes it even if the follow-up job is lost.
+    await recordImapActivity(client, {
+      itemId: params.mailboxItemId,
+      nextExpectedActivityAt: complete ? new Date(Date.now() + 30 * 60 * 1000) : new Date(),
+      completesInitialSync: complete,
+    });
+    await params.pass.finish(client, { complete });
   });
-  return { complete };
+  if (!finished) return ended;
+  return { ran: true, complete };
 }

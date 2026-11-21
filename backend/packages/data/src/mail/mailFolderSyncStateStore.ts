@@ -53,6 +53,18 @@ export async function getMailFolderSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/** The row locked `FOR UPDATE` until the caller's transaction ends; `null` when it is gone. */
+export async function lockMailFolderSyncState(
+  client: Queryable,
+  itemId: string,
+): Promise<MailFolderSyncStateRow | null> {
+  const { rows } = await client.query<MailFolderSyncStateDbRow>(
+    `SELECT ${COLUMNS} FROM mail_folder_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 /**
  * A `UIDVALIDITY` change invalidates the folder's whole UID cache. Resets `uidnext`/`highestmodseq` so the next pass
  * runs a full reconcile keyed by `Message-ID`.

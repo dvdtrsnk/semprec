@@ -54,7 +54,7 @@ described elsewhere and only referenced here:
 - The host must be a lower-cased DNS name (≤ 253 chars). IP literals in any notation, `localhost` and names
   ending in `.localhost`, `.local` or `.internal` are refused. This is an input contract only.
 - Every connection to a tenant-chosen host is opened through `mail/mailServerConnections.ts`:
-  `openImapFlow()` (the one IMAP connect step; returns only a *connected* `ImapFlow`), `openImapConnection()`
+  `openImapFlow()` (the one IMAP connect step; returns only a _connected_ `ImapFlow`), `openImapConnection()`
   (sync wrapper `ImapFlowMailClient`), `createSmtpTransporter()`, and the verification helpers
   `verifyImapServerConnection()` / `verifySmtpServerConnection()`. No other code constructs `ImapFlow` or a
   nodemailer transport for a tenant host.
@@ -156,6 +156,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 4. For Gmail the connect writes `gmail_watch_email_address` once, from `users.getProfile`
    (`recordGmailWatchEmailAddress`). Afterwards only the Gmail watch lifecycle writes that column. The value
    never comes from the request or the alias list, because `route_gmail_address` routes across tenants by it.
+
 - Reauthorization (`POST /api/mail/mailboxes/:id/reauthorize`, then the same complete route) runs
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
@@ -180,22 +181,33 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Sync pass and the mailbox sync guard
 
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
-  mailbox, state and credential happen first; reconcile then runs in one transaction that also talks to the
-  provider (existing, accepted cost; do not add new network work there).
+  mailbox, state and credential happen first. A Gmail or Graph pass then reconciles in one transaction that also
+  talks to the provider (existing, accepted cost; do not add new network work there).
+- An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
+  transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every
+  attachment's bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) are fetched with no transaction
+  open and no guard held; the writes then run in short transactions: a prepare transaction (Folder items, each
+  folder's sync state), one transaction per folder batch, one for the flag write-back confirmations (the IMAP
+  `STORE`s run before it, outside any transaction) and a final one (account activity, the next pass, `ok`
+  status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
+  batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
+  from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
+  cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
 - An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
-  inbox first, lowest UIDs first (`mail/imapReconcile.ts`). A folder left partial records its `uidnext` after
-  the last ingested UID. An unfinished pass enqueues the next pass in its own transaction, leaves the account
-  due at once and keeps `initial_sync_completed_at` unset, so the backfill of a large mailbox is many short
-  committed passes rather than one transaction that holds the mail-thread guard for its whole duration.
+  inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
+  unfinished pass enqueues the next pass in its final transaction, leaves the account due at once and keeps
+  `initial_sync_completed_at` unset, so the backfill of a large mailbox is many passes of small batches.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
-- In a pass, `enterSyncPass` takes the guard as the first statement of the write transaction, then re-reads
-  the Mailboxes item and sync state row; a trashed/missing item, a missing row or a paused row (Mail off) ends
-  the pass with no provider call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
-  removal still holds it, the pass is skipped and records nothing (no failure, status, problem or
-  notification); the sweep re-enqueues an account that is still due.
+- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction (every
+  transaction of an IMAP pass), then re-reads the Mailboxes item and sync state row; a trashed/missing item, a
+  missing row or a paused row (Mail off) ends the pass with no further provider call and no further write. A
+  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and an IMAP
+  pass it overtakes ends at its next transaction. The pass waits for the guard at most
+  `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a removal still holds it, the pass is skipped and records
+  nothing (no failure, status, problem or notification); the sweep re-enqueues an account that is still due.
 - A pass with no stored credential fails with `MailReauthorizationRequiredError` (failure kind `reauthorization`,
   `syncStatus` `needsReauthorization`), whatever the status it read: only the user can store one again.
 - The sweep (`listAccountsDueForSync`) leaves out an account whose last failure kind is `reauthorization`; the
@@ -412,7 +424,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   row (and an emptied thread: soft-delete its Threads item, delete the row); blobs and Files stay. Mailboxes:
   folder sync states of folders without a `Folders.mailbox` edge. The hook takes the thread guard after the
   purge's own locks (fixed by the registry). Attachments, flag sync state, credential, sync state and server
-  settings go with the item through their foreign keys (data-model-and-writes.md, *Storage*).
+  settings go with the item through their foreign keys (data-model-and-writes.md, _Storage_).
 
 ## Provider failure privacy
 

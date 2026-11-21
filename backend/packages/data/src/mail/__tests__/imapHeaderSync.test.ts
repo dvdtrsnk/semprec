@@ -120,7 +120,7 @@ it("persists IMAP Reply-To and each bulk signal through the adapter and folder s
       }
     });
     const adapter = new ImapFlowMailClient(connection);
-    await withTransaction(pool, (client) => reconcileImapFolder(client, adapter, params));
+    await reconcileImapFolder(pool, adapter, params);
     const query = fetch.mock.calls[0]?.[1];
     expect(query?.headers).toEqual(
       expect.arrayContaining(["list-unsubscribe", "list-id", "precedence", "auto-submitted"]),

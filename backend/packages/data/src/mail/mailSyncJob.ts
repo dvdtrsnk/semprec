@@ -136,7 +136,6 @@ function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWri
   };
 }
 
-/** One reconcile pass in one DB transaction per account: fine for a single-user mailbox, not a bulk-sync design. */
 export interface SyncMailAccountHelpers {
   job: { id: string };
 }
@@ -170,8 +169,10 @@ export async function handleSyncMailAccountTask(
   /**
    * Takes the mailbox's sync guard, which a removal and the Mail switch take first, so neither runs until this
    * transaction ends, then re-reads the mailbox. `false` (trashed, gone, no sync state row, or Mail switched off) means
-   * the pass does nothing. The generic trash takes no guard and can still happen during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws
-   * `MailboxSyncBusyError`: another pass or a removal of this mailbox is running, and the pass is skipped.
+   * the pass does nothing more. An IMAP pass runs it first in each of its transactions, so a removal or the Mail switch
+   * can run between them and ends the pass at its next one. The generic trash takes no guard and can still happen
+   * during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError`: another
+   * transaction of a pass, or a removal of this mailbox, is running, and the pass is skipped.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
     await lockMailboxSync(client, payload.mailboxItemId, { maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS });
@@ -278,28 +279,33 @@ export async function handleSyncMailAccountTask(
           ),
         );
       }
-      // The limiter waits outside any transaction; a pooled connection is checked out only once a slot is granted.
-      ran = await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
-        withTransaction(pool, async (client) => {
-          // Opened before the guard: a mailbox removed while this pass waited still costs one connection, which the
-          // `finally` closes.
-          const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
-          try {
-            if (!(await enterSyncPass(client))) return false;
-            const { complete } = await reconcileImapAccount(client, imap, shared);
-            // Committed with this batch, so the backfill continues as soon as the guard is free.
-            if (!complete) await enqueueMailAccountSync(client, payload.mailboxItemId);
-          } finally {
-            // close() never rejects, so the pass's own error still propagates to the transaction.
-            await imap.close();
-          }
-          // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and resolves
-          // the Semp problem in the same transaction.
-          await writeSyncStatus(client, "ok");
-          await resolveMailboxProblem(client, payload.mailboxItemId);
-          return true;
-        }),
-      );
+      // The limiter waits outside any transaction; the pass checks a pooled connection out only for each of its short
+      // transactions. Attachment bytes of a failed batch are removed by the pass itself, so it gets the untracked
+      // storage: a later failure must not delete the bytes of a batch that committed.
+      ran = await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, async () => {
+        const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
+        try {
+          const result = await reconcileImapAccount(pool, imap, {
+            ...shared,
+            storage,
+            pass: {
+              enter: enterSyncPass,
+              finish: async (client, { complete }) => {
+                // Committed with the pass's last transaction, so the backfill continues as soon as the guard is free.
+                if (!complete) await enqueueMailAccountSync(client, payload.mailboxItemId);
+                // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and
+                // resolves the Semp problem in the same transaction.
+                await writeSyncStatus(client, "ok");
+                await resolveMailboxProblem(client, payload.mailboxItemId);
+              },
+            },
+          });
+          return result.ran;
+        } finally {
+          // close() never rejects, so the pass's own error still propagates.
+          await imap.close();
+        }
+      });
     } else if (state.syncMode === "gmail_api") {
       if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);

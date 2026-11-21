@@ -163,21 +163,19 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         content: Readable.from([Buffer.from(part === "3" ? INVITATION : "body")]),
       }));
 
-      await withTransaction(pool, (client) =>
-        reconcileImapFolder(client, new ImapFlowMailClient(connection), {
-          folderItemId: setup.folder.id,
-          folderPath: "INBOX",
-          emailsDatabaseId: setup.emailsId,
-          filesDatabaseId: setup.filesId,
-          folderRelationPropertyId: setup.folderRelationPropertyId,
-          attachmentsRelationPropertyId: setup.attachmentsRelationPropertyId,
-          storage,
-          storageKeyPrefix: "test",
-          mailboxItemId: setup.mailbox.id,
-          foldersDatabaseId: setup.foldersId,
-          mailboxFolderRelationPropertyId: setup.mailboxFolderRelationPropertyId,
-        }),
-      );
+      await reconcileImapFolder(pool, new ImapFlowMailClient(connection), {
+        folderItemId: setup.folder.id,
+        folderPath: "INBOX",
+        emailsDatabaseId: setup.emailsId,
+        filesDatabaseId: setup.filesId,
+        folderRelationPropertyId: setup.folderRelationPropertyId,
+        attachmentsRelationPropertyId: setup.attachmentsRelationPropertyId,
+        storage,
+        storageKeyPrefix: "test",
+        mailboxItemId: setup.mailbox.id,
+        foldersDatabaseId: setup.foldersId,
+        mailboxFolderRelationPropertyId: setup.mailboxFolderRelationPropertyId,
+      });
 
       expect(download.mock.calls.map((call) => call[1]).sort()).toEqual(["1", "2", "3"]);
       expect(await storedAttachments()).toEqual([
