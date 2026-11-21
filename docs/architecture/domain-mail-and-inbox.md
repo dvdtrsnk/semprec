@@ -243,13 +243,15 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
   known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
   UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
-- A vanished UID removes that folder's Emails–Folders edge. In the pass's final transaction every Emails item the
-  pass removed an edge from and that has no folder edge left (and no unsettled or protected move) is trashed as the
+- A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
+  row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
+  transaction every marked Emails item of the mailbox (marked by this pass or by an earlier one that ended before its
+  final transaction) that has no folder edge left (and no unsettled or protected move) is trashed as the
   system writer and loses its meta row through `deleteMailMessageMetaOfRemovedItem` (a thread no other message names
   goes too), as the Mail-off removal does, so it leaves every thread count and a re-delivery is ingested anew. The
   decision waits for the final transaction because another client's move shows as the target folder's new UID,
   ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
-  move keeps its item. A target UID left beyond the pass's budget makes the move a removal and a new item in the
+  move keeps its item and its mark is cleared. A marked Email with a move in flight keeps its mark for a later pass. A target UID left beyond the pass's budget makes the move a removal and a new item in the
   next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
 - An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
   inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An

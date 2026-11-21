@@ -9,11 +9,15 @@ import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { listMailThreads } from "../mail/mailThreadListQuery.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 import type { FakeImapServer } from "../testSupport/fakeImapServer.js";
 import {
+  createImapMailboxFixture,
   createSyncedLoopbackMailbox,
   IMAP_FIXTURE_ACCOUNT,
+  plainMessage,
   PURELYMAIL_CONTENT,
+  PURELYMAIL_FOLDERS,
   type LoopbackMessage,
   type SyncedLoopbackMailbox,
 } from "../testSupport/imapMailboxFixture.js";
@@ -198,6 +202,51 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     expect((await inboxThreads()).map((thread) => thread.subject)).not.toContain("INBOX 3");
     expect(mailbox.server.flagsOf("Archive", archiveUid)).toEqual([IMAP_SEEN_FLAG]);
   });
+
+  it.each([
+    {
+      change: "expunged",
+      apply: (account: FakeImapAccount, uid: number) => account.expunge("INBOX", uid),
+      after: { trashed: true, folders: [] },
+    },
+    {
+      change: "moved to Archive",
+      apply: (account: FakeImapAccount, uid: number) => account.move("INBOX", uid, "Archive"),
+      after: { trashed: false, folders: ["Archive"] },
+    },
+  ])(
+    "decides a message $change by another client at the next pass when the pass that removed its INBOX copy failed after it",
+    ({ apply, after }) =>
+      runInTenant(tenant, async () => {
+        const account = new FakeImapAccount([...PURELYMAIL_FOLDERS]);
+        account.deliver("INBOX", plainMessage("Kept"));
+        const changedUid = account.deliver("INBOX", plainMessage("Changed"));
+        const mailbox = await createImapMailboxFixture(runtime);
+        await mailbox.sync(async () => account.client());
+        const [before] = await emailsNamed("Changed");
+        expect(before).toMatchObject({ trashed: false, folders: ["INBOX"] });
+
+        apply(account, changedUid);
+        // The inbox goes first; the connection drops once its batch committed, before any other folder is selected.
+        account.gate = async (call) => {
+          if (call.method === "selectFolder" && call.path !== "INBOX") throw new Error("connection lost");
+        };
+        await expect(mailbox.sync(async () => account.client())).rejects.toThrow("connection lost");
+        expect(await emailsNamed("Changed")).toEqual([{ ...before!, folders: [] }]);
+
+        account.gate = undefined;
+        await mailbox.sync(async () => account.client());
+
+        expect(await emailsNamed("Changed")).toEqual([{ ...before!, ...after }]);
+        expect(await emailsNamed("Kept")).toEqual([expect.objectContaining({ trashed: false, folders: ["INBOX"] })]);
+        const { rows } = await runtime.query<{ marked: number }>(
+          `SELECT count(*)::int AS marked FROM mail_message_meta
+            WHERE tenant_id = app_tenant_default() AND folder_copy_removed_at IS NOT NULL`,
+        );
+        expect(rows).toEqual([{ marked: 0 }]);
+      }),
+    30_000,
+  );
 
   tenantIt("removes a message expunged while the IDLE connection idles on INBOX, about a second later", async () => {
     const mailbox = await synced(QRESYNC);

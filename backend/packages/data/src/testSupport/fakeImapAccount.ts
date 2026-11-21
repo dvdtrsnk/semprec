@@ -88,6 +88,24 @@ export class FakeImapAccount {
     return uid;
   }
 
+  /** Removes a message as another client's `\Deleted` and EXPUNGE would; the folder's mod-sequence rises. */
+  expunge(path: string, uid: number): void {
+    const folder = this.folder(path);
+    const index = folder.messages.findIndex((message) => message.uid === uid);
+    if (index === -1) throw new Error(`No message ${uid} in ${path}`);
+    folder.messages.splice(index, 1);
+    folder.highestModSeq++;
+  }
+
+  /** Another client's MOVE: the message is filed in `target` under its next UID, then expunged from `path`. */
+  move(path: string, uid: number, target: string): number {
+    const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+    if (!message) throw new Error(`No message ${uid} in ${path}`);
+    const targetUid = this.deliver(target, message.raw, [...message.flags]);
+    this.expunge(path, uid);
+    return targetUid;
+  }
+
   /** The flags of every message in `path`, by UID. */
   flagsIn(path: string): Map<number, string[]> {
     return new Map(this.folder(path).messages.map((message) => [message.uid, [...message.flags].sort()]));

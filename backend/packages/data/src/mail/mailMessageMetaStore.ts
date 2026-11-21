@@ -257,6 +257,40 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
 }
 
 /**
+ * Marks that an IMAP pass removed one of the Email's folder edges, in the transaction that removed it, so the decision
+ * whether the Email still has a folder copy survives a pass that ends before its final transaction. `false` for an
+ * Email without a meta row, which only the removing pass itself decides.
+ */
+export async function markMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = now() WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/** The Emails of `mailboxItemId` marked by `markMailMessageFolderCopyRemoved` and not yet decided. */
+export async function listMailMessagesWithFolderCopyRemoved(
+  client: Queryable,
+  mailboxItemId: string,
+): Promise<string[]> {
+  const { rows } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1 AND folder_copy_removed_at IS NOT NULL
+      ORDER BY item_id`,
+    [mailboxItemId],
+  );
+  return rows.map((row) => row.item_id);
+}
+
+/** Clears the mark of an Email found to keep a folder copy; `false` for an Email without a meta row. */
+export async function clearMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = NULL WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/**
  * Deletes the meta row of an Emails item that leaves the mail for good: one permanently deleted (in the purge's
  * transaction) or one trashed because its account's Mail was switched off. When no other row names its thread
  * (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the system

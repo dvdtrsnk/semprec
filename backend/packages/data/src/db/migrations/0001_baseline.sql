@@ -1896,6 +1896,7 @@ CREATE TABLE public.mail_message_meta (
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
+    folder_copy_removed_at timestamp with time zone,
     CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
@@ -1905,12 +1906,16 @@ COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview o
 
 COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
 
+COMMENT ON COLUMN public.mail_message_meta.folder_copy_removed_at IS 'When an IMAP pass last removed one of the message''s folder edges; set until a pass''s final transaction decides whether the Email keeps a folder copy.';
+
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);
 
 CREATE INDEX mail_message_meta_dsn_original_message_id_idx ON public.mail_message_meta USING btree (dsn_original_message_id) WHERE (dsn_original_message_id IS NOT NULL);
 
 CREATE INDEX mail_message_meta_envelope_gin_idx ON public.mail_message_meta USING gin (envelope jsonb_path_ops);
+
+CREATE INDEX mail_message_meta_folder_copy_removed_idx ON public.mail_message_meta USING btree (tenant_id, mailbox_item_id) WHERE (folder_copy_removed_at IS NOT NULL);
 
 CREATE INDEX mail_message_meta_in_reply_to_idx ON public.mail_message_meta USING btree (in_reply_to) WHERE (in_reply_to IS NOT NULL);
 
