@@ -10,9 +10,10 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
-import io.ktor.client.request.request
+import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -89,7 +90,7 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         bodyContentType: ContentType = ContentType.Application.Json,
         requestTimeoutMillis: Long? = null,
     ): ApiResponse = try {
-        val response = http.request {
+        http.prepareRequest {
             this.method = method
             url("$serverUrl$path")
             if (requestTimeoutMillis != null) timeout { this.requestTimeoutMillis = requestTimeoutMillis }
@@ -100,12 +101,13 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
                 contentType(bodyContentType)
                 setBody(body)
             }
-        }
-        val failure = failureKind(response.status)
-        if (failure == null) {
-            ApiResponse.Success(response.status.value, response.bodyAsText(), response.headers[HttpHeaders.ETag])
-        } else {
-            ApiResponse.Failure(failure, response.status.value, response.bodyAsText())
+        }.execute { response ->
+            val failure = failureKind(response.status)
+            if (failure == null) {
+                ApiResponse.Success(response.status.value, response.bodyAsText(), response.headers[HttpHeaders.ETag])
+            } else {
+                ApiResponse.Failure(failure, response.status.value, errorBody(response))
+            }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -121,7 +123,7 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         body: RawBody,
         extraHeaders: List<Pair<String, String>>,
     ): ApiResponse = try {
-        val response = http.request {
+        http.prepareRequest {
             method = HttpMethod.Post
             url("$serverUrl$path")
             headers(token)
@@ -129,29 +131,43 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
             contentType(ContentType.parse(body.mimeType))
             timeout { requestTimeoutMillis = UPLOAD_TIMEOUT_MILLIS }
             setBody(body.bytes)
+        }.execute { response ->
+            val failure = failureKind(response.status)
+            if (failure == null) ApiResponse.Success(response.status.value, response.bodyAsText())
+            else ApiResponse.Failure(failure, response.status.value)
         }
-        val failure = failureKind(response.status)
-        if (failure == null) ApiResponse.Success(response.status.value, response.bodyAsText())
-        else ApiResponse.Failure(failure, response.status.value)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
         ApiResponse.Failure(FailureKind.UNAVAILABLE, null)
     }
 
+    /**
+     * The body of an error answer, or `null` when it cannot be read: the status alone still decides the failure, so
+     * a `401` whose body breaks off stays a `401`.
+     */
+    private suspend fun errorBody(response: HttpResponse): String? = try {
+        response.bodyAsText()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
+    }
+
     /** Reads the bytes of a `GET`, with the media type the server named. */
     suspend fun download(serverUrl: String, path: String, token: String?): ApiBytesResponse = try {
-        val response = http.request {
+        http.prepareRequest {
             method = HttpMethod.Get
             url("$serverUrl$path")
             if (token != null) header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        val failure = failureKind(response.status)
-        if (failure == null) {
-            val type = response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
-            ApiBytesResponse.Success(response.status.value, type ?: DEFAULT_MEDIA_TYPE, response.bodyAsBytes())
-        } else {
-            ApiBytesResponse.Failure(failure, response.status.value)
+        }.execute { response ->
+            val failure = failureKind(response.status)
+            if (failure == null) {
+                val type = response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
+                ApiBytesResponse.Success(response.status.value, type ?: DEFAULT_MEDIA_TYPE, response.bodyAsBytes())
+            } else {
+                ApiBytesResponse.Failure(failure, response.status.value)
+            }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -173,10 +189,13 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
     ): SocketEnd {
         val stopping = CompletableDeferred<Unit>()
         // Outside the caller's job: cancelling the caller would otherwise tear the connection down before the close
-        // frame is out. A supervisor, so that nothing the socket does can fail the client itself.
-        val running = http.async(SupervisorJob(http.coroutineContext[Job])) {
+        // frame is out. A supervisor, so that nothing the socket does can fail the client itself; completed at once,
+        // so that it ends with the socket instead of staying a child of the client.
+        val supervisor = SupervisorJob(http.coroutineContext[Job])
+        val running = http.async(supervisor) {
             runSocket(socketUrl(serverUrl, path), token, session, stopping)
         }
+        supervisor.complete()
         return try {
             running.await()
         } catch (cancelled: CancellationException) {

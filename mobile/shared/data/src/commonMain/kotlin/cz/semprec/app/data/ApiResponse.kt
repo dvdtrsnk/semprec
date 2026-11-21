@@ -14,7 +14,7 @@ sealed interface ApiResponse {
 
     /**
      * [status] is `null` when no answer arrived. [body] is the raw body of an error answer, for the routes that read
-     * its error code; `null` when there was no answer.
+     * its error code; `null` when there was no answer or its body could not be read.
      */
     data class Failure(val kind: FailureKind, val status: Int?, val body: String? = null) : ApiResponse
 }

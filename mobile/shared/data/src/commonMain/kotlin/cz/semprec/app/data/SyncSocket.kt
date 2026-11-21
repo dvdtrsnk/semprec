@@ -44,9 +44,9 @@ internal fun nextReconnectDelayMillis(attempt: Int, random: () -> Double): Long 
  * over REST. It goes out with the session of [api], as every request of the window does.
  *
  * After a drop it reconnects with [nextReconnectDelayMillis]. Each successful connect raises every topic once,
- * because the server does not replay what it published while the socket was away. A socket closed because the
- * session was revoked does not reconnect ([AuthenticatedApi.openSocket] signs the window out), and nor does one
- * started while nobody is signed in. [start] and [stop] are called on one thread, the main thread of the app.
+ * because the server does not replay what it published while the socket was away. A socket whose session the
+ * server refused, by closing it as revoked or by refusing the handshake with `401`, does not reconnect
+ * ([AuthenticatedApi.openSocket] signs the window out), and nor does one started while nobody is signed in. [start] and [stop] are called on one thread, the main thread of the app.
  */
 class SyncSocket internal constructor(
     private val api: AuthenticatedApi,
@@ -80,11 +80,10 @@ class SyncSocket internal constructor(
     private suspend fun run() {
         var attempt = 0
         while (true) {
-            val end = api.openSocket(SYNC_PATH) { session ->
+            api.openSocket(SYNC_PATH) { session ->
                 attempt = 0
                 listen(session)
             } ?: return
-            if (end is SocketEnd.Closed && end.code == AuthenticatedApi.SESSION_REVOKED_CLOSE_CODE) return
             delay(reconnectDelay(attempt))
             attempt += 1
         }

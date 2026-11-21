@@ -4,12 +4,18 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
+import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.request.path
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -21,9 +27,12 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -47,18 +56,35 @@ private fun itemFrame(databaseId: String) =
 private fun notificationFrame(kind: String) =
     """{"type":"notification","notification":{"id":"n1","userId":"u1","kind":"$kind"}}"""
 
-/** A `WS /api/sync` and `GET /api/schema` on the loopback interface; it can be stopped and started on its port. */
+/**
+ * A `WS /api/sync`, `GET /api/schema` and `GET /api/auth/session` on the loopback interface; it can be stopped and
+ * started on its port. With [handshakeStatus] set, the socket's handshake is refused with that status instead, and
+ * [sessionStatus] is what the session check answers.
+ */
 private class FakeSyncServer(val port: Int) {
     val connections = Channel<DefaultWebSocketServerSession>(Channel.UNLIMITED)
     val authorizations = Channel<String?>(Channel.UNLIMITED)
     val closes = Channel<CloseReason?>(Channel.UNLIMITED)
+    val refusedHandshakes = Channel<Unit>(Channel.UNLIMITED)
+    var handshakeStatus: HttpStatusCode? = null
+    var sessionStatus: HttpStatusCode = HttpStatusCode.OK
     private var server: EmbeddedServer<*, *>? = null
 
     fun start() {
         server = embeddedServer(CIO, port = port, host = "127.0.0.1") {
             install(WebSockets)
+            // Answers before the WebSocket route, as the sync server refuses an upgrade before any socket exists.
+            intercept(ApplicationCallPipeline.Plugins) {
+                val refused = handshakeStatus
+                if (refused != null && call.request.path() == "/api/sync") {
+                    refusedHandshakes.send(Unit)
+                    call.respond(refused)
+                    finish()
+                }
+            }
             routing {
                 get("/api/schema") { call.respondText(SCHEMA, ContentType.Application.Json) }
+                get("/api/auth/session") { call.respondText("{}", ContentType.Application.Json, sessionStatus) }
                 webSocket("/api/sync") {
                     authorizations.send(call.request.headers[HttpHeaders.Authorization])
                     connections.send(this)
@@ -166,6 +192,42 @@ class SyncSocketTest {
         assertEquals(1, rejected)
     }
 
+    @Test fun `a handshake refused with 401 for the session signs the window out and is not retried`() =
+        runBlocking<Unit> {
+            server.handshakeStatus = HttpStatusCode.Unauthorized
+            server.sessionStatus = HttpStatusCode.Unauthorized
+            server.start()
+            signIn()
+            socket.start()
+            withTimeout(WAIT_MILLIS) { server.refusedHandshakes.receive() }
+            assertNull(withTimeoutOrNull(QUIET_MILLIS) { server.refusedHandshakes.receive() })
+            assertEquals(1, rejected)
+        }
+
+    @Test fun `a refused handshake of a session the server still knows is retried`() = runBlocking<Unit> {
+        server.handshakeStatus = HttpStatusCode.ServiceUnavailable
+        server.start()
+        signIn()
+        socket.start()
+        repeat(2) { withTimeout(WAIT_MILLIS) { server.refusedHandshakes.receive() } }
+        assertEquals(0, rejected)
+    }
+
+    @Test fun `a socket that ended leaves nothing running in its client`() = runBlocking<Unit> {
+        server.start()
+        val engine = OkHttp.create()
+        val client = ApiClient(engine)
+        val clientJob = engine.coroutineContext[Job]!!
+        val before = clientJob.activeDescendants()
+        repeat(3) {
+            val ended = scope.async { client.openSocket("http://127.0.0.1:${server.port}", "/api/sync", "tok") {} }
+            connection()
+            withTimeout(WAIT_MILLIS) { ended.await() }
+        }
+        assertEquals(before, withTimeout(WAIT_MILLIS) { settled { clientJob.activeDescendants() } })
+        engine.close()
+    }
+
     @Test fun `a socket the server closes for another reason is reconnected`() = runBlocking<Unit> {
         server.start()
         signIn()
@@ -195,5 +257,18 @@ class SyncSocketTest {
         socket.start()
         connection()
         assertEquals(0, rejected)
+    }
+}
+
+private fun Job.activeDescendants(): Int = children.filter { it.isActive }.sumOf { 1 + it.activeDescendants() }
+
+/** [read] once it gives the same answer twice in a row, 50 ms apart. */
+private suspend fun settled(read: () -> Int): Int {
+    var last = read()
+    while (true) {
+        delay(50)
+        val next = read()
+        if (next == last) return next
+        last = next
     }
 }
