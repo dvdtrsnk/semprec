@@ -256,6 +256,11 @@ export interface GraphUploadAttachment {
 export const GRAPH_SEND_MAIL_MAX_RAW_BYTES = 3_000_000;
 
 const WRITE_REQUEST_TIMEOUT_MS = 30_000;
+/** A content request's whole round trip, and the cap on its response. */
+const CONTENT_REQUEST_TIMEOUT_MS = 30_000;
+const CONTENT_RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
+/** Ids in requests and responses stay the immutable ones `provider_message_id` holds. */
+const IMMUTABLE_ID_HEADERS = { Prefer: 'IdType="ImmutableId"' };
 const UPLOAD_CHUNK_TIMEOUT_MS = 120_000;
 const WRITE_ERROR_BODY_READ_LIMIT = 4_096;
 /** A create response may carry the whole created message; over this limit the call fails. */
@@ -376,12 +381,16 @@ export class GraphRestClient implements GraphMailClient {
   }
 
   /** Streams the body without buffering; a counting `Transform` enforces `MAX_ATTACHMENT_BYTES`. */
-  private async fetchAttachmentStream(messageId: string, attachmentId: string): Promise<Readable> {
+  private async fetchAttachmentStream(
+    messageId: string,
+    attachmentId: string,
+    headers: Record<string, string> = {},
+  ): Promise<Readable> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
       response = await this.fetchImpl(`${BASE_URL}/messages/${messageId}/attachments/${attachmentId}/$value`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, ...headers },
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
@@ -515,6 +524,66 @@ export class GraphRestClient implements GraphMailClient {
     }
 
     return { invalidated: false, newDeltaLink, changes };
+  }
+
+  /** The body of one message by its immutable id (`$select=body`); `null` when Graph no longer has it. */
+  async fetchMessageBody(messageId: string): Promise<{ bodyText?: string; bodyHtml?: string } | null> {
+    const token = await this.getAccessToken();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}/messages/${encodeURIComponent(messageId)}?$select=body`, {
+        headers: { Authorization: `Bearer ${token}`, ...IMMUTABLE_ID_HEADERS },
+        signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph content request failed unexpectedly");
+    }
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch (error) {
+        void error;
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error("Graph content response could not be read");
+      }
+      if (response.status === 404) return null;
+      throw new GraphApiError(response.status);
+    }
+    let text: string;
+    try {
+      const read = await readSendBody(response, CONTENT_RESPONSE_MAX_BYTES);
+      if (read.truncated) throw new Error("over the cap");
+      text = read.text;
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Graph content response could not be read");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Graph content response is not valid JSON");
+    }
+    const body = assertJsonObject(assertJsonObject(parsed, "Graph content response").body, "Graph message body");
+    if (typeof body.content !== "string") throw new Error("Graph message body has no content");
+    return body.contentType === "html" ? { bodyHtml: body.content } : { bodyText: body.content };
+  }
+
+  /** One file attachment's bytes by the message's immutable id, streamed and capped; `null` when Graph has no such one. */
+  async openAttachmentContent(messageId: string, attachmentId: string): Promise<Readable | null> {
+    try {
+      return await this.fetchAttachmentStream(
+        encodeURIComponent(messageId),
+        encodeURIComponent(attachmentId),
+        IMMUTABLE_ID_HEADERS,
+      );
+    } catch (error) {
+      if (error instanceof GraphApiError && error.status === 404) return null;
+      throw error;
+    }
   }
 
   async patchMessage(

@@ -10,6 +10,7 @@ import { simpleParser } from "mailparser";
 import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
 import {
   assertJsonObject,
+  AttachmentCapExceededError,
   MAX_ATTACHMENT_BYTES,
   MailReauthorizationRequiredError,
   MailRecipientRejectedError,
@@ -88,6 +89,31 @@ function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
 
 function decodePartText(part: GmailPayloadPart | undefined): string | undefined {
   return part?.body?.data ? decodeBase64Url(part.body.data).toString("utf8") : undefined;
+}
+
+/** A content request's whole round trip, and the cap on its response. */
+const CONTENT_REQUEST_TIMEOUT_MS = 30_000;
+const CONTENT_RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
+/** How deep a `format=full` payload's MIME tree may nest. */
+const MAX_PAYLOAD_DEPTH = 50;
+
+/** The parts of a payload the body selection reads, checked; a malformed or too deep tree fails. */
+function parseGmailPayload(value: unknown, depth = 0): GmailPayloadPart {
+  if (depth > MAX_PAYLOAD_DEPTH) throw new Error("Gmail message payload nests too deep");
+  const part = assertJsonObject(value, "Gmail message payload");
+  if (typeof part.mimeType !== "string") throw new Error("Gmail message payload part has no MIME type");
+  const body = part.body === undefined ? undefined : assertJsonObject(part.body, "Gmail message payload body");
+  if (body !== undefined && body.data !== undefined && typeof body.data !== "string")
+    throw new Error("Gmail message payload body data is not a string");
+  if (part.parts !== undefined && !Array.isArray(part.parts)) throw new Error("Gmail message payload parts is no list");
+  return {
+    mimeType: part.mimeType,
+    ...(typeof part.filename === "string" ? { filename: part.filename } : {}),
+    ...(typeof body?.data === "string" ? { body: { data: body.data } } : {}),
+    ...(Array.isArray(part.parts)
+      ? { parts: part.parts.map((child: unknown) => parseGmailPayload(child, depth + 1)) }
+      : {}),
+  };
 }
 
 /**
@@ -463,6 +489,75 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (!response.ok) throw new Error(`Gmail label modification failed with status ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /**
+   * The body of one message (`messages.get format=full`), its parts chosen as the full ingest chooses them; `null` when
+   * Gmail no longer has it.
+   */
+  async fetchMessageBody(id: string): Promise<{ bodyText?: string; bodyHtml?: string } | null> {
+    const json = await this.readContent(`/messages/${encodeURIComponent(id)}?format=full`);
+    if (json === null) return null;
+    const tree = walkGmailPayload(parseGmailPayload(json.payload));
+    return { bodyText: decodePartText(tree.textPlainPart), bodyHtml: decodePartText(tree.textHtmlPart) };
+  }
+
+  /** One attachment's decoded bytes (`attachments.get`); `null` when Gmail no longer has it. */
+  async fetchAttachmentContent(messageId: string, attachmentId: string): Promise<Buffer | null> {
+    const json = await this.readContent(
+      `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    );
+    if (json === null) return null;
+    if (typeof json.size !== "number" || typeof json.data !== "string")
+      throw new Error("Gmail attachment response has no size or data");
+    // Checked before decoding so an oversized (malformed) response is never materialized.
+    if (json.size > MAX_ATTACHMENT_BYTES)
+      throw new AttachmentCapExceededError(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
+    return decodeBase64Url(json.data);
+  }
+
+  /** A capped JSON read; `null` for a 404. Every failure is a fixed error; the token source's own failure passes. */
+  private async readContent(path: string): Promise<Record<string, unknown> | null> {
+    const token = await this.getAccessToken();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${BASE_URL}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail content request failed unexpectedly");
+    }
+    if (!response.ok) {
+      try {
+        await response.body?.cancel();
+      } catch (error) {
+        void error;
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error("Gmail content response could not be read");
+      }
+      if (response.status === 404) return null;
+      throw new Error(`Gmail content request failed with status ${response.status}`);
+    }
+    let text: string;
+    try {
+      const read = await readSendBody(response, CONTENT_RESPONSE_MAX_BYTES);
+      if (read.truncated) throw new Error("over the cap");
+      text = read.text;
+    } catch (error) {
+      void error;
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error("Gmail content response could not be read");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Gmail content response is not valid JSON");
+    }
+    return assertJsonObject(parsed, "Gmail content response");
   }
 
   /** Gmail does not thread by In-Reply-To alone, so a reply must pass `threadId`. */

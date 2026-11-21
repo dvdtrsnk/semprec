@@ -35,7 +35,6 @@ import {
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
-import type { WritableImapFlag } from "./messageFlags.js";
 import {
   listPendingImapFlagWrites,
   recordConfirmedMailMessageFlag,
@@ -44,6 +43,8 @@ import {
 import { createImapMailFlagWritebackAdapter } from "./mailFlagWriteback.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
 import { createAttachmentSpool, type AttachmentSpool } from "./imapAttachmentSpool.js";
+import type { ImapMailClient } from "./imapMailClient.js";
+export type { ImapMailClient, ImapMessageBody } from "./imapMailClient.js";
 import { logger } from "./logger.js";
 
 /** A message as the light fetch gives it: envelope, threading and delivery headers, flags and labels, no body. */
@@ -91,57 +92,6 @@ export interface ImapFolderRef {
   specialUse?: string;
   /** The folder's STATUS, listed with it; absent when the client did not ask for it or the server gave none. */
   status?: ImapFolderSelection;
-}
-
-export interface ImapMailClient {
-  prepareMove?(
-    path: string,
-    uid: number,
-  ): Promise<{ uidValidity: string; capabilities: Set<string>; found: boolean } | null>;
-  executeMoveStep?(
-    step: "move" | "copy" | "mark_deleted" | "expunge",
-    sourcePath: string,
-    uid: number,
-    uidValidity: string,
-    targetPath: string,
-  ): Promise<import("./mailMoveProviderAdapters.js").SafeImapMoveStepResult>;
-  getCapabilities(): Promise<Set<string>>;
-  listFolders(): Promise<ImapFolderRef[]>;
-  selectFolder(path: string): Promise<ImapFolderSelection>;
-  /** The light fetch of at most `limit` messages from `sinceUid` up, lowest UIDs first. */
-  fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]>;
-  /** The light fetch of at most `limit` messages below `beforeUid`, highest UIDs first. */
-  fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedMessage[]>;
-  /** The plain text of the first `IMAP_SNIPPET_BYTES` octets of each message's snippet part, by UID. */
-  fetchSnippets(
-    path: string,
-    requests: ReadonlyArray<{ uid: number; part: ImapSnippetPart }>,
-  ): Promise<Map<number, string>>;
-  /**
-   * QRESYNC: the flags changed and the UIDs expunged since `sinceModSeq`, in one fetch. `null` when QRESYNC is not
-   * enabled on the connection; the caller then uses `fetchFlagsChangedSince` and the message count.
-   */
-  fetchChangesSince(
-    path: string,
-    sinceModSeq: number,
-  ): Promise<{ flags: Array<{ uid: number; flags: string[] }>; vanished: number[] } | null>;
-  /** Every UID the folder holds, for a full UID diff when the message count does not account for the folder. */
-  fetchAllUids(path: string): Promise<number[]>;
-  /** Observes provider-side flag changes on known UIDs; `null` modseq fetches every UID's flags. */
-  fetchFlagsChangedSince(path: string, sinceModSeq: number | null): Promise<Array<{ uid: number; flags: string[] }>>;
-  /** The only flag write; every fetch above must stay peek-only so reads never mark mail as seen. */
-  setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void>;
-  /** Used only to keep a sent message's copy in the Sent folder. */
-  appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void>;
-  /** Never rejects: callers invoke it during cleanup, possibly after a failure. */
-  close(): Promise<void>;
-  /**
-   * `true` while the connection is open and nothing it ran failed or was left in doubt, so a later caller can use it
-   * again (a pooled sync session, the next move of a drain). Absent: the client cannot tell, and is never reused.
-   */
-  isReusable?(): boolean;
-  /** One round trip (NOOP) proving a connection kept open between uses still answers; `false` if it does not. */
-  ping?(): Promise<boolean>;
 }
 
 export interface ReconcileImapFolderParams {
