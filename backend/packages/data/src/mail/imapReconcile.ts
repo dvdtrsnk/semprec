@@ -322,6 +322,7 @@ async function applyImapFolder(
     await applyObservedMailMessageFlags(dbClient, {
       emailsDatabaseId: params.emailsDatabaseId,
       messageItemId: emailItemId,
+      folderItemId: params.folderItemId,
       flags,
     });
   }

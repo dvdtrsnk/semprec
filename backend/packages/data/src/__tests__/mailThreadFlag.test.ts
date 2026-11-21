@@ -292,17 +292,18 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     });
   });
 
-  it("never flags mail the user sent from an Inbox, mail in Sent or mail in Drafts, and picks the last incoming message among the rest", async () => {
+  it("flags mail to oneself delivered to an Inbox as the last received message, never mail in Sent or Drafts", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const first = await f.ingest({ id: "<first@example.test>", day: 1 });
       const refs = ["<first@example.test>"];
       const second = await f.ingest({ id: "<second@example.test>", day: 2, refs });
-      // Each message below is later than the incoming ones and is excluded for exactly one reason.
-      const ownInInbox = await f.ingest({ id: "<own@example.test>", day: 3, refs, from: OWN_ADDRESS });
+      // From the user's own address but delivered to the Inbox: received, and the last received message.
+      const toSelf = await f.ingest({ id: "<own@example.test>", day: 3, refs, from: OWN_ADDRESS });
+      // Each message below is later than the received ones and is excluded for exactly one reason.
       const otherInSent = await f.ingest({ id: "<sent@example.test>", day: 4, refs, folder: f.folders.sent.id });
       const otherInDrafts = await f.ingest({ id: "<draft@example.test>", day: 5, refs, folder: f.folders.drafts.id });
-      const excluded = [ownInInbox, otherInSent, otherInDrafts];
+      const excluded = [otherInSent, otherInDrafts];
       const threadId = await threadOf(first);
       const excludedBefore = await stateOf(excluded);
       recordThreadAnnouncements();
@@ -310,9 +311,9 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
       const result = await post(threadId, { flagged: true });
 
       expect(result.body.flagged).toBe(true);
-      expect(await flagsOf([first, second])).toEqual([null, true]);
+      expect(await flagsOf([first, second, toSelf])).toEqual([null, null, true]);
       expect(await stateOf(excluded)).toEqual(excludedBefore);
-      expect(await flagsOf(excluded)).toEqual([null, null, null]);
+      expect(await flagsOf(excluded)).toEqual([null, null]);
     });
   });
 
@@ -413,14 +414,19 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
 
   it("serializes with a reconcile pass that locks the copies in another order instead of deadlocking with it", async () => {
     await runInTenant(tenant, async () => {
-      const { threadId, offer, reply1, reply1Copy, answer, reply3 } = await offerThread(["offer", "answer"]);
+      const { f, threadId, offer, reply1, reply1Copy, answer, reply3 } = await offerThread(["offer", "answer"]);
       const { emailsDatabaseId } = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
       // `flagged:false` writes the flagged copies in item id order; the pass below locks the highest id first.
       const byId = [offer, answer].sort();
       const lowest = byId[0];
       const highest = byId[1];
       if (lowest === undefined || highest === undefined) throw new Error("Expected two copies");
-      const flagged = (messageItemId: string) => ({ emailsDatabaseId, messageItemId, flags: ["\\Flagged"] });
+      const flagged = (messageItemId: string) => ({
+        emailsDatabaseId,
+        messageItemId,
+        folderItemId: f.folders.sent.id,
+        flags: ["\\Flagged"],
+      });
 
       let routeIsWaiting!: () => void;
       const routeWaits = new Promise<void>((resolve) => {
@@ -461,7 +467,7 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
     });
   });
 
-  it("flags nothing in a thread of sent mail only and answers flagged false, and clears nothing that is not there", async () => {
+  it("refuses flagged:true on a thread of sent mail only, clears nothing that is not there and writes nothing", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const sentOnly = await f.ingest({
@@ -475,12 +481,15 @@ describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
       const before = await stateOf([sentOnly]);
       recordThreadAnnouncements();
 
-      for (const flagged of [true, false]) {
-        expect(await post(threadId, { flagged })).toEqual({ status: 200, body: { threadId, flagged: false } });
-      }
+      await expect(post(threadId, { flagged: true })).rejects.toMatchObject({
+        status: 409,
+        code: "mail_thread_no_received_message",
+      });
+      expect(await post(threadId, { flagged: false })).toEqual({ status: 200, body: { threadId, flagged: false } });
 
       expect(await stateOf([sentOnly])).toEqual(before);
       expect(await desiredFlagStates()).toEqual([]);
+      expect(events).toEqual([{ scope: "mailThread", threadId }]);
     });
   });
 

@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { lockItemForObservedMailFlags, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { parseMailSearchQuery } from "./search.js";
 import { hasInvalidMailSearchDate, listMailThreads, parseMailThreadListCursor } from "./mailThreadListQuery.js";
@@ -118,10 +118,20 @@ export function createMailThreadFacetsRouteHandler(pool: Pool) {
 
 const readBodySchema = z.object({ read: z.boolean() }).strict();
 
+/** Refuses a change the thread has no received message for, so a 200 never stands for a write that did not happen. */
+function noReceivedMessage(): ConflictError {
+  return new ConflictError(
+    "The thread has no received message to change",
+    undefined,
+    "mail_thread_no_received_message",
+  );
+}
+
 /**
- * `read: true` sets `read` on every incoming copy in every mailbox; `read: false` only on the copies of
- * the last incoming message. Non-incoming copies (own mail, Sent, Drafts) are never written. The server
- * loads the versions, so the last write wins.
+ * `read: true` sets `read` on every received copy in every mailbox (mail to oneself delivered to an Inbox included);
+ * `read: false` only on the copies of the last received message, and is refused with 409
+ * `mail_thread_no_received_message` when there is none. Copies that are not received (the user's own Sent copies,
+ * Drafts) are never written. The server loads the versions, so the last write wins.
  *
  * The transaction starts with the tenant's mail-thread guard; each copy is then locked in item id order
  * and written as the session's user only when its `read` differs, so the Emails flag hook queues the
@@ -145,6 +155,7 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
       const threadId = await resolveMailThreadForAction(client, requested.data);
       const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
       if (messages.length === 0) throw new NotFoundError("Thread not found");
+      if (!read && lastIncomingMessageId === null) throw noReceivedMessage();
       const { emailsDatabaseId } = await resolveMailModuleIds(client);
       const targets = messages.filter(
         (message) => message.incoming && (read || message.messageId === lastIncomingMessageId),
@@ -171,9 +182,9 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
 const flagBodySchema = z.object({ flagged: z.boolean() }).strict();
 
 /**
- * `flagged: true` flags the copies of the last incoming message (nothing to flag without one);
- * `flagged: false` clears every live copy, own mail, Sent and Drafts included. Locking, writing and
- * invalidation follow the read route.
+ * `flagged: true` flags the copies of the last received message, and is refused with 409
+ * `mail_thread_no_received_message` when there is none; `flagged: false` clears every live copy, own mail, Sent and
+ * Drafts included. Locking, writing and invalidation follow the read route.
  */
 export function createMailThreadFlagRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
@@ -193,6 +204,7 @@ export function createMailThreadFlagRouteHandler(pool: Pool) {
       const threadId = await resolveMailThreadForAction(client, requested.data);
       const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
       if (messages.length === 0) throw new NotFoundError("Thread not found");
+      if (flagged && lastIncomingMessageId === null) throw noReceivedMessage();
       const { emailsDatabaseId } = await resolveMailModuleIds(client);
       const targets = messages.filter(
         (message) => !flagged || (message.incoming && message.messageId === lastIncomingMessageId),
@@ -242,7 +254,8 @@ async function moveMailThread(
 }
 
 /**
- * Moves the copies in an Inbox to their own mailbox's Archive (a Gmail API mailbox's synthetic one).
+ * Moves the copies in an Inbox to their own mailbox's Archive (a Gmail API mailbox's synthetic one). The Sent copy an
+ * IMAP server keeps of mail to oneself stays in Sent, as it does for the trash route.
  * A mailbox without an Archive fails the whole call with 409 `mail_archive_folder_missing`. Moves are
  * recorded as pending and synced later; nothing is deleted.
  */
@@ -260,8 +273,8 @@ export function createMailThreadTrashRouteHandler(pool: Pool) {
 }
 
 /**
- * Moves copies in Archive or Trash back: incoming ones to Inbox, the user's own to Sent; Junk and drafts
- * stay. 409 `mail_thread_not_archived_or_trashed`, `mail_inbox_folder_missing` or
+ * Moves copies in Archive or Trash back: received ones (mail to oneself included) to Inbox, the user's own to Sent;
+ * Junk and drafts stay. 409 `mail_thread_not_archived_or_trashed`, `mail_inbox_folder_missing` or
  * `mail_sent_folder_missing`, each changing nothing.
  */
 export function createMailThreadRestoreRouteHandler(pool: Pool) {

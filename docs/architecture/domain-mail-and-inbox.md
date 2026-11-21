@@ -301,6 +301,17 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   → per copy record the desire first, then replace its `Emails.folder` edges with one UID-less edge → enqueue
   one account sync per mailbox → one `mailThread` invalidation after commit.
 - Provider write-back of flags is queued by the Emails flag hook; thread actions make no provider call.
+- A copy is **received** (`received` in `mailThreadCopyCtes`) when it is in an Inbox or Junk folder, when it has a copy
+  of its own beside a Sent copy whose edge carries a UID, or when its sender is no mailbox address of the tenant and it
+  is in no Sent folder. Mail to oneself is therefore received; only its Sent copy is the user's own. The list's and the
+  summary's `unread` and the actions' incoming copies (Drafts copies excluded) read it.
+- `read: false` and `flagged: true` on a thread without a received message are 409 `mail_thread_no_received_message`
+  and write nothing; `read: true` and `flagged: false` with nothing to change are 200.
+- An IMAP server keeps mail to oneself twice (Sent and where it was delivered) and both converge on one Emails item. An
+  IMAP move of an item that is also in another folder takes the one provider message outside Sent and keeps the Sent
+  copy's edge with its UID: archive and trash move the delivered copy, restore brings it back to the Inbox. A flag
+  observation of that Sent copy is ignored while the item has a copy with a UID elsewhere
+  (`applyObservedMailMessageFlags`), so the item's `read`/`flagged` follow the delivered copy.
 
 ### Inherited values
 

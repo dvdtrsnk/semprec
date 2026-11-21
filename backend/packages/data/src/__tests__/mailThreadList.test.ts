@@ -246,7 +246,7 @@ describe("mail thread list", () => {
       });
     });
   });
-  it("distinguishes own, sent-folder, read and unread incoming messages", async () => {
+  it("counts mail to oneself delivered to the Inbox as unread, unlike a message in Sent or a read one", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const own = await f.ingest({ id: "<own-inbox@example.test>", from: "me@example.test" });
@@ -265,7 +265,7 @@ describe("mail thread list", () => {
         rows.find((row) => row.threadId === threads.find((entry) => entry.item_id === sentFolder.itemId)?.thread_id),
       ).toBeUndefined();
       for (const [itemId, expected] of [
-        [own.itemId, false],
+        [own.itemId, true],
         [sentFolder.itemId, false],
         [read.itemId, false],
         [unread.itemId, true],

@@ -4311,24 +4311,24 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
   );
 
   describe("applyObservedMailMessageFlags, called directly", () => {
-    const observe = (emailsDatabaseId: string, messageItemId: string, flags: string[]) =>
+    const observe = (emailsDatabaseId: string, messageItemId: string, flags: string[], folderItemId: string) =>
       withTransaction(pool, (client) =>
-        applyObservedMailMessageFlags(client, { emailsDatabaseId, messageItemId, flags }),
+        applyObservedMailMessageFlags(client, { emailsDatabaseId, messageItemId, folderItemId, flags }),
       );
 
     it("throws NotFoundError when the item does not exist", async () => {
-      const { emailsId } = await setUpFolder();
-      await expect(observe(emailsId, randomUUID(), [])).rejects.toThrow(NotFoundError);
+      const { emailsId, params } = await setUpFolder();
+      await expect(observe(emailsId, randomUUID(), [], params.folderItemId)).rejects.toThrow(NotFoundError);
     });
 
     tenantIt("patches the item and creates a converged sync-state row when none exists yet", async () => {
-      const { emailsId, ingestKnown, readOf } = await setUpFolder();
+      const { emailsId, params, ingestKnown, readOf } = await setUpFolder();
       // No `flags`: ingestEmailMessage's created branch only records observed flags when the caller passes them,
       // so this message lands with no mail_message_flag_sync_state rows at all.
       const { itemId } = await ingestKnown("<no-rows@x>");
       expect(await flagStateRowFor(itemId, "read")).toBeUndefined();
 
-      await observe(emailsId, itemId, [IMAP_SEEN_FLAG]);
+      await observe(emailsId, itemId, [IMAP_SEEN_FLAG], params.folderItemId);
 
       expect(await readOf(itemId)).toBe(true);
       expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: true });
@@ -4337,7 +4337,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     tenantIt(
       "leaves a pending property untouched while converging a different, non-pending property in the same call",
       async () => {
-        const { emailsId, ingestKnown, markRead } = await setUpFolder();
+        const { emailsId, params, ingestKnown, markRead } = await setUpFolder();
         // Unread, unflagged — seeds converged sync-state rows for both properties.
         const { itemId } = await ingestKnown("<pending-plus-converge@x>", { flags: [] });
 
@@ -4345,7 +4345,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
         await markRead(itemId);
         expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: false, current_state: false });
 
-        await observe(emailsId, itemId, [IMAP_FLAGGED_FLAG]); // still unread (the old value) but now flagged
+        await observe(emailsId, itemId, [IMAP_FLAGGED_FLAG], params.folderItemId); // still unread (the old value) but now flagged
 
         // The pending `read` write survives untouched, while `flagged`, which had no pending write, converges to
         // the observation: both properties were recorded in this one call.

@@ -88,6 +88,12 @@ export function mailThreadCopyCtes(
     EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
     EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
     COALESCE(f.has_sent, false) AS has_sent,
+    -- Received: delivered to an Inbox or Junk folder, a copy of its own beside a Sent copy that carries a UID (an IMAP
+    -- server keeps a self-addressed message twice), or from no address of the tenant and in no Sent folder. Mail to
+    -- oneself is therefore received although its sender is the tenant's; only its Sent copy is the user's own.
+    COALESCE(f.delivered, false) OR (NOT COALESCE(f.has_sent, false) AND NOT EXISTS (
+      SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))
+    )) AS received,
     COALESCE(f.has_inbox, false) AS has_inbox, COALESCE(f.has_non_junk, true) AS has_non_junk,
     COALESCE(f.folder_ids, ARRAY[]::uuid[]) AS folder_ids
   FROM mail_message_meta m
@@ -98,6 +104,9 @@ export function mailThreadCopyCtes(
       count(*) AS n, bool_and(COALESCE(folder.properties->>'specialPurpose' = 'drafts', false)) AS only_drafts,
       bool_or(COALESCE(folder.properties->>'specialPurpose' = 'sent', false)) AS has_sent,
       bool_or(COALESCE(folder.properties->>'specialPurpose' = 'inbox', false)) AS has_inbox,
+      bool_or(COALESCE(folder.properties->>'specialPurpose' IN ('inbox', 'junk'), false))
+        OR (bool_or(COALESCE(folder.properties->>'specialPurpose' = 'sent', false) AND r.metadata ? 'uid')
+          AND bool_or(COALESCE(folder.properties->>'specialPurpose' NOT IN ('sent', 'drafts'), true))) AS delivered,
       bool_or(COALESCE(folder.properties->>'specialPurpose' NOT IN ('junk', 'trash'), true)) AS has_non_junk,
       array_agg(folder.id) AS folder_ids
     FROM folder_definition fd JOIN item_relations r ON r.relation_definition_id = fd.id AND r.tenant_id = app_tenant_default()
@@ -114,7 +123,7 @@ export function mailThreadCopyCtes(
       AND NOT EXISTS (SELECT 1 FROM mail_drafts d WHERE d.tenant_id = m.tenant_id AND d.email_item_id = i.id AND d.sent_at IS NULL)))
 ), copy_stats AS (
   SELECT thread_id, bool_or(attached) AS has_attachment, bool_or(flagged) AS flagged,
-    bool_or(NOT own AND NOT has_sent AND NOT is_read) AS unread
+    bool_or(received AND NOT is_read) AS unread
   FROM copies GROUP BY thread_id
 )`;
 }

@@ -27,7 +27,10 @@ export interface MailThreadActionMessage {
   messageId: string;
   /** An absent property reads as `false`. */
   read: boolean;
-  /** The sender is none of the tenant's mailbox addresses and the copy is in neither a Sent nor a Drafts folder. */
+  /**
+   * Received and not in a Drafts folder: delivered to an Inbox or Junk folder (mail to oneself included), a copy of its
+   * own beside a Sent copy, or from none of the tenant's mailbox addresses and in no Sent folder.
+   */
   incoming: boolean;
 }
 
@@ -67,7 +70,7 @@ export async function listMailThreadActionMessages(
     `
 WITH ${mailThreadCopyCtes(1)}, classified AS (
   SELECT c.item_id, c.message_id, c.is_read, c.activity,
-    NOT c.own AND NOT c.has_sent AND NOT EXISTS (
+    c.received AND NOT EXISTS (
       SELECT 1 FROM items f
       WHERE f.tenant_id = app_tenant_default() AND f.id = ANY(c.folder_ids) AND f.properties->>'specialPurpose' = 'drafts'
     ) AS incoming
@@ -152,7 +155,7 @@ WITH ${mailThreadCopyCtes(1)}
 SELECT jsonb_build_object(
   'itemId', c.item_id, 'mailboxItemId', c.mailbox_item_id, 'providerMessageId', meta.provider_message_id,
   'purposes', p.purposes,
-  'incoming', NOT c.own AND NOT c.has_sent AND NOT (p.purposes @> '"drafts"'::jsonb),
+  'incoming', c.received AND NOT (p.purposes @> '"drafts"'::jsonb),
   'draft', p.purposes @> '"drafts"'::jsonb OR EXISTS (
     SELECT 1 FROM mail_drafts d WHERE d.tenant_id = app_tenant_default() AND d.email_item_id = c.item_id AND d.sent_at IS NULL)
 ) AS copy
@@ -216,8 +219,9 @@ export async function planMailThreadMoves(
   return plans;
 }
 
-const imapSourceRow = z.object({
+const imapCopyEdgeRow = z.object({
   folderId: z.uuid(),
+  purpose: z.string().nullable(),
   path: z.string().min(1).max(1024),
   uid: z.string().regex(/^[1-9]\d{0,9}$/),
   uidValidity: z.string().regex(/^[1-9]\d{0,9}$/),
@@ -225,73 +229,112 @@ const imapSourceRow = z.object({
 
 const MAX_IMAP_UID = 4_294_967_295;
 
-/**
- * The one folder edge carrying a UID, with path and stored `UIDVALIDITY`. `null` for none or several (a tentative
- * move edge carries no UID): the provider copy cannot be addressed.
- */
-async function readImapMoveSource(
+/** A folder edge of an IMAP copy that carries a UID: one provider message, with its path and stored `UIDVALIDITY`. */
+interface ImapCopyEdge {
+  source: Extract<MailMoveSource, { provider: "imap" }>;
+  inSent: boolean;
+}
+
+/** `null` when an edge is malformed: no provider message can then be addressed with certainty. */
+async function readImapCopyEdges(
   client: PoolClient,
   messageItemId: string,
   folderDefinitionId: string,
-): Promise<MailMoveSource | null> {
-  const { rows } = await client.query<{ source: unknown }>(
-    `SELECT jsonb_build_object('folderId', folder.id, 'path', folder.properties->>'providerId',
-             'uid', edge.metadata->>'uid', 'uidValidity', state.uidvalidity::text) AS source
+): Promise<ImapCopyEdge[] | null> {
+  const { rows } = await client.query<{ edge: unknown }>(
+    `SELECT jsonb_build_object('folderId', folder.id, 'purpose', folder.properties->>'specialPurpose',
+             'path', folder.properties->>'providerId', 'uid', edge.metadata->>'uid',
+             'uidValidity', state.uidvalidity::text) AS edge
      FROM item_relations edge
      JOIN items folder ON folder.tenant_id = app_tenant_default() AND folder.deleted_at IS NULL
        AND folder.id = CASE WHEN edge.item_a = $1 THEN edge.item_b ELSE edge.item_a END
      JOIN mail_folder_sync_state state ON state.tenant_id = app_tenant_default() AND state.item_id = folder.id
      WHERE edge.tenant_id = app_tenant_default() AND edge.relation_definition_id = $2
-       AND (edge.item_a = $1 OR edge.item_b = $1) AND edge.metadata->>'uid' IS NOT NULL`,
+       AND (edge.item_a = $1 OR edge.item_b = $1) AND edge.metadata->>'uid' IS NOT NULL
+     ORDER BY folder.id`,
     [messageItemId, folderDefinitionId],
   );
-  if (rows.length !== 1) return null;
-  const parsed = imapSourceRow.safeParse(rows[0]?.source);
-  if (!parsed.success || Number(parsed.data.uid) > MAX_IMAP_UID || Number(parsed.data.uidValidity) > MAX_IMAP_UID)
-    return null;
-  return {
-    provider: "imap",
-    folderItemId: parsed.data.folderId,
-    path: parsed.data.path,
-    uid: Number(parsed.data.uid),
-    uidValidity: parsed.data.uidValidity,
-  };
+  const edges: ImapCopyEdge[] = [];
+  for (const row of rows) {
+    const parsed = imapCopyEdgeRow.safeParse(row.edge);
+    if (!parsed.success || Number(parsed.data.uid) > MAX_IMAP_UID || Number(parsed.data.uidValidity) > MAX_IMAP_UID)
+      return null;
+    edges.push({
+      source: {
+        provider: "imap",
+        folderItemId: parsed.data.folderId,
+        path: parsed.data.path,
+        uid: Number(parsed.data.uid),
+        uidValidity: parsed.data.uidValidity,
+      },
+      inSent: parsed.data.purpose === "sent",
+    });
+  }
+  return edges;
 }
 
 /**
- * `undefined` when an earlier outstanding desire keeps its own evidence. Throws 409 `mail_move_source_unverified` when
- * the copy cannot be addressed.
+ * How one copy moves. `source` is `undefined` when an earlier outstanding desire keeps its own evidence. `keepFolderIds`
+ * are the folders whose edges the move leaves in place: an IMAP server keeps mail to oneself twice, in Sent and where
+ * it was delivered, and one Emails item holds both; the move takes the delivered message and leaves the Sent copy.
+ */
+interface CopyMoveSource {
+  source: MailMoveSource | undefined;
+  keepFolderIds: ReadonlySet<string>;
+}
+
+const NO_FOLDERS: ReadonlySet<string> = new Set();
+
+function unaddressable(): ConflictError {
+  return new ConflictError(
+    "A message of the thread cannot be addressed at its provider",
+    undefined,
+    "mail_move_source_unverified",
+  );
+}
+
+/**
+ * An IMAP copy moves the one provider message an edge with a UID names. When the item is also in another folder, its
+ * Sent copies stay and the move takes the one message outside Sent. Throws 409 `mail_move_source_unverified` when the
+ * copy cannot be addressed.
  */
 async function resolveMoveSource(
   client: PoolClient,
   copy: MailThreadMoveCopy,
   syncModes: Map<string, string | null>,
   folderDefinitionId: string,
-): Promise<MailMoveSource | undefined> {
-  if (await hasPreservedMailMoveSource(client, copy.itemId)) return undefined;
+): Promise<CopyMoveSource> {
   if (!syncModes.has(copy.mailboxItemId))
     syncModes.set(copy.mailboxItemId, (await getMailAccountSyncState(client, copy.mailboxItemId))?.syncMode ?? null);
   const syncMode = syncModes.get(copy.mailboxItemId);
-  let source: MailMoveSource | null = null;
-  if (syncMode === "imap") source = await readImapMoveSource(client, copy.itemId, folderDefinitionId);
-  else if ((syncMode === "gmail_api" || syncMode === "graph_api") && copy.providerMessageId !== null)
-    source = {
-      provider: syncMode === "gmail_api" ? "gmail" : "graph",
-      providerMessageId: copy.providerMessageId,
-    };
-  if (source === null)
-    throw new ConflictError(
-      "A message of the thread cannot be addressed at its provider",
-      undefined,
-      "mail_move_source_unverified",
+  const preserved = await hasPreservedMailMoveSource(client, copy.itemId);
+  if (syncMode === "imap") {
+    const edges = await readImapCopyEdges(client, copy.itemId, folderDefinitionId);
+    if (edges === null) throw unaddressable();
+    const sentCopyFolderIds = new Set(edges.filter((edge) => edge.inSent).map((edge) => edge.source.folderItemId));
+    const inOtherFolder = (await listRelationsForItem(client, folderDefinitionId, copy.itemId)).some(
+      (edge) => !sentCopyFolderIds.has(otherSide(edge, copy.itemId)),
     );
-  return source;
+    const keepFolderIds = inOtherFolder ? sentCopyFolderIds : NO_FOLDERS;
+    if (preserved) return { source: undefined, keepFolderIds };
+    const [only, ...more] = inOtherFolder ? edges.filter((edge) => !edge.inSent) : edges;
+    if (only === undefined || more.length > 0) throw unaddressable();
+    return { source: only.source, keepFolderIds };
+  }
+  if (preserved) return { source: undefined, keepFolderIds: NO_FOLDERS };
+  if ((syncMode === "gmail_api" || syncMode === "graph_api") && copy.providerMessageId !== null)
+    return {
+      source: { provider: syncMode === "gmail_api" ? "gmail" : "graph", providerMessageId: copy.providerMessageId },
+      keepFolderIds: NO_FOLDERS,
+    };
+  throw unaddressable();
 }
 
 /**
  * Moves the planned copies under the caller's thread guard. All sources are resolved first, so nothing is written for
  * an unaddressable copy. Recording the desired move verifies an IMAP source against the current edge, so it must
- * precede the edge replacement; the new edge carries no metadata, so no old UID survives.
+ * precede the edge replacement; the new edge carries no metadata, so no old UID survives. The edges of a Sent copy the
+ * move leaves in place are kept with their UIDs.
  */
 export async function applyMailThreadMoves(client: PoolClient, plans: readonly MailThreadMovePlan[]): Promise<number> {
   if (plans.length === 0) return 0;
@@ -302,17 +345,19 @@ export async function applyMailThreadMoves(client: PoolClient, plans: readonly M
   if (!definition) throw new Error("The Emails folder property has no relation definition");
 
   const syncModes = new Map<string, string | null>();
-  const sources: (MailMoveSource | undefined)[] = [];
-  for (const { copy } of plans) sources.push(await resolveMoveSource(client, copy, syncModes, definition.id));
+  const moves: Array<MailThreadMovePlan & CopyMoveSource> = [];
+  for (const plan of plans)
+    moves.push({ ...plan, ...(await resolveMoveSource(client, plan.copy, syncModes, definition.id)) });
 
-  for (const [index, { copy, purpose, targetFolderId }] of plans.entries()) {
+  for (const { copy, purpose, targetFolderId, source, keepFolderIds } of moves) {
     await recordDesiredMailMessageMove(client, {
       messageItemId: copy.itemId,
       mailboxItemId: copy.mailboxItemId,
       desiredPurpose: purpose,
-      source: sources[index],
+      source,
     });
     for (const edge of await listRelationsForItem(client, definition.id, copy.itemId)) {
+      if (keepFolderIds.has(otherSide(edge, copy.itemId))) continue;
       await deleteRelationWithClient(
         client,
         {
@@ -349,7 +394,7 @@ export function selectMailThreadTrashMoves(copies: readonly MailThreadMoveCopy[]
   return counted.filter((copy) => !copy.purposes.has("trash")).map((copy) => ({ copy, purpose: "trash" }));
 }
 
-/** Restore: incoming copies to `inbox`, the user's own to `sent` so sent mail never lands in an Inbox. */
+/** Restore: received copies to `inbox`, the user's own to `sent` so sent mail never lands in an Inbox. */
 export function selectMailThreadRestoreMoves(copies: readonly MailThreadMoveCopy[]): MailThreadMoveSelection[] {
   const selected = copies
     .filter((copy) => !copy.draft && (copy.purposes.has("archive") || copy.purposes.has("trash")))
