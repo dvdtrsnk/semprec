@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatUsd } from "../format.js";
+import { formatByteSize, formatDateTime, formatUsd } from "../format.js";
 
 describe("formatUsd", () => {
   it("formats USD for en", () => {
@@ -30,5 +30,23 @@ describe("formatDateTime", () => {
     expect(formatDateTime("cs", instant)).toBe(
       new Intl.DateTimeFormat("cs", { dateStyle: "medium", timeStyle: "short" }).format(date),
     );
+  });
+});
+
+describe("formatByteSize", () => {
+  const unit = (locale: "cs" | "en", value: number, name: string, maximumFractionDigits: number) =>
+    new Intl.NumberFormat(locale, { style: "unit", unit: name, unitDisplay: "short", maximumFractionDigits }).format(
+      value,
+    );
+
+  it.each([
+    { bytes: 0, value: 0, name: "byte", digits: 0 },
+    { bytes: 1023, value: 1023, name: "byte", digits: 0 },
+    { bytes: 1536, value: 1.5, name: "kilobyte", digits: 1 },
+    { bytes: 5 * 1024 * 1024, value: 5, name: "megabyte", digits: 1 },
+    { bytes: 3 * 1024 ** 4, value: 3 * 1024, name: "gigabyte", digits: 1 },
+  ])("formats $bytes bytes in the largest binary unit it reaches, for en and cs", ({ bytes, value, name, digits }) => {
+    expect(formatByteSize("en", bytes)).toBe(unit("en", value, name, digits));
+    expect(formatByteSize("cs", bytes)).toBe(unit("cs", value, name, digits));
   });
 });

@@ -4,6 +4,7 @@ import { I18nProvider } from "../../i18n/index.js";
 import { OperationError, type GenericOperations, type View } from "../../api/genericOperations.js";
 import { createFakeOperations } from "../../test/fakeOperations.js";
 import { createFakeMailDrafts } from "../../test/fakeMailDrafts.js";
+import { createFakeMailMessages } from "../../test/fakeMailMessages.js";
 import { VIEW_ID, createMailboxBackend, mailboxView } from "../../test/mailboxFixture.js";
 import { setViewport } from "../../test/renderMailbox.js";
 import { createDefaultViewRegistry } from "../registerViews.js";
@@ -11,7 +12,10 @@ import { ViewHost } from "../ViewHost.js";
 import { createViewRegistry, registerViewRenderer, resolveViewRenderer } from "../viewRegistry.js";
 
 function defaultRegistry() {
-  return createDefaultViewRegistry({ mailDrafts: createFakeMailDrafts(createMailboxBackend()) });
+  return createDefaultViewRegistry({
+    mailDrafts: createFakeMailDrafts(createMailboxBackend()),
+    mailMessages: createFakeMailMessages(createMailboxBackend()),
+  });
 }
 
 function renderHost(operations: GenericOperations, viewId = VIEW_ID) {
