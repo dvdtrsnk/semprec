@@ -39,6 +39,7 @@ internal data class AccountNotificationDto(
     val approvals: Boolean = true,
     val invites: Boolean = true,
     val reminders: Boolean = true,
+    val calendarChanges: Boolean = true,
     val problemsLevel: String = "critical",
     val problemsSummary: Boolean = true,
     val badgeApprovals: Boolean = true,

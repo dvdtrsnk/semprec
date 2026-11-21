@@ -7,6 +7,13 @@ import {
   type EventRecurrenceRule,
 } from "./eventRecurrenceRule.js";
 import { isCalendarDate } from "./eventValidationHook.js";
+import { parseRecurrenceRule, type RecurrenceRule } from "./recurrenceExpansion.js";
+import {
+  EVENT_EXCEPTION_DATES_PROPERTY_KEY,
+  EVENT_RECURRENCE_RULE_PROPERTY_KEY,
+  readExceptionDates,
+  type LocalStart,
+} from "./syncedEventFields.js";
 
 export interface EventSeriesDefinition {
   rule: EventRecurrenceRule;
@@ -28,4 +35,34 @@ export function readEventSeries(properties: Record<string, unknown>): EventSerie
     if (error instanceof ValidationError) return null;
     throw error;
   }
+}
+
+export interface SyncedEventSeriesDefinition {
+  /** `null` for a rule outside the supported RRULE subset; such a series is shown once, at its own start. */
+  rule: RecurrenceRule | null;
+  exceptions: LocalStart[];
+  startDate: string;
+}
+
+/**
+ * A series the calendar sync stored with a raw `recurrenceRule` instead of `recurrence`. `null` like
+ * `readEventSeries`, and for an Event that also carries `recurrence` (that rule wins). Unreadable stored
+ * `exceptionDates` exclude nothing.
+ */
+export function readSyncedEventSeries(properties: Record<string, unknown>): SyncedEventSeriesDefinition | null {
+  const text = properties[EVENT_RECURRENCE_RULE_PROPERTY_KEY];
+  const { date } = properties;
+  if (typeof text !== "string" || text === "") return null;
+  if (properties[EVENT_SERIES_ID_PROPERTY_KEY] !== undefined || !isCalendarDate(date)) return null;
+  if (readEventSeries(properties) !== null) return null;
+  return {
+    rule: parseRecurrenceRule(text),
+    exceptions: readExceptionDates(properties[EVENT_EXCEPTION_DATES_PROPERTY_KEY]) ?? [],
+    startDate: date,
+  };
+}
+
+/** A row that stands for a whole series, with either kind of rule. */
+export function isEventSeriesRow(properties: Record<string, unknown>): boolean {
+  return readEventSeries(properties) !== null || readSyncedEventSeries(properties) !== null;
 }

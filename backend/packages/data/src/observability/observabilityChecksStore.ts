@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 
 export type ObservabilityCheckStatus = "ok" | "alerting";
 
@@ -44,32 +45,45 @@ export function transitionTenantObservabilityCheck(
   return transitionCheckIn(client, "tenant_observability_checks", checkKey, compute);
 }
 
+/**
+ * A missing row is inserted before it is locked, so a concurrent run of the same check waits for this transaction and
+ * then sees its status: a first transition happens once, not once per run.
+ */
 async function transitionCheckIn(
   client: PoolClient,
   table: CheckTable,
   checkKey: string,
   compute: ComputeCheck,
 ): Promise<ObservabilityCheckTransition> {
-  const existing = await client.query<{ status: ObservabilityCheckStatus }>(
-    `SELECT status FROM ${table} WHERE check_key = $1 FOR UPDATE`,
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO ${table} (check_key, status) VALUES ($1, 'ok')
+     ON CONFLICT (${CONFLICT_TARGET[table]}) DO NOTHING
+     RETURNING id`,
     [checkKey],
   );
-  const previousStatus = existing.rows[0]?.status ?? null;
+  let id = inserted.rows[0]?.id;
+  let previousStatus: ObservabilityCheckStatus | null = null;
+  if (id === undefined) {
+    const existing = await client.query<{ id: string; status: ObservabilityCheckStatus }>(
+      `SELECT id, status FROM ${table} WHERE check_key = $1 FOR UPDATE`,
+      [checkKey],
+    );
+    const row = requireSingleRow(existing.rows, `observability check "${checkKey}"`);
+    id = row.id;
+    previousStatus = row.status;
+  }
   const { status, detail } = compute(previousStatus);
   const changed = previousStatus !== status;
 
-  const { rows } = await client.query<{ id: string }>(
-    `INSERT INTO ${table} (check_key, status, detail, changed_at)
-     VALUES ($1, $2, $3::jsonb, now())
-     ON CONFLICT (${CONFLICT_TARGET[table]}) DO UPDATE SET
-       status = excluded.status,
-       detail = excluded.detail,
-       changed_at = CASE WHEN $4 THEN now() ELSE ${table}.changed_at END
-     RETURNING id`,
-    [checkKey, status, JSON.stringify(detail), changed],
+  requireAffectedRows(
+    await client.query(
+      `UPDATE ${table}
+       SET status = $2, detail = $3::jsonb, changed_at = CASE WHEN $4 THEN now() ELSE changed_at END
+       WHERE id = $1`,
+      [id, status, JSON.stringify(detail), changed],
+    ),
+    `observability check "${checkKey}"`,
   );
-  const id = rows[0]?.id;
-  if (!id) throw new Error(`transitionCheckIn: upsert for "${checkKey}" returned no row`);
 
   return {
     id,
@@ -79,16 +93,10 @@ async function transitionCheckIn(
   };
 }
 
-/** Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. */
-export function deleteOrphanedObservabilityChecks(
-  client: PoolClient,
-  checkKeyPrefix: string,
-  currentCheckKeys: readonly string[],
-): Promise<number> {
-  return deleteOrphansIn(client, "observability_checks", checkKeyPrefix, currentCheckKeys);
-}
-
-/** Tenant-table variant; RLS limits it to the caller's tenant. */
+/**
+ * Rows whose source is gone would never be re-evaluated and could sit `alerting` forever. RLS limits it to the
+ * caller's tenant.
+ */
 export function deleteOrphanedTenantObservabilityChecks(
   client: PoolClient,
   checkKeyPrefix: string,

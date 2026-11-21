@@ -192,11 +192,6 @@ describe("admin routes (issue #1037)", () => {
       `INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'SECRET-TENANT-TEXT')`,
       [tenantId, projectItemId],
     );
-    // A global per-mailbox row, as left until the check-system tick purges it.
-    await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
-      `mail:${mailboxItemId}`,
-      JSON.stringify({ mailboxItemId, lastError: "SECRET-TENANT-TEXT" }),
-    ]);
 
     const res = await fetch(`${baseUrl}/api/admin/health`, { headers: { Authorization: `Bearer ${admin.token}` } });
     expect(res.status).toBe(200);

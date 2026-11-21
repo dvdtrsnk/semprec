@@ -22,7 +22,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
 import { ensureMailAccountSyncState, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
-import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
@@ -102,6 +102,22 @@ async function createActiveMailbox(): Promise<string> {
       await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: "imap" });
       return item.id;
     }),
+  );
+}
+
+/** An IMAP adapter whose connect fails with a plain error: an ordinary sync failure, not a reauthorization. */
+const UNEXPECTED_FAILURE = "IMAP connection failed unexpectedly";
+const unexpectedlyFailing: MailSyncAdapterFactory = {
+  createImapClient: async () => {
+    throw new Error(UNEXPECTED_FAILURE);
+  },
+};
+
+async function storeFixtureCredential(mailboxItemId: string): Promise<void> {
+  await runInTenant(getTenantZeroId(), () =>
+    withTransaction(pool, (client) =>
+      storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
+    ),
   );
 }
 
@@ -277,7 +293,7 @@ describe("observability.checkSystem (issue #169)", () => {
     const overdueMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: overdueMailbox, syncMode: "imap" });
     await pool.query(
-      `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
+      `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 hour' WHERE item_id = $1`,
       [overdueMailbox],
     );
 
@@ -380,18 +396,6 @@ describe("observability.checkSystem (issue #169)", () => {
     await pool.query(`DELETE FROM mail_account_sync_state WHERE item_id = $1`, [mailboxItemId]);
     await runCheck();
     expect(await getTenantCheck(`mail:${mailboxItemId}`)).toBeUndefined();
-  });
-
-  it("purges a legacy global mail: row that still carries a lastError", async () => {
-    await markAllProcessesFresh();
-    const legacyKey = `mail:${randomUUID()}`;
-    await pool.query(
-      `INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2::jsonb)`,
-      [legacyKey, JSON.stringify({ lastError: "boom" })],
-    );
-
-    await runCheck();
-    expect(await getCheck(legacyKey)).toBeUndefined();
   });
 
   it("references the specific check row that transitioned as the notification's source", async () => {
@@ -503,7 +507,7 @@ describe("observability.checkSystem (issue #169)", () => {
       expect(await notificationsFor(alerting!.id)).toHaveLength(2);
     });
 
-    it("removes the tenant row of a soft-deleted mailbox and purges legacy global mailsync rows", async () => {
+    it("removes the tenant row of a soft-deleted mailbox", async () => {
       await createTestUser();
       await markAllProcessesFresh();
       const mailboxId = await createActiveMailbox();
@@ -511,13 +515,10 @@ describe("observability.checkSystem (issue #169)", () => {
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeDefined();
 
       await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [mailboxId]);
-      const legacyKey = `process:mailsync:${randomUUID()}`;
-      await pool.query(`INSERT INTO observability_checks (check_key, status) VALUES ($1, 'alerting')`, [legacyKey]);
 
       await runCheck();
 
       expect(await getTenantCheck(`process:mailsync:${mailboxId}`)).toBeUndefined();
-      expect(await getCheck(legacyKey)).toBeUndefined();
     });
   });
 
@@ -552,7 +553,7 @@ describe("observability.checkSystem (issue #169)", () => {
       const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       await pool.query(
-        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
+        `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 hour' WHERE item_id = $1`,
         [mailboxItemId],
       );
       return mailboxItemId;
@@ -620,13 +621,14 @@ describe("observability.checkSystem (issue #169)", () => {
         withTransaction(pool, (client) => resolveMailModuleIds(client)),
       );
 
-      // The pass has no stored credential, so it fails before any provider call, with its own report.
+      // The pass fails at the provider with an ordinary error, with its own report.
+      await storeFixtureCredential(mailboxItemId);
       await runInTenant(getTenantZeroId(), async () => {
         await expect(
-          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+          handleSyncMailAccountTask(pool, { mailboxItemId }, unexpectedlyFailing, moduleIds, unusedStorage, {
             job: { id: "sync-job-1" },
           }),
-        ).rejects.toThrow("has no stored credential");
+        ).rejects.toThrow(UNEXPECTED_FAILURE);
       });
       await runCheck();
 
@@ -641,21 +643,19 @@ describe("observability.checkSystem (issue #169)", () => {
       const moduleIds = await runInTenant(getTenantZeroId(), () =>
         withTransaction(pool, (client) => resolveMailModuleIds(client)),
       );
+      await storeFixtureCredential(mailboxItemId);
       await runInTenant(getTenantZeroId(), async () => {
         await expect(
-          handleSyncMailAccountTask(pool, { mailboxItemId }, {}, moduleIds, unusedStorage, {
+          handleSyncMailAccountTask(pool, { mailboxItemId }, unexpectedlyFailing, moduleIds, unusedStorage, {
             job: { id: "sync-before-reauthorization" },
           }),
-        ).rejects.toThrow("has no stored credential");
+        ).rejects.toThrow(UNEXPECTED_FAILURE);
       });
       await runCheck();
       expect(await mailProblems(mailboxItemId)).toMatchObject([
         { severity: "warning", occurrence_count: 2, resolved_at: null },
       ]);
       await runInTenant(getTenantZeroId(), async () => {
-        await withTransaction(pool, (client) =>
-          storeCredential(client, { itemId: mailboxItemId, credentialType: "app_password", plaintext: "fixture" }),
-        );
         await expect(
           handleSyncMailAccountTask(
             pool,
@@ -727,9 +727,9 @@ describe("observability.checkSystem (issue #169)", () => {
           const imap: ImapMailClient = {
             getCapabilities: async () => new Set(),
             listFolders: async () => [],
-            selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
+            selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
             fetchMessagesSince: async () => [],
-            fetchVanishedSince: async () => [],
+            fetchChangesSince: async () => ({ flags: [], vanished: [] }),
             fetchAllUids: async () => [],
             fetchFlagsChangedSince: async () => [],
             setMessageFlag: async () => {},

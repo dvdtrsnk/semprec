@@ -2,6 +2,7 @@ package cz.semprec.app.data
 
 import cz.semprec.app.core.DeviceInfo
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.AuthRepository
@@ -14,11 +15,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 
-/** The session of this device, kept in [storage] and checked against the server. */
+/**
+ * The session of this device, kept in [storage] and checked against the server. [endingSession] runs on signing out,
+ * after the device has forgotten the session and before the server ends it, with calls that still carry it: what
+ * belongs to the session on the server (the push subscription of this device) is ended there first.
+ */
 class HttpAuthRepository(
     private val client: ApiClient,
     private val storage: SessionStorage,
     private val device: DeviceInfo,
+    private val endingSession: suspend (AuthenticatedApi) -> Unit = {},
 ) : AuthRepository {
     private val mutableStatus = MutableStateFlow<SessionStatus>(SessionStatus.Restoring)
     override val status: StateFlow<SessionStatus> = mutableStatus.asStateFlow()
@@ -32,7 +38,7 @@ class HttpAuthRepository(
             mutableStatus.value = SessionStatus.SignedOut
             return
         }
-        val response = client.send(stored.serverUrl, HttpMethod.Get, SESSION_PATH, stored.token)
+        val response = client.send(stored.serverUrl, HttpMethod.Get, AuthenticatedApi.SESSION_PATH, stored.token)
         mutableStatus.value = when (response) {
             is ApiResponse.Success -> response.readSession(stored.serverUrl)
             is ApiResponse.Failure -> when (response.kind) {
@@ -79,7 +85,10 @@ class HttpAuthRepository(
     override suspend fun signOut() {
         val stored = storage.load()
         forget()
-        if (stored != null) client.send(stored.serverUrl, HttpMethod.Post, LOGOUT_PATH, stored.token)
+        if (stored == null) return
+        val ending = InMemorySessionStorage().apply { save(stored) }
+        endingSession(AuthenticatedApi(client, ending, onSessionRejected = {}))
+        client.send(stored.serverUrl, HttpMethod.Post, LOGOUT_PATH, stored.token)
     }
 
     private fun forget() {
@@ -98,7 +107,6 @@ class HttpAuthRepository(
         if (this == FailureKind.REJECTED) FailureKind.UNAUTHORIZED else this
 
     private companion object {
-        const val SESSION_PATH = "/api/auth/session"
         const val LOGIN_PATH = "/api/auth/login"
         const val LOGOUT_PATH = "/api/auth/logout"
         const val RESET_PATH = "/api/auth/password-reset/request"

@@ -3,12 +3,10 @@
   endpoint or process that mutates rows directly, bypassing it, is a high-severity
   finding.
  
-- Before the first production release the migrations are a baseline edited in place,
-  with the seed alongside; a cutover, backfill or compatibility shim written for
-  development data is medium. After that release every migration is
-  additive/backward-compatible: a column drop, type narrowing, or `NOT NULL` without a
-  default on an existing table is critical unless the issue calls for the break
-  (`docs/architecture/migrations-and-seeding.md`).
+- The backend assumes the first version: the schema is `0001_baseline.sql`, edited in
+  place with the seed alongside. A second migration file, a backfill, a data cutover, a
+  reconcile of already seeded tenants, or a compatibility shim or reader branch for data
+  an older version wrote is medium (`docs/architecture/migrations-and-seeding.md`).
  
 - No new abstraction, helper, or config flag beyond what the current issue's Task
   section asks for — speculative generality is a smell, not a virtue.

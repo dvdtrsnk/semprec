@@ -2,7 +2,8 @@ import CoreKit
 import MailFeature
 
 /// Routes of the Mail feature, on the stack of the tab it was created for. The editor of a message is a sheet over that
-/// stack, and so is the Podrobnosti sheet of a task made from a thread.
+/// stack, and so is the Podrobnosti sheet of a task made from a thread. The accounts live in the settings: the profile
+/// sheet opens over that stack on the internet accounts, and on the account when one is asked for.
 @MainActor
 final class AppMailRouter {
 
@@ -37,11 +38,14 @@ extension AppMailRouter: MailRouting {
     }
 
     func showAccounts() {
-        context.showMailAccounts(in: tab)
+        context.presentSheet(.profile(opening: [.page(.internetAccounts)]), from: tab)
     }
 
     func showAccount(mailboxId: String) {
-        context.push(.mailAccount(mailboxId: mailboxId, tab: tab), in: tab)
+        context.presentSheet(
+            .profile(opening: [.page(.internetAccounts), .internetAccount(accountId: mailboxId)]),
+            from: tab
+        )
     }
 
     func showTask(taskId: String) {

@@ -11,11 +11,14 @@ import kotlinx.coroutines.launch
 
 /**
  * The notification settings. A change shows at once and is taken back when the server refuses it, so the switches
- * never disagree with the server for longer than a request.
+ * never disagree with the server for longer than a request. Turning something on asks the app for the permission to
+ * notify ([NotificationSettingsEffect.RequestPermission]); the system asks the person only the first time.
  */
 class NotificationSettingsViewModel internal constructor(
     private val repository: AccountNotificationRepository,
-) : ScreenViewModel<NotificationSettingsState, NotificationSettingsAction, Nothing>(NotificationSettingsState()) {
+) : ScreenViewModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>(
+    NotificationSettingsState(),
+) {
     private var loadJob: Job? = null
 
     init {
@@ -52,6 +55,7 @@ class NotificationSettingsViewModel internal constructor(
         val before = state.value.choices ?: return
         if (before.isOn(switch) == on) return
         update { it.copy(choices = before.with(switch, on), writeFailure = null) }
+        if (on) emit(NotificationSettingsEffect.RequestPermission)
         viewModelScope.launch {
             val result = answer { repository.setSwitch(switch, on) }
             ensureActive()
@@ -69,6 +73,7 @@ class NotificationSettingsViewModel internal constructor(
         val before = state.value.choices ?: return
         if (before.problemsLevel == level) return
         update { it.copy(choices = before.copy(problemsLevel = level), writeFailure = null) }
+        if (before.problemsLevel == AccountProblemsLevel.OFF) emit(NotificationSettingsEffect.RequestPermission)
         viewModelScope.launch {
             val result = answer { repository.setProblemsLevel(level) }
             ensureActive()
@@ -89,6 +94,7 @@ private fun NotificationChoices.isOn(switch: AccountNotificationSwitch): Boolean
     AccountNotificationSwitch.APPROVALS -> approvals
     AccountNotificationSwitch.INVITES -> invites
     AccountNotificationSwitch.REMINDERS -> reminders
+    AccountNotificationSwitch.CALENDAR_CHANGES -> calendarChanges
     AccountNotificationSwitch.PROBLEMS_SUMMARY -> problemsSummary
     AccountNotificationSwitch.BADGE_APPROVALS -> badgeApprovals
     AccountNotificationSwitch.BADGE_INVITES -> badgeInvites
@@ -100,6 +106,7 @@ private fun NotificationChoices.with(switch: AccountNotificationSwitch, on: Bool
         AccountNotificationSwitch.APPROVALS -> copy(approvals = on)
         AccountNotificationSwitch.INVITES -> copy(invites = on)
         AccountNotificationSwitch.REMINDERS -> copy(reminders = on)
+        AccountNotificationSwitch.CALENDAR_CHANGES -> copy(calendarChanges = on)
         AccountNotificationSwitch.PROBLEMS_SUMMARY -> copy(problemsSummary = on)
         AccountNotificationSwitch.BADGE_APPROVALS -> copy(badgeApprovals = on)
         AccountNotificationSwitch.BADGE_INVITES -> copy(badgeInvites = on)
@@ -107,5 +114,13 @@ private fun NotificationChoices.with(switch: AccountNotificationSwitch, on: Bool
     }
 
 private fun AccountNotificationPrefs.toChoices() = NotificationChoices(
-    approvals, invites, reminders, problemsLevel, problemsSummary, badgeApprovals, badgeInvites, badgeInbox,
+    approvals,
+    invites,
+    reminders,
+    calendarChanges,
+    problemsLevel,
+    problemsSummary,
+    badgeApprovals,
+    badgeInvites,
+    badgeInbox,
 )

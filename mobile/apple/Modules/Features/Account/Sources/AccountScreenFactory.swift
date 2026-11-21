@@ -24,9 +24,10 @@ public enum AccountScreenFactory {
     }
 
     public static func notificationSettings(
-        makeModel: @escaping @MainActor () -> any NotificationSettingsScreenModel
+        makeModel: @escaping @MainActor () -> any NotificationSettingsScreenModel,
+        router: any AccountRouting
     ) -> some View {
-        NotificationSettingsScreen(viewModel: NotificationSettingsViewModel(model: makeModel()))
+        NotificationSettingsScreen(viewModel: NotificationSettingsViewModel(model: makeModel(), router: router))
     }
 
     public static func aiUsage(makeModel: @escaping @MainActor () -> any AiUsageScreenModel) -> some View {
@@ -35,5 +36,21 @@ public enum AccountScreenFactory {
 
     public static func trash(makeModel: @escaping @MainActor () -> any TrashScreenModel) -> some View {
         TrashScreen(viewModel: TrashViewModel(model: makeModel()))
+    }
+
+    /// The internet accounts with their services, and the sheet that adds one.
+    public static func internetAccounts(
+        makeModel: @escaping @MainActor () -> any InternetAccountsScreenModel,
+        router: any AccountRouting
+    ) -> some View {
+        InternetAccountsScreen(viewModel: InternetAccountsViewModel(model: makeModel(), router: router))
+    }
+
+    /// One internet account with its Mail and Calendars switches, its settings and its removal.
+    public static func internetAccount(
+        makeModel: @escaping @MainActor () -> any InternetAccountScreenModel,
+        router: any AccountRouting
+    ) -> some View {
+        InternetAccountScreen(viewModel: InternetAccountViewModel(model: makeModel(), router: router))
     }
 }

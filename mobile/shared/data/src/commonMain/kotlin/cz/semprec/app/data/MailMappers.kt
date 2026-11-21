@@ -1,5 +1,7 @@
 package cz.semprec.app.data
 
+import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailAddress
 import cz.semprec.app.domain.MailDraft
@@ -108,6 +110,28 @@ internal fun MailMailboxDto.toDomain() = MailAccount(
     connectionLimitApplies = connectionLimit.applies,
     autonomousSendProjectCount = autonomousSendProjectCount,
     syncedMessageCount = syncedMessageCount,
+)
+
+/**
+ * The account side of a mailbox row. A row without a calendar status, or with one this app does not know, is off when
+ * Calendars is switched off and pending otherwise.
+ */
+internal fun MailMailboxDto.toInternetAccount() = InternetAccount(
+    mailbox = toDomain(),
+    mailEnabled = mailEnabled,
+    calendarsEnabled = calendarsEnabled,
+    calendarStatus = CALENDAR_STATUSES[calendarStatus]
+        ?: if (calendarsEnabled) CalendarSyncStatus.PENDING else CalendarSyncStatus.OFF,
+)
+
+private val CALENDAR_STATUSES = mapOf(
+    "off" to CalendarSyncStatus.OFF,
+    "pending" to CalendarSyncStatus.PENDING,
+    "needsConsent" to CalendarSyncStatus.NEEDS_CONSENT,
+    "ok" to CalendarSyncStatus.OK,
+    "error" to CalendarSyncStatus.ERROR,
+    "never" to CalendarSyncStatus.NEVER,
+    "needsReauthorization" to CalendarSyncStatus.NEEDS_REAUTHORIZATION,
 )
 
 internal fun MailFolderDto.toDomain() = MailFolder(id, name, specialPurpose, unreadCount, totalCount)

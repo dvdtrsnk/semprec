@@ -59,9 +59,11 @@ struct CalendarScreen: View {
                 Button(role: .destructive) { viewModel.edit(.confirmDelete) } label: {
                     Text("calendar.delete.confirm", bundle: .module)
                 }
+                .accessibilityIdentifier(CalendarIdentifiers.deleteConfirm)
                 Button(role: .cancel) { viewModel.edit(.cancelDelete) } label: {
                     Text("calendar.delete.cancel", bundle: .module)
                 }
+                .accessibilityIdentifier(CalendarIdentifiers.deleteCancel)
             } message: { request in
                 Text(deleteMessage(request.kind), bundle: .module)
             }

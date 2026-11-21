@@ -35,6 +35,7 @@ const DEFAULTS = {
   badgeApprovals: true,
   badgeInvites: true,
   badgeInbox: false,
+  calendarChanges: true,
   updatedAt: null,
 };
 
@@ -123,6 +124,7 @@ describe("notification preferences (issue #1441)", () => {
       badgeApprovals: false,
       badgeInvites: false,
       badgeInbox: true,
+      calendarChanges: false,
     };
 
     const first = await patchPreferences(tenant, user, every);

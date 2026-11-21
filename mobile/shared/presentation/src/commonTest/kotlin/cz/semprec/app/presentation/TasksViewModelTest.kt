@@ -308,6 +308,18 @@ class TasksViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a renamed title with line breaks is written on one line`() = runTest(dispatcher) {
+        content(aTask("a"))
+        val vm = tasks()
+        runCurrent()
+
+        vm.onAction(TasksAction.Rename("a", "Nový\nnázev"))
+        runCurrent()
+
+        assertEquals(ItemChange.Title("Nový název"), fake.updates.single().second)
+        vm.close()
+    }
+
     @Test fun `a new task is created for today in the chosen project and the list loads again`() = runTest(dispatcher) {
         content(aTask("a"))
         fake.onCreate = { RepositoryResult.Content(aTask("n")) }

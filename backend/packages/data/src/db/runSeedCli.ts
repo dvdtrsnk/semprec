@@ -8,9 +8,7 @@ if (!connectionString) {
 
 const pool = createPool(connectionString, { role: "semprec_data" });
 try {
-  for (const result of await runSeed(pool)) {
-    console.log(formatSeedLine(result));
-  }
+  for (const result of await runSeed(pool)) console.log(formatSeedLine(result));
 } finally {
   await pool.end();
 }

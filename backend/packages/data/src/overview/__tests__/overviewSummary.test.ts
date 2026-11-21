@@ -294,6 +294,34 @@ describe("getOverviewSummary (issue gh-1837)", () => {
     expect((await todayList(tenant)).open).toHaveLength(summary.tasksToday);
   });
 
+  it("reads every figure on one pool connection", async () => {
+    await unreadMessages(tenant, 1);
+    let connections = 0;
+    let poolQueries = 0;
+    const counting = new Proxy(runtime, {
+      get(target, key, receiver) {
+        if (key === "connect") {
+          return (): Promise<PoolClient> => {
+            connections += 1;
+            return target.connect();
+          };
+        }
+        if (key === "query") {
+          return (...args: unknown[]): unknown => {
+            poolQueries += 1;
+            return Reflect.apply(target.query.bind(target), undefined, args);
+          };
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const summary = await runInTenant(tenant.id, () =>
+      getOverviewSummary(counting, { ownerUserId: tenant.userId, now: NOW }),
+    );
+    expect(summary.mailUnread).toBe(1);
+    expect({ connections, poolQueries }).toEqual({ connections: 1, poolQueries: 0 });
+  });
+
   it("counts only the open tasks of the Today list: 7 open and 1 completed today give 7", async () => {
     for (let n = 0; n < 5; n += 1) await task(tenant, TODAY);
     for (let n = 0; n < 2; n += 1) await task(tenant, YESTERDAY);

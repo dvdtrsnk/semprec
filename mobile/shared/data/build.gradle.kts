@@ -17,5 +17,10 @@ kotlin {
             implementation(libs.coroutines.test)
             implementation(libs.ktor.client.mock)
         }
+        // A real WebSocket server on the loopback interface, for the sync socket's tests on the JVM.
+        jvmTest.dependencies {
+            implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.server.websockets)
+        }
     }
 }

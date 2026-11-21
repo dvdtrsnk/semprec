@@ -8,10 +8,15 @@ import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { enqueueRemindersResync } from "./remindersResync.js";
+import {
+  EVENT_EXCEPTION_DATES_PROPERTY_KEY,
+  EVENT_RECURRENCE_RULE_PROPERTY_KEY,
+  EVENT_TIME_ZONE_PROPERTY_KEY,
+} from "./syncedEventKeys.js";
 
 const REMINDER_ITEM_MODULE_IDS: readonly (string | null)[] = [EVENTS_MODULE_ID, TASKS_MODULE_ID];
 
-/** The inputs of `reminderFireTime.ts`. */
+/** The inputs of `reminderFireTime.ts`, and the synced Event fields that move or add a reminder in the feed. */
 const FIRE_TIME_KEYS: readonly string[] = [
   "date",
   "endDate",
@@ -20,6 +25,9 @@ const FIRE_TIME_KEYS: readonly string[] = [
   "travelMinutes",
   "notifications",
   "status",
+  EVENT_TIME_ZONE_PROPERTY_KEY,
+  EVENT_RECURRENCE_RULE_PROPERTY_KEY,
+  EVENT_EXCEPTION_DATES_PROPERTY_KEY,
 ];
 
 const CALENDAR_NOTIFY_KEY = "notify";

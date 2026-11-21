@@ -37,17 +37,4 @@ public enum MailScreenFactory {
     ) -> some View {
         MailFoldersScreen(viewModel: MailFoldersViewModel(model: makeModel(), router: router))
     }
-
-    /// The connected accounts and the form that adds one.
-    public static func accounts(
-        makeModel: @escaping @MainActor () -> any MailAccountsScreenModel,
-        router: any MailRouting
-    ) -> some View {
-        MailAccountsScreen(viewModel: MailAccountsViewModel(model: makeModel(), router: router))
-    }
-
-    /// One account with its settings and its removal.
-    public static func account(makeModel: @escaping @MainActor () -> any MailAccountScreenModel) -> some View {
-        MailAccountScreen(viewModel: MailAccountViewModel(model: makeModel()))
-    }
 }

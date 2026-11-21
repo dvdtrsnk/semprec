@@ -62,7 +62,7 @@ class MailThreadsViewModel internal constructor(
             is MailThreadsAction.SetProject -> change(reloadFacets = true) { it.withProject(action.projectId) }
             MailThreadsAction.ClearContext -> change(reloadFacets = true) { it.withoutContext() }
             is MailThreadsAction.ToggleRead -> toggleRead(action.threadId)
-            MailThreadsAction.DismissFailure -> update { it.copy(actionFailed = false) }
+            MailThreadsAction.DismissFailure -> update { it.copy(actionFailed = false, actionRefusal = null) }
             is MailThreadsAction.Open -> emit(action.target)
         }
     }
@@ -91,6 +91,7 @@ class MailThreadsViewModel internal constructor(
                     hasMore = false,
                     threads = emptyList(),
                     actionFailed = false,
+                    actionRefusal = null,
                 )
             } else {
                 it.copy(refreshing = true, loadingMore = false)
@@ -151,12 +152,13 @@ class MailThreadsViewModel internal constructor(
         val markRead = thread.unread
         update { it.withUnread(threadId, unread = !markRead) }
         viewModelScope.launch {
-            val result = mailAttempt { mail.setRead(threadId, read = markRead) }
+            val result = mailWrite { mail.setRead(threadId, read = markRead) }
             ensureActive()
             when (result) {
-                is RepositoryResult.Content -> update { it.withUnread(threadId, result.value) }
-                is RepositoryResult.Failure, null ->
-                    update { it.withUnread(threadId, unread = markRead).copy(actionFailed = true) }
+                is MailWrite.Done -> update { it.withUnread(threadId, result.value) }
+                is MailWrite.Failed -> update {
+                    it.withUnread(threadId, unread = markRead).copy(actionFailed = true, actionRefusal = result.refusal)
+                }
             }
         }
     }
@@ -181,7 +183,7 @@ private fun MailThreadsState.afterLoad(result: RepositoryResult<MailThreadPage>?
 /** A failed first load is an error; a failed refresh leaves the list that is shown as it was. */
 private fun MailThreadsState.failed(kind: FailureKind?): MailThreadsState =
     if (phase == MailThreadsPhase.CONTENT) {
-        copy(refreshing = false, loadingMore = false, actionFailed = true)
+        copy(refreshing = false, loadingMore = false, actionFailed = true, actionRefusal = null)
     } else {
         copy(phase = MailThreadsPhase.ERROR, failure = kind)
     }
@@ -196,7 +198,7 @@ private fun MailThreadsState.afterMore(result: RepositoryResult<MailThreadPage>?
                 threads = threads + result.value.threads.filter { it.threadId !in known }.map { it.toItem() },
             )
         }
-        is RepositoryResult.Failure, null -> copy(loadingMore = false, actionFailed = true)
+        is RepositoryResult.Failure, null -> copy(loadingMore = false, actionFailed = true, actionRefusal = null)
     }
 
 private fun MailThreadsState.afterFacets(result: RepositoryResult<MailFacets>?): MailThreadsState = when (result) {

@@ -23,6 +23,7 @@ import { createEventInCalendar } from "../defaultCalendarCreateHook.js";
 import { createMaterializeEventOccurrenceRouteHandler } from "../eventOccurrenceRouteHandlers.js";
 import { MAX_OCCURRENCES_PER_SERIES } from "../eventOccurrences.js";
 import { logger } from "../logger.js";
+import { createCalendarTimelineLookups } from "../timelineLookups.js";
 import { readCalendarTimeline } from "../timelineRead.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
@@ -265,6 +266,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date("2026-10-16T08:00:00.000Z"),
           includeSleep: true,
+          lookups: createCalendarTimelineLookups(client),
         }),
       );
       expect(coreItems.map((entry) => entry.id)).toEqual([plain]);

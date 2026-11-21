@@ -25,7 +25,7 @@ import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderK
 export interface ActionContext {
   heartbeatId: string;
   projectItemId: string;
-  /** Set for a rule fired via onItemEvent. */
+  /** Set for a rule fired via onItemEvent; a batched fire calls the handler once per item. */
   itemId?: string;
   /** The agent run that fired this heartbeat via `heartbeat.trigger`; becomes the new run's `parent_run_id`. */
   triggeredByRunId?: string;

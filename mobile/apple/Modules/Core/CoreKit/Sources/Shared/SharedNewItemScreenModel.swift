@@ -48,7 +48,7 @@ extension SharedNewItemScreenModel {
     static func state(_ state: SharedSDK.NewItemState) -> NewItemState {
         NewItemState(
             phase: NewItemPhase(state.phase, failure: state.failure),
-            calendars: state.calendars.map(NewItemCalendar.init),
+            groups: state.groups.map(NewItemCalendarGroup.init),
             defaultDay: state.defaultDay
         )
     }

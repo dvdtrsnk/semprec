@@ -23,6 +23,14 @@ final class AccountFormatTests: XCTestCase {
         XCTAssertNil(AccountFormat.instant("yesterday"))
     }
 
+    func testASyncTimeReadsTheServersMicrosecondsAndIsNilWithoutAnInstant() {
+        let micro = AccountFormat.syncTime("2026-10-21T10:00:00.123456Z", locale: english, timeZone: utc)
+        XCTAssertNotNil(micro)
+        XCTAssertEqual(micro, AccountFormat.syncTime("2026-10-21T10:00:00Z", locale: english, timeZone: utc))
+        XCTAssertNil(AccountFormat.syncTime("yesterday", locale: english, timeZone: utc))
+        XCTAssertNil(AccountFormat.syncTime(nil, locale: english, timeZone: utc))
+    }
+
     func testHowLongAgoIsWordedInTheLocaleAndNilForNoInstant() throws {
         let now = try XCTUnwrap(AccountFormat.instant("2026-10-21T12:00:00Z"))
         XCTAssertEqual(AccountFormat.relative("2026-10-21T10:00:00Z", now: now, locale: english), "2 hr. ago")

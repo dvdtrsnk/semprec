@@ -623,7 +623,7 @@ describe("the mail agent tools", () => {
 
       expect(answer.error).toBe(false);
       const thread = threadSchema.parse(JSON.parse(answer.result));
-      expect(thread).toMatchObject({ threadId, subject: "Re: Offer", messageCount: 2, company: null });
+      expect(thread).toMatchObject({ threadId, subject: "Offer", messageCount: 2, company: null });
       expect(thread.project).toMatchObject({ name: "Website" });
       expect(thread.participants.map((participant) => participant.address).sort()).toEqual(
         [PETR.address, OWN_ADDRESS, JANA.address].sort(),

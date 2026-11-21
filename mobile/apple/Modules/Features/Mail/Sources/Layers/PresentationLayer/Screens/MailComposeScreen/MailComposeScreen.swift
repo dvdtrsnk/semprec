@@ -60,7 +60,12 @@ private extension MailComposeScreen {
         case .loading:
             StatusView(.loading)
         case .failure(let failure):
-            StatusView(.failure(message: Text(FailureKind.message(for: failure)), retry: { viewModel.send(.retry) }))
+            StatusView(
+                .failure(
+                    message: Text(FailureKind.message(for: failure, refusal: viewModel.state.refusal)),
+                    retry: { viewModel.send(.retry) }
+                )
+            )
         case .editing:
             form
         }
@@ -170,7 +175,8 @@ private extension MailComposeScreen {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             }
         } else if state.sendPhase == .failed {
-            Text(FailureKind.sendMessage(for: state.sendFailure)).foregroundStyle(Theme.Colors.destructive)
+            Text(FailureKind.sendMessage(for: state.sendFailure, refusal: state.sendRefusal))
+                .foregroundStyle(Theme.Colors.destructive)
         } else if state.discardFailed {
             Text("mail.compose.discardFailed", bundle: .module).foregroundStyle(Theme.Colors.destructive)
         }

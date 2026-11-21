@@ -2,7 +2,7 @@ import CoreKit
 import Foundation
 
 /// The choices the new item form offers and how it names them: the repeats of an event and of a task, the alert and
-/// travel presets, and the words for a number of minutes.
+/// travel presets, the words for a number of minutes, and the calendars by where they come from.
 enum NewItemOptions {
 
     // MARK: - Constants
@@ -21,6 +21,32 @@ enum NewItemOptions {
     static let travelRange = 1...1_440
 
     // MARK: - Names
+    /// The title of a group of calendars: the own calendars', or an account's name and address (`iCloud ·
+    /// david@tresnak.cc`), either alone when the other is missing.
+    static func title(of group: NewItemCalendarGroup) -> String {
+        guard let account = group.account else {
+            return String(localized: "calendars.group.own", table: "Sheets", bundle: .module)
+        }
+        let parts = [account.name, account.address].compactMap { $0 }.filter { !$0.isEmpty }
+        guard !parts.isEmpty else {
+            return String(localized: "calendars.account.unnamed", table: "Sheets", bundle: .module)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// A calendar's name, followed by where it comes from when another calendar offered has the same name
+    /// (`Osobní · iCloud`).
+    static func label(of calendar: NewItemCalendar) -> String {
+        let source: String? = switch calendar.qualifier {
+        case .unqualified: nil
+        case .own: String(localized: "calendars.group.own", table: "Sheets", bundle: .module)
+        case .accountName: calendar.account?.name
+            ?? String(localized: "calendars.account.unnamed", table: "Sheets", bundle: .module)
+        case .accountAddress: calendar.account?.address
+        }
+        return [calendar.name, source].compactMap { $0 }.joined(separator: " · ")
+    }
+
     static func name(of repeatRule: NewItemRepeat) -> String {
         let key: String.LocalizationValue = switch repeatRule {
         case .never: "newItem.repeat.never"

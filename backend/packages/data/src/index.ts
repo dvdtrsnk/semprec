@@ -312,6 +312,7 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { bindMailboxServiceLiveSyncStop } from "./mail/mailboxServiceHooks.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
 // The Gmail watch and Graph subscription owners, hosted by semprec-api.
 export {
@@ -636,6 +637,8 @@ export {
   type EventInvitationSnapshot,
 } from "./calendar/eventInvitationJob.js";
 export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
+export * from "./calendar/sync/adapters/composition.js";
+export * from "./calendar/sync/calendarPushComposition.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,
@@ -886,7 +889,6 @@ export {
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export * from "./semp/sempTurnCancellation.js";
-export { reindexSempMessageSearch, type SempMessageSearchReindexOptions } from "./semp/sempMessageSearch.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
 export { listSleepNightReadItemIds } from "./semp/sempSleepNightContext.js";
@@ -923,6 +925,7 @@ export {
   createMailOauthCompleteRouteHandler,
   createMailOauthStartRouteHandler,
 } from "./mail/mailOauthRouteHandlers.js";
+export { resolveMailOauthRedirectUrl } from "./mail/mailOauthStatesStore.js";
 export { createMailboxPasswordConnectRouteHandler } from "./mail/mailboxPasswordRouteHandlers.js";
 export { createMailSummaryRouteHandler } from "./mail/mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";

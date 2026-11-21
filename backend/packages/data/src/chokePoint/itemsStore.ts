@@ -74,6 +74,15 @@ export async function lockItemById(client: Queryable, databaseId: string, itemId
  * the locking statement, so a non-qualifying row is not locked and `null` is returned; a row changed
  * while waiting is rechecked against its latest committed version.
  */
+/** Locks the row, live or trashed, `FOR SHARE`; `false` when there is none. */
+export async function lockItemForShare(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR SHARE",
+    [databaseId, itemId],
+  );
+  return rows.length > 0;
+}
+
 export async function lockTrashedItemBefore(
   client: Queryable,
   databaseId: string,
@@ -672,10 +681,20 @@ export async function countItemsGrouped(
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
+  return getItemsByIdsAmong(client, itemIds, await visibleDatabaseIds(client));
+}
+
+/** `getItemsByIds` with the `visibleDatabaseIds` a caller reading several batches already read. */
+export async function getItemsByIdsAmong(
+  client: Queryable,
+  itemIds: string[],
+  databaseIds: readonly string[],
+): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
-    [itemIds, await visibleDatabaseIds(client)],
+    [itemIds, databaseIds],
   );
   return rows.map(mapItemRow);
 }

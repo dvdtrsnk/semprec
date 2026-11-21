@@ -7,7 +7,34 @@ import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY, messageFlagProperties } from "
 export interface ApplyObservedMailMessageFlagsInput {
   emailsDatabaseId: string;
   messageItemId: string;
+  /** The folder whose copy the flags were observed on. */
+  folderItemId: string;
   flags: readonly string[];
+}
+
+/**
+ * An IMAP server keeps mail to oneself twice: the Sent copy (appended `\Seen`) and the delivered one. The item's flags
+ * follow the delivered copy, so a Sent copy's observation is ignored while the item has a copy with a UID elsewhere.
+ */
+async function isSentCopyBesideDeliveredCopy(client: PoolClient, input: ApplyObservedMailMessageFlagsInput) {
+  const { rows } = await client.query<{ ignored: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM items observed
+       WHERE observed.tenant_id = app_tenant_default() AND observed.id = $3
+         AND observed.properties->>'specialPurpose' = 'sent'
+     ) AND EXISTS (
+       SELECT 1 FROM properties p
+       JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
+       JOIN item_relations edge ON edge.tenant_id = p.tenant_id AND edge.relation_definition_id = rd.id
+         AND (edge.item_a = $2 OR edge.item_b = $2) AND edge.metadata ? 'uid'
+       JOIN items folder ON folder.tenant_id = p.tenant_id AND folder.deleted_at IS NULL
+         AND folder.id = CASE WHEN edge.item_a = $2 THEN edge.item_b ELSE edge.item_a END
+       WHERE p.tenant_id = app_tenant_default() AND p.database_id = $1 AND p.key = 'folder'
+         AND COALESCE(folder.properties->>'specialPurpose', 'none') <> 'sent'
+     ) AS ignored`,
+    [input.emailsDatabaseId, input.messageItemId, input.folderItemId],
+  );
+  return rows[0]?.ignored === true;
 }
 
 /**
@@ -17,7 +44,8 @@ export interface ApplyObservedMailMessageFlagsInput {
  * survives. `recordObservedMailMessageFlags` then records the observation for both flags.
  *
  * Locks the items row before the sync-state row, the order the user write path takes; the reverse order would
- * deadlock against a concurrent user flag update (40P01).
+ * deadlock against a concurrent user flag update (40P01). The Sent copy of mail to oneself is not observed while its
+ * delivered copy is known.
  */
 export async function applyObservedMailMessageFlags(
   client: PoolClient,
@@ -25,6 +53,7 @@ export async function applyObservedMailMessageFlags(
 ): Promise<void> {
   const item = await lockItemForObservedMailFlags(client, input.emailsDatabaseId, input.messageItemId);
   if (!item) throw new NotFoundError(`Emails item ${input.messageItemId} not found`);
+  if (await isSentCopyBesideDeliveredCopy(client, input)) return;
 
   const { rows } = await client.query<{
     property_key: string;

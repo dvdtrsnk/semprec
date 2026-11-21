@@ -32,7 +32,6 @@ export interface MailEnvelope {
 }
 
 export type MailMessageKind = "message" | "dsn";
-export type MailMessageMigrationStatus = "stable" | "partial" | "done";
 
 export interface MailMessageMetaRow {
   itemId: string;
@@ -51,8 +50,6 @@ export interface MailMessageMetaRow {
   messageKind: MailMessageKind;
   /** For a DSN only: the Message-ID (from References/In-Reply-To) of the outgoing message it reports on. */
   dsnOriginalMessageId: string | null;
-  /** 'stable' for every row a current writer produces; the column also admits 'partial' and 'done'. */
-  migrationStatus: MailMessageMigrationStatus;
   /** At most 200 characters; `null` until ingest or send sets it. */
   previewText: string | null;
   ingestedAt: Date | null;
@@ -73,7 +70,6 @@ type MailMessageMetaDbRow = {
   delivered_to_address: string | null;
   message_kind: MailMessageKind;
   dsn_original_message_id: string | null;
-  migration_status: MailMessageMigrationStatus;
   preview_text: string | null;
   ingested_at: Date | null;
   is_bulk: boolean;
@@ -93,7 +89,6 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
     deliveredToAddress: row.delivered_to_address,
     messageKind: row.message_kind,
     dsnOriginalMessageId: row.dsn_original_message_id,
-    migrationStatus: row.migration_status,
     previewText: row.preview_text,
     ingestedAt: row.ingested_at,
     isBulk: row.is_bulk,
@@ -102,7 +97,7 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
 
 const COLUMNS =
   'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
-  "delivered_to_address, message_kind, dsn_original_message_id, migration_status, preview_text, ingested_at, is_bulk";
+  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -118,7 +113,6 @@ export interface UpsertMailMessageMetaInput {
   deliveredToAddress?: string | null;
   messageKind?: MailMessageKind;
   dsnOriginalMessageId?: string | null;
-  migrationStatus?: MailMessageMigrationStatus;
   previewText?: string | null;
   ingestedAt?: Date | null;
   /** Written on insert only; a conflicting upsert keeps the stored value. Defaults to `false`. */
@@ -148,8 +142,8 @@ export async function upsertMailMessageMeta(
   }
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
-                                     delivered_to_address, message_kind, dsn_original_message_id, migration_status, mailbox_item_id, preview_text, ingested_at, is_bulk)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
+                                     delivered_to_address, message_kind, dsn_original_message_id, mailbox_item_id, preview_text, ingested_at, is_bulk)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15)
      ON CONFLICT (mailbox_item_id, message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
@@ -171,7 +165,6 @@ export async function upsertMailMessageMeta(
       input.deliveredToAddress ?? null,
       input.messageKind ?? "message",
       input.dsnOriginalMessageId ?? null,
-      input.migrationStatus ?? "stable",
       input.mailboxItemId,
       input.previewText ?? null,
       input.ingestedAt ?? null,
@@ -264,14 +257,50 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
 }
 
 /**
- * Deletes the meta row of a permanently deleted Emails item, in the purge's transaction. When no other row names its
- * thread (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the
- * system writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key.
- * Unlike `deleteMailMessageMetaByItemId`, an already purged or unbound Threads item does not fail it.
+ * Marks that an IMAP pass removed one of the Email's folder edges, in the transaction that removed it, so the decision
+ * whether the Email still has a folder copy survives a pass that ends before its final transaction. `false` for an
+ * Email without a meta row, which only the removing pass itself decides.
+ */
+export async function markMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = now() WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/** The Emails of `mailboxItemId` marked by `markMailMessageFolderCopyRemoved` and not yet decided. */
+export async function listMailMessagesWithFolderCopyRemoved(
+  client: Queryable,
+  mailboxItemId: string,
+): Promise<string[]> {
+  const { rows } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1 AND folder_copy_removed_at IS NOT NULL
+      ORDER BY item_id`,
+    [mailboxItemId],
+  );
+  return rows.map((row) => row.item_id);
+}
+
+/** Clears the mark of an Email found to keep a folder copy; `false` for an Email without a meta row. */
+export async function clearMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = NULL WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/**
+ * Deletes the meta row of an Emails item that leaves the mail for good: one permanently deleted (in the purge's
+ * transaction) or one trashed because its account's Mail was switched off. When no other row names its thread
+ * (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the system
+ * writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key. Unlike
+ * `deleteMailMessageMetaByItemId`, an item without a meta row and an already purged or unbound Threads item do not
+ * fail it.
  *
  * Takes the tenant's mail-thread mutation guard before its first statement on a mail table.
  */
-export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, itemId: string): Promise<void> {
+export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, itemId: string): Promise<void> {
   await lockMailThreadMutation(client);
   const deleted = await client.query<{ thread_id: string | null }>(
     `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,

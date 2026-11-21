@@ -1,19 +1,17 @@
 import type { PoolClient } from "pg";
-import { getTenantUserLocale } from "../auth/usersStore.js";
 import { eventEnd, getCalendarClock, type WallClock } from "../calendarTime.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
-import { getItemsByIds } from "../chokePoint/itemsStore.js";
-import { toManifestLocale } from "../manifest/catalogResolution.js";
-import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
 import { TASK_DISPLAY_DAY_SQL } from "../tasks/taskDisplayDaySql.js";
 import { EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
-import { readEventSeries } from "./eventSeries.js";
+import { isEventSeriesRow } from "./eventSeries.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
+import { shiftDays } from "./recurrenceExpansion.js";
+import { readEventTimeZone, scheduleInTenantZone } from "./syncedEventFields.js";
+import { createCalendarTimelineLookups, type CalendarTimelineLookups } from "./timelineLookups.js";
 import { attachTaskInEventState } from "./timelineTaskInEvent.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
@@ -37,18 +35,22 @@ const DAY_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
 
 /**
  * Stored days are compared as text, never cast, so an unreadable value cannot fail the statement. A row whose days
- * do not start with a date is always a candidate, so `readSchedule` can log it.
+ * do not start with a date is always a candidate, so `readSchedule` can log it. An Event with its own `timeZone` can
+ * be stored a day away from the tenant day it is shown on, so its days are compared with `$5`..`$6`, a day wider.
  */
 const EVENT_CANDIDATES_SQL = `
   SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    CROSS JOIN LATERAL (SELECT left(i.properties->>'date', 10) AS first_day,
-                              left(i.properties->>'endDate', 10) AS last_day) days
+                              left(i.properties->>'endDate', 10) AS last_day,
+                              jsonb_typeof(i.properties->'timeZone') = 'string' AS zoned) days
    WHERE i.database_id = $1 AND i.deleted_at IS NULL
      AND i.properties->>'date' <> ''
      AND (days.first_day !~ $4
           OR days.last_day !~ $4
-          OR (days.first_day COLLATE "C" <= $3 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $2))`;
+          OR (days.first_day COLLATE "C" <= $3 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $2)
+          OR (days.zoned IS TRUE
+              AND days.first_day COLLATE "C" <= $6 AND coalesce(days.last_day, days.first_day) COLLATE "C" >= $5))`;
 
 /** Selected like `EVENT_CANDIDATES_SQL`, by the Task's display day. `seriesFilter` is a condition on row `i`. */
 function taskCandidatesSql(seriesFilter: string): string {
@@ -103,6 +105,27 @@ export function readSchedule(
 }
 
 /**
+ * `readSchedule` as the tenant's wall clock: an Event with its own `timeZone` is converted from that zone. Returns
+ * the first invalid key instead of a schedule.
+ */
+function readZonedSchedule(
+  kind: CalendarTimelineItem["kind"],
+  properties: Record<string, unknown>,
+  tenantZone: string,
+): Schedule | { invalidKey: ScheduleKey | "timeZone" } {
+  const schedule = readSchedule(kind, properties);
+  if ("invalidKey" in schedule || kind !== "event") return schedule;
+  const zone = readEventTimeZone(properties);
+  if (zone === undefined) return { invalidKey: "timeZone" };
+  return scheduleInTenantZone(schedule, zone, tenantZone);
+}
+
+/** Inclusive; the days of a schedule overlap `from`..`to`. */
+export function overlapsRange(schedule: Pick<Schedule, "date" | "endDate">, from: string, to: string): boolean {
+  return schedule.date <= to && (schedule.endDate ?? schedule.date) >= from;
+}
+
+/**
  * The stored wall-clock value, never the end instant formatted back: a time the zone skips on a daylight-saving
  * day would read an hour later. Only a timed Event without `timeTo` falls back to `eventEnd`.
  */
@@ -141,25 +164,6 @@ async function readEdges(
     [databaseId, keys, itemIds],
   );
   return rows;
-}
-
-export async function readCalendarIds(
-  client: PoolClient,
-): Promise<{ defaultCalendarId: string | null; tasksCalendarId: string | null }> {
-  const calendars = await getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
-  if (!calendars) return { defaultCalendarId: null, tasksCalendarId: null };
-  const { rows } = await client.query<{ id: string; is_default: boolean | null; system_key: string | null }>(
-    `SELECT id, properties->'isDefault' = 'true'::jsonb AS is_default, properties->>'systemKey' AS system_key
-       FROM items
-      WHERE database_id = $1 AND deleted_at IS NULL
-        AND (properties->'isDefault' = 'true'::jsonb OR properties->>'systemKey' = $2)
-      ORDER BY id`,
-    [calendars.id, "tasks"],
-  );
-  return {
-    defaultCalendarId: rows.find((row) => row.is_default === true)?.id ?? null,
-    tasksCalendarId: rows.find((row) => row.system_key === "tasks")?.id ?? null,
-  };
 }
 
 function text(value: unknown): string | null {
@@ -210,10 +214,14 @@ const TENTATIVE_EVENTS_SQL = `
    WHERE p.database_id = $1 AND p.type = 'relation' AND p.key = 'event'`;
 
 /** One query whatever the number of Events; virtual occurrence ids are never tentative. */
-export async function readTentativeEventIds(client: PoolClient, eventIds: string[]): Promise<Set<string>> {
+export async function readTentativeEventIds(
+  client: PoolClient,
+  eventIds: string[],
+  lookups: CalendarTimelineLookups,
+): Promise<Set<string>> {
   const itemIds = eventIds.filter((id) => ITEM_ID_PATTERN.test(id));
   if (itemIds.length === 0) return new Set();
-  const invitations = await getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
+  const invitations = await lookups.database(INVITATIONS_MODULE_ID);
   if (!invitations) return new Set();
   const { rows } = await client.query<{ event_id: string }>(TENTATIVE_EVENTS_SQL, [invitations.id, itemIds]);
   return new Set(rows.map((row) => row.event_id));
@@ -231,19 +239,19 @@ export async function toTimelineItems(
   kind: CalendarTimelineItem["kind"],
   databaseId: string,
   rows: StoredRow[],
-  context: Pick<CalendarTimelineContext, "timezone">,
+  context: Pick<CalendarTimelineContext, "timezone" | "lookups">,
 ): Promise<CalendarTimelineItem[]> {
   const scheduled: { row: StoredRow; schedule: Schedule }[] = [];
   for (const row of rows) {
-    const schedule = readSchedule(kind, row.properties);
-    if ("invalidKey" in schedule) {
+    const read = readZonedSchedule(kind, row.properties, context.timezone);
+    if ("invalidKey" in read) {
       logger.warn(
-        { itemId: row.id, databaseId, property: schedule.invalidKey },
+        { itemId: row.id, databaseId, property: read.invalidKey },
         "Calendar timeline left out an item with an invalid stored value",
       );
       continue;
     }
-    scheduled.push({ row, schedule });
+    scheduled.push({ row, schedule: read });
   }
 
   const edges = await readEdges(
@@ -258,7 +266,7 @@ export async function toTimelineItems(
     targetIdsByLink.set(link, [...(targetIdsByLink.get(link) ?? []), edge.target_id]);
   }
   const targetIds = (itemId: string, key: string): string[] => targetIdsByLink.get(`${itemId} ${key}`) ?? [];
-  const linked = await getItemsByIds(client, [
+  const linked = await context.lookups.itemsByIds([
     ...new Set(edges.filter((edge) => edge.property_key !== "calendar").map((edge) => edge.target_id)),
   ]);
   const live = new Map(linked.map((item) => [item.id, item.properties]));
@@ -267,11 +275,13 @@ export async function toTimelineItems(
       const properties = live.get(id);
       return properties === undefined ? [] : [{ id, properties }];
     });
-  const calendars = await readCalendarIds(client);
+  const calendars = await context.lookups.calendarIds();
+  const tasksCalendarId = calendars.systemCalendarIds.get("tasks") ?? null;
 
   return scheduled.map(({ row, schedule }) => {
     const isEvent = kind === "event";
     const project = liveTargets(row.id, "project")[0];
+    const calendarId = isEvent ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId) : tasksCalendarId;
     return {
       kind,
       id: row.id,
@@ -285,9 +295,7 @@ export async function toTimelineItems(
       effectiveTo: effectiveTo(kind, schedule, context.timezone),
       hasEnd: schedule.timeTo !== null,
       allDay: schedule.timeFrom === null,
-      calendarId: isEvent
-        ? (targetIds(row.id, "calendar")[0] ?? calendars.defaultCalendarId)
-        : calendars.tasksCalendarId,
+      calendarId,
       status: isEvent ? null : text(row.properties.status),
       place: isEvent ? text(row.properties.place) : null,
       project:
@@ -303,7 +311,7 @@ export async function toTimelineItems(
       carriedFrom: null,
       updatedAt: row.updated_at.toISOString(),
       version: row.version,
-      readOnly: false,
+      readOnly: isEvent && calendarId !== null && calendars.readOnlyCalendarIds.has(calendarId),
     };
   });
 }
@@ -313,18 +321,22 @@ export async function readEventTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
+  const events = await context.lookups.database(EVENTS_MODULE_ID);
   if (!events) return [];
   const { rows } = await client.query<StoredRow>(EVENT_CANDIDATES_SQL, [
     events.id,
     context.from,
     context.to,
     DAY_PATTERN,
+    shiftDays(context.from, -1),
+    shiftDays(context.to, 1),
   ]);
   const stored = rows.filter(
-    (row) => row.properties[EVENT_SERIES_ID_PROPERTY_KEY] == null && readEventSeries(row.properties) === null,
+    (row) => row.properties[EVENT_SERIES_ID_PROPERTY_KEY] == null && !isEventSeriesRow(row.properties),
   );
-  const items = await toTimelineItems(client, "event", events.id, stored, context);
+  const items = (await toTimelineItems(client, "event", events.id, stored, context)).filter((item) =>
+    overlapsRange(item, context.from, context.to),
+  );
   const transcripts = await readEventTranscripts(
     client,
     events.id,
@@ -356,7 +368,7 @@ export async function toShownTaskItems(
   client: PoolClient,
   tasksDatabaseId: string,
   rows: StoredRow[],
-  context: Pick<CalendarTimelineContext, "timezone" | "today" | "at">,
+  context: Pick<CalendarTimelineContext, "timezone" | "today" | "at" | "lookups">,
 ): Promise<CalendarTimelineItem[]> {
   const shown = rows.filter((row) => !isHiddenAt(row.properties.hiddenUntil, context.at));
   const completedInEvent = new Set(
@@ -382,7 +394,7 @@ export async function readTaskTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  const tasks = await context.lookups.database(TASKS_MODULE_ID);
   if (!tasks) return [];
   const { rows } = await client.query<StoredRow>(TASK_CANDIDATES_SQL, [
     tasks.id,
@@ -546,6 +558,7 @@ export async function readCalendarTimeline(
     now: clock.now(at),
     at,
     includeSleep: input.includeSleep ?? true,
+    lookups: createCalendarTimelineLookups(client),
   };
   const read: CalendarTimelineEntry[] = [];
   for (const source of CALENDAR_TIMELINE_SOURCES) read.push(...(await source.readItems(client, context)));
@@ -553,12 +566,13 @@ export async function readCalendarTimeline(
   const tentative = await readTentativeEventIds(
     client,
     attached.filter((entry) => entry.kind === "event").map((entry) => entry.id),
+    context.lookups,
   );
   const items = attached.map((entry) =>
     entry.kind === "event" && tentative.has(entry.id) ? { ...entry, attendance: "tentative" as const } : entry,
   );
 
-  const collator = new Intl.Collator(toManifestLocale((await getTenantUserLocale(client)) ?? "cs"));
+  const collator = new Intl.Collator(await context.lookups.locale());
   items.sort((a, b) => {
     const keyA = sortKey(a);
     const keyB = sortKey(b);

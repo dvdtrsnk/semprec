@@ -217,6 +217,9 @@ importers:
       sanitize-html:
         specifier: ^2.17.7
         version: 2.17.7
+      tsdav:
+        specifier: 2.5.0
+        version: 2.5.0
       undici:
         specifier: ^8.9.0
         version: 8.9.0
@@ -3650,6 +3653,11 @@ packages:
       { integrity: sha512-PGtEkc9cbnedU3s9TmzDbpsZ8w086g/0Q8k8/oIO1NLNU3i5k9yn835CrjJSajp1KMmkisbO1qPXxNKO3welAg== }
     engines: { node: ">=22.12.0" }
 
+  sax@1.6.1:
+    resolution:
+      { integrity: sha512-42tBVwLWnaQvW5zc4HbZrTuWccECCZfBi92FDuwtqxasH+JbPB3/FOKb1m222K42R4WxuxzzMsTswfzgtSu64Q== }
+    engines: { node: ">=11.0.0" }
+
   selderee@0.12.0:
     resolution:
       { integrity: sha512-b1YMh3+DHZp59DLna3qVwQ5iOla/nrI6mLBNW02XxU77M3046Df6VLkoaJyFz20VsGIG5kkp+FK0kg4K4HnUFw== }
@@ -3858,6 +3866,11 @@ packages:
     resolution:
       { integrity: sha512-NoZ4roiN7LnbKn9QqE1amc9DJfzvZXxF4xDavcOWt1BPkdx+m+0gJuPM+S0vCe7zTJMYUP0R8pO2XMr+Y8oLIg== }
     engines: { node: ">=6" }
+
+  tsdav@2.5.0:
+    resolution:
+      { integrity: sha512-xcLbZ1Lwfr9OOlnLZGgICwkbqDHTGO9Gcn/k6ycwByt5TZf8LjEQhWFcim46M9Jq2aY19Nz4CV2tzJkWiqq2Iw== }
+    engines: { node: ">=18" }
 
   tslib@2.8.1:
     resolution:
@@ -4072,6 +4085,11 @@ packages:
         optional: true
       utf-8-validate:
         optional: true
+
+  xml-js@1.6.11:
+    resolution:
+      { integrity: sha512-7rVi2KMfwfWFl+GpPg6m80IVMWXLRjO+PxTq7V2CDhoGak0wzYzFgUY2m4XJ47OGdXd8eLE8EmwfAmdjw7lC1g== }
+    hasBin: true
 
   xmlbuilder@10.1.1:
     resolution:
@@ -6620,6 +6638,8 @@ snapshots:
       parse-srcset: 1.0.2
       postcss: 8.5.26
 
+  sax@1.6.1: {}
+
   selderee@0.12.0:
     dependencies:
       parseley: 0.13.1
@@ -6816,6 +6836,13 @@ snapshots:
       minimist: 1.2.8
       strip-bom: 3.0.0
 
+  tsdav@2.5.0:
+    dependencies:
+      debug: 4.4.3
+      xml-js: 1.6.11
+    transitivePeerDependencies:
+      - supports-color
+
   tslib@2.8.1: {}
 
   type-check@0.4.0:
@@ -6939,6 +6966,10 @@ snapshots:
   wrappy@1.0.2: {}
 
   ws@8.21.3: {}
+
+  xml-js@1.6.11:
+    dependencies:
+      sax: 1.6.1
 
   xmlbuilder@10.1.1: {}
 

@@ -170,9 +170,9 @@ private extension ProfileScreen {
 
     var data: some View {
         Section {
-            row(.mailAccounts, ProfileTile(symbol: "envelope.fill", color: .blue), title: "profile.row.mail",
+            row(.internetAccounts, ProfileTile(symbol: "at", color: .blue), title: "profile.row.internetAccounts",
                 value: viewModel.state.figures.map { String($0.mailAccountCount) },
-                subtitle: mailSubtitle
+                subtitle: internetAccountsSubtitle
             )
             row(.trash, ProfileTile(symbol: "trash.fill", color: .gray), title: "profile.row.trash",
                 value: viewModel.state.figures.map { String($0.trashCount) },
@@ -266,9 +266,10 @@ private extension ProfileScreen {
         }
     }
 
-    var mailSubtitle: String? {
+    /// How many accounts need attention: those that must sign in again.
+    var internetAccountsSubtitle: String? {
         guard let reauth = viewModel.state.figures?.mailAccountsNeedingReauth, reauth > 0 else { return nil }
-        return String(format: String(localized: "profile.mail.reauth", bundle: .module), reauth)
+        return String(format: String(localized: "profile.internetAccounts.reauth", bundle: .module), reauth)
     }
 
     func identifier(_ page: AccountPage) -> String {
@@ -278,7 +279,7 @@ private extension ProfileScreen {
         case .aiUsage: "aiUsage"
         case .trash: "trash"
         case .sempStatus: "sempStatus"
-        case .mailAccounts: "mailAccounts"
+        case .internetAccounts: "internetAccounts"
         case .appearance: "appearance"
         }
     }

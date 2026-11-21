@@ -12,6 +12,7 @@ export { calendarSendEventInvitationPayloadSchema, handleCalendarSendEventInvita
 export { calendarSendInvitationReplyPayloadSchema, handleCalendarSendInvitationReply } from "./invitationReplyJob.js";
 export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpactRouteHandler.js";
 export { createRespondToInvitationRouteHandler } from "./invitationRouteHandlers.js";
+export { createCalendarAccountSyncRouteHandler } from "./sync/calendarAccountSyncJob.js";
 export {
   calendarTimelineArgsSchema,
   createCalendarTimelineTool,
@@ -43,6 +44,9 @@ export {
  * update from the stored organizer, and only for a field still equal to the previous mapped value; it never
  * clears the title (docs/architecture/domain-calendar-tasks-and-media.md#event-participants-and-invitations).
  *
+ * The calendar sync of internet accounts (`sync/`) is the `CALENDAR_SYNC_WRITER`: it alone creates `account`
+ * calendars, writes their remote fields and `account` edge, and writes the provider fields of their Events.
+ *
  * Agent tools: `calendar.timeline` needs `calendar.read` and no approval, because it only reads. The write
  * tools need `calendar.write` and `requiresApproval`; `calendar.respondToInvitation` keeps the requirement
  * for good because the answer emails the organizer. All declare `mcp`. The tools see hidden calendars: hiding
@@ -50,7 +54,7 @@ export {
  */
 export const manifest: ModuleManifest = {
   id: CALENDAR_MODULE_ID,
-  version: "1.2.0",
+  version: "1.3.0",
   name: "Calendar",
   removable: false,
   systemProject: true,
@@ -141,6 +145,14 @@ export const manifest: ModuleManifest = {
       path: "/api/calendar/invitations/:id/respond",
       handlerExport: "createRespondToInvitationRouteHandler",
       // The answer and the Event it creates, restores or trashes must commit together.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "calendarAccountSync",
+      method: "POST",
+      path: "/api/accounts/:id/calendars/sync",
+      handlerExport: "createCalendarAccountSyncRouteHandler",
+      // Checks Calendars under the account's row lock, records the debounced request and queues the pass together.
       justification: "transactional-semantics",
     },
   ],

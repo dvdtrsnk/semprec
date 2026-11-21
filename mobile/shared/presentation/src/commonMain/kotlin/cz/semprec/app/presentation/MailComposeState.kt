@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 
 enum class MailComposePhase { LOADING, EDITING, ERROR }
 
@@ -15,11 +16,14 @@ data class MailSuggestion(val name: String, val address: String, val relationshi
  * A message being written. The subject and the text belong to the screen's fields: [initialSubject] and [initialBody]
  * seed them once when the draft is ready (a reply starts with the quote the server wrote), and the fields come back with
  * [MailComposeAction.Send]. [invalidAddress] says the last typed recipient was no address; [discardFailed] says leaving
- * could not remove the draft that was made for this message, so that leaving again keeps it.
+ * could not remove the draft that was made for this message, so that leaving again keeps it. [refusal] and
+ * [sendRefusal] name the reason the server gave for refusing the reply's draft or the send, next to [failure] and
+ * [sendFailure].
  */
 data class MailComposeState(
     val phase: MailComposePhase = MailComposePhase.LOADING,
     val failure: FailureKind? = null,
+    val refusal: MailRefusal? = null,
     val senders: List<MailSender> = emptyList(),
     val senderId: String? = null,
     val to: List<MailRecipient> = emptyList(),
@@ -30,6 +34,7 @@ data class MailComposeState(
     val invalidAddress: Boolean = false,
     val sendPhase: MailSendPhase = MailSendPhase.IDLE,
     val sendFailure: FailureKind? = null,
+    val sendRefusal: MailRefusal? = null,
     val sentFrom: String? = null,
     val discardFailed: Boolean = false,
 )

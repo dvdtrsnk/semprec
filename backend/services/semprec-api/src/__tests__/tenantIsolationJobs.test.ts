@@ -142,6 +142,20 @@ interface Tenant {
 
 type Payload = Record<string, unknown>;
 
+/** The calendar sync's writer identity, which only it may use for account calendars. */
+const CALENDAR_SYNC = { writerKind: "system", systemProcess: "calendarSync" } as const;
+
+/** A Graph subscription row of the account; without a push runtime the maintenance only forgets it. */
+async function insertPushChannel(tenant: Tenant, accountItemId: string): Promise<void> {
+  await inTenant(tenant, () =>
+    pool.query(
+      `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, secret, expires_at)
+       VALUES ('graph', $1, $2, 'secret', now() + interval '1 day')`,
+      [randomUUID(), accountItemId],
+    ),
+  );
+}
+
 interface TenantTaskCase {
   tenancy: "tenant";
   seed(tenant: Tenant): Promise<Payload>;
@@ -544,13 +558,17 @@ async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
   return row.id;
 }
 
-async function createMailbox(tenant: Tenant): Promise<string> {
+async function createMailbox(tenant: Tenant, options: { calendarsEnabled?: boolean } = {}): Promise<string> {
   const mailboxesId = await moduleDatabaseId(tenant, "mailboxes");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
       const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
-        properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
+        properties: {
+          name: `Mailbox ${randomUUID()}`,
+          provider: "generic",
+          ...(options.calendarsEnabled === true ? { calendarsEnabled: true } : {}),
+        },
       });
       await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
@@ -1114,7 +1132,7 @@ const cases: Record<string, TaskCase> = {
         // Simulate an item predating indexing.
         const removed = await pool.query("DELETE FROM item_search_index WHERE item_id = $1", [item.id]);
         expect(removed.rowCount).toBe(1);
-        return { databaseId: database.id, onlyMissing: true };
+        return { databaseId: database.id };
       });
     },
     async expectDone(tenant, payload) {
@@ -1298,6 +1316,124 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      return { accountItemId: await createMailbox(tenant, { calendarsEnabled: true }) };
+    },
+    // The fixture mailbox has no server settings, so the CalDAV adapter refuses it after the tenant-scoped reads.
+    expectedError: /^Account <id> has no mail server settings$/,
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT status, last_error_code FROM calendar_account_sync_state WHERE account_item_id = $1",
+        [str(payload, "accountItemId")],
+        [{ status: "error", last_error_code: "unexpected" }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant, { calendarsEnabled: true });
+      const calendarsId = await moduleDatabaseId(tenant, "calendars");
+      const accountProperty = await inTenant(tenant, () => propertyId(calendarsId, "account"));
+      // An account calendar without remote state is one the sync no longer tracks.
+      const calendarItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const calendar = await createItemWithClient(
+            client,
+            {
+              databaseId: calendarsId,
+              properties: { kind: "account", name: null, color: null, remoteName: "Work", readOnly: false },
+            },
+            {
+              writer: CALENDAR_SYNC,
+              allowedSystemKeys: ["kind", "remoteName", "readOnly"],
+              systemOwnerProcess: CALENDAR_MODULE_ID,
+            },
+          );
+          await createRelationWithClient(
+            client,
+            { relationPropertyId: accountProperty, callerItemId: calendar.id, targetItemId: accountItemId },
+            { ownerProcess: CALENDAR_MODULE_ID },
+            CALENDAR_SYNC,
+          );
+          return calendar.id;
+        }),
+      );
+      seededByKey.set(accountItemId, { calendarItemId });
+      return { accountItemId };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1",
+        [seeded(payload, "accountItemId").calendarItemId],
+        [{ trashed: true }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const eventsId = await moduleDatabaseId(tenant, "events");
+      const eventItemId = await inTenant(tenant, () =>
+        withTransaction(pool, async (client) => {
+          const event = await createItemWithClient(client, {
+            databaseId: eventsId,
+            properties: { name: "Dinner", date: "2026-11-27" },
+          });
+          // An Event outside account calendars records no push itself; the row stands for a change since moved out.
+          await client.query("INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, 'update')", [
+            event.id,
+          ]);
+          return event.id;
+        }),
+      );
+      return { eventItemId };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT status FROM calendar_event_push_state WHERE event_item_id = $1",
+        [str(payload, "eventItemId")],
+        [{ status: "sent" }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // No synced Event is linked, so the answer cannot reach a provider and the invitation is pending again.
+      const { invitationId, respondedAt } = await seedAnsweredInvitation(tenant);
+      return { invitationId, response: "accepted", respondedAt };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT properties->>'status' AS status FROM items WHERE id = $1",
+        [str(payload, "invitationId")],
+        [{ status: "pending" }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant);
+      await insertPushChannel(tenant, accountItemId);
+      return { accountItemId };
+    },
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT channel_id FROM calendar_push_channels WHERE account_item_id = $1",
+        [str(payload, "accountItemId")],
+        [],
+      );
+    },
+  },
   [CORE_TASK_NAMES.MAILBOX_REMOVAL]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -1344,7 +1480,6 @@ const cases: Record<string, TaskCase> = {
             mailboxItemId: null,
             messageId: `<${randomUUID()}@example.test>`,
             envelope: { from: { address }, to: [{ address }] },
-            migrationStatus: "partial",
           });
           return person.id;
         }),
@@ -1653,6 +1788,39 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant, { calendarsEnabled: true });
+      // The sweep enqueues the account's calendar sync, which fails for want of an adapter.
+      return marked([accountItemId], () =>
+        expectRows(
+          tenant,
+          "SELECT status, last_error_code FROM calendar_account_sync_state WHERE account_item_id = $1",
+          [accountItemId],
+          [{ status: "error", last_error_code: "unexpected" }],
+        ),
+      );
+    },
+  },
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const accountItemId = await createMailbox(tenant);
+      await insertPushChannel(tenant, accountItemId);
+      // The sweep queues the account's maintenance, which forgets the channel of an account with Calendars off.
+      return marked([accountItemId], () =>
+        expectRows(
+          tenant,
+          "SELECT channel_id FROM calendar_push_channels WHERE account_item_id = $1",
+          [accountItemId],
+          [],
+        ),
+      );
+    },
+  },
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -1662,8 +1830,8 @@ const cases: Record<string, TaskCase> = {
       await inTenant(tenant, () =>
         pool.query(
           `INSERT INTO mail_oauth_states
-             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at)
-           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute')`,
+             (id, user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, expires_at, services)
+           VALUES ($1, $2, 'gmail', $3, $4, $5, now() - interval '1 minute', '{mail}')`,
           [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
         ),
       );

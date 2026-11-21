@@ -3,7 +3,11 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarCancellationImpact
+import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.SyncTopic
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -18,6 +22,17 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarListViewModelTest : MainDispatcherTest() {
     private val catalog = FakeCatalogRepository()
+    private val sync = SyncChanges()
+    private val accounts = ScriptedInternetAccountRepository(
+        list = MailCall(
+            mailContent(
+                listOf(
+                    internetAccount("m2", calendars = true, provider = "outlook"),
+                    internetAccount("m1", calendars = true, calendarStatus = CalendarSyncStatus.OK),
+                ),
+            ),
+        ),
+    )
 
     private fun viewModel() =
         CalendarViewModelFactory(
@@ -25,6 +40,8 @@ class CalendarListViewModelTest : MainDispatcherTest() {
             catalog,
             FakeInvitationRepository(),
             catalog.changes,
+            accounts,
+            sync = sync,
         ).calendarListViewModel()
 
     private fun TestScope.loaded(): CalendarListViewModel = viewModel().also { runCurrent() }
@@ -54,6 +71,104 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         assertEquals("tasks", state.calendars.first { it.id == "tasks" }.systemKey)
         vm.close()
     }
+
+    @Test fun `account calendars are shown under their account and its address`() = runTest(dispatcher) {
+        catalog.calendars += listOf(
+            accountCalendar("g1", "m1"),
+            accountCalendar("o1", "m2", readOnly = true),
+            accountCalendar("g2", "m1", color = "#FF3B30"),
+            accountCalendar("x1", null),
+            accountCalendar("z1", "m9"),
+        )
+        val state = loaded().also { it.close() }.state.value
+        assertEquals(
+            listOf(
+                CalendarAccountSection("m2", "Gmail", "outlook", InternetServiceStatus.PENDING, "me@gmail.com"),
+                CalendarAccountSection("m1", "Gmail", "gmail", InternetServiceStatus.OK, "me@gmail.com"),
+                CalendarAccountSection("", null, null, null),
+                CalendarAccountSection("m9", null, null, null),
+            ),
+            state.accounts,
+        )
+        val rows = state.calendars.associateBy { it.id }
+        val accountIds = listOf("g1", "o1", "g2", "x1", "z1").map { rows[it]?.accountId }
+        assertEquals(listOf("m1", "m2", "m1", "", "m9"), accountIds)
+        val provider = rows.getValue("g1")
+        assertEquals(CalendarGroup.ACCOUNT, provider.group)
+        assertEquals("#0B8043" to true, provider.color to provider.usesRemoteColor)
+        assertTrue(provider.canRename)
+        assertFalse(provider.canDelete)
+        assertFalse(provider.readOnly)
+        assertTrue(rows.getValue("o1").readOnly)
+        val recoloured = rows.getValue("g2")
+        assertEquals("#FF3B30" to false, recoloured.color to recoloured.usesRemoteColor)
+        assertEquals("#0B8043", recoloured.remoteColor)
+        val others = state.calendars.filter { it.group != CalendarGroup.ACCOUNT }
+        assertEquals(listOf(null), others.map { it.accountId }.distinct())
+    }
+
+    @Test fun `account calendars are shown when the accounts cannot be read`() = runTest(dispatcher) {
+        catalog.calendars += accountCalendar("g1", "m1")
+        val failing = ScriptedInternetAccountRepository(list = MailCall(mailFailure(FailureKind.UNAVAILABLE)))
+        val vm = CalendarViewModelFactory(
+            FakeCalendarRepository(),
+            catalog,
+            FakeInvitationRepository(),
+            catalog.changes,
+            failing,
+        ).calendarListViewModel()
+        runCurrent()
+        assertEquals(CalendarListPhase.CONTENT, vm.state.value.phase)
+        assertEquals(listOf(CalendarAccountSection("m1", null, null, null)), vm.state.value.accounts)
+        assertEquals("m1", vm.state.value.calendars.single { it.id == "g1" }.accountId)
+        vm.close()
+    }
+
+    @Test fun `the accounts are not read when no calendar belongs to one`() = runTest(dispatcher) {
+        val vm = loaded()
+        assertEquals(emptyList(), vm.state.value.accounts)
+        assertEquals(0, accounts.list.count)
+        vm.close()
+    }
+
+    @Test fun `an account calendar is renamed and recoloured here and not deleted`() = runTest(dispatcher) {
+        catalog.calendars += accountCalendar("g1", "m1", color = "#FF3B30")
+        val vm = loaded()
+        act(vm, CalendarListAction.Change.Rename("g1", "Rodina"))
+        act(vm, CalendarListAction.Change.SetColor("g1", "#FF9500"))
+        act(vm, CalendarListAction.Change.UseRemoteColor("g1"))
+        act(vm, CalendarListAction.RequestDelete("g1"))
+        assertEquals(
+            listOf(
+                "edit g1 Rodina null null null",
+                "edit g1 null #FF9500 null null",
+                "edit g1 null null null null remoteColor",
+            ),
+            catalog.calls.filter { it.startsWith("edit") || it.startsWith("impact") },
+        )
+        assertFalse(vm.state.value.problem)
+        vm.close()
+    }
+
+    @Test fun `only an account calendar goes back to the provider colour`() = runTest(dispatcher) {
+        val vm = loaded()
+        act(vm, CalendarListAction.Change.UseRemoteColor("work"))
+        assertEquals(FailureKind.REJECTED, vm.state.value.problemFailure)
+        assertTrue(catalog.calls.none { it.startsWith("edit") })
+        vm.close()
+    }
+
+    @Test fun `pulling to refresh reads the list again and asks once a minute for the accounts to sync`() =
+        runTest(dispatcher) {
+            val vm = loaded()
+            act(vm, CalendarListAction.Refresh)
+            assertEquals(2, catalog.calls.count { it == "list" })
+            assertEquals(listOf("m2", "m1"), accounts.syncs.asked)
+            act(vm, CalendarListAction.Refresh)
+            assertEquals(3, catalog.calls.count { it == "list" })
+            assertEquals(listOf("m2", "m1"), accounts.syncs.asked)
+            vm.close()
+        }
 
     @Test fun `a failing load is an error that a retry recovers`() = runTest(dispatcher) {
         catalog.listResult = unavailable
@@ -233,6 +348,30 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a calendar change the server reports reloads the list unless a write is under way`() =
+        runTest(dispatcher) {
+            val vm = loaded()
+            catalog.calendars = catalog.calendars.filter { it.id != "work" }
+            sync.raise(setOf(SyncTopic.INVITATIONS, SyncTopic.MAIL_ACCOUNTS))
+            runCurrent()
+            assertEquals(4, vm.state.value.calendars.size)
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(3, vm.state.value.calendars.size)
+
+            val gate = CompletableDeferred<Unit>()
+            catalog.writeGate = gate
+            act(vm, CalendarListAction.Change.ToggleHidden("personal"))
+            sync.raise(setOf(SyncTopic.CALENDAR))
+            runCurrent()
+            assertEquals(2, catalog.calls.count { it == "list" })
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(listOf("list", "list", "edit personal null null null true", "list"), catalog.calls.take(4))
+            assertFalse(vm.state.value.busy)
+            vm.close()
+        }
+
     @Test fun `closing ignores actions and clearing the store closes it too`() = runTest(dispatcher) {
         val store = ViewModelStore()
         val vm = store.provide { viewModel() }
@@ -257,6 +396,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
             failing,
             FakeInvitationRepository(),
             catalog.changes,
+            ScriptedInternetAccountRepository(),
         ).calendarListViewModel()
         runCurrent()
         assertEquals(CalendarListPhase.ERROR, vm.state.value.phase)

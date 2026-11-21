@@ -1,0 +1,61 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/events('AAMkSeries-standup')/instances",
+  "value": [
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+      "id": "AAMkSeries-standup-occ-1102",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStart": "2026-11-02T08:00:00Z",
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-02T08:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-02T08:15:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtQ==\"",
+      "id": "AAMkSeries-standup-exc-1104",
+      "type": "exception",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup (moved)",
+      "body": { "contentType": "text", "content": "Later today" },
+      "isAllDay": false,
+      "isCancelled": false,
+      "isReminderOn": true,
+      "reminderMinutesBeforeStart": 5,
+      "originalStart": "2026-11-04T08:00:00Z",
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-04T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-04T09:15:00.0000000", "timeZone": "UTC" },
+      "location": { "displayName": "Room 2" },
+      "attendees": [],
+      "organizer": { "emailAddress": { "name": "Me", "address": "me@example.test" } }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+      "id": "AAMkSeries-standup-occ-1118",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Canceled: Standup",
+      "isAllDay": false,
+      "isCancelled": true,
+      "originalStart": "2026-11-18T08:00:00Z",
+      "start": { "dateTime": "2026-11-18T08:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-18T08:15:00.0000000", "timeZone": "UTC" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+      "id": "AAMkSeries-standup-occ-1130",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStart": "2026-11-30T08:00:00Z",
+      "start": { "dateTime": "2026-11-30T08:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-30T08:15:00.0000000", "timeZone": "UTC" }
+    }
+  ]
+}

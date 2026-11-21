@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import {
   assertRuntimeRole,
+  bindMailboxServiceLiveSyncStop,
   createMailLiveSyncRoot,
   createPool,
   LocalFsBlobStorageWriter,
@@ -14,6 +15,7 @@ import {
   resolveModuleRuleKinds,
   startProcessHeartbeat,
   startTenantDeactivationListener,
+  verifyCalDavServer,
   verifyMailCredentials,
   type InviteMailer,
   type PasswordResetMailer,
@@ -81,8 +83,11 @@ function optionalOAuthClient(idKey: string, secretKey: string): CustomRouteOAuth
 const mailLiveSyncControl = createMailLiveSyncControl();
 
 const customRouteDependencies: CustomRouteDependencies = {
-  // The password connect route verifies a login only through this member.
-  mailServerClients: { verifyPassword: verifyMailCredentials },
+  // The password routes verify a login, and the connect lists the account's folders, only through these members.
+  mailServerClients: {
+    verifyPassword: verifyMailCredentials,
+    verifyCalDav: verifyCalDavServer,
+  },
   oauth: {
     gmail: optionalOAuthClient("GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET"),
     msGraph: optionalOAuthClient("MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET"),
@@ -200,6 +205,10 @@ const mailLiveSync = createMailLiveSyncRoot(
 );
 // Bound before the server listens, so no request reaches the control without the root.
 mailLiveSyncControl.bind(mailLiveSync);
+// Switching an account's Mail off in this process stops its live sync after the commit.
+bindMailboxServiceLiveSyncStop((tenantId, mailboxItemId) =>
+  mailLiveSyncControl.control.stopMailbox(tenantId, mailboxItemId),
+);
 await mailLiveSync.start();
 
 // The one puller of the deployment's Gmail Pub/Sub subscription, started after the root and stopped

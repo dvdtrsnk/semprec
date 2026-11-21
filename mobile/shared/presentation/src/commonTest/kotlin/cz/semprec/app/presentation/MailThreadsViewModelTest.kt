@@ -2,6 +2,7 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.domain.MailBox
 import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.MailThreadQuery
@@ -222,7 +223,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
     @Test fun `marking read shows at once and keeps the answer of the server`() = runTest(dispatcher) {
         val mail = ScriptedMailRepository(
             threads = MailCall(mailContent(mailPage(mailThread("a", unread = true)))),
-            read = MailCall({ RepositoryResult.Content(false) }),
+            read = MailCall(mailDone(false)),
         )
         val vm = viewModel(mail)
         runCurrent()
@@ -250,6 +251,24 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         vm.onAction(MailThreadsAction.ToggleRead("unknown"))
         runCurrent()
         assertEquals(1, mail.read.count)
+        vm.close()
+    }
+
+    @Test fun `an unread mark refused for a thread without a received message says why`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage(mailThread("a", unread = false)))),
+            read = MailCall(mailRefused(MailRefusal.NO_RECEIVED_MESSAGE)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("a"))
+        runCurrent()
+        assertFalse(vm.state.value.threads.single().unread)
+        assertTrue(vm.state.value.actionFailed)
+        assertEquals(MailRefusal.NO_RECEIVED_MESSAGE, vm.state.value.actionRefusal)
+        vm.onAction(MailThreadsAction.DismissFailure)
+        assertFalse(vm.state.value.actionFailed)
+        assertNull(vm.state.value.actionRefusal)
         vm.close()
     }
 

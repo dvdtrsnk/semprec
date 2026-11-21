@@ -206,6 +206,10 @@ internal data class MailMailboxDto(
     val connectionLimit: MailConnectionLimitDto,
     val autonomousSendProjectCount: Int = 0,
     val syncedMessageCount: Int? = null,
+    val mailEnabled: Boolean = true,
+    val calendarsEnabled: Boolean = false,
+    /** Read as text: the server adds values as the calendar sync grows, and an unknown one must not fail the row. */
+    val calendarStatus: String? = null,
 )
 
 @Serializable
@@ -227,3 +231,21 @@ internal data class MailRemovalImpactDto(
     val threads: Int = 0,
     val attachmentsKept: Int = 0,
 )
+
+/** The answer of `oauth/start` and of `:id/reauthorize`: the provider page the browser opens. */
+@Serializable
+internal data class MailOauthAuthorizeDto(val authorizeUrl: String)
+
+/** The answer of `oauth/complete`: the mailbox that was connected or signed in again. */
+@Serializable
+internal data class MailOauthCompleteDto(val mailboxId: String)
+
+/**
+ * The error answer of a route that refuses with a code: `{ "error": { "code" } }`, as the server writes it; a code at
+ * the top level is read as well.
+ */
+@Serializable
+internal data class ApiErrorDto(val error: ApiErrorCodeDto? = null, val code: String? = null)
+
+@Serializable
+internal data class ApiErrorCodeDto(val code: String? = null)

@@ -40,8 +40,10 @@ struct AppScene: View {
         let selectedTab = $selectedTab
         SessionGate(viewModel: SessionViewModel(model: composition.models.makeSession())) {
             Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
+                .modifier(LiveUpdates(models: composition.models))
         } signedOut: {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
+                .task { await composition.notifications?.signedOut() }
         }
     }
 }
@@ -81,6 +83,9 @@ private extension AppScene {
         .onAppear { composition.currentTab = selectedTab.wrappedValue }
         .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }
         .onReceive(composition.navigation.tabRequests) { tab in selectedTab.wrappedValue = tab }
+        // Signed in: this device registers for pushes and schedules its reminders, and a tapped notification opens.
+        .task { await composition.notifications?.refresh() }
+        .onReceive(composition.notificationArrivals) { composition.openTappedNotification() }
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its
@@ -142,7 +147,7 @@ private extension AppScene {
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)
-        case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
+        case .mailList, .mailThread, .mailFolders, .mailCompose:
             mailView(destination, composition: composition)
         }
     }
@@ -168,7 +173,7 @@ private extension AppScene {
         }
     }
 
-    /// The Mail screens, type-erased: with their six cases inline the destination provider's result type grows so deep
+    /// The Mail screens, type-erased: with their cases inline the destination provider's result type grows so deep
     /// that the Swift compiler crashes lowering the closure that `tabs` hands to NavigatorUI (the crash `tabs` already
     /// notes for method references).
     static func mailView(_ destination: AppDestination, composition: AppComposition) -> AnyView {
@@ -197,15 +202,6 @@ private extension AppScene {
             )
         case .mailCompose(let start):
             AnyView(MailScreenFactory.compose { composition.models.makeMailCompose(start: start) })
-        case .mailAccounts(let tab):
-            AnyView(
-                MailScreenFactory.accounts(
-                    makeModel: { composition.models.makeMailAccounts() },
-                    router: composition.mailRouter(in: tab)
-                )
-            )
-        case .mailAccount(let mailboxId, _):
-            AnyView(MailScreenFactory.account { composition.models.makeMailAccount(mailboxId: mailboxId) })
         default:
             AnyView(EmptyView())
         }

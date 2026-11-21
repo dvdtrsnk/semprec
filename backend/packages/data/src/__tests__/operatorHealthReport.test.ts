@@ -172,22 +172,6 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["queue:backlog"]);
   });
 
-  it("omits legacy per-mailbox global checks that carry a mailbox id and its lastError", async () => {
-    const mailboxItemId = randomUUID();
-    // Raw SQL: legacy global rows no writer produces; they survive until the check-system tick purges them.
-    for (const checkKey of [`mail:${mailboxItemId}`, `process:mailsync:${mailboxItemId}`, "queue:backlog"]) {
-      await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
-        checkKey,
-        JSON.stringify({ mailboxItemId, lastError: "SECRET-MAILBOX-ERROR" }),
-      ]);
-    }
-
-    const report = await getOperatorHealthReport(pool);
-
-    expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["queue:backlog"]);
-    expect(JSON.stringify(report.alertingChecks.map((check) => check.checkKey))).not.toContain(mailboxItemId);
-  });
-
   it("throws instead of reporting zero errors when ops_health_counts() returns no row", async () => {
     const client = await pool.connect();
     try {

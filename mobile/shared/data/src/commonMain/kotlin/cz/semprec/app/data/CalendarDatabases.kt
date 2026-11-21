@@ -43,12 +43,15 @@ internal class CalendarDatabases(private val api: AuthenticatedApi) {
         }
     }
 
-    /** Reads every item of the database `key` (one query; the databases read here are small). */
-    suspend fun items(key: String): RepositoryResult<List<CalendarStoredItem>> =
+    /**
+     * Reads every item of the database `key` (one query; the databases read here are small). [query] is the body of
+     * the query, for example the relations to expand.
+     */
+    suspend fun items(key: String, query: String = "{}"): RepositoryResult<List<CalendarStoredItem>> =
         when (val database = id(key)) {
             is RepositoryResult.Failure -> database
             is RepositoryResult.Content -> {
-                val response = api.send(HttpMethod.Post, "/api/databases/${database.value}/query", body = "{}")
+                val response = api.send(HttpMethod.Post, "/api/databases/${database.value}/query", body = query)
                 when (val list = response.decode<CalendarItemList>()) {
                     is RepositoryResult.Failure -> list
                     is RepositoryResult.Content -> RepositoryResult.Content(list.value.items)

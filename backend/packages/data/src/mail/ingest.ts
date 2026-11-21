@@ -254,6 +254,7 @@ export async function ingestEmailMessage(
       await applyObservedMailMessageFlags(client, {
         emailsDatabaseId: input.emailsDatabaseId,
         messageItemId: itemId,
+        folderItemId: input.folderItemId,
         flags: input.flags,
       });
     }

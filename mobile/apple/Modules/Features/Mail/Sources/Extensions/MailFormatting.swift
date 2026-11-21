@@ -47,12 +47,6 @@ enum MailFormatting {
         return date.formatted(style(locale, calendar).day().month(.defaultDigits).hour().minute())
     }
 
-    /// The day and clock time of an account's last sync.
-    static func syncTime(_ iso: String?, calendar: Calendar = .current, locale: Locale = .current) -> String? {
-        guard let date = date(iso) else { return nil }
-        return date.formatted(style(locale, calendar).weekday(.abbreviated).day().month().hour().minute())
-    }
-
     // MARK: - People
     /// Up to two capital letters: the first letters of the first and last word of the name, or the first letter of the
     /// address when the name is empty.

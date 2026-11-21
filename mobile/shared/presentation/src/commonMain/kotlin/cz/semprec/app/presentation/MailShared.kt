@@ -59,6 +59,3 @@ internal fun MailLink?.toInfo(): MailLinkInfo? = this?.let {
         brokenByAgent = it.brokenBy == MailLinkBreaker.AGENT,
     )
 }
-
-/** How often a mail screen reads an account again while the server is still syncing it. */
-internal const val MAIL_SYNC_POLL_MILLIS = 10_000L

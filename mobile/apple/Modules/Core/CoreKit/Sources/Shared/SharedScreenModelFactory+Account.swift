@@ -22,4 +22,12 @@ extension SharedScreenModelFactory {
     public func makeTrash() -> any TrashScreenModel {
         SharedTrashScreenModel(sdk.account.trashViewModel())
     }
+
+    public func makeInternetAccounts() -> any InternetAccountsScreenModel {
+        SharedInternetAccountsScreenModel(sdk.mail.internetAccountsViewModel())
+    }
+
+    public func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel {
+        SharedInternetAccountScreenModel(sdk.mail.internetAccountViewModel(accountId: accountId))
+    }
 }

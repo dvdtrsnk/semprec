@@ -1,8 +1,14 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
+import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.InternetAccount
+import cz.semprec.app.domain.InternetAccountRepository
+import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailAddress
+import cz.semprec.app.domain.MailConnectOutcome
 import cz.semprec.app.domain.MailContact
 import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftFields
@@ -13,6 +19,7 @@ import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailMessage
 import cz.semprec.app.domain.MailNamedRef
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPrefill
 import cz.semprec.app.domain.MailRemovalImpact
@@ -25,6 +32,9 @@ import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
 import cz.semprec.app.domain.MailThreadSummary
 import cz.semprec.app.domain.MailboxRepository
+import cz.semprec.app.domain.OAuthOutcome
+import cz.semprec.app.domain.OAuthProvider
+import cz.semprec.app.domain.OAuthSignIn
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -33,6 +43,14 @@ import kotlinx.coroutines.test.TestScope
 internal fun <T> mailContent(value: T): ScriptedStep<T> = { RepositoryResult.Content(value) }
 
 internal fun <T> mailFailure(kind: FailureKind): ScriptedStep<T> = { RepositoryResult.Failure(kind) }
+
+/** The answer of a scripted mail write the server carried out. */
+internal fun <T> mailDone(value: T): ScriptedStep<MailOutcome<T>> =
+    { RepositoryResult.Content(MailOutcome.Done(value)) }
+
+/** The answer of a scripted mail write the server refused with a known code. */
+internal fun <T> mailRefused(refusal: MailRefusal): ScriptedStep<MailOutcome<T>> =
+    { RepositoryResult.Content(MailOutcome.Refused(refusal)) }
 
 /** A scripted call: [script] answers, [calls] records what it was asked with. */
 internal class MailCall<A, T>(vararg steps: ScriptedStep<T>) {
@@ -52,9 +70,9 @@ internal class ScriptedMailRepository(
     val facets: MailCall<Pair<String?, String?>, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
-    val read: MailCall<Pair<String, Boolean>, Boolean> = MailCall({ RepositoryResult.Content(false) }),
-    val flag: MailCall<Pair<String, Boolean>, Boolean> = MailCall({ RepositoryResult.Content(true) }),
-    val moves: MailCall<String, Unit> = MailCall(mailContent(Unit)),
+    val read: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(false)),
+    val flag: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(true)),
+    val moves: MailCall<String, MailOutcome<Unit>> = MailCall(mailDone(Unit)),
     val tasks: MailCall<String, MailNamedRef> = MailCall(mailContent(MailNamedRef("t9", "Zavolat"))),
 ) : MailRepository {
     val moved = mutableListOf<String>()
@@ -79,20 +97,21 @@ internal class ScriptedMailRepository(
 
     override suspend fun createTask(threadId: String) = tasks.answer(threadId)
 
-    private suspend fun move(action: String, threadId: String): RepositoryResult<Unit> {
+    private suspend fun move(action: String, threadId: String): RepositoryResult<MailOutcome<Unit>> {
         moved += "$action:$threadId"
         return moves.answer(threadId)
     }
 }
 
 internal class ScriptedMailDraftRepository(
-    val create: MailCall<Pair<MailDraftFields, String?>, MailDraft> = MailCall(mailContent(mailDraft())),
-    val prefilled: MailCall<MailPrefill, MailDraft> = MailCall(mailContent(mailDraft(mode = MailDraftMode.REPLY))),
+    val create: MailCall<Pair<MailDraftFields, String?>, MailOutcome<MailDraft>> = MailCall(mailDone(mailDraft())),
+    val prefilled: MailCall<MailPrefill, MailOutcome<MailDraft>> =
+        MailCall(mailDone(mailDraft(mode = MailDraftMode.REPLY))),
     val read: MailCall<String, MailDraft> = MailCall(mailContent(mailDraft())),
-    val update: MailCall<Triple<String, String, MailDraftFields>, MailDraft> =
-        MailCall({ RepositoryResult.Content(mailDraft(version = "v2")) }),
+    val update: MailCall<Triple<String, String, MailDraftFields>, MailOutcome<MailDraft>> =
+        MailCall(mailDone(mailDraft(version = "v2"))),
     val discard: MailCall<String, Unit> = MailCall(mailContent(Unit)),
-    val send: MailCall<String, MailSentDraft> = MailCall(mailContent(MailSentDraft("d1", "t1", "Gmail"))),
+    val send: MailCall<String, MailOutcome<MailSentDraft>> = MailCall(mailDone(MailSentDraft("d1", "t1", "Gmail"))),
     val contacts: MailCall<Pair<String, List<String>>, List<MailContact>> =
         MailCall(mailContent(listOf(MailContact("Petr Novák", "petr@novak.cz", "Klient")))),
 ) : MailDraftRepository {
@@ -119,7 +138,10 @@ internal class ScriptedMailboxRepository(
         MailCall(mailContent(listOf(MailFolder("f1", "Inbox", "inbox", 3, 40)))),
     val impact: MailCall<String, MailRemovalImpact> = MailCall(mailContent(MailRemovalImpact(120, 2, 50, 7))),
     val remove: MailCall<String, Unit> = MailCall(mailContent(Unit)),
-    val connect: MailCall<MailPasswordAccount, Unit> = MailCall(mailContent(Unit)),
+    val connect: MailCall<MailPasswordAccount, MailConnectOutcome> =
+        MailCall(mailContent(MailConnectOutcome.Connected)),
+    val passwords: MailCall<Triple<String, String, String?>, MailConnectOutcome> =
+        MailCall(mailContent(MailConnectOutcome.Connected)),
     val rename: MailCall<Pair<String, String>, Unit> = MailCall(mailContent(Unit)),
     val limit: MailCall<Pair<String, Int>, Unit> = MailCall(mailContent(Unit)),
 ) : MailboxRepository {
@@ -135,10 +157,64 @@ internal class ScriptedMailboxRepository(
 
     override suspend fun connect(account: MailPasswordAccount) = connect.answer(account)
 
+    override suspend fun updatePassword(mailboxId: String, password: String, username: String?) =
+        passwords.answer(Triple(mailboxId, password, username))
+
     override suspend fun rename(mailboxId: String, name: String) = rename.answer(mailboxId to name)
 
     override suspend fun setConnectionLimit(mailboxId: String, limit: Int) = this.limit.answer(mailboxId to limit)
 }
+
+internal class ScriptedInternetAccountRepository(
+    val list: MailCall<Unit, List<InternetAccount>> = MailCall(mailContent(listOf(internetAccount()))),
+    val one: MailCall<String, InternetAccount> = MailCall(mailContent(internetAccount())),
+    val services: MailCall<Triple<String, InternetService, Boolean>, Unit> = MailCall(mailContent(Unit)),
+    val syncs: MailCall<String, Unit> = MailCall(mailContent(Unit)),
+    val signIns: MailCall<Pair<OAuthProvider, Set<InternetService>>, OAuthSignIn> =
+        MailCall(mailContent(OAUTH_SIGN_IN)),
+    val reauthorizations: MailCall<Pair<String, Set<InternetService>>, OAuthSignIn> =
+        MailCall(mailContent(OAUTH_SIGN_IN)),
+    val finishes: MailCall<Pair<OAuthSignIn, String>, OAuthOutcome> =
+        MailCall(mailContent(OAuthOutcome.Connected("m1"))),
+) : InternetAccountRepository {
+    override suspend fun accounts() = list.answer(Unit)
+
+    override suspend fun account(accountId: String) = one.answer(accountId)
+
+    override suspend fun setServiceEnabled(accountId: String, service: InternetService, enabled: Boolean) =
+        services.answer(Triple(accountId, service, enabled))
+
+    override suspend fun syncCalendars(accountId: String) = syncs.answer(accountId)
+
+    override suspend fun startSignIn(provider: OAuthProvider, services: Set<InternetService>) =
+        signIns.answer(provider to services)
+
+    override suspend fun startReauthorization(accountId: String, services: Set<InternetService>) =
+        reauthorizations.answer(accountId to services)
+
+    override suspend fun finishSignIn(signIn: OAuthSignIn, callbackUrl: String) =
+        finishes.answer(signIn to callbackUrl)
+}
+
+internal val OAUTH_SIGN_IN = OAuthSignIn("https://accounts.google.com/o/oauth2/v2/auth?state=s1", "s1")
+
+internal const val OAUTH_CALLBACK = "semprec://oauth?state=s1&code=c1"
+
+internal fun internetAccount(
+    id: String = "m1",
+    status: MailSyncStatus = MailSyncStatus.OK,
+    mail: Boolean = true,
+    calendars: Boolean = false,
+    calendarStatus: CalendarSyncStatus = if (calendars) CalendarSyncStatus.PENDING else CalendarSyncStatus.OFF,
+    initial: Boolean = false,
+    limitApplies: Boolean = true,
+    provider: String = "gmail",
+) = InternetAccount(
+    mailAccount(id, status, initial, limitApplies).copy(provider = provider),
+    mail,
+    calendars,
+    calendarStatus,
+)
 
 internal fun mailThread(
     id: String = "t1",

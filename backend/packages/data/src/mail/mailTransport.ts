@@ -97,15 +97,20 @@ export type ImapConnectionOpener = (
   credential: MailServerCredential,
 ) => Promise<ImapMailClient>;
 
-/** Called once per accepted send after the SMTP connection closed. Its failure never fails the send. */
-export type SentCopySaver = (raw: Buffer) => Promise<void>;
+/**
+ * Called once per send as the SMTP submission starts, so its IMAP connection opens while SMTP submits. `accepted`
+ * settles `true` once the server took the message and `false` otherwise (it never rejects); the copy is appended only
+ * on `true`. It settles only after its connection is closed. Its failure never fails the send.
+ */
+export type SentCopySaver = (raw: Buffer, accepted: Promise<boolean>) => Promise<void>;
 
 /**
  * Each send opens its own policy-checked transporter and closes it on every path out. Exported for
  * protocol tests that need a loopback endpoint the stored settings (standard ports only) cannot name.
  *
- * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy; its failure is
- * logged and does not fail the send, because the message has been delivered.
+ * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy. It starts with the
+ * submission and the send waits for it on every path, so its connection is closed before the send settles; its
+ * failure after an accepted submission is logged and does not fail the send, because the message has been delivered.
  */
 export function createSmtpMailTransport(
   mailboxItemId: string,
@@ -127,6 +132,14 @@ export function createSmtpMailTransport(
           secondary.push(error);
         }
       };
+      let decide!: (accepted: boolean) => void;
+      const accepted = new Promise<boolean>((resolve) => {
+        decide = resolve;
+      });
+      const copy = saveSentCopy?.(message.raw, accepted).then(
+        () => undefined,
+        (error: unknown) => ({ error }),
+      );
       try {
         transporter = open(settings, credential);
         const owned = transporter;
@@ -155,6 +168,9 @@ export function createSmtpMailTransport(
         const settled = await sendOutcome;
         if (!settled.ok && (!primary || settled.value !== primary.value)) secondary.push(settled.value);
       }
+      decide(primary === undefined);
+      const copyFailure = await copy;
+      if (copyFailure) secondary.push(copyFailure.error);
       if (primary) {
         let mapped: Error;
         try {
@@ -168,14 +184,7 @@ export function createSmtpMailTransport(
         void secondary;
         throw mapped;
       }
-      if (saveSentCopy) {
-        try {
-          await saveSentCopy(message.raw);
-        } catch (error) {
-          secondary.push(error);
-          diagnostic("sent_copy");
-        }
-      }
+      if (copyFailure) diagnostic("sent_copy");
       void secondary;
       return {};
     },
@@ -206,7 +215,9 @@ async function sentFolderPathOf(
 /**
  * Gmail and Graph file sent mail themselves; an IMAP server does not, so the raw message is appended
  * with `\Seen`. The connection goes through the outbound address policy and holds the account's IMAP
- * connection slot at the sync worker's limit. No Sent folder yet logs `no_sent_folder` and keeps no copy.
+ * connection slot at the sync worker's limit. It opens while the submission runs; the APPEND waits for
+ * `accepted` and is skipped, the connection closed, when the server refused the message. No Sent folder
+ * yet logs `no_sent_folder` for an accepted message and keeps no copy.
  */
 export function createSentCopySaver(
   pool: Pool,
@@ -215,7 +226,12 @@ export function createSentCopySaver(
   openImap: ImapConnectionOpener = openImapConnection,
   limiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
 ): SentCopySaver {
-  return async (raw) => {
+  return async (raw, accepted) => {
+    let decision: boolean | undefined;
+    const decided = accepted.then((value) => {
+      decision = value;
+      return value;
+    });
     const stored = await getMailServerSettings(pool, mailboxItemId);
     if (!stored?.imap) {
       throw new ValidationError(`Mailbox ${mailboxItemId} has no IMAP server settings`, { field: "imap" });
@@ -232,14 +248,20 @@ export function createSentCopySaver(
       };
     });
     if (sentPath === null) {
-      logger.warn({ mailboxItemId, reason: "no_sent_folder" }, "The mailbox has no Sent folder yet; no copy was kept");
+      if (await decided)
+        logger.warn(
+          { mailboxItemId, reason: "no_sent_folder" },
+          "The mailbox has no Sent folder yet; no copy was kept",
+        );
       return;
     }
 
     await limiter.run(mailboxItemId, connectionLimit, async () => {
+      // A submission refused before the slot was free needs no connection.
+      if (decision === false) return;
       const imap = await openImap(imapSettings, credential);
       try {
-        await imap.appendMessage(sentPath, raw, [IMAP_SEEN_FLAG]);
+        if (await decided) await imap.appendMessage(sentPath, raw, [IMAP_SEEN_FLAG]);
       } finally {
         // close() never rejects, so the append's own outcome is the one the saver reports.
         await imap.close();

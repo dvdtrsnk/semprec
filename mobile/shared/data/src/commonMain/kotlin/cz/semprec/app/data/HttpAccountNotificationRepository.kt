@@ -37,6 +37,7 @@ private fun AccountNotificationSwitch.wireName(): String = when (this) {
     AccountNotificationSwitch.APPROVALS -> "approvals"
     AccountNotificationSwitch.INVITES -> "invites"
     AccountNotificationSwitch.REMINDERS -> "reminders"
+    AccountNotificationSwitch.CALENDAR_CHANGES -> "calendarChanges"
     AccountNotificationSwitch.PROBLEMS_SUMMARY -> "problemsSummary"
     AccountNotificationSwitch.BADGE_APPROVALS -> "badgeApprovals"
     AccountNotificationSwitch.BADGE_INVITES -> "badgeInvites"
@@ -53,6 +54,7 @@ private fun AccountNotificationDto.toPrefs() = AccountNotificationPrefs(
     approvals = approvals,
     invites = invites,
     reminders = reminders,
+    calendarChanges = calendarChanges,
     problemsLevel = when (problemsLevel) {
         "off" -> AccountProblemsLevel.OFF
         "all" -> AccountProblemsLevel.ALL

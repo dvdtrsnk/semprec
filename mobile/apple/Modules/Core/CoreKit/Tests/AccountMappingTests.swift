@@ -192,6 +192,7 @@ final class AccountMappingTests: XCTestCase {
                 approvals: true,
                 invites: false,
                 reminders: true,
+                calendarChanges: false,
                 problemsLevel: .all,
                 problemsSummary: false,
                 badgeApprovals: true,
@@ -213,7 +214,8 @@ final class AccountMappingTests: XCTestCase {
             (
                 .approvals,
                 .approvals
-            ), (.invites, .invites), (.reminders, .reminders), (.problemsSummary, .problemsSummary),
+            ), (.invites, .invites), (.reminders, .reminders), (.calendarChanges, .calendarChanges),
+            (.problemsSummary, .problemsSummary),
             (.badgeApprovals, .badgeApprovals), (.badgeInvites, .badgeInvites), (.badgeInbox, .badgeInbox)
         ]
         XCTAssertEqual(switches.count, CoreKit.AccountNotificationSwitch.allCases.count)
@@ -299,6 +301,7 @@ private func notificationChoices(_ level: SharedSDK.AccountProblemsLevel) -> Sha
         approvals: true,
         invites: false,
         reminders: true,
+        calendarChanges: false,
         problemsLevel: level,
         problemsSummary: false,
         badgeApprovals: true,

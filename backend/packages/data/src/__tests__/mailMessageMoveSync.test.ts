@@ -48,6 +48,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
+import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -200,6 +201,7 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
         uidvalidity: folder.uidValidity,
         uidnext: folder.uidNext,
         highestmodseq: null,
+        messageCount: "0",
       });
       folderIds.push(id);
     }
@@ -1295,20 +1297,23 @@ describe("mail move intent store", () => {
     const reconcileClient = {
       getCapabilities: async () => new Set<string>(),
       listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
-      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null }),
+      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
       fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => [23],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: reconciledFlag,
       appendMessage: async () => {},
       close: async () => {},
     } satisfies ImapMailClient;
-    await inTenant(async (client) => {
+    const { files, attachments } = await inTenant(async (client) => {
       const files = await getDatabaseByModuleId(client, "files");
       const attachments = await getPropertyByKey(client, fx.emailsDatabaseId, "attachments");
       if (!files || !attachments) throw new Error("missing attachment schema");
-      await reconcileImapAccount(client, reconcileClient, {
+      return { files, attachments };
+    });
+    await runInTenant(a, () =>
+      reconcileImapAccount(pool, reconcileClient, {
         mailboxItemId: fx.mailboxItemId,
         emailsDatabaseId: fx.emailsDatabaseId,
         filesDatabaseId: files.id,
@@ -1318,8 +1323,9 @@ describe("mail move intent store", () => {
         attachmentsRelationPropertyId: attachments.id,
         storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
         storageKeyPrefix: fx.mailboxItemId,
-      });
-    });
+        pass: UNGUARDED_IMAP_PASS,
+      }),
+    );
     expect(reconciledFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
 
     // A native MOVE that answers false stays uncertain and is not replayed.

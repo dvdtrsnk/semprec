@@ -152,7 +152,17 @@ function keepsEarlierMoveSource(row: { status: string; operation_token: string |
 /** Records a new desire without releasing an outstanding provider operation. */
 export async function recordDesiredMailMessageMove(
   client: PoolClient,
-  input: { messageItemId: string; mailboxItemId: string; desiredPurpose: MailMovePurpose; source?: MailMoveSource },
+  input: {
+    messageItemId: string;
+    mailboxItemId: string;
+    desiredPurpose: MailMovePurpose;
+    source?: MailMoveSource;
+    /**
+     * For an archive or trash desire, the Inbox or Sent folder the copy leaves, which a restore returns it to; `null`
+     * keeps the one an earlier archive or trash recorded. Any other desire clears it.
+     */
+    restorePurpose?: "inbox" | "sent" | null;
+  },
 ): Promise<MailMessageMoveSyncRow> {
   await lockMailThreadMutation(client);
   const previous = await client.query<{ source_evidence: unknown; status: string; operation_token: string | null }>(
@@ -202,15 +212,24 @@ export async function recordDesiredMailMessageMove(
     throw new Error("Mail move source is not verified");
   }
   const result = await client.query<Record<string, unknown>>(
-    `INSERT INTO mail_message_move_sync_state (message_item_id, mailbox_item_id, desired_purpose, source_evidence)
-     VALUES ($1, $2, $3, $4::jsonb)
+    `INSERT INTO mail_message_move_sync_state
+       (message_item_id, mailbox_item_id, desired_purpose, source_evidence, restore_purpose)
+     VALUES ($1, $2, $3, $4::jsonb, CASE WHEN $3 IN ('archive', 'trash') THEN $5 END)
      ON CONFLICT (tenant_id, message_item_id) DO UPDATE SET
        desired_purpose = EXCLUDED.desired_purpose, desired_revision = mail_message_move_sync_state.desired_revision + 1,
        source_evidence = EXCLUDED.source_evidence,
+       restore_purpose = CASE WHEN EXCLUDED.desired_purpose IN ('archive', 'trash')
+         THEN COALESCE(EXCLUDED.restore_purpose, mail_message_move_sync_state.restore_purpose) END,
        attempts = 0, status = 'pending', failure_reason = NULL, updated_at = now()
      WHERE mail_message_move_sync_state.mailbox_item_id = EXCLUDED.mailbox_item_id
      RETURNING ${COLUMNS}`,
-    [input.messageItemId, input.mailboxItemId, input.desiredPurpose, JSON.stringify(source)],
+    [
+      input.messageItemId,
+      input.mailboxItemId,
+      input.desiredPurpose,
+      JSON.stringify(source),
+      input.restorePurpose ?? null,
+    ],
   );
   if (!result.rows[0]) throw new Error("Mail move mailbox does not match the existing intent");
   return rowSchema.parse(result.rows[0]);

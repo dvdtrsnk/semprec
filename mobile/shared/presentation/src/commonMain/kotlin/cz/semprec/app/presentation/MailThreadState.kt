@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 
 enum class MailThreadPhase { LOADING, CONTENT, ERROR }
 
@@ -41,7 +42,8 @@ data class MailSempDraft(val id: String, val body: String, val recipients: List<
 /**
  * One thread. [archivedOrTrashed] is `true` when every message of it sits in the archive or the trash, where the
  * toolbar offers to restore it. [sentFrom] names the mailbox a reply was sent from, until the screen is left.
- * [actionFailed] says a flag, move, task or reload did not go through.
+ * [actionFailed] says a flag, move, task or reload did not go through. [sendRefusal] and [actionRefusal] name the
+ * reason the server gave for refusing the send or the flag or move, next to [sendFailure] and [actionFailed].
  */
 data class MailThreadState(
     val phase: MailThreadPhase = MailThreadPhase.LOADING,
@@ -61,12 +63,14 @@ data class MailThreadState(
     val draft: MailSempDraft? = null,
     val sendPhase: MailSendPhase = MailSendPhase.IDLE,
     val sendFailure: FailureKind? = null,
+    val sendRefusal: MailRefusal? = null,
     val sentFrom: String? = null,
     val archivedOrTrashed: Boolean = false,
     val canReply: Boolean = false,
     val acting: Boolean = false,
     val creatingTask: Boolean = false,
     val actionFailed: Boolean = false,
+    val actionRefusal: MailRefusal? = null,
 )
 
 enum class MailThreadMove { ARCHIVE, TRASH, RESTORE }

@@ -126,6 +126,11 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     error: new ChokePointError(422, "mail_recipient_rejected", "The mail server refused a recipient"),
   },
   {
+    code: "mail_drafts_folder_missing",
+    status: 409,
+    error: new ChokePointError(409, "mail_drafts_folder_missing", "The mailbox has no Drafts folder"),
+  },
+  {
     code: "mail_sent_folder_missing",
     status: 409,
     error: new ChokePointError(409, "mail_sent_folder_missing", "The mailbox has no Sent folder yet"),

@@ -125,6 +125,23 @@ export const CORE_TASK_NAMES = {
   REMINDERS_RESYNC: "remindersResync",
   // Requests every subscription calendar's feed once per run, with the last consumed feed's validators.
   CALENDAR_SUBSCRIPTION_SWEEP: "calendarSubscriptionSweep",
+  // One calendar sync pass of an internet account; job key `calendar-account-sync:<accountItemId>`.
+  CALENDAR_ACCOUNT_SYNC: "calendarAccountSync",
+  // Enqueues a pass for every account with Calendars on that is due.
+  CALENDAR_ACCOUNT_SYNC_SWEEP: "calendarAccountSyncSweep",
+  // Trashes, in chunks, the calendars an account no longer syncs and their Events; job key
+  // `calendar-account-cleanup:<accountItemId>`.
+  CALENDAR_ACCOUNT_CLEANUP: "calendarAccountCleanup",
+  // Brings a user's or agent's change of an account calendar Event to its provider; job key
+  // `calendar-event-push:<eventItemId>`, replaced by every newer change.
+  CALENDAR_EVENT_PUSH: "calendarEventPush",
+  // Answers an invitation of a synced Event through the account's provider; job key
+  // `calendar-invitation-respond:<invitationId>`, replaced by a newer answer.
+  CALENDAR_INVITATION_RESPOND: "calendarInvitationRespond",
+  // Creates, renews and stops one account's calendar push channels; job key `calendar-push-channels:<accountItemId>`.
+  CALENDAR_PUSH_CHANNELS: "calendarPushChannels",
+  // Queues that maintenance for every account that has a push channel or could have one.
+  CALENDAR_PUSH_CHANNELS_SWEEP: "calendarPushChannelsSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -186,6 +203,13 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "api",
   [CORE_TASK_NAMES.REMINDERS_RESYNC]: "api",
   [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: "api",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: "api",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "api",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "api",
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "api",
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: "api",
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: "api",
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: "api",
 };
 
 /** The closed set of task names the agents runtime may run. */
@@ -257,6 +281,13 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "tenant",
   [CORE_TASK_NAMES.REMINDERS_RESYNC]: "tenant",
   [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: "system",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: "system",
+  [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.ItemChanges
+import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 
@@ -59,8 +60,46 @@ class AuthenticatedApi(
         return response
     }
 
+    /**
+     * Opens the WebSocket [path] with the stored session and runs [session] on it (see [ApiClient.openSocket]), and
+     * returns how it ended. It returns `null`, and nothing should reconnect, when nobody is signed in (nothing is
+     * opened) or when the server refused the session; then [onSessionRejected] has run, as for a `401` of [send].
+     * The server refuses it by closing the socket with [SESSION_REVOKED_CLOSE_CODE], or by answering the handshake
+     * with `401`. A failed handshake does not say which status it got on every engine, so after one the session is
+     * checked with `GET /api/auth/session`, whose `401` is the refusal.
+     */
+    suspend fun openSocket(path: String, session: suspend (DefaultClientWebSocketSession) -> Unit): SocketEnd? {
+        val stored = storage.load() ?: return null
+        var opened = false
+        val end = client.openSocket(stored.serverUrl, path, stored.token) { socket ->
+            opened = true
+            session(socket)
+        }
+        val rejected = when {
+            end is SocketEnd.Closed && end.code == SESSION_REVOKED_CLOSE_CODE -> {
+                onSessionRejected()
+                true
+            }
+            end is SocketEnd.Failed && !opened -> sessionRefused()
+            else -> false
+        }
+        return end.takeUnless { rejected }
+    }
+
+    /** Whether the session check answers `401`; [send] has then run [onSessionRejected]. */
+    private suspend fun sessionRefused(): Boolean {
+        val check = send(HttpMethod.Get, SESSION_PATH)
+        return check is ApiResponse.Failure && check.status == UNAUTHORIZED_STATUS
+    }
+
     internal companion object {
         const val UNAUTHORIZED_STATUS = 401
+
+        /** Answers `401` for a session the server no longer knows. */
+        const val SESSION_PATH = "/api/auth/session"
+
+        /** The close code of `WS /api/sync` for a revoked session, outside the range the protocol reserves. */
+        const val SESSION_REVOKED_CLOSE_CODE: Short = 4401
 
         /**
          * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the

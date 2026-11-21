@@ -4,16 +4,18 @@ import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getCalendarClock, type CalendarClock } from "../calendarTime.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
-import { readEventSeries } from "./eventSeries.js";
+import { expandEventOccurrences, readLiveEventSeries } from "./eventOccurrences.js";
+import { isEventSeriesRow, readSyncedEventSeries } from "./eventSeries.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
 import { ALL_DAY_REMINDER_HOUR, computeReminderFireAt, type ReminderInput } from "./reminderFireTime.js";
+import { shiftDays } from "./recurrenceExpansion.js";
+import { createCalendarTimelineLookups, type CalendarTimelineLookups } from "./timelineLookups.js";
 import { toTimelineItems, type StoredRow } from "./timelineRead.js";
 import type { CalendarTimelineItem } from "./timelineSources.js";
 import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
@@ -34,7 +36,10 @@ const ALL_DAY_START_TIME = `${String(ALL_DAY_REMINDER_HOUR).padStart(2, "0")}:00
 const instantSchema = z.iso.datetime({ offset: true });
 
 export interface UpcomingReminder {
-  /** `<itemId>:<fireAt>`, or `<itemId>@<occurrenceDate>:<fireAt>` for a materialized occurrence of a recurring Event. */
+  /**
+   * `<itemId>:<fireAt>`, or `<itemId>@<occurrenceDate>:<fireAt>` for a materialized occurrence of a recurring Event.
+   * A virtual occurrence of a synced series has the item id `<seriesId>@<occurrenceDate>`.
+   */
   key: string;
   itemId: string;
   kind: "event" | "task";
@@ -44,12 +49,18 @@ export interface UpcomingReminder {
   startsAt: string;
 }
 
-/** Stored days are compared as text and never cast, so an unreadable value cannot fail the statement. */
+/**
+ * Stored days are compared as text and never cast, so an unreadable value cannot fail the statement. An Event with
+ * its own `timeZone` can be stored a day away from the tenant day it starts on, so its day is compared with
+ * `$4`..`$5`, a day wider.
+ */
 const CANDIDATES_SQL = `
   SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    WHERE i.tenant_id = app_tenant_default() AND i.database_id = $1 AND i.deleted_at IS NULL
-     AND left(i.properties->>'date', 10) COLLATE "C" BETWEEN $2 AND $3
+     AND (left(i.properties->>'date', 10) COLLATE "C" BETWEEN $2 AND $3
+          OR (jsonb_typeof(i.properties->'timeZone') = 'string'
+              AND left(i.properties->>'date', 10) COLLATE "C" BETWEEN $4 AND $5))
    ORDER BY i.id`;
 
 function text(value: unknown): string | null {
@@ -117,18 +128,26 @@ async function readReminders(
   databaseId: string,
   window: FeedWindow,
   clock: CalendarClock,
+  lookups: CalendarTimelineLookups,
 ): Promise<UpcomingReminder[]> {
   const { rows: candidates } = await client.query<StoredRow>(CANDIDATES_SQL, [
     databaseId,
     window.firstDay,
     window.lastDay,
+    shiftDays(window.firstDay, -1),
+    shiftDays(window.lastDay, 1),
   ]);
   // A series row is also its first occurrence, which may have been moved or cancelled as its own occurrence row, so
   // it is left out as `readEventTimelineItems` does. A Task series lives in `task_recurrence`, not in a row.
-  const rows = kind === "event" ? candidates.filter((row) => readEventSeries(row.properties) === null) : candidates;
-  if (rows.length === 0) return [];
+  const rows = kind === "event" ? candidates.filter((row) => !isEventSeriesRow(row.properties)) : candidates;
   const propertiesById = new Map(rows.map((row) => [row.id, row.properties]));
-  const items = await toTimelineItems(client, kind, databaseId, rows, { timezone: clock.zone });
+  const items = [
+    ...(await toTimelineItems(client, kind, databaseId, rows, { timezone: clock.zone, lookups })),
+    ...(kind === "event"
+      ? await readSyncedSeriesOccurrences(client, databaseId, window, clock, lookups, propertiesById)
+      : []),
+  ];
+  if (items.length === 0) return [];
   const notifyByCalendar =
     kind === "event"
       ? await readCalendarNotify(client, [
@@ -153,6 +172,39 @@ async function readReminders(
     }
   }
   return reminders;
+}
+
+/**
+ * The occurrences of series the calendar sync stored with a raw rule, which the provider expects to remind of like
+ * any stored Event; each takes its alert from the series row, which is added to `propertiesById`. Overrides are
+ * stored rows and come from the candidates instead. Series with a `recurrence` rule stay unlisted: only their
+ * materialized occurrences are.
+ */
+async function readSyncedSeriesOccurrences(
+  client: PoolClient,
+  eventsDatabaseId: string,
+  window: FeedWindow,
+  clock: CalendarClock,
+  lookups: CalendarTimelineLookups,
+  propertiesById: Map<string, Record<string, unknown>>,
+): Promise<CalendarTimelineItem[]> {
+  const series = (await readLiveEventSeries(client, eventsDatabaseId, window.lastDay)).filter(
+    (row) => readSyncedEventSeries(row.properties) !== null,
+  );
+  if (series.length === 0) return [];
+  const seriesProperties = new Map(series.map((row) => [row.id, row.properties]));
+  const entries = await expandEventOccurrences(client, eventsDatabaseId, series, {
+    from: window.firstDay,
+    to: window.lastDay,
+    timezone: clock.zone,
+    lookups,
+  });
+  return entries.flatMap(({ seriesId, occurrenceDate: _date, overridden, ...item }) => {
+    // An overridden entry is a stored override (a candidate already) or the series row shown once.
+    if (overridden && item.id !== seriesId) return [];
+    propertiesById.set(item.id, seriesProperties.get(seriesId) ?? {});
+    return [item];
+  });
 }
 
 /** A calendar that is not live, or no calendar at all, mutes nothing. */
@@ -209,12 +261,13 @@ async function readUpcomingReminders(client: PoolClient, interval: FeedInterval)
   const clock = await getCalendarClock(client);
   const window = readWindow(interval, clock);
   const reminders: UpcomingReminder[] = [];
+  const lookups = createCalendarTimelineLookups(client);
   for (const [kind, moduleId] of [
     ["event", EVENTS_MODULE_ID],
     ["task", TASKS_MODULE_ID],
   ] as const) {
-    const database = await getDatabaseByModuleId(client, moduleId);
-    if (database) reminders.push(...(await readReminders(client, kind, database.id, window, clock)));
+    const database = await lookups.database(moduleId);
+    if (database) reminders.push(...(await readReminders(client, kind, database.id, window, clock, lookups)));
   }
   const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   reminders.sort((a, b) => byCodePoint(a.fireAt, b.fireAt) || byCodePoint(a.key, b.key));
@@ -222,9 +275,10 @@ async function readUpcomingReminders(client: PoolClient, interval: FeedInterval)
 }
 
 /**
- * `GET /api/calendar/reminders?from=<instant>[&hours=48]`. Only stored rows are listed: virtual occurrences of a
- * series are not, so a moved or cancelled occurrence is never reminded of at its old time. Shifting a reminder
- * around a sleep window is the client's job. The reads share one repeatable-read snapshot.
+ * `GET /api/calendar/reminders?from=<instant>[&hours=48]`. Stored rows are listed, and the occurrences of a series
+ * the calendar sync stored with a raw rule; the virtual occurrences of a `recurrence` series are not, so a moved or
+ * cancelled occurrence is never reminded of at its old time. Shifting a reminder around a sleep window is the client's
+ * job. The reads share one repeatable-read snapshot.
  */
 export function createRemindersFeedRouteHandler(pool: Pool) {
   return async (ctx: RouteUrl): Promise<CustomRouteResult<UpcomingReminder[]>> => {

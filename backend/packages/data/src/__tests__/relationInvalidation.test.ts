@@ -17,6 +17,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import type { ItemRow } from "../types.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { UNGUARDED_IMAP_PASS } from "../testSupport/imapSyncPass.js";
 
 describe("relation invalidations", () => {
   let admin: Pool;
@@ -232,7 +233,7 @@ describe("relation invalidations", () => {
           return [{ path: "All Mail", specialUse: "\\All" }];
         },
         async selectFolder() {
-          return { uidvalidity: 1, uidnext: 2, highestModSeq: null };
+          return { uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 };
         },
         async fetchMessagesSince() {
           return [
@@ -248,8 +249,8 @@ describe("relation invalidations", () => {
             },
           ];
         },
-        async fetchVanishedSince() {
-          return [];
+        async fetchChangesSince() {
+          return { flags: [], vanished: [] };
         },
         async fetchAllUids() {
           return [1];
@@ -263,20 +264,19 @@ describe("relation invalidations", () => {
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       const folderPropertyId = propertyId(emailProperties, "folder");
-      await withTransaction(pool, (client) =>
-        reconcileImapAccount(client, imap, {
-          mailboxItemId: mailbox.id,
-          emailsDatabaseId,
-          filesDatabaseId,
-          foldersDatabaseId,
-          folderRelationPropertyId: folderPropertyId,
-          mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
-          attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
-          storage,
-          storageKeyPrefix: "test",
-          folderPaths: ["All Mail"],
-        }),
-      );
+      await reconcileImapAccount(pool, imap, {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId,
+        filesDatabaseId,
+        foldersDatabaseId,
+        folderRelationPropertyId: folderPropertyId,
+        mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+        attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+        storage,
+        storageKeyPrefix: "test",
+        folderPaths: ["All Mail"],
+        pass: UNGUARDED_IMAP_PASS,
+      });
       const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
         emailsDatabaseId,
       ]);

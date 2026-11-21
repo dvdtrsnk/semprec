@@ -169,6 +169,29 @@ export async function getDatabaseByModuleId(client: PoolClient, ownerModuleId: s
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
+/**
+ * `getDatabaseByModuleId` for several module ids in one statement, failing the same way on several matches. A module
+ * id without a database is absent.
+ */
+export async function getDatabasesByModuleIds(
+  client: PoolClient,
+  ownerModuleIds: readonly string[],
+): Promise<Map<string, DatabaseRow>> {
+  const { rows } = await client.query<DatabaseDbRow>(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE owner_module_id = ANY($1::text[]) AND system`,
+    [ownerModuleIds],
+  );
+  const byModule = new Map<string, DatabaseRow>();
+  for (const moduleId of new Set(ownerModuleIds)) {
+    const matches = rows.filter((row) => row.owner_module_id === moduleId);
+    if (matches.length > 1) {
+      throw new Error(`Module id '${moduleId}' resolves to ${matches.length} system databases, expected at most one`);
+    }
+    if (matches[0]) byModule.set(moduleId, mapDatabaseRow(matches[0]));
+  }
+  return byModule;
+}
+
 /** Every non-archived database, including system databases, which no project-scoped query sees. */
 export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[]> {
   const { rows } = await client.query<DatabaseDbRow>(
@@ -304,51 +327,27 @@ export async function restoreDatabase(client: PoolClient, id: string): Promise<D
   return mapDatabaseRow(requireSingleRow(rows, "databases row"));
 }
 
-/**
- * SQL condition (`$n` is `RETENTION_DAYS`) that `purge_at` is one this release can have written: never
- * earlier than `archived_at` plus the retention. An older release's restore and re-archive leaves the
- * first archive's deadline beside the second archive's time, which must not delete the database.
- */
-function purgeDeadlineIsCurrent(retentionParam: number): string {
-  return `purge_at >= archived_at + make_interval(hours => $${retentionParam}::int * 24)`;
-}
-
-/**
- * Gives every archived user database without a current deadline (`purgeDeadlineIsCurrent`) one
- * `retentionDays` × 24h from now. A deadline this release wrote is never touched. Returns how many.
- */
-export async function assignMissingPurgeDeadlines(client: PoolClient, retentionDays: number): Promise<number> {
-  const result = await client.query(
-    `UPDATE databases SET purge_at = now() + make_interval(hours => $1::int * 24)
-      WHERE archived_at IS NOT NULL AND NOT system
-        AND (purge_at IS NULL OR NOT (${purgeDeadlineIsCurrent(1)}))`,
-    [retentionDays],
-  );
-  return result.rowCount ?? 0;
-}
-
-/** Earliest deadline first; a stale deadline does not count until `assignMissingPurgeDeadlines` replaced it. */
+/** Earliest deadline first. */
 export async function listExpiredArchivedDatabaseIds(client: PoolClient): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM databases
-      WHERE archived_at IS NOT NULL AND NOT system AND purge_at < now() AND ${purgeDeadlineIsCurrent(1)}
+      WHERE archived_at IS NOT NULL AND NOT system AND purge_at < now()
       ORDER BY purge_at, id`,
-    [RETENTION_DAYS],
   );
   return rows.map((row) => row.id);
 }
 
 /**
  * Locks the row `FOR NO KEY UPDATE` (an archive or restore waits for it) and says whether it is still
- * an archived user database past a current deadline. The purge calls it first in every transaction
+ * an archived user database past its deadline. The purge calls it first in every transaction
  * that deletes from or drops the database, so an earlier restore is seen and a later one waits.
  */
 export async function lockExpiredArchivedDatabase(client: PoolClient, id: string): Promise<boolean> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM databases
-      WHERE id = $1 AND archived_at IS NOT NULL AND NOT system AND purge_at < now() AND ${purgeDeadlineIsCurrent(2)}
+      WHERE id = $1 AND archived_at IS NOT NULL AND NOT system AND purge_at < now()
       FOR NO KEY UPDATE`,
-    [id, RETENTION_DAYS],
+    [id],
   );
   return rows.length === 1;
 }

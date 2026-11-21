@@ -1,6 +1,8 @@
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
+import { isLockNotAvailable } from "../db/tenantAdvisoryGuard.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ChokePointError, ValidationError } from "../errors.js";
+import { MailboxSyncBusyError } from "./mailboxSyncGuard.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { PoolClient } from "pg";
 
@@ -40,6 +42,8 @@ export interface MailAccountSyncStateRow {
   failingSince: string | null;
   initialSyncCompletedAt: string | null;
   lastFailureKind: MailSyncFailureKind | null;
+  /** Set while the account's Mail is off; the sync pass, sweep, live-sync discovery and send skip or refuse it. */
+  syncPausedAt: string | null;
 }
 
 type MailAccountSyncStateDbRow = {
@@ -58,6 +62,7 @@ type MailAccountSyncStateDbRow = {
   failing_since: Date | null;
   initial_sync_completed_at: Date | null;
   last_failure_kind: string | null;
+  sync_paused_at: Date | null;
 };
 
 function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
@@ -80,11 +85,12 @@ function mapRow(row: MailAccountSyncStateDbRow): MailAccountSyncStateRow {
       row.last_failure_kind === null
         ? null
         : assertKnownValue(MAIL_SYNC_FAILURE_KINDS, row.last_failure_kind, "mail sync failure kind"),
+    syncPausedAt: row.sync_paused_at?.toISOString() ?? null,
   };
 }
 
 const COLUMNS =
-  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind";
+  "item_id, sync_mode, gmail_history_id, gmail_watch_expires_at, graph_subscription_id, graph_subscription_expires_at, graph_client_state, graph_delta_link, last_error, last_activity_at, next_expected_activity_at, last_successful_sync_at, failing_since, initial_sync_completed_at, last_failure_kind, sync_paused_at";
 
 export interface EnsureMailAccountSyncStateInput {
   itemId: string;
@@ -157,10 +163,133 @@ export async function lockMailAccountSyncState(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+export interface MailAccountStallState extends MailAccountSyncStateRow {
+  /** A pass holds an unexpired lease. */
+  passRunning: boolean;
+  /** `next_expected_activity_at` lies more than the grace in the past. */
+  overdue: boolean;
+  /** The last successful pass ended within the grace. */
+  recentlySynced: boolean;
+}
+
+/**
+ * Locks the account's row like `lockMailAccountSyncState` and judges its lease and activity times against the
+ * database clock.
+ */
+export async function lockMailAccountStallState(
+  client: PoolClient,
+  itemId: string,
+  graceMs: number,
+): Promise<MailAccountStallState | null> {
+  const { rows } = await client.query<
+    MailAccountSyncStateDbRow & { pass_running: boolean; overdue: boolean; recently_synced: boolean }
+  >(
+    `SELECT ${COLUMNS},
+            COALESCE(pass_lease_token IS NOT NULL AND pass_lease_expires_at > now(), false) AS pass_running,
+            COALESCE(next_expected_activity_at < now() - make_interval(secs => $2::double precision / 1000), false)
+              AS overdue,
+            COALESCE(last_successful_sync_at > now() - make_interval(secs => $2::double precision / 1000), false)
+              AS recently_synced
+       FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+    [itemId, graceMs],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...mapRow(row),
+    passRunning: row.pass_running,
+    overdue: row.overdue,
+    recentlySynced: row.recently_synced,
+  };
+}
+
+/** The account's sync mode and recorded OAuth grant; `null` for a mailbox that never connected. */
+export async function getMailAccountGrant(
+  client: Queryable,
+  itemId: string,
+): Promise<{ syncMode: SyncMode; grantedScopes: string[] | null } | null> {
+  const { rows } = await client.query<{ sync_mode: string; granted_scopes: string[] | null }>(
+    "SELECT sync_mode, granted_scopes FROM mail_account_sync_state WHERE item_id = $1",
+    [itemId],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  return { syncMode: assertKnownValue(SYNC_MODES, row.sync_mode, "sync mode"), grantedScopes: row.granted_scopes };
+}
+
+/**
+ * Replaces the scopes the provider granted with the account's current OAuth credential, as its token response
+ * reported them.
+ */
+export async function recordGrantedOauthScopes(
+  client: Queryable,
+  itemId: string,
+  grantedScopes: readonly string[],
+): Promise<void> {
+  const result = await client.query("UPDATE mail_account_sync_state SET granted_scopes = $2 WHERE item_id = $1", [
+    itemId,
+    [...grantedScopes],
+  ]);
+  requireAffectedRows(result, `granted OAuth scopes for item ${itemId}`);
+}
+
 /** Returns whether a row existed; a never-connected mailbox has none. */
 export async function deleteMailAccountSyncState(client: Queryable, itemId: string): Promise<boolean> {
   const result = await client.query("DELETE FROM mail_account_sync_state WHERE item_id = $1", [itemId]);
   return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Pauses the account's mail sync and resets it to a never-synced account: the cursors, the initial-sync mark, the
+ * next expected activity and the failure record are cleared, so a resumed account syncs as a new one does and the
+ * stall check finds nothing overdue. The routing address, provider account address, sync mode and Graph
+ * subscription are kept. Seeds the row (with `syncMode`) when the account has none. `false` when it was paused already.
+ */
+export async function pauseMailAccountSync(client: Queryable, itemId: string, syncMode: SyncMode): Promise<boolean> {
+  const result = await client.query(
+    `INSERT INTO mail_account_sync_state (item_id, sync_mode, sync_paused_at) VALUES ($1, $2, now())
+     ON CONFLICT (item_id) DO UPDATE
+       SET sync_paused_at = now(), gmail_history_id = NULL, graph_delta_link = NULL, last_error = NULL,
+           next_expected_activity_at = NULL, failing_since = NULL, last_failure_kind = NULL,
+           initial_sync_completed_at = NULL
+     WHERE mail_account_sync_state.sync_paused_at IS NULL`,
+    [itemId, syncMode],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/** `false` when the account was not paused or has no row. */
+export async function resumeMailAccountSync(client: Queryable, itemId: string): Promise<boolean> {
+  const result = await client.query(
+    "UPDATE mail_account_sync_state SET sync_paused_at = NULL WHERE item_id = $1 AND sync_paused_at IS NOT NULL",
+    [itemId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Locks the account's row `FOR SHARE`, so the Mail switch waits for the caller's transaction, and answers whether
+ * Mail is switched off. `false` for an account without a row.
+ */
+export async function lockMailAccountSyncPaused(client: Queryable, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ paused: boolean }>(
+    "SELECT sync_paused_at IS NOT NULL AS paused FROM mail_account_sync_state WHERE item_id = $1 FOR SHARE",
+    [itemId],
+  );
+  return rows[0]?.paused ?? false;
+}
+
+/**
+ * Locks the paused account's row `FOR SHARE` and answers its pause time as six-digit UTC text (the trash epoch form
+ * `itemDeleteWithClient` takes); `null`, locking nothing, when the row is gone or not paused.
+ */
+export async function lockMailAccountSyncPause(client: Queryable, itemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ paused_at_exact: string }>(
+    `SELECT to_char(sync_paused_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS paused_at_exact
+       FROM mail_account_sync_state WHERE item_id = $1 AND sync_paused_at IS NOT NULL FOR SHARE`,
+    [itemId],
+  );
+  return rows[0]?.paused_at_exact ?? null;
 }
 
 export async function setSyncMode(client: Queryable, itemId: string, syncMode: SyncMode): Promise<void> {
@@ -494,6 +623,20 @@ export async function recordSyncError(
 }
 
 /**
+ * Clears the failure record after the account's credential was replaced, so the account is due at once and shows no
+ * failure until its next pass. The row must exist.
+ */
+export async function clearMailSyncFailure(client: Queryable, itemId: string): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+     SET last_error = NULL, last_failure_kind = NULL, failing_since = NULL, next_expected_activity_at = NULL
+     WHERE item_id = $1`,
+    [itemId],
+  );
+  requireAffectedRows(result, `mail sync failure of item ${itemId}`);
+}
+
+/**
  * Like `recordSyncError` with a provider-aware delay. The caller returns instead of rethrowing, so
  * the retry comes only from the sweep, not also from graphile-worker.
  */
@@ -526,9 +669,15 @@ export async function classifyUnclassifiedMailSyncErrors(client: Queryable): Pro
     AND state.last_error IS NOT NULL AND state.last_activity_at IS NULL AND state.last_failure_kind IS NULL`);
 }
 
+/**
+ * A paused account is never due, nor is one whose last pass needed reauthorization: only a new credential (a sign-in
+ * or a password entered again, each of which queues a pass) changes its outcome.
+ */
 export async function listAccountsDueForSync(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(
-    `SELECT ${COLUMNS} FROM mail_account_sync_state WHERE next_expected_activity_at IS NULL OR next_expected_activity_at <= now()`,
+    `SELECT ${COLUMNS} FROM mail_account_sync_state
+      WHERE sync_paused_at IS NULL AND last_failure_kind IS DISTINCT FROM 'reauthorization'
+        AND (next_expected_activity_at IS NULL OR next_expected_activity_at <= now())`,
   );
   return rows.map(mapRow);
 }
@@ -537,4 +686,125 @@ export async function listAccountsDueForSync(client: Queryable): Promise<MailAcc
 export async function listAllMailAccountSyncStates(client: Queryable): Promise<MailAccountSyncStateRow[]> {
   const { rows } = await client.query<MailAccountSyncStateDbRow>(`SELECT ${COLUMNS} FROM mail_account_sync_state`);
   return rows.map(mapRow);
+}
+
+/** What `claimMailSyncPass` found: the lease is now this pass's, another live pass holds it, or there is no row. */
+export type MailSyncPassClaim = "claimed" | "busy" | "missing";
+
+export interface ClaimMailSyncPassOptions {
+  /** How long the claim waits for the sync state row's lock; without it only the pool's statement timeout bounds it. */
+  maxWaitMs?: number;
+}
+
+/**
+ * Takes the account's pass lease for `token` until `leaseMs` from now, unless another pass holds an unexpired one;
+ * then that pass is asked for one more run (`pass_rerun_requested`) and `busy` is returned. Locks the sync state row,
+ * so a claim and `releaseMailSyncPass` never interleave: a trigger either reaches the running pass's rerun flag or
+ * finds the lease free. A claim clears the flag, because the claiming pass is the requested run.
+ *
+ * A Gmail or Graph pass keeps the row locked for its whole reconcile transaction, so `maxWaitMs` bounds the wait with
+ * a transaction-local `lock_timeout`, restored right after the grant. When it expires the transaction is aborted and
+ * `MailboxSyncBusyError` is thrown: the row's holder (a running pass, a removal or the Mail switch) decides the
+ * account's state, and the trigger is not recorded as a rerun.
+ */
+export async function claimMailSyncPass(
+  client: PoolClient,
+  itemId: string,
+  token: string,
+  leaseMs: number,
+  options: ClaimMailSyncPassOptions = {},
+): Promise<MailSyncPassClaim> {
+  const { maxWaitMs } = options;
+  let restoredLockTimeout: string | undefined;
+  if (maxWaitMs !== undefined) {
+    // `lock_timeout` of 0 means no timeout at all, so a bound of 0 would silently be none.
+    if (!Number.isInteger(maxWaitMs) || maxWaitMs <= 0) {
+      throw new RangeError("The mail sync pass claim's maximum wait must be a positive integer of milliseconds");
+    }
+    const { rows: settings } = await client.query<{ lockTimeout: string }>(
+      `SELECT current_setting('lock_timeout') AS "lockTimeout"`,
+    );
+    restoredLockTimeout = settings[0]?.lockTimeout;
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [`${maxWaitMs}ms`]);
+  }
+  let rows: Array<{ held: boolean }>;
+  try {
+    ({ rows } = await client.query<{ held: boolean }>(
+      `SELECT (pass_lease_token IS NOT NULL AND pass_lease_expires_at > now()) AS held
+         FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+      [itemId],
+    ));
+  } catch (error) {
+    if (isLockNotAvailable(error)) throw new MailboxSyncBusyError();
+    throw error;
+  }
+  if (restoredLockTimeout !== undefined) {
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [restoredLockTimeout]);
+  }
+  const row = rows[0];
+  if (!row) return "missing";
+  // The row is locked above, so each update below finds it.
+  if (row.held) {
+    requireAffectedRows(
+      await client.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [itemId]),
+      `mail sync pass rerun request of ${itemId}`,
+    );
+    return "busy";
+  }
+  const claimed = await client.query(
+    `UPDATE mail_account_sync_state
+        SET pass_lease_token = $2, pass_lease_expires_at = now() + make_interval(secs => $3::double precision / 1000),
+            pass_rerun_requested = false
+      WHERE item_id = $1`,
+    [itemId, token, leaseMs],
+  );
+  requireAffectedRows(claimed, `mail sync pass lease of ${itemId}`);
+  return "claimed";
+}
+
+/**
+ * Extends `token`'s lease, or takes it again when no live pass holds it (it expired, or the row was deleted and
+ * inserted again). `false` when another pass holds it now: this pass must stop.
+ */
+export async function renewMailSyncPass(
+  client: Queryable,
+  itemId: string,
+  token: string,
+  leaseMs: number,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state
+        SET pass_lease_token = $2,
+            pass_lease_expires_at = now() + make_interval(secs => $3::double precision / 1000)
+      WHERE item_id = $1
+        AND (pass_lease_token = $2 OR pass_lease_token IS NULL OR pass_lease_expires_at <= now())`,
+    [itemId, token, leaseMs],
+  );
+  return result.rowCount === 1;
+}
+
+/** Asks for one more pass once the running one releases its lease (an unfinished backfill). */
+export async function requestMailSyncRerun(client: Queryable, itemId: string, token: string): Promise<void> {
+  const result = await client.query(
+    "UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1 AND pass_lease_token = $2",
+    [itemId, token],
+  );
+  requireAffectedRows(result, `mail sync pass lease of ${itemId}`);
+}
+
+/**
+ * Gives up `token`'s lease and returns whether a rerun was requested while it was held. `false` with nothing changed
+ * when the lease is no longer `token`'s or the row is gone (a removal deleted it).
+ */
+export async function releaseMailSyncPass(client: PoolClient, itemId: string, token: string): Promise<boolean> {
+  const { rows } = await client.query<{ rerun: boolean }>(
+    `UPDATE mail_account_sync_state state
+        SET pass_lease_token = NULL, pass_lease_expires_at = NULL, pass_rerun_requested = false
+       FROM (SELECT item_id, pass_rerun_requested FROM mail_account_sync_state
+              WHERE item_id = $1 AND pass_lease_token = $2 FOR UPDATE) previous
+      WHERE state.item_id = previous.item_id
+      RETURNING previous.pass_rerun_requested AS rerun`,
+    [itemId, token],
+  );
+  return rows[0]?.rerun ?? false;
 }

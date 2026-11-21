@@ -105,6 +105,8 @@ export function pushInterruptionLevelFor(
       return preferences.invites ? "active" : null;
     case "reminders":
       return preferences.reminders ? "active" : null;
+    case "calendarChanges":
+      return preferences.calendarChanges ? "active" : null;
     case "problems":
       if (!problemsLevelIncludes(preferences.problemsLevel, policy.severity)) return null;
       if (!preferences.problemsSummary) return "active";
@@ -159,6 +161,16 @@ function apnsFieldsFor(notification: NotificationRow): NotificationApnsFields | 
   }
   if (notification.kind === "calendar_invitation" && notification.sourceTable === "items") {
     return { category: CALENDAR_INVITATION_PUSH_CATEGORY, data: { invitation_id: notification.sourceId } };
+  }
+  if (policyForKind(notification.kind).category === "calendarChanges") {
+    // A summary of several changes names only its calendar, so the app opens no single Event for it.
+    const { eventId, calendarId } = notification.payload;
+    return {
+      data: {
+        ...(typeof calendarId === "string" ? { calendar_id: calendarId } : {}),
+        ...(typeof eventId === "string" ? { event_id: eventId } : {}),
+      },
+    };
   }
   return undefined;
 }

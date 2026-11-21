@@ -10,13 +10,12 @@ import { normalizeWallClockTime } from "../timezone.js";
 import type { ItemRow } from "../types.js";
 import {
   getTaskRecurrenceBySeriesId,
-  publicTaskRecurrenceTemplate,
   updateTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
 import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
-/** The template fields a series edit may change; every other key, `persistent` included, is refused by name. */
+/** The template fields a series edit may change; every other key is refused by name. */
 const TEMPLATE_FIELDS = ["name", "timeFrom", "timeTo", "notifications", "flagged", "description"] as const;
 type TemplateField = (typeof TEMPLATE_FIELDS)[number];
 const TEMPLATE_FIELD_SET: ReadonlySet<string> = new Set(TEMPLATE_FIELDS);
@@ -164,7 +163,7 @@ export function createTaskSeriesPatchRouteHandler(pool: Pool) {
         status: 200,
         body: {
           seriesId,
-          template: publicTaskRecurrenceTemplate(template),
+          template,
           recurrence: after?.properties.recurrence ?? null,
           currentInstanceId: current.id,
         },

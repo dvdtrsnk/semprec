@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ValidationError } from "../errors.js";
+import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 
 export const MAIL_SERVER_PORTS = [993, 143, 465, 587] as const;
 export const MAIL_SERVER_SECURITIES = ["tls", "starttls"] as const;
@@ -19,10 +20,13 @@ export interface MailServerSettingsInput {
   imap: MailServerEndpoint | null;
   smtp: MailServerEndpoint | null;
   username: string;
+  /** A generic account's CalDAV address (`normalizeCalDavUrl`); absent or `null` when discovery uses its domain. */
+  caldavUrl?: string | null;
 }
 
 export interface MailServerSettings extends MailServerSettingsInput {
   mailboxItemId: string;
+  caldavUrl: string | null;
 }
 
 type SettingsDbRow = {
@@ -34,11 +38,14 @@ type SettingsDbRow = {
   smtp_port: number | null;
   smtp_security: string | null;
   username: string;
+  caldav_url: string | null;
 };
 
-const COLUMNS = "mailbox_item_id, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, username";
+const COLUMNS =
+  "mailbox_item_id, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, username, caldav_url";
 const MAX_HOST_LENGTH = 253;
 const MAX_USERNAME_LENGTH = 320;
+const MAX_CALDAV_URL_LENGTH = 2048;
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const RESERVED_SUFFIXES = [".localhost", ".local", ".internal"];
 
@@ -66,6 +73,28 @@ export function normalizeMailServerHost(raw: unknown, field: string): string {
     throw new ValidationError(`${field} must be a valid DNS name`, { field });
   }
   return bare;
+}
+
+/**
+ * Returns the URL as `URL` writes it. It must pass the stored outbound URL baseline (`https:`, default port, no
+ * userinfo, a DNS name that is no IP literal and not `localhost`) and its host the same name rules as a mail server.
+ * Input contract only; resolved addresses are checked at connect time.
+ */
+export function normalizeCalDavUrl(raw: unknown, field = "caldavUrl"): string {
+  if (typeof raw !== "string" || raw.trim().length === 0 || raw.length > MAX_CALDAV_URL_LENGTH) {
+    throw new ValidationError(`${field} must be 1 to ${MAX_CALDAV_URL_LENGTH} characters`, { field });
+  }
+  const value = raw.trim();
+  if (!isBaselineOutboundUrl(value)) {
+    throw new ValidationError(`${field} must be an https URL of a DNS name on the default port`, { field });
+  }
+  const url = new URL(value);
+  normalizeMailServerHost(url.hostname, field);
+  url.hash = "";
+  if (url.href.length > MAX_CALDAV_URL_LENGTH) {
+    throw new ValidationError(`${field} must be 1 to ${MAX_CALDAV_URL_LENGTH} characters`, { field });
+  }
+  return url.href;
 }
 
 function validatePort(raw: unknown, field: string): number {
@@ -114,6 +143,7 @@ function toSettings(row: SettingsDbRow): MailServerSettings {
     imap: endpointOf(row.imap_host, row.imap_port, row.imap_security, "mail_account_server_settings.imap_security"),
     smtp: endpointOf(row.smtp_host, row.smtp_port, row.smtp_security, "mail_account_server_settings.smtp_security"),
     username: row.username,
+    caldavUrl: row.caldav_url,
   };
 }
 
@@ -134,14 +164,17 @@ export async function upsertMailServerSettings(
   const imap = validateEndpoint(input.imap, "imap");
   const smtp = validateEndpoint(input.smtp, "smtp");
   const username = validateUsername(input.username);
+  const caldavUrl =
+    input.caldavUrl === undefined || input.caldavUrl === null ? null : normalizeCalDavUrl(input.caldavUrl);
   const { rows } = await db.query<SettingsDbRow>(
     `INSERT INTO mail_account_server_settings
-       (mailbox_item_id, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, username)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (mailbox_item_id, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, username,
+        caldav_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (mailbox_item_id) DO UPDATE SET
        imap_host = EXCLUDED.imap_host, imap_port = EXCLUDED.imap_port, imap_security = EXCLUDED.imap_security,
        smtp_host = EXCLUDED.smtp_host, smtp_port = EXCLUDED.smtp_port, smtp_security = EXCLUDED.smtp_security,
-       username = EXCLUDED.username, updated_at = now()
+       username = EXCLUDED.username, caldav_url = EXCLUDED.caldav_url, updated_at = now()
      RETURNING ${COLUMNS}`,
     [
       mailboxItemId,
@@ -152,6 +185,7 @@ export async function upsertMailServerSettings(
       smtp?.port ?? null,
       smtp?.security ?? null,
       username,
+      caldavUrl,
     ],
   );
   const row = rows[0];

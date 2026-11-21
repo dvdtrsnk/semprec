@@ -4,6 +4,7 @@ import cz.semprec.app.domain.MailBox
 import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailNamedRef
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailThreadDetail
@@ -22,7 +23,8 @@ private const val PROJECTS_KEY = "projects"
 
 /**
  * The mail reads and thread actions of `/api/mail/threads*`, `/api/mail/summary` and `/api/mail/contacts`. The names
- * and colors of the areas and projects in the filter are read as items, because the counts carry only their ids.
+ * and colors of the areas and projects in the filter are read as items, because the counts carry only their ids. A
+ * read mark, flag or move refused with a known code is [MailOutcome.Refused].
  */
 class HttpMailRepository internal constructor(
     private val api: AuthenticatedApi,
@@ -65,26 +67,26 @@ class HttpMailRepository internal constructor(
         api.send(HttpMethod.Get, "/api/mail/threads/${threadId.encodeURLPathPart()}")
             .decode<MailThreadDetailDto>().map { it.toDomain() }
 
-    override suspend fun setRead(threadId: String, read: Boolean): RepositoryResult<Boolean> =
+    override suspend fun setRead(threadId: String, read: Boolean): RepositoryResult<MailOutcome<Boolean>> =
         api.send(HttpMethod.Post, "${threadPath(threadId)}/read", body = flagBody("read", read))
-            .decode<MailReadDto>().map { it.unread }
+            .mailOutcome { decode<MailReadDto>().map { it.unread } }
 
-    override suspend fun setFlagged(threadId: String, flagged: Boolean): RepositoryResult<Boolean> =
+    override suspend fun setFlagged(threadId: String, flagged: Boolean): RepositoryResult<MailOutcome<Boolean>> =
         api.send(HttpMethod.Post, "${threadPath(threadId)}/flag", body = flagBody("flagged", flagged))
-            .decode<MailFlagDto>().map { it.flagged }
+            .mailOutcome { decode<MailFlagDto>().map { it.flagged } }
 
-    override suspend fun archive(threadId: String): RepositoryResult<Unit> = move(threadId, "archive")
+    override suspend fun archive(threadId: String): RepositoryResult<MailOutcome<Unit>> = move(threadId, "archive")
 
-    override suspend fun trash(threadId: String): RepositoryResult<Unit> = move(threadId, "trash")
+    override suspend fun trash(threadId: String): RepositoryResult<MailOutcome<Unit>> = move(threadId, "trash")
 
-    override suspend fun restore(threadId: String): RepositoryResult<Unit> = move(threadId, "restore")
+    override suspend fun restore(threadId: String): RepositoryResult<MailOutcome<Unit>> = move(threadId, "restore")
 
     override suspend fun createTask(threadId: String): RepositoryResult<MailNamedRef> =
         api.send(HttpMethod.Post, "${threadPath(threadId)}/tasks", body = EMPTY_BODY)
             .decode<MailTaskCreatedDto>().map { MailNamedRef(it.id, it.name) }
 
-    private suspend fun move(threadId: String, action: String): RepositoryResult<Unit> =
-        api.send(HttpMethod.Post, "${threadPath(threadId)}/$action", body = EMPTY_BODY).ignoreBody()
+    private suspend fun move(threadId: String, action: String): RepositoryResult<MailOutcome<Unit>> =
+        api.send(HttpMethod.Post, "${threadPath(threadId)}/$action", body = EMPTY_BODY).mailOutcome { ignoreBody() }
 
     /** The name and color of every item of the system database [key], by id. */
     private suspend fun names(key: String): RepositoryResult<Map<String, MailNameAndColor>> =

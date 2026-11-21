@@ -11,11 +11,19 @@ export const IMAP_IDLE_MAX_IDLE_TIME_MS = 25 * 60 * 1000;
 /** Longer than `IMAP_IDLE_MAX_IDLE_TIME_MS` so a renewal never trips it; imapflow's 5-minute default is too short. */
 export const IMAP_IDLE_SOCKET_TIMEOUT_MS = 35 * 60 * 1000;
 
+/**
+ * imapflow's `autoIdleDelay` (15 s by default) on the IDLE connection: a server reports a new message only while
+ * IDLE runs, so the connection, which issues no command after its SELECT, starts IDLE at once instead of leaving a
+ * blind window after every connect.
+ */
+export const IMAP_IDLE_AUTO_IDLE_DELAY_MS = 0;
+
 // TCP keepalive needs no configuration: imapflow always enables it on its sockets.
 
 export interface ImapIdleFlowOptions {
   maxIdleTime: number;
   socketTimeout: number;
+  autoIdleDelay: number;
 }
 
 /**
@@ -212,6 +220,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       const client = await createClient(mailboxItemId, credential, {
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+        autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
       });
       const ended = endPromiseFor(client);
       let targets: ImapIdleFolderTarget[];
@@ -236,6 +245,7 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       const client = await createClient(mailboxItemId, credential, {
         maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
         socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+        autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
       });
       const ended = endPromiseFor(client);
       try {

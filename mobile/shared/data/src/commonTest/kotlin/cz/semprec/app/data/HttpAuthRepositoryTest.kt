@@ -3,9 +3,11 @@ package cz.semprec.app.data
 import cz.semprec.app.core.AppPlatform
 import cz.semprec.app.core.DeviceInfo
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.InMemoryPushSubscriptionStorage
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SessionStatus
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -38,6 +40,7 @@ class HttpAuthRepositoryTest {
 
     private fun repository(
         storage: InMemorySessionStorage = InMemorySessionStorage(),
+        endingSession: suspend (AuthenticatedApi) -> Unit = {},
         handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData,
     ): HttpAuthRepository {
         val engine = MockEngine { request ->
@@ -45,7 +48,7 @@ class HttpAuthRepositoryTest {
             bodies += request.body.toByteArray().decodeToString()
             handler(request)
         }
-        return HttpAuthRepository(ApiClient(engine), storage, DEVICE)
+        return HttpAuthRepository(ApiClient(engine), storage, DEVICE, endingSession)
     }
 
     private fun MockRequestHandleScope.json(body: String, status: HttpStatusCode = HttpStatusCode.OK) =
@@ -159,6 +162,45 @@ class HttpAuthRepositoryTest {
 
         assertEquals(SessionStatus.Unreachable("https://s.example"), repo.status.value)
         assertEquals(stored, storage.load())
+    }
+
+    @Test
+    fun signOutRevokesTheStoredPushSubscriptionWithTheEndingSessionBeforeTheLogout() = runTest {
+        val storage = InMemorySessionStorage().apply { save(StoredSession("https://s.example", "tok")) }
+        val subscriptions = InMemoryPushSubscriptionStorage().apply { save("sub-1") }
+        var storedWhileEnding: StoredSession? = StoredSession("unset", "unset")
+        val repo = repository(
+            storage,
+            endingSession = { ending ->
+                storedWhileEnding = storage.load()
+                RevokePushSubscription(HttpPushRepository(ending), subscriptions)()
+            },
+        ) { json("""{"revoked":true}""") }
+
+        repo.signOut()
+
+        assertNull(storedWhileEnding, "the device forgets the session before it ends it on the server")
+        assertEquals(
+            listOf(
+                "https://s.example/api/push-subscriptions/sub-1/revoke",
+                "https://s.example/api/auth/logout",
+            ),
+            requests.map { it.url.toString() },
+        )
+        assertTrue(requests.all { it.headers[HttpHeaders.Authorization] == "Bearer tok" })
+        assertNull(subscriptions.load())
+        assertEquals(SessionStatus.SignedOut, repo.status.value)
+    }
+
+    @Test
+    fun signOutWithoutASessionEndsNothingOnTheServer() = runTest {
+        var ended = 0
+        val repo = repository(endingSession = { ended += 1 }) { error("no request expected") }
+
+        repo.signOut()
+
+        assertEquals(0, ended)
+        assertTrue(requests.isEmpty())
     }
 
     @Test

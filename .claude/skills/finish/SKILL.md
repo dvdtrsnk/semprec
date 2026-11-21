@@ -130,7 +130,7 @@ the matching `web/review-rules/` for frontend changes, `mobile/review-rules/`,
 changes (a file belongs to the platform whose directory is the longest prefix
 of its path), plus the conventions in
 `.bb/skills/` (choke-point writes, single-writer ownership,
-expand/contract migrations, AI calls only through the gateway, English
+the baseline schema edited in place, AI calls only through the gateway, English
 camelCase canonical keys, labels via i18n). Sweep for debug prints,
 commented-out code and files unrelated to this branch. Fix what you find and
 commit it.

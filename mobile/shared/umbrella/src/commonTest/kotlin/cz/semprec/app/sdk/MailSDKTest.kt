@@ -1,7 +1,7 @@
 package cz.semprec.app.sdk
 
 import cz.semprec.app.core.FailureKind
-import cz.semprec.app.presentation.MailAccountPhase
+import cz.semprec.app.presentation.InternetAccountPhase
 import cz.semprec.app.presentation.MailComposeStart
 import cz.semprec.app.presentation.MailFoldersPhase
 import cz.semprec.app.presentation.MailListStart
@@ -35,8 +35,8 @@ class MailSDKTest {
             mail.threadViewModel("t1") to mail.threadViewModel("t1"),
             mail.composeViewModel(MailComposeStart.New) to mail.composeViewModel(MailComposeStart.New),
             mail.foldersViewModel() to mail.foldersViewModel(),
-            mail.accountsViewModel() to mail.accountsViewModel(),
-            mail.accountViewModel("m1") to mail.accountViewModel("m1"),
+            mail.internetAccountsViewModel() to mail.internetAccountsViewModel(),
+            mail.internetAccountViewModel("m1") to mail.internetAccountViewModel("m1"),
         )
         pairs.forEach { (first, second) ->
             assertNotSame(first, second)
@@ -52,13 +52,13 @@ class MailSDKTest {
         val threads = mail.threadsViewModel(MailListStart())
         val thread = mail.threadViewModel("t1")
         val folders = mail.foldersViewModel()
-        val account = mail.accountViewModel("m1")
+        val account = mail.internetAccountViewModel("m1")
         runCurrent()
         assertEquals(MailThreadsPhase.ERROR, threads.state.value.phase)
         assertEquals(FailureKind.UNAUTHORIZED, threads.state.value.failure)
         assertEquals(MailThreadPhase.ERROR, thread.state.value.phase)
         assertEquals(MailFoldersPhase.ERROR, folders.state.value.phase)
-        assertEquals(MailAccountPhase.ERROR, account.state.value.phase)
+        assertEquals(InternetAccountPhase.ERROR, account.state.value.phase)
         listOf(threads, thread, folders, account).forEach { it.close() }
     }
 }

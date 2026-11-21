@@ -22,7 +22,7 @@ export interface NotificationPushPayload {
   sourceTable: string;
   sourceId: string;
   kind: NotificationKind;
-  /** Approval notifications only. */
+  /** Approval, calendar invitation and calendar change notifications only. */
   apns?: NotificationApnsFields;
   /** Sent as `aps.badge` (`0` clears it); Web Push ignores it. */
   badge?: number;

@@ -33,6 +33,12 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.j
 import { createTasksTodayView } from "../tasks/todayView.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from "../calendar/eventOccurrenceId.js";
+import {
+  EVENT_EXCEPTION_DATES_PROPERTY_KEY,
+  EVENT_RECURRENCE_ID_PROPERTY_KEY,
+  EVENT_RECURRENCE_RULE_PROPERTY_KEY,
+  EVENT_TIME_ZONE_PROPERTY_KEY,
+} from "../calendar/syncedEventKeys.js";
 import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
@@ -281,6 +287,17 @@ export async function seedTenDatabasesInTransaction(
       owner: "system",
       ownerProcess: CALENDAR_MODULE_ID,
     },
+    // A synced Event's provider fields, written by the calendar sync (`calendar/syncedEventFields.ts` admits that
+    // writer only, plus the calendar module's own clearing and override copies). No owner process: the sync writes
+    // them together with `seriesId`, and the Events pre-write transform clears the raw rule.
+    // IANA zone of `date`/`timeFrom`/`endDate`/`timeTo`; none means the tenant's zone.
+    { key: EVENT_TIME_ZONE_PROPERTY_KEY, name: "Time zone", type: "text", owner: "system" },
+    // Raw RRULE of a series, instead of `recurrence`.
+    { key: EVENT_RECURRENCE_RULE_PROPERTY_KEY, name: "Recurrence rule", type: "text", owner: "system" },
+    // Starts the raw rule excludes: days or `YYYY-MM-DDTHH:MM` in the Event's zone.
+    { key: EVENT_EXCEPTION_DATES_PROPERTY_KEY, name: "Exception dates", type: "json", owner: "system" },
+    // On an override (an occurrence item of a synced series): the original start it replaces, as above.
+    { key: EVENT_RECURRENCE_ID_PROPERTY_KEY, name: "Recurrence ID", type: "text", owner: "system" },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);

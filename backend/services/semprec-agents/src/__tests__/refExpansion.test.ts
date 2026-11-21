@@ -529,7 +529,6 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(sections[0]).toContain('"occurrenceDate":"2026-11-16"');
     expect(sections[0]).toContain("Description sentinel");
     expect(sections[0]).toContain(seriesId);
-    expect(sections[0]).not.toContain("persistent");
     expect(sections[1]).toContain('"occurrenceDate":"2026-11-09"');
     expect(sections[2]).toContain("taskTrace: Task sentinel");
     expect(sections[2]).toContain('"traceDay":"2026-11-02"');

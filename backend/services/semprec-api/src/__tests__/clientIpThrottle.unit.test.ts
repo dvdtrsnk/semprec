@@ -32,6 +32,8 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       passwordResetConsume: { maxEvents: 10, windowSeconds: 3600 },
       invitationAccept: { maxEvents: 10, windowSeconds: 3600 },
       mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 900 },
+      mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
+      calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
     });
   });
 });

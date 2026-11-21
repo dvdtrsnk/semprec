@@ -1,5 +1,11 @@
 import { executeImapMoveStep, type SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
-import type { ImapFlow, FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
+import type {
+  ImapFlow,
+  FetchMessageObject,
+  MessageAddressObject,
+  MessageStructureObject,
+  StatusObject,
+} from "imapflow";
 import { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapMailClient } from "./imapReconcile.js";
 import {
@@ -271,9 +277,21 @@ export class ImapFlowMailClient implements ImapMailClient {
     return new Set(this.client.capabilities.keys());
   }
 
+  /**
+   * With CONDSTORE each folder's STATUS comes with it: inline on a LIST-STATUS server, else one STATUS per folder,
+   * which imapflow sends. Without CONDSTORE a STATUS cannot show a flag change, so none is asked for.
+   */
   async listFolders(): Promise<ImapFolderRef[]> {
-    const list = await this.providerCall(() => this.client.list());
-    return list.map((f) => ({ path: f.path, specialUse: f.specialUse }));
+    const withStatus = this.client.capabilities.has("CONDSTORE");
+    const list = await this.providerCall(() =>
+      withStatus
+        ? this.client.list({ statusQuery: { uidValidity: true, uidNext: true, highestModseq: true, messages: true } })
+        : this.client.list(),
+    );
+    return list.map((f) => {
+      const status = withStatus ? listedStatus(f.status) : undefined;
+      return { path: f.path, specialUse: f.specialUse, ...(status ? { status } : {}) };
+    });
   }
 
   async selectFolder(path: string): Promise<ImapFolderSelection> {
@@ -282,7 +300,15 @@ export class ImapFlowMailClient implements ImapMailClient {
       uidvalidity: Number(mailbox.uidValidity),
       uidnext: mailbox.uidNext,
       highestModSeq: mailbox.highestModseq !== undefined && !mailbox.noModseq ? Number(mailbox.highestModseq) : null,
+      messages: mailbox.exists,
     };
+  }
+
+  /** imapflow sends SELECT on every `mailboxOpen`; the fetches and STOREs after a selection reuse it. */
+  private async ensureSelected(path: string): Promise<void> {
+    const current = this.client.mailbox;
+    if (current && current.path === path) return;
+    await this.providerCall(() => this.client.mailboxOpen(path));
   }
 
   private async downloadText(uid: number, part: string): Promise<string> {
@@ -491,7 +517,7 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    await this.ensureSelected(path);
     // "*" in a range can include one message below sinceUid on an empty-range edge case.
     const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
     const uids = (found === false ? [] : found)
@@ -537,29 +563,22 @@ export class ImapFlowMailClient implements ImapMailClient {
     return results;
   }
 
-  async fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null> {
-    if (!this.client.capabilities.has("QRESYNC")) return null;
-    await this.providerCall(() => this.client.mailboxOpen(path));
+  /**
+   * With QRESYNC enabled on this connection, imapflow adds `VANISHED` to a UID FETCH with `CHANGEDSINCE`, so one
+   * command returns the changed flags and the expunged UIDs, which imapflow reports as `expunge` events.
+   */
+  async fetchChangesSince(
+    path: string,
+    sinceModSeq: number,
+  ): Promise<{ flags: Array<{ uid: number; flags: string[] }>; vanished: number[] } | null> {
+    if (!this.client.enabled.has("QRESYNC")) return null;
     const vanished: number[] = [];
-    const onExpunge = (event: { vanished: boolean; uid?: number }) => {
-      if (event.vanished && event.uid !== undefined) vanished.push(event.uid);
-    };
-    this.client.on("expunge", onExpunge);
-    try {
-      // QRESYNC reports VANISHED via 'expunge' events; the fetch is drained only to collect them.
-      for await (const _raw of this.providerStream(() =>
-        this.client.fetch("1:*", { uid: true }, { uid: true, changedSince: BigInt(sinceModSeq) }),
-      )) {
-        // draining only
-      }
-    } finally {
-      this.client.off("expunge", onExpunge);
-    }
-    return vanished;
+    const flags = await this.fetchFlags(path, sinceModSeq, vanished);
+    return { flags, vanished };
   }
 
   async fetchAllUids(path: string): Promise<number[]> {
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    await this.ensureSelected(path);
     const uids = await this.providerCall(() => this.client.search({ all: true }, { uid: true }));
     return uids === false ? [] : uids;
   }
@@ -569,8 +588,27 @@ export class ImapFlowMailClient implements ImapMailClient {
     path: string,
     sinceModSeq: number | null,
   ): Promise<Array<{ uid: number; flags: string[] }>> {
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    return this.fetchFlags(path, sinceModSeq);
+  }
+
+  /**
+   * The flag fetch, collecting into `vanished` every UID a VANISHED response names for `path` while it runs. The
+   * vanished UIDs count against the same result cap as the flags.
+   */
+  private async fetchFlags(
+    path: string,
+    sinceModSeq: number | null,
+    vanished?: number[],
+  ): Promise<Array<{ uid: number; flags: string[] }>> {
+    await this.ensureSelected(path);
     const results: Array<{ uid: number; flags: string[] }> = [];
+    let vanishedOverCap = false;
+    const onExpunge = (event: { path: string; vanished: boolean; uid?: number }) => {
+      if (!vanished || !event.vanished || event.uid === undefined || event.path !== path) return;
+      if (results.length + vanished.length >= MAX_FLAG_FETCH_RESULTS) vanishedOverCap = true;
+      else vanished.push(event.uid);
+    };
+    if (vanished) this.client.on("expunge", onExpunge);
     const iterator = this.providerStream(() =>
       this.client.fetch(
         "1:*",
@@ -598,15 +636,20 @@ export class ImapFlowMailClient implements ImapMailClient {
           clearTimeout(timer);
         }
         if (step.done) break;
-        if (results.length >= MAX_FLAG_FETCH_RESULTS) {
+        if (vanishedOverCap || results.length + (vanished?.length ?? 0) >= MAX_FLAG_FETCH_RESULTS) {
           throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
         }
         results.push({ uid: step.value.uid, flags: step.value.flags ? [...step.value.flags] : [] });
+      }
+      // VANISHED (EARLIER) may be the whole response, with no FETCH line after it.
+      if (vanishedOverCap) {
+        throw new FlagFetchCapExceededError(`IMAP flag fetch exceeded the ${MAX_FLAG_FETCH_RESULTS}-message cap`);
       }
     } catch (error) {
       primary = { value: error };
       throw error;
     } finally {
+      if (vanished) this.client.off("expunge", onExpunge);
       // Best effort: with no abort signal this only stops local consumption.
       try {
         await iterator.return?.(undefined);
@@ -622,7 +665,7 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   /** The only flag write in this class; every fetch/download uses `BODY.PEEK`, so reads never mark mail read. */
   async setMessageFlag(path: string, uid: number, flag: WritableImapFlag, value: boolean): Promise<void> {
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    await this.ensureSelected(path);
     if (value) await this.providerCall(() => this.client.messageFlagsAdd(String(uid), [flag], { uid: true }));
     else await this.providerCall(() => this.client.messageFlagsRemove(String(uid), [flag], { uid: true }));
   }
@@ -717,6 +760,23 @@ export class ImapFlowMailClient implements ImapMailClient {
     if (observed.length > 0) imapDiagnostic("operation", observed);
     void observed;
   }
+}
+
+/** A listed STATUS with every cursor a pass compares, as numbers; anything less (a refused STATUS) is no status. */
+function listedStatus(status: StatusObject | undefined): ImapFolderSelection | undefined {
+  if (
+    status?.uidValidity === undefined ||
+    status.uidNext === undefined ||
+    status.highestModseq === undefined ||
+    status.messages === undefined
+  )
+    return undefined;
+  return {
+    uidvalidity: Number(status.uidValidity),
+    uidnext: status.uidNext,
+    highestModSeq: Number(status.highestModseq),
+    messages: status.messages,
+  };
 }
 
 function imapDiagnostic(

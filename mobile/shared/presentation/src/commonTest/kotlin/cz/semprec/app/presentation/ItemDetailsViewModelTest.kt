@@ -140,6 +140,19 @@ class ItemDetailsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a title with line breaks is written on one line`() = runTest(dispatcher) {
+        task()
+        val vm = sheet()
+        runCurrent()
+
+        vm.onAction(ItemDetailsAction.SetTitle("Nový\nnázev\n"))
+        assertEquals("Nový název", vm.state.value.title)
+        runCurrent()
+
+        assertEquals(ItemChange.Title("Nový název"), fake.updates.single().second)
+        vm.close()
+    }
+
     @Test fun `ticking the task off shows at once and tells the open lists`() = runTest(dispatcher) {
         task()
         val vm = sheet()

@@ -2,8 +2,10 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.domain.MailAddress
 import cz.semprec.app.domain.MailDraftMode
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPrefill
 import cz.semprec.app.domain.MailSentDraft
 import cz.semprec.app.domain.RepositoryResult
@@ -20,6 +22,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val SENT = MailSentDraft("d1", "t1", "Gmail")
+
+/** A send whose draft write or send [drafts] refuses for [reason], after [sends] calls of the send itself. */
+private class RefusedSend(
+    val start: MailComposeStart,
+    val drafts: ScriptedMailDraftRepository,
+    val reason: MailRefusal,
+    val sends: Int,
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MailComposeViewModelTest : MainDispatcherTest() {
@@ -46,7 +56,7 @@ class MailComposeViewModelTest : MainDispatcherTest() {
 
     @Test fun `a reply is a draft the server wrote and carries its quote`() = runTest(dispatcher) {
         val drafts = ScriptedMailDraftRepository(
-            prefilled = MailCall(mailContent(mailDraft(mode = MailDraftMode.REPLY, body = "> citace"))),
+            prefilled = MailCall(mailDone(mailDraft(mode = MailDraftMode.REPLY, body = "> citace"))),
         )
         val vm = viewModel(reply, drafts)
         runCurrent()
@@ -216,7 +226,7 @@ class MailComposeViewModelTest : MainDispatcherTest() {
 
     @Test fun `a failed send keeps the draft and the next send updates and sends it`() = runTest(dispatcher) {
         val drafts = ScriptedMailDraftRepository(
-            send = MailCall(mailFailure(FailureKind.REJECTED), mailContent(SENT)),
+            send = MailCall(mailFailure(FailureKind.REJECTED), mailDone(SENT)),
         )
         val vm = viewModel(drafts = drafts)
         runCurrent()
@@ -251,6 +261,87 @@ class MailComposeViewModelTest : MainDispatcherTest() {
         first.close()
         second.close()
     }
+
+    @Test fun `a refused draft or send says why and sends nothing more`() = runTest(dispatcher) {
+        val cases = listOf(
+            RefusedSend(
+                MailComposeStart.New,
+                ScriptedMailDraftRepository(create = MailCall(mailRefused(MailRefusal.DRAFTS_FOLDER_MISSING))),
+                MailRefusal.DRAFTS_FOLDER_MISSING,
+                sends = 0,
+            ),
+            RefusedSend(
+                reply,
+                ScriptedMailDraftRepository(update = MailCall(mailRefused(MailRefusal.DRAFT_ALREADY_SENT))),
+                MailRefusal.DRAFT_ALREADY_SENT,
+                sends = 0,
+            ),
+            RefusedSend(
+                MailComposeStart.New,
+                ScriptedMailDraftRepository(send = MailCall(mailRefused(MailRefusal.SENT_FOLDER_MISSING))),
+                MailRefusal.SENT_FOLDER_MISSING,
+                sends = 1,
+            ),
+            RefusedSend(
+                MailComposeStart.New,
+                ScriptedMailDraftRepository(send = MailCall(mailRefused(MailRefusal.RECIPIENT_REJECTED))),
+                MailRefusal.RECIPIENT_REJECTED,
+                sends = 1,
+            ),
+        )
+        for (case in cases) {
+            val vm = viewModel(case.start, case.drafts)
+            runCurrent()
+            vm.onAction(MailComposeAction.AddAddress("petr@novak.cz"))
+            vm.onAction(MailComposeAction.Send("A", "B"))
+            runCurrent()
+            val state = vm.state.value
+            assertEquals(MailSendPhase.FAILED, state.sendPhase, "${case.reason}")
+            assertEquals(FailureKind.REJECTED, state.sendFailure, "${case.reason}")
+            assertEquals(case.reason, state.sendRefusal)
+            assertEquals(case.sends, case.drafts.send.count, "${case.reason}")
+            vm.close()
+        }
+    }
+
+    @Test fun `sending again clears the reason the server gave`() = runTest(dispatcher) {
+        val drafts = ScriptedMailDraftRepository(
+            create = MailCall(mailRefused(MailRefusal.DRAFTS_FOLDER_MISSING), mailDone(mailDraft())),
+        )
+        val vm = viewModel(drafts = drafts)
+        runCurrent()
+        vm.onAction(MailComposeAction.AddAddress("petr@novak.cz"))
+        vm.onAction(MailComposeAction.Send("A", "B"))
+        runCurrent()
+        assertEquals(MailRefusal.DRAFTS_FOLDER_MISSING, vm.state.value.sendRefusal)
+        vm.onAction(MailComposeAction.Send("A", "B"))
+        assertNull(vm.state.value.sendRefusal)
+        assertNull(vm.state.value.sendFailure)
+        runCurrent()
+        assertEquals(MailSendPhase.SENT, vm.state.value.sendPhase)
+        assertNull(vm.state.value.sendRefusal)
+        vm.close()
+    }
+
+    @Test fun `a reply in a mailbox without Drafts is an error that says why and retry clears it`() =
+        runTest(dispatcher) {
+            val drafts = ScriptedMailDraftRepository(
+                prefilled = MailCall(
+                    mailRefused(MailRefusal.DRAFTS_FOLDER_MISSING),
+                    mailDone(mailDraft(mode = MailDraftMode.REPLY)),
+                ),
+            )
+            val vm = viewModel(reply, drafts)
+            runCurrent()
+            assertEquals(MailComposePhase.ERROR, vm.state.value.phase)
+            assertEquals(FailureKind.REJECTED, vm.state.value.failure)
+            assertEquals(MailRefusal.DRAFTS_FOLDER_MISSING, vm.state.value.refusal)
+            vm.onAction(MailComposeAction.Retry)
+            runCurrent()
+            assertEquals(MailComposePhase.EDITING, vm.state.value.phase)
+            assertNull(vm.state.value.refusal)
+            vm.close()
+        }
 
     @Test fun `leaving a message nobody made a draft for closes at once`() = runTest(dispatcher) {
         val drafts = ScriptedMailDraftRepository()
@@ -329,7 +420,7 @@ class MailComposeViewModelTest : MainDispatcherTest() {
     @Test fun `a draft that answers late after close never publishes`() = runTest(dispatcher) {
         val gate = CompletableDeferred<Unit>()
         val drafts = ScriptedMailDraftRepository(
-            prefilled = MailCall(answersLate(gate, RepositoryResult.Content(mailDraft()))),
+            prefilled = MailCall(answersLate(gate, RepositoryResult.Content(MailOutcome.Done(mailDraft())))),
         )
         val vm = viewModel(reply, drafts)
         runCurrent()

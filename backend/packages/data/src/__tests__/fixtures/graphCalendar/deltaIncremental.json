@@ -1,0 +1,33 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/AAMkCal-work/calendarView/delta?$deltatoken=token-2",
+  "value": [
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAHCQ==\"",
+      "id": "AAMkEv-review",
+      "type": "singleInstance",
+      "subject": "Quarterly review (moved)",
+      "body": { "contentType": "text", "content": "Agenda attached" },
+      "isAllDay": false,
+      "isCancelled": false,
+      "isReminderOn": true,
+      "reminderMinutesBeforeStart": 15,
+      "originalStartTimeZone": "Central Europe Standard Time",
+      "start": { "dateTime": "2026-11-21T13:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-21T14:30:00.0000000", "timeZone": "UTC" },
+      "location": { "displayName": "Room 4" }
+    },
+    {
+      "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+      "id": "AAMkSeries-standup-occ-1130",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkSeries-standup",
+      "subject": "Standup",
+      "isAllDay": false,
+      "isCancelled": false,
+      "originalStart": "2026-11-30T08:00:00Z",
+      "start": { "dateTime": "2026-11-30T08:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-11-30T08:15:00.0000000", "timeZone": "UTC" }
+    }
+  ]
+}

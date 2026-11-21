@@ -79,8 +79,10 @@ Procedure: [docs/operations/releases.md](../operations/releases.md).
 
 Rules that follow:
 
+- The database is expected to be empty: the operator wipes it before a deploy, and `deploy.sh`
+  never drops data ([migrations-and-seeding.md](migrations-and-seeding.md#one-baseline-no-versions)).
 - Any failure before activation removes the staging directory and changes nothing but the
-  (backward-compatible) schema.
+  database.
 - A failure after the swap exits non-zero but does not roll itself back.
 - Mail live-sync runs inside `semprec-api` and restarts, reports and shuts down with it; it is
   not a separately deployed service. A separate process would be a new decision.
@@ -96,7 +98,9 @@ Procedure: `deploy/README.md` ("Deploying a release").
   (semver order, staging directories excluded), its `release.env` must declare
   `APP_VERSION=<tag>`, and `current` must still name the newest release. Every refusal happens
   before anything changes; a second consecutive rollback is refused.
-- Schema is never unwound. A defect that needs a schema change is fixed forward in a new release.
+- The database is not touched, and nothing keeps its schema compatible with older code: a
+  rollback is safe only between releases with the same baseline. Otherwise the way forward is a
+  fixed release deployed onto a wiped database.
 
 Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `deploy/README.md`
 ("Rolling back").
@@ -204,7 +208,7 @@ Format and commands: `issues/README.md`, `.github/ISSUE_FORMAT.md`,
 - Every implementation issue has a `## Touches` section listing the files or narrow areas it
   changes. Two issues that can be eligible at the same time must not overlap; an overlap becomes a
   `Blocked by:` edge or a shared change extracted into an earlier issue. `.github/ISSUE_FORMAT.md`
-  lists the known hotspots (migration ordinals, registries, barrels, catalogs).
+  lists the known hotspots (the baseline schema, registries, barrels, catalogs).
 - A batch's `NN/MM` is topological creation order, not execution order.
 
 ### Model tiers
@@ -312,9 +316,8 @@ The backend backlog in `issues/batches/backend/` is delivered by a controller-ru
   every publication, one full run on the host at a time. A failure that reproduces alone stops
   landings; a load-only failure is recorded with both logs, never reported as a pass. Timeouts
   are not raised.
-- **Shared files and migrations.** Registry, barrel, manifest and catalog conflicts keep both
-  sides and rerun that file's validating suites. A migration ordinal is final only at landing;
-  only an unmerged chain's own files are renumbered.
+- **Shared files.** Registry, barrel, manifest, catalog and baseline schema conflicts keep both
+  sides and rerun that file's validating suites.
 - **Authority and gates.** The controller acts under the owner's delegation: it approves exact
   specification hashes at dispatch, adjudicates findings and scope, and accepts results; no
   worker approves its own scope. Local acceptance is never production authorization: a criterion

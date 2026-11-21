@@ -4,15 +4,15 @@ import type { Pool, PoolClient } from "pg";
 import { currentTenantScope } from "@semprec/shared";
 import { ACTIVE_PROJECTS_FILTER } from "../areas/areaOverviewRouteHandler.js";
 import { getDatabaseByModuleId, listAllDatabases } from "../chokePoint/databasesStore.js";
-import { createItemReadOps, type ItemCountEntry, type ItemCountEntryInput } from "../chokePoint/itemReads.js";
+import { countItemsBatchWithClient, type ItemCountEntry, type ItemCountEntryInput } from "../chokePoint/itemReads.js";
 import { withTransaction } from "../db/pool.js";
 import { countOpenInboxCards } from "../inbox/inboxCardsStore.js";
 import { computeJournalPeriodKey } from "../journal/journalPeriods.js";
 import { findJournalPeriodEntries } from "../journal/journalRouteHandlers.js";
 import { createCollectionMetadataResolver, type CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
-import { getMailSummary } from "../mail/mailSummary.js";
-import { getSempStatusSummary } from "../semp/sempStatusSummary.js";
+import { countUnreadInboxThreads } from "../mail/mailSummary.js";
+import { readSempStatusSummary } from "../semp/sempStatusSummary.js";
 import { JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { countTasksToday } from "../tasks/todayView.js";
@@ -83,16 +83,16 @@ function countAt(counts: readonly ItemCountEntry[], index: number): ItemCountEnt
 }
 
 /**
- * Each number comes from the same function its owner's route calls. Reads span several transactions, so numbers may
- * be read at slightly different moments. A missing seeded database is an error, not an empty Overview, and an
- * unscoped call throws so it can never look like an empty tenant.
+ * Each number comes from the same function its owner's route calls, all in one READ COMMITTED transaction on one
+ * connection, so numbers may be read at slightly different moments. A missing seeded database is an error, not an
+ * empty Overview, and an unscoped call throws so it can never look like an empty tenant.
  */
 export async function getOverviewSummary(pool: Pool, input: OverviewSummaryInput): Promise<OverviewSummary> {
   if (currentTenantScope()?.kind !== "tenant") throw new Error("getOverviewSummary requires an active tenant scope");
   const now = input.now ?? new Date();
   const resolver = await getCollectionMetadataResolver();
 
-  const read = await withTransaction(pool, async (client) => {
+  return withTransaction(pool, async (client) => {
     const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
     if (!projects) throw new Error("The Projects database is missing");
     const collections = (await listAllDatabases(client)).flatMap((database) =>
@@ -100,35 +100,32 @@ export async function getOverviewSummary(pool: Pool, input: OverviewSummaryInput
         ? [{ databaseId: database.id, ownerModuleId: database.ownerModuleId }]
         : [],
     );
+    const inboxPending = await countOpenInboxCards(client, { ownerUserId: input.ownerUserId });
+    const mailUnread = await countUnreadInboxThreads(client);
+    const tasksToday = await countTasksToday(client, now);
+    const journalTodayItemId = await findJournalTodayItemId(client, now);
+
+    // Areas entry last, so collection entries keep their indices.
+    const entries: ItemCountEntryInput[] = [
+      ...collections.map(({ databaseId }) => ({ databaseId, collection: true })),
+      { databaseId: projects.id, filter: ACTIVE_PROJECTS_FILTER, groupBy: "area" },
+    ];
+    const counts = await countItemsBatchWithClient(client, entries, { resolver, now });
+    const problemCount = (await readSempStatusSummary(client)).activeCount;
+
     return {
-      inboxPending: await countOpenInboxCards(client, { ownerUserId: input.ownerUserId }),
-      mailUnread: (await getMailSummary(client)).unreadInbox,
-      tasksToday: await countTasksToday(client, now),
-      journalTodayItemId: await findJournalTodayItemId(client, now),
-      projectsDatabaseId: projects.id,
-      collections,
+      inboxPending,
+      mailUnread,
+      tasksToday,
+      areas: (countAt(counts, collections.length).groups ?? []).flatMap((group) =>
+        group.key === null ? [] : [{ id: group.key, activeProjectCount: group.count }],
+      ),
+      collections: collections.map((collection, index) => ({
+        ...collection,
+        itemCount: countAt(counts, index).count,
+      })),
+      problemCount,
+      journalTodayItemId,
     };
   });
-
-  // Areas entry last, so collection entries keep their indices.
-  const entries: ItemCountEntryInput[] = [
-    ...read.collections.map(({ databaseId }) => ({ databaseId, collection: true })),
-    { databaseId: read.projectsDatabaseId, filter: ACTIVE_PROJECTS_FILTER, groupBy: "area" },
-  ];
-  const counts = await createItemReadOps({ pool }).countItemsBatch(entries, { resolver, now });
-
-  return {
-    inboxPending: read.inboxPending,
-    mailUnread: read.mailUnread,
-    tasksToday: read.tasksToday,
-    areas: (countAt(counts, read.collections.length).groups ?? []).flatMap((group) =>
-      group.key === null ? [] : [{ id: group.key, activeProjectCount: group.count }],
-    ),
-    collections: read.collections.map((collection, index) => ({
-      ...collection,
-      itemCount: countAt(counts, index).count,
-    })),
-    problemCount: (await getSempStatusSummary(pool)).activeCount,
-    journalTodayItemId: read.journalTodayItemId,
-  };
 }

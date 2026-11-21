@@ -91,6 +91,11 @@ const TENANT_TABLES = [
   "library_cover_candidates",
   "idempotent_responses",
   "calendar_feed_state",
+  "calendar_remote_state",
+  "event_remote_state",
+  "calendar_account_sync_state",
+  "calendar_event_push_state",
+  "calendar_push_channels",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;

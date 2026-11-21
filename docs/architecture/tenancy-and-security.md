@@ -103,7 +103,7 @@ The rules:
 ### Cross-tenant router functions
 
 - An external identifier that names a tenant before any tenant is known (a Graph subscription id, a
-  Gmail address), or an operator aggregate across tenants, goes through a `SECURITY DEFINER`
+  Gmail address, a calendar push channel id), or an operator aggregate across tenants, goes through a `SECURITY DEFINER`
   function owned by `semprec_router`. That role is `NOLOGIN BYPASSRLS` and holds column-level
   `SELECT` only on the columns its functions read.
 - A router function pins `search_path` (ending in `pg_temp`), revokes `EXECUTE` from `PUBLIC`,
@@ -273,9 +273,14 @@ tenant by earliest, first or `LIMIT 1`.
 ### Public auth throttles
 
 - The routes reachable without a session (login, password-reset request and consume, invitation
-  acceptance), plus mailbox credential verification, are throttled per client address in process
-  memory (`createClientIpThrottle` in `backend/services/semprec-api/src/clientIpThrottle.ts`, limits
-  in `CLIENT_IP_THROTTLE_LIMITS`).
+  acceptance, the mail OAuth callback, the Google and Graph calendar webhooks) are throttled per
+  client address in process memory (`createClientIpThrottle` in
+  `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`);
+  mailbox credential verification is throttled the same way per user id.
+- The mail OAuth callback (`mailOauthCallback`) and both calendar webhooks (`calendarWebhook`, one
+  budget shared by the two) count every request before any database read; a refused one gets `429`
+  with `Retry-After` (an empty body on the webhooks). A Graph calendar batch looks each distinct
+  `(subscriptionId, clientState)` pair up once, at most 20 per batch.
 - `tryAcquire` reserves a slot before the body is read. Outcomes that must not count release the
   slot. A refused attempt gets `429 rate_limited` with `Retry-After`.
 - An IPv4 address is its own key, an IPv4-mapped address counts as its IPv4 address, and any other

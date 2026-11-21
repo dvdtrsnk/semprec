@@ -3,7 +3,7 @@ import DesignSystem
 import SwiftUI
 
 /// One calendar of the calendars sheet: a tap on the row shows or hides it, the info button opens its settings (the
-/// sleep plan for the sleep calendar).
+/// sleep plan for the sleep calendar). A read-only calendar carries a lock.
 struct CalendarListRow: View {
 
     // MARK: - Dependencies
@@ -13,7 +13,7 @@ struct CalendarListRow: View {
     // MARK: - Body
     var body: some View {
         HStack(spacing: Theme.Spacing.small) {
-            Button { send(.toggleHidden(calendarId: calendar.id)) } label: { label }
+            Button { send(.change(.toggleHidden(calendarId: calendar.id))) } label: { label }
                 .listRowButton()
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(toggleLabel))
@@ -41,8 +41,17 @@ private extension CalendarListRow {
         HStack(spacing: Theme.Spacing.medium) {
             checkbox
             VStack(alignment: .leading, spacing: 2) {
-                Text(calendar.name)
-                    .foregroundStyle(calendar.hidden ? Theme.Colors.secondaryText : Color.primary)
+                HStack(spacing: Theme.Spacing.small) {
+                    Text(calendar.name)
+                        .foregroundStyle(calendar.hidden ? Theme.Colors.secondaryText : Color.primary)
+                    if calendar.readOnly {
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.Colors.secondaryText)
+                            .accessibilityLabel(Text("calendars.readOnly", tableName: "Sheets", bundle: .module))
+                            .accessibilityIdentifier(CalendarSheetIdentifiers.calendarReadOnly(calendar.id))
+                    }
+                }
                 if let subtitle = calendar.subtitle {
                     Text(subtitle)
                         .font(.footnote)
@@ -95,6 +104,10 @@ private extension CalendarListRow {
         CalendarListRow(calendar: CalendarRow(id: "work", name: "Práce", color: "#007AFF"), send: { _ in })
         CalendarListRow(
             calendar: CalendarRow(id: "sleep", name: "Spánek", color: "#5856D6", hidden: true, systemKey: "sleep"),
+            send: { _ in }
+        )
+        CalendarListRow(
+            calendar: CalendarRow(id: "shared", name: "Svátky", color: "#16A765", group: .account, readOnly: true),
             send: { _ in }
         )
     }

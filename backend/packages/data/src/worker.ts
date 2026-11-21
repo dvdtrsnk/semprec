@@ -1,4 +1,15 @@
 import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscriptionSweep.js";
+import { handleCalendarAccountCleanupTask } from "./calendar/sync/calendarAccountCleanupJob.js";
+import { handleCalendarEventPushTask } from "./calendar/sync/eventPushJob.js";
+import { handleCalendarInvitationRespondTask } from "./calendar/sync/invitationRespondJob.js";
+import {
+  handleCalendarPushChannelsSweepTask,
+  handleCalendarPushChannelsTask,
+} from "./calendar/sync/calendarPushChannelsJob.js";
+import {
+  handleCalendarAccountSyncSweepTask,
+  handleCalendarAccountSyncTask,
+} from "./calendar/sync/calendarAccountSyncJob.js";
 import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
@@ -111,6 +122,8 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
 5 4 * * * ${CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP}
 25 * * * * ${CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP}
+*/5 * * * * ${CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP}
+35 * * * * ${CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP}
 `;
 
 /**
@@ -205,6 +218,33 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: async () => {
       await handleCalendarSubscriptionSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC_SWEEP]: async () => {
+      await handleCalendarAccountSyncSweepTask(pool);
+    },
+    // The adapters are this package's own (`calendar/sync/adapters/`); the Google one takes its OAuth client from
+    // `setGoogleCalendarSyncRuntime`, which the composition root calls.
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: async (payload, helpers) => {
+      await handleCalendarAccountSyncTask(pool, payload, { jobId: helpers.job.id });
+    },
+    [CORE_TASK_NAMES.CALENDAR_ACCOUNT_CLEANUP]: async (payload) => {
+      await handleCalendarAccountCleanupTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.CALENDAR_EVENT_PUSH]: async (payload, helpers) => {
+      await handleCalendarEventPushTask(pool, payload, { jobId: helpers.job.id });
+    },
+    [CORE_TASK_NAMES.CALENDAR_INVITATION_RESPOND]: async (payload, helpers) => {
+      await handleCalendarInvitationRespondTask(pool, payload, {
+        jobId: helpers.job.id,
+        isFinalAttempt: helpers.job.attempts >= helpers.job.max_attempts,
+      });
+    },
+    // The OAuth clients and webhook URLs come from `setCalendarPushRuntime`, which the composition root calls.
+    [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS]: async (payload) => {
+      await handleCalendarPushChannelsTask(pool, payload);
+    },
+    [CORE_TASK_NAMES.CALENDAR_PUSH_CHANNELS_SWEEP]: async () => {
+      await handleCalendarPushChannelsSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);

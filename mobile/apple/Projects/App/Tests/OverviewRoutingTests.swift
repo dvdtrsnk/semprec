@@ -20,7 +20,7 @@ final class OverviewRoutingTests: XCTestCase {
         context.register(overview, for: .overview)
         context.register(calendar, for: .calendar)
         AppOverviewRouter(context: context).show(.profile)
-        XCTAssertEqual(overview.sheets, [.profile])
+        XCTAssertEqual(overview.sheets, [.profile()])
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(calendar.sheets.isEmpty)
     }
@@ -189,7 +189,7 @@ final class OverviewRoutingTests: XCTestCase {
         let overview = try XCTUnwrap(scene.navigation.stack(for: .overview) as? NavigatorStackAdapter)
 
         scene.overviewRouter.show(.profile)
-        XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, .profile)
+        XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, .profile())
         XCTAssertEqual(overview.navigator.count, 0, "The profile must be presented, not pushed")
         try await eventually { window.presentsSheet }
         XCTAssertTrue(window.presentsSheet, "The window must show the profile sheet")

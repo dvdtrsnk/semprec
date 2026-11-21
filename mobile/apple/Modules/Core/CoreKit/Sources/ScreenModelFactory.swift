@@ -5,6 +5,14 @@ import Foundation
 @MainActor
 public protocol ScreenModelFactory: AnyObject, Sendable {
 
+    // MARK: - Live updates
+    /// Connects the scene's sync socket with the signed-in session and keeps it connected, so the calendar, the
+    /// invitations and the mailboxes show what the server changed; signed out, it does nothing. Calling it while the
+    /// socket runs changes nothing.
+    func startLiveUpdates()
+    /// Closes the scene's sync socket until the next `startLiveUpdates()`.
+    func stopLiveUpdates()
+
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
     func makeOverview() -> any OverviewScreenModel
@@ -41,6 +49,10 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeNotificationSettings() -> any NotificationSettingsScreenModel
     func makeAiUsage() -> any AiUsageScreenModel
     func makeTrash() -> any TrashScreenModel
+    /// The internet accounts with their services, and one of them; an account is a mailbox, so `accountId` is the id
+    /// of its Mailboxes item.
+    func makeInternetAccounts() -> any InternetAccountsScreenModel
+    func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel
 
     // MARK: - Areas
     func makeArea(areaId: String) -> any AreaScreenModel
@@ -52,8 +64,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeMailThread(threadId: String) -> any MailThreadScreenModel
     func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel
     func makeMailFolders() -> any MailFoldersScreenModel
-    func makeMailAccounts() -> any MailAccountsScreenModel
-    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel
 
     // Semp slice
     /// A conversation. `threadId` names the thread of `.existing`, `inboxItemId` the Inbox item of `.item`; `title`

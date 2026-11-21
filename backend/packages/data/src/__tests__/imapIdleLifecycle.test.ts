@@ -11,6 +11,7 @@ import {
   type ImapIdleTransport,
 } from "../mail/imapIdleLifecycle.js";
 import { createImapFlowIdleTransport } from "../mail/imapIdleClient.js";
+import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 
 let pool: Pool;
 
@@ -277,6 +278,43 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
 
     await lifecycle.stop();
   });
+  it("ends discovery after one attempt when no credential is stored, and a lifecycle started later connects", async () => {
+    let attempts = 0;
+    let stored: string | null = null;
+    const errors: unknown[] = [];
+    const { transport, connections } = createFakeTransport();
+    const factory = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => {
+        attempts += 1;
+        if (stored === null) throw new MailReauthorizationRequiredError("Mailbox has no stored credential");
+        return stored;
+      },
+      getConnectionLimit: () => 1,
+      reconnectBaseDelayMs: 1,
+      reconnectMaxDelayMs: 1,
+      onError: (_id, _folder, error) => errors.push(error),
+    });
+    const account = { mailboxItemId: "needs-reauthorization", syncMode: "imap" as const };
+
+    const waiting = factory(account);
+    await waiting.start();
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    // Fifty times the backoff: a retry would have run by now.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(attempts).toBe(1);
+    expect(errors[0]).toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(connections.size).toBe(0);
+    await waiting.stop();
+
+    // The restart after the password was entered again.
+    stored = "new-password";
+    const restarted = factory(account);
+    await restarted.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    expect(attempts).toBe(2);
+    await restarted.stop();
+  });
+
   it("retries refused discovery and eventually connects", async () => {
     let attempts = 0;
     const refusal = new Error("private credential and host");

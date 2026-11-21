@@ -1,0 +1,74 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p32vrmrsl4bpj40g\"",
+  "summary": "me@example.test",
+  "updated": "2026-11-19T08:12:41.137Z",
+  "timeZone": "Europe/Prague",
+  "accessRole": "owner",
+  "defaultReminders": [
+    { "method": "email", "minutes": 30 },
+    { "method": "popup", "minutes": 10 }
+  ],
+  "nextSyncToken": "CPDAlvWFx5EDEPDAlvWFx5EDGAUggICA",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234569000\"",
+      "id": "standup_20261125T140000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=c3RhbmR1cF8yMDI2MTEyNVQxNDAwMDBa",
+      "created": "2026-11-01T10:00:00.000Z",
+      "updated": "2026-11-12T10:00:00.000Z",
+      "summary": "Standup (late)",
+      "creator": { "email": "boss@example.test", "displayName": "Boss" },
+      "organizer": { "email": "boss@example.test", "displayName": "Boss" },
+      "start": { "dateTime": "2026-11-25T10:00:00-05:00", "timeZone": "America/New_York" },
+      "end": { "dateTime": "2026-11-25T10:30:00-05:00", "timeZone": "America/New_York" },
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-11-25T09:00:00-05:00", "timeZone": "America/New_York" },
+      "iCalUID": "standup@google.com",
+      "sequence": 3,
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          { "method": "email", "minutes": 60 },
+          { "method": "popup", "minutes": 5 }
+        ]
+      },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234570000\"",
+      "id": "standup_20261209T140000Z",
+      "status": "cancelled",
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-12-09T09:00:00-05:00", "timeZone": "America/New_York" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234571000\"",
+      "id": "lateshow",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=bGF0ZXNob3c",
+      "created": "2026-11-15T10:00:00.000Z",
+      "updated": "2026-11-15T10:00:00.000Z",
+      "summary": "Late show",
+      "creator": { "email": "me@example.test", "self": true },
+      "organizer": { "email": "me@example.test", "self": true },
+      "start": { "dateTime": "2026-11-27T22:00:00+01:00" },
+      "end": { "dateTime": "2026-11-28T00:00:00+01:00" },
+      "source": { "title": "Tickets", "url": "https://tickets.example.test/42" },
+      "iCalUID": "lateshow@google.com",
+      "sequence": 0,
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234572000\"",
+      "id": "deletedlunch",
+      "status": "cancelled"
+    }
+  ]
+}

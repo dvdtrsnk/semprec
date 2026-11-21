@@ -38,7 +38,6 @@ export async function startTaskSeries(
         timeFrom: text(item.properties.timeFrom),
         timeTo: text(item.properties.timeTo),
         notifications: item.properties.notifications === true,
-        persistent: item.properties.persistent === true,
         flagged: item.properties.flagged === true,
         description: text(item.properties.description),
         ...input.template,

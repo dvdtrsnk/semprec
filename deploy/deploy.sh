@@ -12,9 +12,8 @@
 # load is refused before `current` moves.
 #
 # A rollback builds nothing, fetches nothing and runs no migration: it repoints `current` at a
-# release already on disk and restarts the services. Migrations are forward-only and compatible
-# with the code one release back only, so the target must be the release directly before the
-# newest one on disk, and `current` must still name that newest release.
+# release already on disk and restarts the services. The target must be the release directly before
+# the newest one on disk, and `current` must still name that newest release.
 set -euo pipefail
 
 readonly SEMPREC_ROOT=/opt/semprec
@@ -144,8 +143,8 @@ write_release_env() {
 }
 
 # systemd reads the `migrate` group file itself, the only file that holds the superuser migrate
-# URL and one no unit loads, so this script never reads or copies a secret. Migrations are forward-only and backward-compatible, so the release
-# still serving traffic keeps working against the migrated schema.
+# URL and one no unit loads, so this script never reads or copies a secret. The database is expected to be
+# empty (the operator wipes it before a deploy); the CLI applies the baseline to it.
 run_migrations() {
   systemd-run --quiet --wait --pipe --collect \
     --uid=semprec --gid=semprec \

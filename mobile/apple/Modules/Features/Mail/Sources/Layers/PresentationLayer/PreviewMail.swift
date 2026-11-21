@@ -161,36 +161,4 @@ enum PreviewMail {
             )
         ]
     )
-
-    // MARK: - Accounts
-    static let accounts = MailAccountsState(
-        phase: .content,
-        accounts: [
-            MailAccountItem(
-                id: "m1",
-                name: "Gmail",
-                address: "david@gmail.com",
-                provider: "gmail",
-                status: .needsReauthorization
-            ),
-            MailAccountItem(id: "m2", name: "Outlook", address: "s@tresnak.cc", provider: "outlook", status: .ok)
-        ]
-    )
-
-    static let account = MailAccountState(
-        phase: .content,
-        account: MailAccountDetail(
-            id: "m2",
-            name: "Outlook",
-            address: "s@tresnak.cc",
-            provider: "outlook",
-            syncMode: "imap",
-            status: .ok,
-            lastSuccessfulSyncAt: "2026-10-20T12:30:00.000000Z",
-            failingSince: nil,
-            connectionLimit: 5,
-            connectionLimitApplies: true,
-            autonomousSendProjectCount: 1
-        )
-    )
 }

@@ -11,6 +11,7 @@ data class NotificationChoices(
     val approvals: Boolean,
     val invites: Boolean,
     val reminders: Boolean,
+    val calendarChanges: Boolean,
     val problemsLevel: AccountProblemsLevel,
     val problemsSummary: Boolean,
     val badgeApprovals: Boolean,
@@ -34,4 +35,9 @@ sealed interface NotificationSettingsAction {
     data class SetProblemsLevel(val level: AccountProblemsLevel) : NotificationSettingsAction
 
     data object DismissFailure : NotificationSettingsAction
+}
+
+sealed interface NotificationSettingsEffect {
+    /** The person turned a notification on; the app asks for the permission to notify unless it was answered. */
+    data object RequestPermission : NotificationSettingsEffect
 }

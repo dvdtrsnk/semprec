@@ -17,8 +17,9 @@ import {
 } from "./personEmailIndexStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 
-export const MAIL_REINDEX_PERSON_EMAILS_ACTION_ID = "mail.reindexPersonEmails";
-export const MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID = "mail.linkPeopleByEmail";
+import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingKeys.js";
+
+export { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingKeys.js";
 
 const personEmailReindexActionConfigSchema = z.object({ peopleDatabaseId: z.string().min(1) });
 

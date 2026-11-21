@@ -9,6 +9,7 @@ import cz.semprec.app.domain.AccountNotificationRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -20,6 +21,7 @@ private val STORED = AccountNotificationPrefs(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,
@@ -31,6 +33,7 @@ private val CHOICES = NotificationChoices(
     approvals = true,
     invites = true,
     reminders = true,
+    calendarChanges = true,
     problemsLevel = AccountProblemsLevel.CRITICAL,
     problemsSummary = true,
     badgeApprovals = true,
@@ -124,6 +127,7 @@ class NotificationSettingsViewModelTest : MainDispatcherTest() {
             AccountNotificationSwitch.APPROVALS to { it.approvals },
             AccountNotificationSwitch.INVITES to { it.invites },
             AccountNotificationSwitch.REMINDERS to { it.reminders },
+            AccountNotificationSwitch.CALENDAR_CHANGES to { it.calendarChanges },
             AccountNotificationSwitch.PROBLEMS_SUMMARY to { it.problemsSummary },
             AccountNotificationSwitch.BADGE_APPROVALS to { it.badgeApprovals },
             AccountNotificationSwitch.BADGE_INVITES to { it.badgeInvites },
@@ -186,6 +190,72 @@ class NotificationSettingsViewModelTest : MainDispatcherTest() {
         assertEquals(AccountProblemsLevel.CRITICAL, second.state.value.choices?.problemsLevel)
         assertEquals(Failed(FailureKind.REJECTED), second.state.value.writeFailure)
         second.close()
+    }
+
+    @Test fun `turning a notification on asks for the permission once per change and turning off never does`() =
+        runTest(dispatcher) {
+            val vm = viewModel(ScriptedPrefs())
+            val effects = mutableListOf<NotificationSettingsEffect>()
+            val collector = launch { vm.effects.collect { effects += it } }
+            runCurrent()
+            vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.BADGE_INBOX, on = true))
+            runCurrent()
+            assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), effects)
+            vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.INVITES, on = false))
+            vm.onAction(NotificationSettingsAction.SetProblemsLevel(AccountProblemsLevel.ALL))
+            runCurrent()
+            assertEquals(1, effects.size, "turning off and raising a level that was on ask nothing")
+            collector.cancel()
+            vm.close()
+
+            val quiet = STORED.copy(problemsLevel = AccountProblemsLevel.OFF)
+            val fromOff = viewModel(
+                ScriptedPrefs(
+                    load = listOf({ RepositoryResult.Content(quiet) }),
+                    write = { RepositoryResult.Content(quiet) },
+                ),
+            )
+            val asked = mutableListOf<NotificationSettingsEffect>()
+            val second = launch { fromOff.effects.collect { asked += it } }
+            runCurrent()
+            fromOff.onAction(NotificationSettingsAction.SetProblemsLevel(AccountProblemsLevel.CRITICAL))
+            runCurrent()
+            assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), asked)
+            second.cancel()
+            fromOff.close()
+        }
+
+    @Test fun `turning calendar changes on is sent as its switch and asks for the permission`() = runTest(dispatcher) {
+        val quiet = STORED.copy(calendarChanges = false)
+        val prefs = ScriptedPrefs(
+            load = listOf({ RepositoryResult.Content(quiet) }),
+            write = { RepositoryResult.Content(STORED) },
+        )
+        val vm = viewModel(prefs)
+        val effects = mutableListOf<NotificationSettingsEffect>()
+        val collector = launch { vm.effects.collect { effects += it } }
+        runCurrent()
+        assertEquals(false, vm.state.value.choices?.calendarChanges)
+        vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.CALENDAR_CHANGES, on = true))
+        assertEquals(true, vm.state.value.choices?.calendarChanges)
+        runCurrent()
+        assertEquals(listOf(AccountNotificationSwitch.CALENDAR_CHANGES to true), prefs.switches)
+        assertEquals(listOf<NotificationSettingsEffect>(NotificationSettingsEffect.RequestPermission), effects)
+        assertEquals(CHOICES, vm.state.value.choices)
+        collector.cancel()
+        vm.close()
+    }
+
+    @Test fun `a switch that is already on asks for nothing`() = runTest(dispatcher) {
+        val vm = viewModel(ScriptedPrefs())
+        val effects = mutableListOf<NotificationSettingsEffect>()
+        val collector = launch { vm.effects.collect { effects += it } }
+        runCurrent()
+        vm.onAction(NotificationSettingsAction.Set(AccountNotificationSwitch.APPROVALS, on = true))
+        runCurrent()
+        assertTrue(effects.isEmpty())
+        collector.cancel()
+        vm.close()
     }
 
     @Test fun `closing cancels the load and ignores later actions and clearing the store does the same`() =

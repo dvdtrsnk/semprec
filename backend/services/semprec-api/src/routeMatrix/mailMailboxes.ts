@@ -27,4 +27,12 @@ export const MAIL_MAILBOXES_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "mailbox password replace",
+    method: "PUT",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}/password`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

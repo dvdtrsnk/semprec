@@ -132,8 +132,13 @@ struct ShellDestination: View {
         switch destination {
         case .pending(let title):
             PendingScreen(title: title)
-        case .profile:
-            ProfileSheet(models: composition.models, navigation: composition.navigation)
+        case .profile(let opening):
+            ProfileSheet(
+                opening: opening,
+                models: composition.models,
+                navigation: composition.navigation,
+                notifications: composition.notifications
+            )
         case .sempProjectAgent(let projectId):
             SempScreenFactory.projectAgent(
                 makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },

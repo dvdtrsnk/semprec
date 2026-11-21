@@ -14,17 +14,50 @@ described elsewhere and only referenced here:
 
 ## Mailboxes and connections
 
+### Internet accounts and service switches
+
+- A Mailboxes item is an internet account (label "Internet accounts"; the key `mailboxes` and the
+  `/api/mail/mailboxes*` routes stay). Its user-owned checkboxes `mailEnabled` and `calendarsEnabled` are the
+  service switches. Unset reads as the default, Mail on and Calendars off (`isMailEnabled`,
+  `areCalendarsEnabled` in `mail/mailboxServiceHooks.ts`); the connect flows write both explicitly. Both
+  appear in the `GET /api/mail/mailboxes` and `/:id` rows. Both services may be off; the account keeps its
+  sign-in until it is removed. `calendarsEnabled` drives the account's calendar sync, whose lifecycle the
+  same hooks start and stop (see the calendar sync in
+  [domain-calendar-tasks-and-media.md](domain-calendar-tasks-and-media.md#internet-account-calendar-sync)).
+- `mail_account_sync_state.sync_paused_at` is what the mail lifecycle reads: set, the account has Mail off.
+  The sync pass (prologue and again under the guard), the sweep (`listAccountsDueForSync`), live-sync
+  discovery and the mail-sync heartbeat expectation skip a paused account; `sendDraftEmail` refuses it.
+- Switching (`mailboxServiceItemUpdatePreLockHook`, `mailboxServiceItemUpdateHook`): a write that patches
+  `mailEnabled` takes the mailbox sync guard (≤ 15 s, else 409 `mailbox_sync_busy`) and then the sync state row
+  `FOR UPDATE` before the update locks the Mailboxes item, the order of a removal. The update hook decides by
+  the locked row, so a repeated write changes nothing.
+  - Off (`pauseMailAccountSync`), in the write's transaction: set `sync_paused_at` (seeding a row for a
+    never-connected mailbox) and reset the account to never synced (Gmail history id, Graph delta link,
+    initial-sync mark, next expected activity and failure record cleared); delete the folder sync states;
+    resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the mail-off `mailboxRemoval` job. After
+    the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
+    (`semprec-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
+    a binding the next discovery pass unhosts the account. The item, credential, server settings, sync mode,
+    provider account and Gmail routing addresses and the Graph subscription id stay; the provider-side Gmail
+    watch and Graph subscription are not cancelled, their renewals stop with the lifecycle and they expire,
+    and a notification that still arrives only enqueues a pass that skips.
+  - On (`resumeMailAccountSync`): clear `sync_paused_at` and enqueue `mailAccountSync` in the same
+    transaction; discovery hosts the live sync again on its next pass. The mail downloads as for a new account.
+
 ### Server settings and outbound connections
 
 - IMAP/SMTP settings live in `mail_account_server_settings` (`mail/mailServerSettingsStore.ts`); the password
   stays in `external_credentials`. Database CHECK constraints repeat the port, security and all-or-none rules.
+- A generic account may also store `caldav_url`, the start of its calendar discovery: an `https:` URL on the
+  default port without userinfo whose host follows the host rules below (`normalizeCalDavUrl`, ≤ 2048 chars).
 - The port must be one of 993, 143, 465, 587 (`MAIL_SERVER_PORTS`); security is `tls` or `starttls`.
 - The host must be a lower-cased DNS name (≤ 253 chars). IP literals in any notation, `localhost` and names
   ending in `.localhost`, `.local` or `.internal` are refused. This is an input contract only.
 - Every connection to a tenant-chosen host is opened through `mail/mailServerConnections.ts`:
-  `openImapFlow()` (the one IMAP connect step; returns only a *connected* `ImapFlow`), `openImapConnection()`
+  `openImapFlow()` (the one IMAP connect step; returns only a _connected_ `ImapFlow`), `openImapConnection()`
   (sync wrapper `ImapFlowMailClient`), `createSmtpTransporter()`, and the verification helpers
-  `verifyImapServerConnection()` / `verifySmtpServerConnection()`. No other code constructs `ImapFlow` or a
+  `verifyImapServerConnection()` (and `verifyImapServerConnectionAndListFolders()`, which lists the folders on the
+  verified connection) / `verifySmtpServerConnection()`. No other code constructs `ImapFlow` or a
   nodemailer transport for a tenant host.
 - These factories resolve the name once through the outbound address policy (`createPolicyLookup` in
   `net/outboundAddressPolicy.ts`): IMAP sets `tls.lookup` + `tls.servername`; SMTP hands nodemailer a socket
@@ -33,7 +66,9 @@ described elsewhere and only referenced here:
   (`mail_server_unreachable`) without cause or address; a refused address is indistinguishable from an
   unreachable server. Authentication failures keep their own classification. imapflow's logger is disabled.
 - IMAP IDLE (`mail/imapIdleClient.ts`, `mail/imapIdleLifecycle.ts`) receives a connected client from
-  `openImapFlow()` with `maxIdleTime`/`socketTimeout` options; the IDLE transport never connects itself.
+  `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
+  itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
+  server reports a delivery unasked) starts at once instead of after imapflow's 15 s default.
 - Tests reach local fake servers only through `allowLoopbackOutboundForTests()`. Host egress filtering stays
   the second layer.
 
@@ -42,18 +77,32 @@ described elsewhere and only referenced here:
 `POST /api/mail/mailboxes` (`mail/mailboxPasswordRouteHandlers.ts`) connects an iCloud or generic IMAP mailbox.
 
 - Order: validate body → duplicate rule (`mailboxHoldsAddress`, READ COMMITTED read, 409
-  `provider_account_already_connected`) → throttle → `verifyMailCredentials` outside any transaction →
-  `createPasswordMailbox` in one READ COMMITTED transaction that re-reads the duplicate rule before writing.
-- An address is held when `mail_account_sync_state.provider_account_address` records it or any Mailboxes
-  item's `addresses` list names it (trashed mailboxes count). The partial unique index
+  `provider_account_already_connected`) → throttle → outside any transaction and concurrently,
+  `verifyMailCredentials` with `listFolders` and, for a generic body with `caldavUrl`, the `verifyCalDav` member
+  (`verifyCalDavServer`, CalDAV discovery to the calendar home with the same login; 400 `caldav_auth_failed`,
+  `caldav_server_unreachable` or `caldav_server_invalid`) → `createPasswordMailbox` in one READ COMMITTED transaction
+  that re-reads the duplicate rule before writing.
+- Both verifications settle before the route answers. The mail failure is answered before a CalDAV failure; a failure
+  that is not answered is logged (verification and error name only).
+- The folders are listed on the IMAP verification's own connection: once its login succeeded, the attempt sends LIST
+  (imapflow `list()` without a status query, so no STATUS) under its own 15 s deadline and then closes the connection
+  as any attempt does. What the client and its sockets report while the LIST runs is the listing's and never fails
+  the verification. `createPasswordMailbox` writes the Drafts and Sent Folder items among them
+  (`ensureComposeFolders`, `mail/folderDiscovery.ts`) with the `providerId`, name and purpose the first sync pass
+  derives (`imapProviderFolder`), so the account drafts and sends before that pass, which finds them by `providerId`.
+  A failed or expired listing is logged (error name only) and the mailbox is connected without them.
+- An address is held when `mail_account_sync_state.provider_account_address` records it or a live Mailboxes
+  item's `addresses` list names it (`mailboxHoldsAnyAddress`, `mail/mailboxAddresses.ts`). A trashed mailbox does not
+  count: its removal deleted its sync state row, so its address can be connected again. The partial unique index
   `mail_account_sync_state_tenant_provider_address_uq` decides concurrent connects; the reads take no row lock.
 - Throttle: action `mailboxCredentialVerification`, 10 verifications per 15 minutes **per user id**, in process
   memory (`services/semprec-api/src/clientIpThrottle.ts`), handed to custom routes as the `throttle` member.
   `tryAcquire` runs directly before the verification with no `await` between; a counted attempt is never
   released. Refusal is `RateLimitedError` → 429 `rate_limited` with `Retry-After`. Without a throttle the
   route fails before contacting any server.
-- `verifyMailCredentials` (`mail/mailCredentialVerification.ts`) has a 15 s whole-attempt deadline spanning
-  DNS, connect, TLS and login. It owns its sockets: on expiry it destroys the owned socket (so `connect()`
+- `verifyMailCredentials` (`mail/mailCredentialVerification.ts`) verifies IMAP and SMTP concurrently, each trying
+  its candidates in order; both settle before it returns, and when both fail the IMAP failure is thrown. Each attempt
+  has a 15 s whole-attempt deadline spanning DNS, connect, TLS and login. It owns its sockets: on expiry it destroys the owned socket (so `connect()`
   rejects through the library's handlers), fences late DNS/connect callbacks and waits for real socket close
   before trying the next candidate or returning. The one private accessor reads ImapFlow 1.7.6's `socket`
   property behind a runtime `net.Socket` check; a library upgrade must re-prove it with the real-library tests.
@@ -63,26 +112,78 @@ described elsewhere and only referenced here:
 - At its public boundary an unknown failure becomes a fresh fixed generic `Error` (no cause, no candidate
   continuation). Verification saves nothing.
 
+### Password sign-in again
+
+`PUT /api/mail/mailboxes/:id/password` (`createMailboxPasswordReplaceRouteHandler`) replaces the password of an
+existing iCloud or generic mailbox; its mail, folders and threads stay.
+
+- Body `{ password, username? }` (strict, same bounds as the connect); `username` defaults to the stored one. A
+  malformed, unknown, foreign or trashed id is 404 `not_found`. A mailbox whose `provider` is not `icloud`/`generic`,
+  that lacks stored IMAP or SMTP settings, or whose sync mode is not `imap` is 409 `mailbox_not_password`.
+- Order: read the account → throttle (`mailboxCredentialVerification`, as the connect) → outside any transaction and
+  concurrently, as the connect, `verifyMailCredentials` against the stored hosts (no folder listing) and, with
+  Calendars on, `verifyCalDav` at the CalDAV start (`https://caldav.icloud.com/` for iCloud, else the stored
+  `caldav_url`; none without one) → one READ COMMITTED
+  transaction: unlocked sanity read → `ensureMailAccountSyncState` → lock sync state row → lock Mailboxes item →
+  re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
+  (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected
+  activity), `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueue
+  `mailAccountSync` and, with Calendars on, `calendarAccountSync`. After the commit the route awaits
+  `mailLiveSync.restartAccount`; a failed restart is logged (`mailboxItemId`, `errorName`) and the route still
+  answers 200, because the replacement is committed and the queued pass reads the new password. Refusals answer 400
+  with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
+
 ### OAuth connect and reauthorization
 
 `POST /api/mail/mailboxes/oauth/complete` (`mail/mailOauthRouteHandlers.ts`); states in `mail_oauth_states`.
+
+- Scopes per service (`mail/oauthServiceScopes.ts`): Mail asks Gmail `gmail.modify`, `gmail.send` and Microsoft
+  `Mail.ReadWrite`, `Mail.Send`, `offline_access`, `User.Read`; Calendars adds Google
+  `https://www.googleapis.com/auth/calendar` and Microsoft `Calendars.ReadWrite`. The mail scopes are part of every
+  sign-in: the account identity is read through them, and a reauthorization replaces the one credential mail sync
+  uses. Google is asked with `prompt=consent`, so its consent screen lists every scope asked for.
+- `POST /api/mail/mailboxes/oauth/start` takes `{ provider, services?, redirectTarget? }`; `services` defaults to
+  `["mail"]` and must include `mail` for a new account. The new mailbox's `calendarsEnabled` is whether `calendars`
+  was asked for. `POST /api/mail/mailboxes/:id/reauthorize` takes `{ services?, redirectTarget? }` and asks for the
+  mail scopes, the calendar scope when Calendars is switched on, and whatever `services` adds. The state row stores
+  the asked-for `services` and the `redirect_target`.
+- The token response's space-separated `scope` is stored per account in `mail_account_sync_state.granted_scopes`
+  (`recordGrantedOauthScopes`) on connect and reauthorization, replacing the previous grant; a response without
+  `scope` granted what was asked for (RFC 6749 §5.1). A Google user can leave the calendar box unchecked, so the
+  stored grant, not the request, decides.
+- `calendarStatus` on the mailbox rows (`calendarStatusOf`): `off` while Calendars is off; `needsConsent` for a
+  `gmail_api`/`graph_api` account whose granted scopes lack the calendar scope (Graph's resource-qualified names in
+  any case count); otherwise the stored status of the account's calendar sync (`never` before its first pass).
+  Switching Calendars on queues a calendar sync pass; for an OAuth account without the calendar scope the client
+  then reauthorizes with `services: ["mail", "calendars"]`.
+- `GET /api/mail/oauth/callback` (public, `services/semprec-api/src/mailOauthCallbackHandler.ts`) validates the
+  query first, then `resolveMailOauthRedirectUrl` looks the state up: `route_mail_oauth_state` names the tenant of an
+  open (unused, unexpired) state by its hash, and the target is read inside that tenant. For `redirectTarget: "app"`
+  it answers 302 to `semprec://oauth?state=…&code=…` (or `&error=…`); the URL comes only from the stored state. Any
+  other state, unknown, used or expired ones included, gets the JSON echo `{ state, code }` /
+  `{ state, providerError }`. The callback reads only and writes nothing.
 
 1. `consumeMailOauthState` marks the state used (guarded single `UPDATE`) and commits **before** the provider
    call. A state admits exactly one exchange; every later failure leaves it used and the user restarts.
 2. Code exchange and account/alias lookups run outside any transaction.
 3. Connect: `createConnectedMailbox` writes item, addresses, sealed refresh token, sync state with
-   `provider_account_address` and the first sync job in one READ COMMITTED transaction. The address unique
+   `provider_account_address`, the Drafts and Sent Folder items and the first sync job in one READ COMMITTED
+   transaction. Gmail's are the system labels `DRAFT` and `SENT` (`GMAIL_SYSTEM_FOLDERS`); Graph's are read before the
+   transaction (`GET /me/mailFolders/drafts` and `/sentitems`, with the identity reads' timeout and cap), and a failed
+   read is logged and leaves that folder to the first pass. The address unique
    index decides duplicates; after the rollback a separate read names the existing mailbox (409
    `provider_account_already_connected`, `details.mailboxId` possibly `null`).
 4. For Gmail the connect writes `gmail_watch_email_address` once, from `users.getProfile`
    (`recordGmailWatchEmailAddress`). Afterwards only the Gmail watch lifecycle writes that column. The value
    never comes from the request or the alias list, because `route_gmail_address` routes across tenants by it.
+
 - Reauthorization (`POST /api/mail/mailboxes/:id/reauthorize`, then the same complete route) runs
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
   property) must match the state's provider (`gmail_api`↔`gmail`, `graph_api`↔`outlook`). A different stored
-  account address is 400 `mail_reauth_wrong_account`. It replaces the token, enqueues a sync, and does not write
-  `syncStatus` or the watch address.
+  account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes,
+  `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
+  and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
 - After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
   restart is a 500 although the token was replaced.
 
@@ -101,24 +202,79 @@ described elsewhere and only referenced here:
 ### Sync pass and the mailbox sync guard
 
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
-  mailbox, state and credential happen first; reconcile then runs in one transaction that also talks to the
-  provider (existing, accepted cost; do not add new network work there).
+  mailbox, state and credential happen first. A Gmail or Graph pass then reconciles in one transaction that also
+  talks to the provider (existing, accepted cost; do not add new network work there).
+- One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
+  sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
+  `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
+  beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
+  pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
+  When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
+  A Gmail or Graph pass keeps the row locked for its whole transaction, so the claim waits for the row lock at most
+  `MAILBOX_SYNC_PASS_WAIT_MS` (a transaction-local `lock_timeout`); then it throws `MailboxSyncBusyError` and the job
+  is skipped like one that finds the mailbox sync guard held. Only a job holding the lease records a failure: one
+  that fails before it holds the lease writes no error, status, problem or notification and rethrows for
+  graphile-worker's retry.
+  `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
+  ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
+  rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
+- An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
+  transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every
+  attachment's bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) are fetched with no transaction
+  open and no guard held; the writes then run in short transactions: a prepare transaction (Folder items, each
+  folder's sync state), one transaction per folder batch, one for the flag write-back confirmations (the IMAP
+  `STORE`s run before it, outside any transaction) and a final one (account activity, the next pass, `ok`
+  status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
+  batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
+  from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
+  cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+- On a CONDSTORE server the folder list carries each folder's STATUS (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ,
+  MESSAGES), inline where the server offers LIST-STATUS and otherwise one STATUS per folder. A folder whose four
+  values equal its `mail_folder_sync_state` (`message_count` included) is skipped: no SELECT, no fetch, no write
+  transaction. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
+  STOREs); the new-UID search runs only when UIDNEXT passed the cursor, the flag fetch only when HIGHESTMODSEQ moved
+  (always without CONDSTORE), and the vanished check only when UIDNEXT or the message count differs from the stored
+  ones. The folder list is fetched on every pass: it is how an added or removed folder shows, and it brings the
+  STATUS data in the same round trip.
+- Deleted messages. Every IMAP connection is opened with imapflow's `qresync: true`, which ENABLEs QRESYNC where the
+  server advertises it; `ImapFlowMailClient` decides by the enabled set. Under QRESYNC the flag fetch and the
+  vanished check are one `UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE m VANISHED)` (`fetchChangesSince`), whose
+  `VANISHED (EARLIER)` names the expunged UIDs. Whether those (or, without QRESYNC, none) are every UID that left is
+  decided by the message count: the stored count, less the reported vanished UIDs below the stored UIDNEXT, plus the
+  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a UIDVALIDITY change, a
+  partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
+  known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
+  UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
+- A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
+  row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
+  transaction every marked Emails item of the mailbox (marked by this pass or by an earlier one that ended before its
+  final transaction) that has no folder edge left (and no unsettled or protected move) is trashed as the
+  system writer and loses its meta row through `deleteMailMessageMetaOfRemovedItem` (a thread no other message names
+  goes too), as the Mail-off removal does, so it leaves every thread count and a re-delivery is ingested anew. The
+  decision waits for the final transaction because another client's move shows as the target folder's new UID,
+  ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
+  move keeps its item and its mark is cleared. A marked Email with a move in flight keeps its mark for a later pass. A target UID left beyond the pass's budget makes the move a removal and a new item in the
+  next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
 - An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
-  inbox first, lowest UIDs first (`mail/imapReconcile.ts`). A folder left partial records its `uidnext` after
-  the last ingested UID. An unfinished pass enqueues the next pass in its own transaction, leaves the account
-  due at once and keeps `initial_sync_completed_at` unset, so the backfill of a large mailbox is many short
-  committed passes rather than one transaction that holds the mail-thread guard for its whole duration.
+  inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
+  unfinished pass requests a rerun of itself in its final transaction, leaves the account due at once and keeps
+  `initial_sync_completed_at` unset, so the backfill of a large mailbox is many passes of small batches.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
-- In a pass, `enterSyncPass` takes the guard as the first statement of the write transaction, then re-reads
-  the Mailboxes item and sync state row; a trashed/missing item or missing row ends the pass with no provider
-  call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
-  removal still holds it, the pass is skipped and records nothing (no failure, status, problem or
-  notification); the sweep re-enqueues an account that is still due.
-- A pass with no stored credential fails with `MailReauthorizationRequiredError` when the `syncStatus` it read
-  is `needsReauthorization`; otherwise it is an ordinary failure.
+- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction (every
+  transaction of an IMAP pass), then re-reads the Mailboxes item and sync state row; a trashed/missing item, a
+  missing row or a paused row (Mail off) ends the pass with no further provider call and no further write. A
+  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and an IMAP
+  pass it overtakes ends at its next transaction. The pass waits for the guard at most
+  `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a removal still holds it, the pass is skipped and records
+  nothing (no failure, status, problem or notification); the sweep re-enqueues an account that is still due.
+- A pass with no stored credential fails with `MailReauthorizationRequiredError` (failure kind `reauthorization`,
+  `syncStatus` `needsReauthorization`), whatever the status it read: only the user can store one again.
+- The sweep (`listAccountsDueForSync`) leaves out an account whose last failure kind is `reauthorization`; the
+  sign-in again (OAuth reauthorization or the password route) queues its next pass.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 
@@ -129,7 +285,8 @@ described elsewhere and only referenced here:
   transactions.
 - Discovery takes no sync guard and never waits: for an account without a sync state row it seeds one only
   after `SELECT … FOR SHARE SKIP LOCKED` on the live Mailboxes item (`ensureMailAccountSyncStateOfLiveMailbox`).
-  A skipped account is left out of the pass silently.
+  A skipped account is left out of the pass silently, as is a paused one (Mail off); a hosted account left out
+  is stopped by the pass.
 - `restartAccount(mailboxItemId)` stops and re-hosts one entry, running in the root's captured async context
   inside `runAsSystem("mail:liveSync")`; the tenant comes from the recorded entry, never from the caller, and a
   caller in a tenant scope only reaches its own tenant's entries. The root must be created outside any scope.
@@ -138,7 +295,8 @@ described elsewhere and only referenced here:
   (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
 - The hosted IMAP lifecycle owns its discovery/startup task: policy refusals and transient errors go into the
-  bounded backoff; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
+  bounded backoff, while `MailReauthorizationRequiredError` (the composition root's `getCredential` throws it when no
+  credential is stored) ends the discovery after one report until `restartAccount` hosts a new lifecycle; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
   then public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
 - The Gmail Pub/Sub dispatcher (`createGmailPubSubDispatcher`, `mail/gmailWatchLifecycle.ts`) routes each
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
@@ -206,6 +364,20 @@ described elsewhere and only referenced here:
   → per copy record the desire first, then replace its `Emails.folder` edges with one UID-less edge → enqueue
   one account sync per mailbox → one `mailThread` invalidation after commit.
 - Provider write-back of flags is queued by the Emails flag hook; thread actions make no provider call.
+- A copy is **received** (`received` in `mailThreadCopyCtes`) when it is in an Inbox or Junk folder, when it has a copy
+  of its own beside a Sent copy whose edge carries a UID, or when its sender is no mailbox address of the tenant and it
+  is in no Sent folder. Mail to oneself is therefore received; only its Sent copy is the user's own. The list's and the
+  summary's `unread` and the actions' incoming copies (Drafts copies excluded) read it.
+- `read: false` and `flagged: true` on a thread without a received message are 409 `mail_thread_no_received_message`
+  and write nothing; `read: true` and `flagged: false` with nothing to change are 200.
+- An IMAP server keeps mail to oneself twice (Sent and where it was delivered) and both converge on one Emails item. An
+  IMAP move of an item that is also in another folder takes the one provider message outside Sent and keeps the Sent
+  copy's edge with its UID: archive and trash move the delivered copy, restore brings it back to the Inbox. A flag
+  observation of that Sent copy is ignored while the item has a copy with a UID elsewhere
+  (`applyObservedMailMessageFlags`), so the item's `read`/`flagged` follow the delivered copy.
+- An archive or trash desire records in `mail_message_move_sync_state.restore_purpose` whether the copy left an Inbox
+  or a Sent folder (an earlier record stays when it left neither); restore returns the copy there, and only a copy
+  without a record goes by received (Inbox) or own (Sent).
 
 ### Inherited values
 
@@ -233,9 +405,12 @@ described elsewhere and only referenced here:
 ### Thread refs
 
 - A `mailThread` Semp ref stores the id as given (thread id or alias); `mail/mailThreadRef.ts` resolves
-  aliases, label (latest live message subject, else `subject_hint`), state (`trashed` when no live copy or all
+  aliases, label (earliest live message subject, else `subject_hint`), state (`trashed` when no live copy or all
   live copies only in Trash folders; `purged` for unknown ids) and database key (always null) at read time,
   one statement per batch.
+- A thread's subject, wherever it is shown (thread list and detail, ref label, global search), is its earliest
+  live message's: a reply or a bounce threaded later does not rename the conversation. Order, `lastMessageAt`,
+  `lastSender` and the preview follow the newest message.
 
 ## People linking
 
@@ -251,6 +426,8 @@ described elsewhere and only referenced here:
 ### Drafts
 
 - A Semprec draft is an Emails item in Drafts plus a `mail_drafts` row (`mail/draft.ts`, `mail/mailDraftsStore.ts`).
+  A mailbox for which neither the connect nor a sync pass found a Drafts folder refuses a new draft with 409
+  `mail_drafts_folder_missing` (`details.mailboxId`) and writes nothing.
 - Every writer of an existing draft uses `lockUnsentDraft`: Emails item `FOR UPDATE`, then `mail_drafts` row.
   Refusals: 404 no live item; 409 `mail_draft_not_editable` (no row); 409 `mail_draft_already_sent` (`sent_at`
   set **or** a send claim exists); 409 `version_conflict` on `ifVersion` mismatch. Draft writers take no
@@ -262,13 +439,18 @@ described elsewhere and only referenced here:
 
 ### Sending
 
-- `sendDraftEmail` (`mail/send.ts`, `mail/mailDraftSend.ts`): claim transaction (locks item then row, refuses
+- `sendDraftEmail` (`mail/send.ts`, `mail/mailDraftSend.ts`): for a user, an account with Mail off is refused
+  with 409 `mail_disabled` ahead of the reauthorization, sender and Sent-folder checks, and again in the claim
+  transaction, which first reads the sync state row `FOR SHARE` (a switch that commits later waits for the
+  claim). An approved agent send refused this way ends as `callFailed` and sends nothing. Claim transaction (locks item then row, refuses
   trashed/sent, runs the optional `beforeClaim` guard, writes the `mail_message_meta` claim and threads the
   message) → provider send outside any transaction → finalization transaction (`sent_at`, move to Sent,
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
   No automatic send retry.
 - Transports: SMTP (`createSmtpMailTransport`), Gmail and Graph REST clients. Once the provider accepted the
-  message, close/Sent-copy/response-cleanup failures keep the accepted result. A Graph failure before
+  message, close/Sent-copy/response-cleanup failures keep the accepted result. The send stays synchronous: the
+  IMAP connection for an SMTP account's Sent copy opens while SMTP submits, the APPEND runs only after acceptance,
+  and a refused submission closes that connection unused before the refusal is answered. A Graph failure before
   acceptance best-effort deletes the owned draft.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.
@@ -298,26 +480,35 @@ described elsewhere and only referenced here:
   `mailboxDeleteHook` refuses a `user`/`agent` trash of a system Mailboxes item (403 `forbidden`); the
   matching `mailboxDeleteApprovalGuard` (`registerItemDeleteApprovalGuard`) refuses an agent's `item.delete`
   before it is queued. A delete hook that refuses by rule must register such a guard.
-- Removal is one READ COMMITTED transaction: sync guard (≤ 15 s, `MAILBOX_REMOVAL_SYNC_WAIT_MS`) → sync state
-  row → Mailboxes item → read cleanup input into memory (`readMailboxRemovalCleanupInput`) → `syncStatus =
-  needsReauthorization` → trash item as system writer → delete credential, sync state, folder sync states,
-  server settings → enqueue `mailboxRemoval`. Deletes matching no row are fine.
+- Removal is one READ COMMITTED transaction: sync guard (≤ 15 s, `MAILBOX_REMOVAL_SYNC_WAIT_MS`) → calendar
+  sync guard (same bound) → sync state row → Mailboxes item → read cleanup input into memory
+  (`readMailboxRemovalCleanupInput`) → `syncStatus = needsReauthorization` → trash item as system writer →
+  delete credential, sync state, folder sync states, server settings → enqueue `mailboxRemoval` → stop the
+  calendar sync (`stopCalendarAccountSync`). Deletes matching no row are fine.
 - `mailboxRemoval` job (`mail/mailboxRemovalJob.ts`, lane `mailbox-removal:<tenant>`): chunks of ≤ 100 rows,
   Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
+- The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
+  account with Mail off: each chunk takes the paused sync state row `FOR SHARE`, the mail-thread guard and the live
+  Mailboxes item `FOR SHARE`, trashes with `deletedAtExact` = `sync_paused_at`, and deletes each trashed
+  Email's meta row with a thread no other message names (`deleteMailMessageMetaOfRemovedItem`: Threads item
+  trashed, `mail_threads` row deleted), so a later sync ingests the mail anew. An account no longer paused, or
+  a trashed or gone mailbox, ends it. A trashed Email restored by hand comes back without meta row.
 - After commit `cleanUpRemovedMailbox` (`mail/mailboxRemovalProviderCleanup.ts`) runs awaited, best effort, from
   in-memory values: `liveSyncStop` → Gmail watch stop / Graph subscription delete → Google token revocation.
   Provider follows the sync mode, not `provider`. Google calls happen only when `getGmailAccountUse` says the
   mailbox is the `sole` recorder of the account. Microsoft tokens are not revoked. Steps are 10 s each, logged
   with a fixed classification only; nothing is retried or persisted.
-- Restore: `mailboxItemRestoreHook` (`mail/mailboxRestoreHook.ts`) seeds a default sync state if none
+- Restore: `mailboxItemRestoreHook` (`mail/mailboxRestoreHook.ts`) first refuses (409
+  `provider_account_already_connected`, rolling the restore back) a mailbox one of whose addresses another live
+  mailbox lists or records (`mailboxHoldsAnyAddress`), then seeds a default sync state if none
   (unlocked read + `ON CONFLICT DO NOTHING`, never waits on an existing row), and restores the Folders and Emails
   of the exact trash epoch in the same transaction. It takes no sync guard and does not write `syncStatus`.
 - Purge: `mailItemPurgeHook` (`mail/mailPurgeHook.ts`) acts on system Emails/Mailboxes items. Emails: the meta
   row (and an emptied thread: soft-delete its Threads item, delete the row); blobs and Files stay. Mailboxes:
   folder sync states of folders without a `Folders.mailbox` edge. The hook takes the thread guard after the
   purge's own locks (fixed by the registry). Attachments, flag sync state, credential, sync state and server
-  settings go with the item through their foreign keys (data-model-and-writes.md, *Storage*).
+  settings go with the item through their foreign keys (data-model-and-writes.md, _Storage_).
 
 ## Provider failure privacy
 
@@ -436,8 +627,14 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 
 ## Lock orders to keep
 
-- Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
+- Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
+  folder/item rows.
+- Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
+- Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
+  → Mailboxes item. Mail-off chunk: sync state row (share) → mail-thread guard → Mailboxes item (share) → member
+  rows.
+- Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.
 - Inbox: source item → attachment row; source → blob; card holders never wait for the source and source

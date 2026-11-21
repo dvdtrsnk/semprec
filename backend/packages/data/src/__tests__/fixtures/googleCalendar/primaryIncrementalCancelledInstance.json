@@ -1,0 +1,23 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p32vrmrsl4bpj41g\"",
+  "summary": "me@example.test",
+  "updated": "2026-11-20T08:00:00.000Z",
+  "timeZone": "Europe/Prague",
+  "accessRole": "owner",
+  "defaultReminders": [
+    { "method": "email", "minutes": 30 },
+    { "method": "popup", "minutes": 10 }
+  ],
+  "nextSyncToken": "CPDAlvWFx5EDEPDAlvWFx5EDGAUggICB",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234580000\"",
+      "id": "standup_20261216T140000Z",
+      "status": "cancelled",
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-12-16T09:00:00-05:00", "timeZone": "America/New_York" }
+    }
+  ]
+}

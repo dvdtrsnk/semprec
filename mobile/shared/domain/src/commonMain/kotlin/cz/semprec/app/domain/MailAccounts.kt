@@ -34,11 +34,38 @@ data class MailRemovalImpact(val messages: Int, val drafts: Int, val threads: In
 
 enum class MailPasswordProvider { ICLOUD, GENERIC }
 
-/** The login of an iCloud or generic IMAP mailbox; the servers are for [MailPasswordProvider.GENERIC] only. */
+/**
+ * The login of an iCloud or generic IMAP mailbox; the servers are for [MailPasswordProvider.GENERIC] only.
+ * [caldavUrl] is the CalDAV server of a generic account, `null` when the person left it empty.
+ */
 data class MailPasswordAccount(
     val provider: MailPasswordProvider,
     val address: String,
     val password: String,
     val imapHost: String?,
     val smtpHost: String?,
+    val caldavUrl: String? = null,
 )
+
+/**
+ * Why the server refused a password login it checked: the user name or password, an iCloud account that needs an
+ * app-specific password, a mail server that could not be reached or whose TLS failed, a CalDAV server that refused
+ * the login or could not be found, an address that another mailbox already holds, or too many attempts.
+ */
+enum class MailConnectRefusal {
+    WRONG_CREDENTIALS,
+    APP_PASSWORD_REQUIRED,
+    SERVER_UNREACHABLE,
+    TLS_FAILED,
+    CALDAV_REFUSED,
+    CALDAV_UNREACHABLE,
+    ALREADY_CONNECTED,
+    RATE_LIMITED,
+}
+
+/** How a checked password login ended: the mailbox is [Connected] (new or signed in again), or [Refused]. */
+sealed interface MailConnectOutcome {
+    data object Connected : MailConnectOutcome
+
+    data class Refused(val reason: MailConnectRefusal) : MailConnectOutcome
+}

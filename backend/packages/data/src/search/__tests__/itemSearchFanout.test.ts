@@ -709,21 +709,21 @@ describe("search reindex fan-out (issue #1652)", () => {
       cp.createItem({ databaseId: collection.id, properties: { name: "Exponát", stage: "draft" } }),
     );
     const backfills = async () => (await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id);
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     await runQueued();
     expect(await backfills()).toEqual([]);
     expect(await contains(entry.id, "zelenomodrý")).toBe(true);
     await inTenant(() =>
       cp.updateProperty(property.id, { config: { options: [{ key: "draft", label: "Fialovočervený" }] } }),
     );
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     expect(await contains(entry.id, "fialovočervený")).toBe(false);
     await runQueued();
     expect(await backfills()).toEqual([]);
     expect(await contains(entry.id, "fialovočervený")).toBe(true);
     expect(await contains(entry.id, "zelenomodrý")).toBe(false);
     await inTenant(() => cp.deleteProperty(property.id));
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     expect(await contains(entry.id, "fialovočervený")).toBe(true);
     await runQueued();
     expect(await backfills()).toEqual([]);
@@ -800,7 +800,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     );
     expect(await contains(entry.id, "mezopotámie")).toBe(false);
     await inTenant(() => cp.createProperty({ databaseId: collection.id, key: "origin", name: "Origin", type: "text" }));
-    expect(await queued(BACKFILL)).toContainEqual({ databaseId: collection.id, onlyMissing: false });
+    expect(await queued(BACKFILL)).toContainEqual({ databaseId: collection.id });
     await runQueued();
     expect(await contains(entry.id, "mezopotámie")).toBe(true);
   });
@@ -813,7 +813,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     await inTenant(() => cp.updateProperty(property.id, { name: "Poznámka" }));
     await inTenant(() => cp.deleteProperty(property.id));
     expect((await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id)).toEqual([
-      { databaseId: collection.id, onlyMissing: false },
+      { databaseId: collection.id },
     ]);
   });
 
@@ -847,7 +847,7 @@ describe("search reindex fan-out (issue #1652)", () => {
 
   it("queues the tenant-wide backfill for a profile language change", async () => {
     await inTenant(() => withTransaction(pool, (client) => enqueueTenantSearchReindex(client)));
-    expect(await queued(BACKFILL)).toContainEqual({ onlyMissing: false });
+    expect(await queued(BACKFILL)).toContainEqual({});
   });
 
   it("never reaches another tenant's referrers", async () => {

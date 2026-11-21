@@ -13,6 +13,11 @@ export function mailProblemKey(mailboxItemId: string): string {
   return `mail:${mailboxItemId}`;
 }
 
+/** An internet account's calendar sync failure; one per account, apart from its mail problem. */
+export function calendarProblemKey(accountItemId: string): string {
+  return `calendar:${accountItemId}`;
+}
+
 export const BACKUP_RESTORE_PROBLEM_KEY = "backup:restoreTest";
 
 export const AGENTS_PROCESS_PROBLEM_KEY = "agents:process";

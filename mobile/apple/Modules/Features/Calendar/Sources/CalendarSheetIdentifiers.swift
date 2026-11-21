@@ -24,6 +24,15 @@ enum CalendarSheetIdentifiers {
     /// A colour of the detail page, by the swatch's key.
     static func calendarColor(_ key: String) -> String { "calendars.color.\(key)" }
 
+    /// The provider's colour on the detail page of an account calendar.
+    static let calendarsRemoteColor = "calendars.color.remote"
+
+    /// The lock of a read-only calendar's row, by the calendar's id.
+    static func calendarReadOnly(_ id: String) -> String { "calendars.readOnly.\(id)" }
+
+    /// The header of an internet account's calendars, by the account's id.
+    static func calendarAccount(_ id: String) -> String { "calendars.account.\(id)" }
+
     // MARK: - Invitations
     static let invitationsScreen = "invitations.screen"
     static let invitationsDone = "invitations.done"
@@ -50,6 +59,8 @@ enum CalendarSheetIdentifiers {
     static let newItemEnd = "newItem.end"
     static let newItemPlace = "newItem.place"
     static let newItemCalendar = "newItem.calendar"
+    static let newItemCalendarChooser = "newItem.calendar.chooser"
+    static let newItemCalendarDone = "newItem.calendar.done"
     static let newItemFailure = "newItem.failure"
     static let newItemSchedule = "newItem.schedule"
     static let newItemRepeat = "newItem.repeat"
@@ -58,4 +69,10 @@ enum CalendarSheetIdentifiers {
     static let newItemNotes = "newItem.notes"
     static let newItemUrl = "newItem.url"
     static let newItemFlag = "newItem.flag"
+
+    /// A calendar of the new item's calendar chooser, by the calendar's id.
+    static func newItemCalendarOption(_ id: String) -> String { "newItem.calendar.option.\(id)" }
+
+    /// A section header of the calendar chooser: `own`, or `account.<id>` for an internet account's calendars.
+    static func newItemCalendarSection(_ id: String) -> String { "newItem.calendar.section.\(id)" }
 }

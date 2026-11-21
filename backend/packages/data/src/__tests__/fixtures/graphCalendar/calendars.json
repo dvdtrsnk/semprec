@@ -1,0 +1,21 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/calendars(id,name,color,hexColor,canEdit)",
+  "value": [
+    {
+      "@odata.etag": "W/\"DwAAABYAAAAQZ9Rr6Uu9TL2+ORm8Cq0OAAAAAAMv\"",
+      "id": "AAMkCal-work",
+      "name": "Calendar",
+      "color": "auto",
+      "hexColor": "#3a87ad",
+      "canEdit": true
+    },
+    {
+      "@odata.etag": "W/\"DwAAABYAAAAQZ9Rr6Uu9TL2+ORm8Cq0OAAAAAAMw\"",
+      "id": "AAMkCal-holidays",
+      "name": "Czech holidays",
+      "color": "lightGreen",
+      "hexColor": "",
+      "canEdit": false
+    }
+  ]
+}

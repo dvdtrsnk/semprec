@@ -12,7 +12,7 @@ private class RecordingCatalog : CalendarCatalogRepository {
     override suspend fun calendars(): RepositoryResult<List<CalendarInfo>> = RepositoryResult.Content(emptyList())
 
     override suspend fun edit(calendar: CalendarInfo, change: CalendarEdit): RepositoryResult<Unit> {
-        calls += "edit ${calendar.id} ${change.name} ${change.hidden}"
+        calls += "edit ${calendar.id} ${change.name} ${change.hidden}" + if (change.useRemoteColor) " remote" else ""
         return RepositoryResult.Content(Unit)
     }
 
@@ -69,6 +69,43 @@ class CalendarCatalogUseCasesTest {
         val result = EditCalendars(catalog).edit(system, CalendarEdit(hidden = true))
         assertEquals(RepositoryResult.Content(Unit), result)
         assertEquals(listOf("edit tasks null true"), catalog.calls)
+    }
+
+    @Test fun `an account calendar is renamed here and goes back to the provider colour`() = runTest {
+        val catalog = RecordingCatalog()
+        val edits = EditCalendars(catalog)
+        val account = calendar("google", kind = CalendarKind.ACCOUNT)
+        assertEquals(RepositoryResult.Content(Unit), edits.edit(account, CalendarEdit(name = " Rodina ")))
+        assertEquals(RepositoryResult.Content(Unit), edits.edit(account, CalendarEdit(useRemoteColor = true)))
+        assertEquals(listOf("edit google Rodina null", "edit google null null remote"), catalog.calls)
+    }
+
+    @Test fun `only an account calendar goes back to a provider colour`() = runTest {
+        val catalog = RecordingCatalog()
+        val edits = EditCalendars(catalog)
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+        listOf(CalendarKind.OWN, CalendarKind.SYSTEM, CalendarKind.SUBSCRIPTION).forEach { kind ->
+            assertEquals(refused, edits.edit(calendar("c", kind = kind), CalendarEdit(useRemoteColor = true)), "$kind")
+        }
+        assertTrue(catalog.calls.isEmpty())
+    }
+
+    @Test fun `an account calendar is not deleted`() = runTest {
+        val catalog = RecordingCatalog()
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+        assertEquals(refused, EditCalendars(catalog).delete(calendar("google", kind = CalendarKind.ACCOUNT)))
+        assertTrue(catalog.calls.isEmpty())
+    }
+
+    @Test fun `a new event goes on an own calendar or a writable account calendar`() {
+        val cases = listOf(
+            calendar("own") to true,
+            calendar("google", kind = CalendarKind.ACCOUNT) to true,
+            calendar("shared", kind = CalendarKind.ACCOUNT).copy(readOnly = true) to false,
+            calendar("tasks", kind = CalendarKind.SYSTEM) to false,
+            calendar("feed", kind = CalendarKind.SUBSCRIPTION) to false,
+        )
+        cases.forEach { (calendar, takes) -> assertEquals(takes, calendar.takesNewEvents, calendar.id) }
     }
 
     @Test fun `a new calendar needs a name`() = runTest {

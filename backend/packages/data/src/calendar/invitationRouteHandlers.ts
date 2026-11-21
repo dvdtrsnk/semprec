@@ -23,6 +23,8 @@ import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { createEventInCalendar } from "./defaultCalendarCreateHook.js";
 import { invitationEventFields } from "./invitationEventFields.js";
 import { enqueueInvitationReply } from "./invitationReplyJob.js";
+import { getEventAccountCalendar, getEventRemoteState, resolveCalendarSyncIds } from "./sync/calendarSyncStore.js";
+import { enqueueCalendarInvitationRespond } from "./sync/invitationRespondJob.js";
 import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 import { requireUuidParam } from "../customRoute.js";
 
@@ -61,9 +63,28 @@ interface RespondInput {
 }
 
 /**
+ * How an answer reaches the organizer: through the provider for an invitation whose Event an account calendar holds
+ * (the calendar sync's), by an iTIP REPLY e-mail otherwise. A synced Event the provider no longer has cannot be
+ * answered.
+ */
+async function answerChannel(client: PoolClient, linkedId: string | undefined): Promise<"provider" | "mail"> {
+  if (linkedId === undefined) return "mail";
+  const ids = await resolveCalendarSyncIds(client);
+  if (ids === null || (await getEventAccountCalendar(client, ids, linkedId)) === null) return "mail";
+  if ((await getEventRemoteState(client, linkedId)) === null) {
+    throw new ConflictError("The meeting is no longer in the account's calendar", { field: "event" }, "conflict");
+  }
+  return "provider";
+}
+
+/**
  * The invitation row is locked first; another tenant's id is hidden by RLS and reads as not found. An existing
  * linked Event is kept (or restored) and `calendarId` is then ignored. A failed Event write rolls the whole
  * transaction back, so the invitation keeps its status; `status` and `respondedAt` are written last.
+ *
+ * An invitation of a synced Event leaves the Event to its provider: the answer is queued for the provider, which
+ * changes the account's attendance there, and the Event follows it with the next sync (a provider that removes a
+ * declined meeting removes it here too).
  */
 async function respondToInvitation(client: PoolClient, input: RespondInput, now: Date): Promise<ItemRow> {
   const invitations = await databasesStore.getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
@@ -82,10 +103,12 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
   }
   if (state.data.status === input.response) return invitation;
 
-  if (input.response !== "acknowledged") {
+  const [linkedId] =
+    input.response === "acknowledged" ? [] : await relatedIds(client, invitations.id, invitation.id, "event");
+  const channel = input.response === "acknowledged" ? null : await answerChannel(client, linkedId);
+  if (channel === "mail") {
     const events = await databasesStore.getDatabaseByModuleId(client, EVENTS_MODULE_ID);
     if (!events) throw new Error("The tenant has no Events database");
-    const [linkedId] = await relatedIds(client, invitations.id, invitation.id, "event");
     const linked = linkedId === undefined ? null : await itemsStore.lockItemById(client, events.id, linkedId);
     const { writer } = input;
     // Only a human writer is a `humanWriterUserId`: it is absent for every agent (`chokePoint/hooks.ts`).
@@ -146,7 +169,9 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
   );
   // The job exists only when this transaction commits.
   if (input.response !== "acknowledged") {
-    await enqueueInvitationReply(client, { invitationId: invitation.id, response: input.response, respondedAt });
+    const answer = { invitationId: invitation.id, response: input.response, respondedAt };
+    if (channel === "provider") await enqueueCalendarInvitationRespond(client, answer);
+    else await enqueueInvitationReply(client, answer);
   }
   await resolveNotificationsBySource(client, { sourceTable: "items", sourceId: invitation.id });
   const stored = await itemsStore.getItemById(client, invitations.id, invitation.id);

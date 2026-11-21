@@ -43,7 +43,7 @@ class MailThreadViewModel internal constructor(
             is MailThreadAction.SendDraft -> sendDraft(action.body)
             MailThreadAction.AddTask -> addTask()
             is MailThreadAction.Open -> open(action.target)
-            MailThreadAction.DismissFailure -> update { it.copy(actionFailed = false) }
+            MailThreadAction.DismissFailure -> update { it.copy(actionFailed = false, actionRefusal = null) }
         }
     }
 
@@ -73,7 +73,7 @@ class MailThreadViewModel internal constructor(
         expanded = open
         update { loaded.toState(open, sempDraft?.toSempDraft(), it) }
         // Opening a thread reads it; when the server refuses, the thread stays unread, which the list shows.
-        if (loaded.unread) viewModelScope.launch { mailAttempt { mail.setRead(threadId, read = true) } }
+        if (loaded.unread) viewModelScope.launch { mailWrite { mail.setRead(threadId, read = true) } }
     }
 
     /** The draft is Semp's only when an agent made it; the person's own drafts are not offered as a reply. */
@@ -99,11 +99,13 @@ class MailThreadViewModel internal constructor(
         val flagged = state.value.flagged
         update { it.copy(flagged = !flagged) }
         viewModelScope.launch {
-            val result = mailAttempt { mail.setFlagged(threadId, flagged = !flagged) }
+            val result = mailWrite { mail.setFlagged(threadId, flagged = !flagged) }
             ensureActive()
             when (result) {
-                is RepositoryResult.Content -> update { it.copy(flagged = result.value) }
-                is RepositoryResult.Failure, null -> update { it.copy(flagged = flagged, actionFailed = true) }
+                is MailWrite.Done -> update { it.copy(flagged = result.value) }
+                is MailWrite.Failed -> update {
+                    it.copy(flagged = flagged, actionFailed = true, actionRefusal = result.refusal)
+                }
             }
         }
     }
@@ -112,7 +114,7 @@ class MailThreadViewModel internal constructor(
         if (state.value.acting) return
         update { it.copy(acting = true) }
         viewModelScope.launch {
-            val result = mailAttempt {
+            val result = mailWrite {
                 when (to) {
                     MailThreadMove.ARCHIVE -> mail.archive(threadId)
                     MailThreadMove.TRASH -> mail.trash(threadId)
@@ -120,8 +122,14 @@ class MailThreadViewModel internal constructor(
                 }
             }
             ensureActive()
-            update { it.copy(acting = false, actionFailed = result !is RepositoryResult.Content) }
-            if (result is RepositoryResult.Content) {
+            update {
+                it.copy(
+                    acting = false,
+                    actionFailed = result is MailWrite.Failed,
+                    actionRefusal = (result as? MailWrite.Failed)?.refusal,
+                )
+            }
+            if (result is MailWrite.Done) {
                 if (to == MailThreadMove.RESTORE) load(showWait = false) else emit(MailThreadEffect.Close)
             }
         }
@@ -133,7 +141,13 @@ class MailThreadViewModel internal constructor(
         viewModelScope.launch {
             val result = mailAttempt { mail.createTask(threadId) }
             ensureActive()
-            update { it.copy(creatingTask = false, actionFailed = result !is RepositoryResult.Content) }
+            update {
+                it.copy(
+                    creatingTask = false,
+                    actionFailed = result !is RepositoryResult.Content,
+                    actionRefusal = null,
+                )
+            }
             if (result is RepositoryResult.Content) load(showWait = false)
         }
     }
@@ -141,29 +155,28 @@ class MailThreadViewModel internal constructor(
     private fun sendDraft(body: String) {
         val current = draft
         if (current == null || state.value.sendPhase == MailSendPhase.SENDING) return
-        update { it.copy(sendPhase = MailSendPhase.SENDING, sendFailure = null) }
+        update { it.copy(sendPhase = MailSendPhase.SENDING, sendFailure = null, sendRefusal = null) }
         viewModelScope.launch {
             val saved = if (body == current.body) {
-                RepositoryResult.Content(current)
+                MailWrite.Done(current)
             } else {
-                mailAttempt { drafts.update(current.id, current.version, current.fields(body)) }
+                mailWrite { drafts.update(current.id, current.version, current.fields(body)) }
             }
-            val sent: RepositoryResult<MailSentDraft>? = when (saved) {
-                is RepositoryResult.Content -> {
+            val sent: MailWrite<MailSentDraft> = when (saved) {
+                is MailWrite.Done -> {
                     draft = saved.value
-                    mailAttempt { drafts.send(saved.value.id) }
+                    mailWrite { drafts.send(saved.value.id) }
                 }
-                is RepositoryResult.Failure -> saved
-                null -> null
+                is MailWrite.Failed -> saved
             }
             ensureActive()
             afterSend(sent)
         }
     }
 
-    private fun afterSend(sent: RepositoryResult<MailSentDraft>?) {
+    private fun afterSend(sent: MailWrite<MailSentDraft>) {
         when (sent) {
-            is RepositoryResult.Content -> {
+            is MailWrite.Done -> {
                 draft = null
                 update {
                     it.copy(
@@ -174,8 +187,9 @@ class MailThreadViewModel internal constructor(
                 }
                 load(showWait = false)
             }
-            is RepositoryResult.Failure -> update { it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = sent.kind) }
-            null -> update { it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = null) }
+            is MailWrite.Failed -> update {
+                it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = sent.failure, sendRefusal = sent.refusal)
+            }
         }
     }
 }
@@ -183,7 +197,7 @@ class MailThreadViewModel internal constructor(
 /** A failed first load is an error; a failed refresh leaves the thread that is shown as it was. */
 private fun MailThreadState.failedLoad(kind: FailureKind?): MailThreadState =
     if (phase == MailThreadPhase.CONTENT) {
-        copy(refreshing = false, actionFailed = true)
+        copy(refreshing = false, actionFailed = true, actionRefusal = null)
     } else {
         copy(phase = MailThreadPhase.ERROR, failure = kind)
     }

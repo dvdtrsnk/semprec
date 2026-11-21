@@ -14,6 +14,7 @@ public enum AccountNotificationSwitch: Equatable, Sendable, CaseIterable {
     case approvals
     case invites
     case reminders
+    case calendarChanges
     case problemsSummary
     case badgeApprovals
     case badgeInvites
@@ -33,6 +34,7 @@ public struct NotificationChoices: Equatable, Sendable {
     public var approvals: Bool
     public var invites: Bool
     public var reminders: Bool
+    public var calendarChanges: Bool
     public var problemsLevel: AccountProblemsLevel
     public var problemsSummary: Bool
     public var badgeApprovals: Bool
@@ -43,6 +45,7 @@ public struct NotificationChoices: Equatable, Sendable {
         approvals: Bool = true,
         invites: Bool = true,
         reminders: Bool = true,
+        calendarChanges: Bool = true,
         problemsLevel: AccountProblemsLevel = .critical,
         problemsSummary: Bool = true,
         badgeApprovals: Bool = true,
@@ -52,6 +55,7 @@ public struct NotificationChoices: Equatable, Sendable {
         self.approvals = approvals
         self.invites = invites
         self.reminders = reminders
+        self.calendarChanges = calendarChanges
         self.problemsLevel = problemsLevel
         self.problemsSummary = problemsSummary
         self.badgeApprovals = badgeApprovals
@@ -65,6 +69,7 @@ public struct NotificationChoices: Equatable, Sendable {
         case .approvals: approvals
         case .invites: invites
         case .reminders: reminders
+        case .calendarChanges: calendarChanges
         case .problemsSummary: problemsSummary
         case .badgeApprovals: badgeApprovals
         case .badgeInvites: badgeInvites
@@ -101,10 +106,16 @@ public enum NotificationSettingsAction: Equatable, Sendable {
     case dismissFailure
 }
 
-/// The notification settings have no effects: a change is a state change.
+/// What the notification settings ask the app for.
+public enum NotificationSettingsEffect: Equatable, Sendable {
+
+    /// The person turned a notification on; the app asks for the permission to notify unless it was answered.
+    case requestPermission
+}
+
 public typealias NotificationSettingsScreenModel =
-    ScreenModel<NotificationSettingsState, NotificationSettingsAction, Never>
+    ScreenModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>
 
 /// Notification settings model for previews and tests; it never starts the Kotlin runtime.
 public typealias ScriptedNotificationSettingsScreenModel =
-    ScriptedScreenModel<NotificationSettingsState, NotificationSettingsAction, Never>
+    ScriptedScreenModel<NotificationSettingsState, NotificationSettingsAction, NotificationSettingsEffect>

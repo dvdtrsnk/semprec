@@ -49,6 +49,7 @@ extension SharedCalendarListScreenModel {
         CalendarListState(
             phase: CalendarListPhase(state.phase, failure: state.failure),
             calendars: state.calendars.map(CalendarRow.init),
+            accounts: state.accounts.map(CalendarAccountSection.init),
             swatches: state.swatches.map(CalendarSwatch.init),
             detailId: state.detailId,
             impact: state.impact.map(CalendarImpact.init),
@@ -61,19 +62,27 @@ extension SharedCalendarListScreenModel {
     static func action(_ action: CalendarListAction) -> any SharedSDK.CalendarListAction {
         switch action {
         case .retry: SharedSDK.CalendarListActionRetry.shared
-        case .toggleHidden(let id): SharedSDK.CalendarListActionChangeToggleHidden(calendarId: id)
+        case .refresh: SharedSDK.CalendarListActionRefresh.shared
+        case .change(let change): Self.change(change)
         case .setAllHidden(let hidden): SharedSDK.CalendarListActionSetAllHidden(hidden: hidden)
         case .openDetail(let id): SharedSDK.CalendarListActionOpenDetail(calendarId: id)
         case .closeDetail: SharedSDK.CalendarListActionCloseDetail.shared
-        case .rename(let id, let name): SharedSDK.CalendarListActionChangeRename(calendarId: id, name: name)
-        case .setColor(let id, let color): SharedSDK.CalendarListActionChangeSetColor(calendarId: id, color: color)
-        case .setNotify(let id, let notify): SharedSDK.CalendarListActionChangeSetNotify(calendarId: id, notify: notify)
         case .add(let name): SharedSDK.CalendarListActionAdd(name: name)
         case .requestDelete(let id): SharedSDK.CalendarListActionRequestDelete(calendarId: id)
         case .confirmDelete: SharedSDK.CalendarListActionConfirmDelete.shared
         case .cancelDelete: SharedSDK.CalendarListActionCancelDelete.shared
         case .openSleep: SharedSDK.CalendarListActionOpenSleep.shared
         case .dismissProblem: SharedSDK.CalendarListActionDismissProblem.shared
+        }
+    }
+
+    static func change(_ change: CalendarListChange) -> any SharedSDK.CalendarListActionChange {
+        switch change {
+        case .toggleHidden(let id): SharedSDK.CalendarListActionChangeToggleHidden(calendarId: id)
+        case .rename(let id, let name): SharedSDK.CalendarListActionChangeRename(calendarId: id, name: name)
+        case .setColor(let id, let color): SharedSDK.CalendarListActionChangeSetColor(calendarId: id, color: color)
+        case .setNotify(let id, let notify): SharedSDK.CalendarListActionChangeSetNotify(calendarId: id, notify: notify)
+        case .useRemoteColor(let id): SharedSDK.CalendarListActionChangeUseRemoteColor(calendarId: id)
         }
     }
 

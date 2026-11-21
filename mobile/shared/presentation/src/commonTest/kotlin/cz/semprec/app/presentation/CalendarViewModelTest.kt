@@ -35,8 +35,13 @@ class CalendarViewModelTest : MainDispatcherTest() {
     private val repository = FakeCalendarRepository()
 
     private fun viewModel(day: String = "2026-10-16") =
-        CalendarViewModelFactory(repository, FakeCatalogRepository(), FakeInvitationRepository(), repository.changes)
-            .calendarViewModel(day)
+        CalendarViewModelFactory(
+            repository,
+            FakeCatalogRepository(),
+            FakeInvitationRepository(),
+            repository.changes,
+            ScriptedInternetAccountRepository(),
+        ).calendarViewModel(day)
 
     private fun serve(vararg entries: cz.semprec.app.domain.CalendarEntry, pending: Int = 0) {
         repository.onWindow = { _, _ ->
@@ -554,10 +559,12 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `delete asks for a confirmation that can be given or refused`() = runTest(dispatcher) {
+    @Test fun `delete closes the menu and asks a confirmation that can be given or refused`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
+        act(vm, CalendarAction.Gesture.Select("meeting"))
         act(vm, CalendarAction.Edit.RequestDelete("meeting"))
+        assertNull(vm.state.value.selectedItemId)
         val request = CalendarDeleteRequest("meeting", "Title meeting", CalendarItemKind.EVENT)
         assertEquals(request, vm.state.value.pendingDelete)
         act(vm, CalendarAction.Edit.CancelDelete)
@@ -646,6 +653,7 @@ class CalendarViewModelTest : MainDispatcherTest() {
             FakeCatalogRepository(),
             FakeInvitationRepository(),
             repository.changes,
+            ScriptedInternetAccountRepository(),
             changes,
         ).calendarViewModel("2026-10-16")
 

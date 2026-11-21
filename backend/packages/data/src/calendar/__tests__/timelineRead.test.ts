@@ -1113,6 +1113,13 @@ describe("calendar timeline read (issue #1717)", () => {
         now: { date: DAY, time: "12:15" },
         at: new Date("2026-10-16T10:15:00Z"),
         includeSleep: true,
+        lookups: {
+          database: expect.any(Function),
+          calendarIds: expect.any(Function),
+          locale: expect.any(Function),
+          hostEventsRelation: expect.any(Function),
+          itemsByIds: expect.any(Function),
+        },
       },
     ]);
   });

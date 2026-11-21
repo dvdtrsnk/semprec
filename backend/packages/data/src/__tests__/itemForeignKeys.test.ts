@@ -66,6 +66,68 @@ const KEYS: ItemKey[] = [
     insert: (c, id) => c.query("INSERT INTO calendar_feed_state (calendar_item_id) VALUES ($1)", [id]),
   },
   {
+    table: "calendar_account_sync_state",
+    column: "account_item_id",
+    behaviour: "cascade",
+    insert: (c, id) => c.query("INSERT INTO calendar_account_sync_state (account_item_id) VALUES ($1)", [id]),
+  },
+  {
+    table: "calendar_event_push_state",
+    column: "event_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, 'create')", [id]),
+  },
+  {
+    table: "calendar_remote_state",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO calendar_remote_state (calendar_item_id, remote_id) VALUES ($1, 'remote')", [id]),
+  },
+  {
+    table: "calendar_push_channels",
+    column: "account_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, secret, expires_at)
+         VALUES ('graph', $2, $1, 'secret', now())`,
+        [id, randomUUID()],
+      ),
+  },
+  {
+    table: "calendar_push_channels",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, calendar_item_id, resource_id, secret, expires_at)
+         VALUES ('google', $3, $2, $1, 'resource', 'secret', now())`,
+        [id, await other(), randomUUID()],
+      ),
+  },
+  {
+    table: "event_remote_state",
+    column: "event_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query("INSERT INTO event_remote_state (event_item_id, calendar_item_id, remote_id) VALUES ($1, $2, 'remote')", [
+        id,
+        await other(),
+      ]),
+  },
+  {
+    table: "event_remote_state",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query("INSERT INTO event_remote_state (event_item_id, calendar_item_id, remote_id) VALUES ($1, $2, 'remote')", [
+        await other(),
+        id,
+      ]),
+  },
+  {
     table: "docs",
     column: "item_id",
     behaviour: "cascade",
@@ -207,8 +269,9 @@ const KEYS: ItemKey[] = [
     behaviour: "cascade",
     insert: (c, id, s) =>
       c.query(
-        `INSERT INTO mail_oauth_states (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id)
-         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3)`,
+        `INSERT INTO mail_oauth_states
+           (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id, services)
+         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3, '{mail}')`,
         [s.userId, randomUUID(), id],
       ),
   },

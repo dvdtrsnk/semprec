@@ -68,6 +68,7 @@ import {
   TRANSCRIPTION_OWNER_PROCESS,
   getOrCreateJournalItem,
   ensureJournalPeriodDoc,
+  getDecryptedCredential,
   hashPassword,
   handleObservabilityCheckSystemTask,
   handleAgentRunEventsRetentionTask,
@@ -123,6 +124,7 @@ const SETUP_TOKEN = "tenant-isolation-setup-token";
 const EXAMPLE_ID = "00000000-0000-0000-0000-000000000000";
 const MAILBOX_PASSWORD = "isolation-mailbox-password";
 const REFUSED_MAILBOX_PASSWORD = "isolation-refused-mailbox-password";
+const REPLACED_MAILBOX_PASSWORD = "isolation-replaced-mailbox-password";
 
 /**
  * The mail server accepts every login except `REFUSED_MAILBOX_PASSWORD`, so no case reaches a real
@@ -135,8 +137,15 @@ const MAILBOX_PASSWORD_DEPENDENCIES: CustomRouteDependencies = {
       return {
         imap: { host: input.imapHost ?? "imap.mail.me.com", port: 993, security: "tls" },
         smtp: { host: input.smtpHost ?? "smtp.mail.me.com", port: 465, security: "tls" },
+        folders: null,
       };
     },
+  },
+  // The password replacement restarts the hosted live sync after its commit; this process hosts none.
+  mailLiveSync: {
+    startMailbox: async () => {},
+    stopMailbox: async () => {},
+    restartAccount: async () => {},
   },
 };
 /**
@@ -277,6 +286,8 @@ interface TenantFixture {
   pushDeviceToken: string;
   exportId: string;
   graphSubscriptionId: string;
+  googleCalendarChannelId: string;
+  graphCalendarSubscriptionId: string;
   /**
    * Every recorded id except `agentRunEventId`, plus every database the tenant can list (its seeded
    * system databases included).
@@ -1057,6 +1068,24 @@ async function seedTenant(): Promise<TenantFixture> {
       [mailboxItemId, graphSubscriptionId, `state-${randomUUID()}`],
     ),
   );
+  const googleCalendarChannelId = randomUUID();
+  const graphCalendarSubscriptionId = `graph-calendar-${randomUUID()}`;
+  const watchedCalendarItemId = await runInTenant(tenantId, () => createTestModuleItem(pool, "calendars"));
+  // Raw SQL: creating push channels is the calendar push maintenance's concern, which calls the providers.
+  await inTenantTransaction(tenantId, (client) =>
+    client.query(
+      `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, calendar_item_id, resource_id, secret, expires_at)
+       VALUES ('google', $1, $3, $4, 'resource', $5, now() + interval '1 day'),
+              ('graph', $2, $3, NULL, NULL, $5, now() + interval '1 day')`,
+      [
+        googleCalendarChannelId,
+        graphCalendarSubscriptionId,
+        mailboxItemId,
+        watchedCalendarItemId,
+        `secret-${randomUUID()}`,
+      ],
+    ),
+  );
 
   const listedDatabaseIds = readIdArray(await sendOk(member, GET("/api/databases?limit=200")), "databases");
 
@@ -1121,6 +1150,8 @@ async function seedTenant(): Promise<TenantFixture> {
     pushDeviceToken,
     exportId,
     graphSubscriptionId,
+    googleCalendarChannelId,
+    graphCalendarSubscriptionId,
     ids: [
       ...new Set([
         ...tenantRowIds,
@@ -1130,6 +1161,8 @@ async function seedTenant(): Promise<TenantFixture> {
         webSession.sessionId,
         pushSubscriptionId,
         graphSubscriptionId,
+        googleCalendarChannelId,
+        graphCalendarSubscriptionId,
       ]),
     ],
     tenantRowIds: [...new Set(tenantRowIds)],
@@ -2141,6 +2174,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       }),
     );
   },
+  "Google Calendar webhook": async () => {
+    const answer = await expectForeignLikeRandom(null, [a.googleCalendarChannelId], ([channelId = ""]) => ({
+      method: "POST",
+      path: "/api/calendar/google/webhook",
+      headers: {
+        "X-Goog-Channel-ID": channelId,
+        "X-Goog-Channel-Token": "not-the-token",
+        "X-Goog-Resource-State": "exists",
+      },
+    }));
+    expect(answer.status).toBe(404);
+  },
+  "Microsoft Graph calendar webhook": async () => {
+    await expectForeignLikeRandom(null, [a.graphCalendarSubscriptionId], ([subscriptionId]) =>
+      POST("/api/calendar/graph/webhook", {
+        value: [{ subscriptionId, clientState: "not-the-client-state", changeType: "updated" }],
+      }),
+    );
+  },
 
   // --- account -----------------------------------------------------------------------------
   logout: async () => {
@@ -2745,6 +2797,37 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await mailboxesOf(a.member)).toContain(ofA);
     expect(await mailboxesOf(b.member)).not.toContain(ofA);
   },
+  // A's mailbox answers B exactly like an unknown id and keeps its password; B's own mailbox signs in again.
+  "mailbox password replace": async () => {
+    const connect = (): Request =>
+      POST("/api/mail/mailboxes", {
+        provider: "generic",
+        address: `${randomUUID()}@isolation.example.test`,
+        password: MAILBOX_PASSWORD,
+        imapHost: "imap.isolation.example.test",
+        smtpHost: "smtp.isolation.example.test",
+      });
+    const replace = (mailboxId: string | undefined): Request =>
+      PUT(`/api/mail/mailboxes/${mailboxId}/password`, { password: REPLACED_MAILBOX_PASSWORD });
+    const passwordOf = (tenant: TenantFixture, mailboxId: string): Promise<string | null> =>
+      inTenantTransaction(tenant.tenantId, (client) =>
+        getDecryptedCredential(client, { itemId: mailboxId, actorType: "user", purpose: "test_read" }),
+      );
+    const ofA = readString(await sendOk(a.member, connect()), "id");
+    const ofB = readString(await sendOk(b.member, connect()), "id");
+
+    await leavesAUnchanged(async () => {
+      const own = await expectExcludesA(b.member, replace(ofB), [ofB], [ofA]);
+      expect(own.status).toBe(200);
+      expect(readString(own.text, "id")).toBe(ofB);
+      expectNoneOf(own.text, [REPLACED_MAILBOX_PASSWORD], "B's replaced mailbox");
+      await expectForeign404(b.member, [ofA], ([id]) => replace(id));
+    });
+    expect(await passwordOf(b, ofB)).toBe(REPLACED_MAILBOX_PASSWORD);
+    expect(await passwordOf(a, ofA)).toBe(MAILBOX_PASSWORD);
+    await sendOk(a.member, replace(ofA));
+    expect(await passwordOf(a, ofA)).toBe(REPLACED_MAILBOX_PASSWORD);
+  },
   "mailbox removal impact": async () => {
     const own = await send(b.member, GET(entryPath("mailbox removal impact", b.mailboxItemId)));
     expect(own.status).toBe(200);
@@ -2872,8 +2955,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(afterOwn).toHaveLength(1);
     expect(afterOwn[0]?.used_at).not.toBeNull();
   },
-  // The public callback reads no row, so A's state is handed on like a random value and stays
-  // unused.
+  // The public callback only reads the redirect target of an open state, and A's state names none,
+  // so it is handed on like a random value and stays unused.
   "mail oauth callback": async () => {
     const stateOfA = await startMailOauth(a.member);
     await leavesAUnchanged(async () => {
@@ -4088,6 +4171,30 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       PATCH(`/api/items/${own.id}`, { properties: { status: "declined" }, ifVersion: readString(accepted, "version") }),
     );
     expect(generic.status, generic.text).toBe(403);
+  },
+  // B's request naming A's account answers like a random id, queues nothing for A and does not debounce A's own.
+  "calendar account sync": async () => {
+    const switchOn = (tenant: TenantFixture) =>
+      runInTenant(tenant.tenantId, async () => {
+        const mailboxesDatabaseId = await databaseIdFor(tenant.tenantId, "mailboxes");
+        await createChokePoint(pool).updateItem({
+          databaseId: mailboxesDatabaseId,
+          itemId: tenant.mailboxItemId,
+          propertiesPatch: { calendarsEnabled: true },
+        });
+      });
+    await switchOn(a);
+    await switchOn(b);
+    const sync = (id: string | undefined): Request => POST(`/api/accounts/${id}/calendars/sync`, {});
+
+    await expectForeign404(b.member, [a.mailboxItemId], ([id]) => sync(id));
+    for (const [member, mailboxItemId] of [
+      [b.member, b.mailboxItemId],
+      [a.member, a.mailboxItemId],
+    ] as const) {
+      const body: unknown = JSON.parse(await sendOk(member, sync(mailboxItemId)));
+      expect(body).toEqual({ id: mailboxItemId, queued: true, runAt: expect.any(String) });
+    }
   },
   // A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
   "calendar cancellation impact": async () => {

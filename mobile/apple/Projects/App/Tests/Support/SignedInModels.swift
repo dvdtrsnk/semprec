@@ -8,7 +8,21 @@ final class SignedInModels: ScreenModelFactory {
     // MARK: - Dependencies
     private let real = SharedScreenModelFactory(sessionStore: .memory)
 
+    // MARK: - Properties
+    /// Every call of `startLiveUpdates()` (`true`) and `stopLiveUpdates()` (`false`), in order.
+    private(set) var liveUpdateCalls: [Bool] = []
+
     // MARK: - Protocol conformance
+    func startLiveUpdates() {
+        liveUpdateCalls.append(true)
+        real.startLiveUpdates()
+    }
+
+    func stopLiveUpdates() {
+        liveUpdateCalls.append(false)
+        real.stopLiveUpdates()
+    }
+
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
     func makeOverview() -> any OverviewScreenModel { real.makeOverview() }
@@ -57,6 +71,12 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeTrash() -> any TrashScreenModel { real.makeTrash() }
 
+    func makeInternetAccounts() -> any InternetAccountsScreenModel { real.makeInternetAccounts() }
+
+    func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel {
+        real.makeInternetAccount(accountId: accountId)
+    }
+
     // MARK: - Areas
     func makeArea(areaId: String) -> any AreaScreenModel { real.makeArea(areaId: areaId) }
 
@@ -69,10 +89,6 @@ final class SignedInModels: ScreenModelFactory {
     func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel { real.makeMailCompose(start: start) }
 
     func makeMailFolders() -> any MailFoldersScreenModel { real.makeMailFolders() }
-
-    func makeMailAccounts() -> any MailAccountsScreenModel { real.makeMailAccounts() }
-
-    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel { real.makeMailAccount(mailboxId: mailboxId) }
 
     func makeSempThread(
         start: SempThreadStart,

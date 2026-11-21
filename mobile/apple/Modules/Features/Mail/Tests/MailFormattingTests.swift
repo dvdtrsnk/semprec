@@ -38,9 +38,7 @@ final class MailFormattingTests: XCTestCase {
         XCTAssertEqual(MailFormatting.listTime("nonsense", now: now, calendar: calendar, locale: locale), "")
     }
 
-    func testMessageAndSyncTimesNeedARealDate() {
-        XCTAssertNotNil(MailFormatting.syncTime("2026-10-19T08:12:00Z", calendar: calendar, locale: locale))
-        XCTAssertNil(MailFormatting.syncTime(nil, calendar: calendar, locale: locale))
+    func testMessageTimesNeedARealDate() {
         XCTAssertEqual(MailFormatting.messageTime(nil, calendar: calendar, locale: locale), "")
         XCTAssertFalse(MailFormatting.messageTime("2026-10-12T10:00:00Z", calendar: calendar, locale: locale).isEmpty)
     }

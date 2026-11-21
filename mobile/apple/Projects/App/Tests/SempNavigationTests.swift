@@ -141,7 +141,7 @@ final class SempNavigationTests: XCTestCase {
     }
 
     func testOnlyTheDestinationsPresentedAsSheetsGetTheirOwnBubble() {
-        XCTAssertTrue(AppDestination.profile.presentsAsSheet)
+        XCTAssertTrue(AppDestination.profile().presentsAsSheet)
         XCTAssertTrue(AppDestination.calendars.presentsAsSheet)
         XCTAssertTrue(AppDestination.newItem(day: "2026-10-21").presentsAsSheet)
         XCTAssertFalse(AppDestination.sempProjectAgent(projectId: "p").presentsAsSheet)

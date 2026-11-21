@@ -14,8 +14,12 @@ import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import {
+  claimMailSyncPass,
   getMailAccountSyncState,
   classifyUnclassifiedMailSyncErrors,
+  releaseMailSyncPass,
+  renewMailSyncPass,
+  requestMailSyncRerun,
   listAccountsDueForSync,
   recordConnectionLimitBackoff,
   recordSyncError,
@@ -62,6 +66,12 @@ const MAILBOX_SYNC_STATUS_ALLOWED_KEYS = ["syncStatus"] as const;
 
 /** How long a pass waits for a mailbox another pass or a removal holds before it is skipped. */
 const MAILBOX_SYNC_PASS_WAIT_MS = 5_000;
+
+/**
+ * How long a pass's lease outlives its last transaction. The pass renews it in each of its transactions; a holder that
+ * died blocks the mailbox's passes for at most this long.
+ */
+const MAIL_SYNC_PASS_LEASE_MS = 5 * 60 * 1000;
 
 function mailSyncFailureKind(error: unknown): "connectionLimit" | "reauthorizationRequired" | "unexpected" {
   if (error instanceof MailConnectionLimitError) return "connectionLimit";
@@ -136,7 +146,6 @@ function trackWrittenKeys(storage: BlobStorageWriter): { storage: BlobStorageWri
   };
 }
 
-/** One reconcile pass in one DB transaction per account: fine for a single-user mailbox, not a bulk-sync design. */
 export interface SyncMailAccountHelpers {
   job: { id: string };
 }
@@ -155,6 +164,9 @@ export async function handleSyncMailAccountTask(
   imapConnectionLimiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
 ): Promise<void> {
   const { storage: trackedStorage, writtenKeys } = trackWrittenKeys(storage);
+  // This run's pass lease (`claimMailSyncPass`); `leased` once it holds it, so every way out releases it.
+  const passToken = randomUUID();
+  let leased = false;
   // Read in the prologue so the catch block can compute a provider-aware backoff after that transaction rolled back.
   let mailboxProvider: string | undefined;
   // A pass writes the Mailboxes item only when its outcome differs, so identical passes cause no item update.
@@ -168,16 +180,21 @@ export async function handleSyncMailAccountTask(
     );
   };
   /**
-   * Takes the mailbox's sync guard, which a removal takes first, so no removal runs until this transaction ends, then
-   * re-reads the mailbox. `false` (trashed, gone, or no sync state row) means the pass does nothing. The generic trash
-   * takes no guard and can still happen during a pass. A guard still held after `MAILBOX_SYNC_PASS_WAIT_MS` throws
-   * `MailboxSyncBusyError`: another pass or a removal of this mailbox is running, and the pass is skipped.
+   * Takes the mailbox's sync guard, which a removal and the Mail switch take first, so neither runs until this
+   * transaction ends, then re-reads the mailbox and renews the pass lease. `false` (trashed, gone, no sync state row,
+   * Mail switched off, or another pass holds the lease now) means the pass does nothing more. An IMAP pass runs it
+   * first in each of its transactions, so a removal or the Mail switch can run between them and ends the pass at its
+   * next one. The generic trash takes no guard and can still happen during a pass. A guard still held after
+   * `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError`: a removal or the Mail switch of this mailbox, or a pass
+   * whose lease expired, is running, and the pass is skipped.
    */
   const enterSyncPass = async (client: PoolClient): Promise<boolean> => {
     await lockMailboxSync(client, payload.mailboxItemId, { maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS });
     const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, payload.mailboxItemId);
     if (!mailbox || mailbox.deletedAt) return false;
-    return (await getMailAccountSyncState(client, payload.mailboxItemId)) !== null;
+    const current = await getMailAccountSyncState(client, payload.mailboxItemId);
+    if (current === null || current.syncPausedAt !== null) return false;
+    return renewMailSyncPass(client, payload.mailboxItemId, passToken, MAIL_SYNC_PASS_LEASE_MS);
   };
   try {
     // A short read-only transaction of its own: stable id lookups need no atomicity with the sync's writes. Read first
@@ -208,6 +225,34 @@ export async function handleSyncMailAccountTask(
     const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
     if (!state)
       throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
+    // Mail is switched off: nothing is read from the provider and nothing is recorded.
+    if (state.syncPausedAt !== null) {
+      logger.info({ mailboxItemId: payload.mailboxItemId }, "Mail sync skipped: Mail is switched off for the account");
+      return;
+    }
+
+    // One pass per mailbox at a time. A trigger while a pass runs (IDLE, push, write-back, sweep) only asks that pass
+    // for one more run, which its release enqueues; nothing of the provider is touched here. A Gmail or Graph pass
+    // holds the sync state row for its whole transaction: a claim still waiting after `MAILBOX_SYNC_PASS_WAIT_MS`
+    // throws `MailboxSyncBusyError` and the trigger is skipped like one that finds the mailbox guard held.
+    const claim = await withTransaction(pool, (client) =>
+      claimMailSyncPass(client, payload.mailboxItemId, passToken, MAIL_SYNC_PASS_LEASE_MS, {
+        maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS,
+      }),
+    );
+    // The row was there a moment ago: a removal deleted it meanwhile, and there is nothing to sync.
+    if (claim === "missing") {
+      logger.info({ mailboxItemId: payload.mailboxItemId }, "Mail sync skipped: the sync state is gone");
+      return;
+    }
+    if (claim === "busy") {
+      logger.info(
+        { mailboxItemId: payload.mailboxItemId },
+        "Mail sync coalesced: the running pass of the mailbox runs once more",
+      );
+      return;
+    }
+    leased = true;
 
     // Uses `pool`, not a transaction: the access-log insert commits on its own, so a decrypt failure stays logged.
     // Inside the `try` so a credential failure is recorded like any sync failure and the mailbox does not stay `ok`.
@@ -222,13 +267,10 @@ export async function handleSyncMailAccountTask(
       actorType: "sync_worker",
       purpose: syncPurpose[state.syncMode],
     });
+    // Only the user can store a credential again (a sign-in or a password entered again), so a missing one fails the
+    // pass as a reauthorization case, whatever the status was.
     if (!credential) {
-      const missingCredential = `Mailbox ${payload.mailboxItemId} has no stored credential`;
-      // A removal writes `needsReauthorization` when it deletes the credential, and a restored mailbox returns with
-      // that status and no credential: the pass fails as a reauthorization case so the status is kept. With any other
-      // status a missing credential is an ordinary failure.
-      if (previousSyncStatus === "needsReauthorization") throw new MailReauthorizationRequiredError(missingCredential);
-      throw new Error(missingCredential);
+      throw new MailReauthorizationRequiredError(`Mailbox ${payload.mailboxItemId} has no stored credential`);
     }
 
     logger.info({ mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode }, "Mail sync starting");
@@ -275,28 +317,33 @@ export async function handleSyncMailAccountTask(
           ),
         );
       }
-      // The limiter waits outside any transaction; a pooled connection is checked out only once a slot is granted.
-      ran = await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, () =>
-        withTransaction(pool, async (client) => {
-          // Opened before the guard: a mailbox removed while this pass waited still costs one connection, which the
-          // `finally` closes.
-          const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
-          try {
-            if (!(await enterSyncPass(client))) return false;
-            const { complete } = await reconcileImapAccount(client, imap, shared);
-            // Committed with this batch, so the backfill continues as soon as the guard is free.
-            if (!complete) await enqueueMailAccountSync(client, payload.mailboxItemId);
-          } finally {
-            // close() never rejects, so the pass's own error still propagates to the transaction.
-            await imap.close();
-          }
-          // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and resolves
-          // the Semp problem in the same transaction.
-          await writeSyncStatus(client, "ok");
-          await resolveMailboxProblem(client, payload.mailboxItemId);
-          return true;
-        }),
-      );
+      // The limiter waits outside any transaction; the pass checks a pooled connection out only for each of its short
+      // transactions. Attachment bytes of a failed batch are removed by the pass itself, so it gets the untracked
+      // storage: a later failure must not delete the bytes of a batch that committed.
+      ran = await imapConnectionLimiter.run(payload.mailboxItemId, connectionLimit, async () => {
+        const imap = await adapters.createImapClient!(payload.mailboxItemId, credential);
+        try {
+          const result = await reconcileImapAccount(pool, imap, {
+            ...shared,
+            storage,
+            pass: {
+              enter: enterSyncPass,
+              finish: async (client, { complete }) => {
+                // The release that follows this pass enqueues the backfill's next pass.
+                if (!complete) await requestMailSyncRerun(client, payload.mailboxItemId, passToken);
+                // A completed pass, even one that ingested nothing, clears a prior 'error'/'needsReauthorization' and
+                // resolves the Semp problem in the same transaction.
+                await writeSyncStatus(client, "ok");
+                await resolveMailboxProblem(client, payload.mailboxItemId);
+              },
+            },
+          });
+          return result.ran;
+        } finally {
+          // close() never rejects, so the pass's own error still propagates.
+          await imap.close();
+        }
+      });
     } else if (state.syncMode === "gmail_api") {
       if (!adapters.createGmailClient) throw new Error("No Gmail adapter configured for this composition root");
       const gmail = adapters.createGmailClient(payload.mailboxItemId, credential);
@@ -323,7 +370,7 @@ export async function handleSyncMailAccountTask(
     if (!ran) {
       logger.info(
         { mailboxItemId: payload.mailboxItemId, syncMode: state.syncMode },
-        "Mail sync skipped: the mailbox is in the trash or has no sync state",
+        "Mail sync skipped: the mailbox is in the trash, has no sync state, has Mail switched off or lost its pass lease",
       );
       return;
     }
@@ -340,14 +387,23 @@ export async function handleSyncMailAccountTask(
       return;
     }
 
-    // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
-    const message = err instanceof Error ? err.message : String(err);
     // Provider errors can include complete IMAP/OAuth authentication exchanges: log stable identifiers and a fixed
     // classification, never the raw error or message.
-    logger.error(
-      { mailboxItemId: payload.mailboxItemId, mailboxProvider, failureKind: mailSyncFailureKind(err) },
-      "Mail sync failed",
-    );
+    const failure = { mailboxItemId: payload.mailboxItemId, mailboxProvider, failureKind: mailSyncFailureKind(err) };
+
+    // Only the lease holder records the mailbox's outcome. A job that failed before it held the lease may run beside a
+    // pass that does, whose outcome it would overwrite; its failure goes to graphile-worker's retry instead.
+    if (!leased) {
+      logger.error(
+        { ...failure, errorName: err instanceof Error ? err.name : typeof err },
+        "Mail sync failed before holding the pass lease",
+      );
+      throw err;
+    }
+
+    // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(failure, "Mail sync failed");
 
     if (err instanceof MailConnectionLimitError) {
       // Too many IMAP sessions for this account is contention, not an account failure, but mail is not syncing, so
@@ -409,5 +465,26 @@ export async function handleSyncMailAccountTask(
       }
     });
     throw err;
+  } finally {
+    if (leased) await releasePassLease(pool, payload.mailboxItemId, passToken);
+  }
+}
+
+/**
+ * Releases the lease and, when a trigger arrived while it was held, enqueues the one follow-up pass in the same
+ * transaction. A failure here is logged, not thrown, so it never replaces the pass's own outcome: the lease then
+ * expires after `MAIL_SYNC_PASS_LEASE_MS`, and a requested rerun waits for the next trigger or the sweep.
+ */
+async function releasePassLease(pool: Pool, mailboxItemId: string, passToken: string): Promise<void> {
+  try {
+    await withTransaction(pool, async (client) => {
+      if (await releaseMailSyncPass(client, mailboxItemId, passToken))
+        await enqueueMailAccountSync(client, mailboxItemId);
+    });
+  } catch (error) {
+    logger.error(
+      { mailboxItemId, errorName: error instanceof Error ? error.name : typeof error },
+      "Releasing the mail sync pass lease failed",
+    );
   }
 }

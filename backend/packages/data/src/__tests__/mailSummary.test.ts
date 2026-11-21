@@ -14,7 +14,7 @@ import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { resolveMailModuleIds, type MailModuleIds } from "../mail/mailModuleIds.js";
-import { createMailSummaryRouteHandler } from "../mail/mailSummary.js";
+import { countUnreadInboxThreads, createMailSummaryRouteHandler, getMailAccountsSummary } from "../mail/mailSummary.js";
 import { createMailThreadListRouteHandler } from "../mail/mailThreadRoutes.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -136,10 +136,23 @@ const summaryBody = z
   })
   .strict();
 
+/** Also checks that the Overview's unread count and the account summary's mailbox figures agree with the route. */
 async function summary(tenantId: string): Promise<z.infer<typeof summaryBody>> {
   const answer = await runInTenant(tenantId, () => createMailSummaryRouteHandler(runtime)());
   expect(answer.status).toBe(200);
-  return summaryBody.parse(answer.body);
+  const body = summaryBody.parse(answer.body);
+  const parts = await runInTenant(tenantId, () =>
+    withTransaction(runtime, async (client) => ({
+      unreadInbox: await countUnreadInboxThreads(client),
+      ...(await getMailAccountsSummary(client)),
+    })),
+  );
+  expect(parts).toEqual({
+    unreadInbox: body.unreadInbox,
+    accounts: body.accounts,
+    accountsNeedingReauth: body.accountsNeedingReauth,
+  });
+  return body;
 }
 
 const listPage = z.object({
@@ -162,7 +175,7 @@ async function listedThreadIds(tenantId: string, query: string): Promise<string[
 
 /**
  * The count tests' scenario: one mailbox whose own address is `OWN_ADDRESS`, and threads that differ in
- * exactly the properties the inbox, unread and flagged predicates read. Three threads are unread in the
+ * exactly the properties the inbox, unread and flagged predicates read. Four threads are unread in the
  * inbox and two are flagged outside Junk.
  */
 async function seedThreads(tenantId: string, prefix: string): Promise<string> {
@@ -191,7 +204,7 @@ async function seedThreads(tenantId: string, prefix: string): Promise<string> {
   await send("unread-flagged", inbox, { flags: ["\\Flagged"] });
   await send("archived-flagged", archive, { flags: ["\\Flagged"] });
   await send("junk-flagged", junk, { flags: ["\\Flagged"] });
-  // The user's own message is never unread for the user.
+  // Mail to oneself delivered to the Inbox is received like any other: unread until it is read.
   await send("own", inbox, { from: OWN_ADDRESS });
   // Two messages of one thread, one of them unread: one unread thread, not two.
   await send("thread-first", inbox, { flags: ["\\Seen"] });
@@ -249,7 +262,7 @@ describe("GET /api/mail/summary (issue gh-1688)", () => {
     expect(new Set(flagged).size).toBe(flagged.length);
     expect(counts.unreadInbox).toBe(unread.length);
     expect(counts.flagged).toBe(flagged.length);
-    expect({ unreadInbox: counts.unreadInbox, flagged: counts.flagged }).toEqual({ unreadInbox: 3, flagged: 2 });
+    expect({ unreadInbox: counts.unreadInbox, flagged: counts.flagged }).toEqual({ unreadInbox: 4, flagged: 2 });
   });
 
   it("answers the counts, sempDrafts 0, the accounts and the ones that need a new sign-in", async () => {
@@ -264,7 +277,7 @@ describe("GET /api/mail/summary (issue gh-1688)", () => {
     expect(answer).toEqual({
       status: 200,
       body: {
-        unreadInbox: 3,
+        unreadInbox: 4,
         flagged: 2,
         sempDrafts: 0,
         accounts: 4,
@@ -295,7 +308,7 @@ describe("GET /api/mail/summary (issue gh-1688)", () => {
   it("counts nothing of another tenant's mail and mailboxes", async () => {
     await seedThreads(tenant, "own");
     const before = await summary(tenant);
-    expect(before).toMatchObject({ unreadInbox: 3, flagged: 2, accounts: 1, accountsNeedingReauth: [] });
+    expect(before).toMatchObject({ unreadInbox: 4, flagged: 2, accounts: 1, accountsNeedingReauth: [] });
 
     const other = await mailFixture(foreign);
     const otherBox = await other.mailbox("Foreign", "needsReauthorization");

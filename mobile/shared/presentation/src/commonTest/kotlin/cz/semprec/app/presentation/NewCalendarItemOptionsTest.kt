@@ -18,8 +18,13 @@ class NewCalendarItemOptionsTest : MainDispatcherTest() {
     private val repository = FakeCalendarRepository()
 
     private fun TestScope.loaded(): NewCalendarItemViewModel =
-        CalendarViewModelFactory(repository, FakeCatalogRepository(), FakeInvitationRepository(), repository.changes)
-            .newCalendarItemViewModel("2026-10-17")
+        CalendarViewModelFactory(
+            repository,
+            FakeCatalogRepository(),
+            FakeInvitationRepository(),
+            repository.changes,
+            ScriptedInternetAccountRepository(),
+        ).newCalendarItemViewModel("2026-10-17")
             .also { runCurrent() }
 
     private fun create(

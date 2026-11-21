@@ -29,6 +29,8 @@ import { createDispatcher } from "../app.js";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createMailLiveSyncControl } from "../mailLiveSyncControl.js";
 import { logger } from "../logger.js";
+import { createMailOauthCallbackRequestListener } from "../mailOauthCallbackHandler.js";
+import { createClientIpThrottle } from "../clientIpThrottle.js";
 
 /**
  * Mail OAuth through the production composition: the real dispatcher, the manifest routes behind the REST adapter
@@ -192,14 +194,25 @@ async function usedAt(state: string): Promise<Date | null | undefined> {
   return rows[0]?.used_at;
 }
 
-async function statementsDuring(fn: () => Promise<void>): Promise<number> {
+/** The SQL text of every statement any client sends while `fn` runs. */
+async function statementsDuring(fn: () => Promise<void>): Promise<string[]> {
   const spy = vi.spyOn(pg.Client.prototype, "query");
   try {
     await fn();
-    return spy.mock.calls.length;
+    return spy.mock.calls.map(([query]) =>
+      typeof query === "string" ? query : z.object({ text: z.string() }).parse(query).text,
+    );
   } finally {
     spy.mockRestore();
   }
+}
+
+/** The statements the callback's state lookup may send: the routing read, the target read and their transactions. */
+const CALLBACK_LOOKUP =
+  /^(BEGIN|COMMIT|SELECT set_config\(|SELECT tenant_id FROM route_mail_oauth_state\(|SELECT redirect_target FROM mail_oauth_states)/;
+
+function expectOnlyStateLookups(statements: string[]): void {
+  expect(statements.filter((statement) => !CALLBACK_LOOKUP.test(statement.trim()))).toEqual([]);
 }
 
 beforeAll(async () => {
@@ -240,7 +253,7 @@ afterAll(async () => {
 });
 
 describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
-  it("is the redirect target the start route names, and hands the code and state on without touching the database", async () => {
+  it("is the redirect target the start route names, and hands the code and state on, only reading the state", async () => {
     const authorizeUrl = await start("gmail");
     const state = stateOf(authorizeUrl);
     const redirect = new URL(authorizeUrl.searchParams.get("redirect_uri") ?? "");
@@ -259,11 +272,12 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
     expect(answer?.headers.get("referrer-policy")).toBe("no-referrer");
     expect(answer?.headers.get("set-cookie")).toBeNull();
     // Neither a session lookup nor a write.
-    expect(statements).toBe(0);
+    expectOnlyStateLookups(statements);
+    expect(statements.some((statement) => statement.includes("route_mail_oauth_state"))).toBe(true);
     expect(await usedAt(state)).toBeNull();
   });
 
-  it("answers the same with a session presented as without one, and still sends no statement", async () => {
+  it("answers the same with a session presented as without one, and still only looks the state up", async () => {
     const path = "/api/mail/oauth/callback?state=some-state&code=some-code";
 
     const anonymous = await request("GET", path);
@@ -275,7 +289,7 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
     expect(anonymous.status).toBe(200);
     expect(signedIn?.status).toBe(200);
     expect(signedIn?.body).toEqual(anonymous.body);
-    expect(statements).toBe(0);
+    expectOnlyStateLookups(statements);
   });
 
   it("hands on the provider's error, such as a cancelled consent, instead of a code", async () => {
@@ -286,7 +300,7 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
 
     expect(answer?.status).toBe(200);
     expect(answer?.body).toEqual({ state: "some-state", providerError: "access_denied" });
-    expect(statements).toBe(0);
+    expectOnlyStateLookups(statements);
   });
 
   it.each([
@@ -306,7 +320,7 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
     expect(answer?.status).toBe(400);
     expect(answer?.body).toEqual({ error: { code: "validation_failed" } });
     expect(answer?.headers.get("cache-control")).toBe("no-store");
-    expect(statements).toBe(0);
+    expect(statements).toEqual([]);
   });
 
   it("accepts a state and a code exactly at their length caps", async () => {
@@ -324,6 +338,104 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
 
     expect((await request("POST", path, {})).status).toBe(401);
     expect((await request("POST", path, {}, bearer)).status).toBe(404);
+  });
+
+  /** The callback as the browser sheet loads it, without following a redirect. */
+  async function callback(query: string): Promise<{ status: number; location: string | null; headers: Headers }> {
+    const res = await fetch(`${baseUrl}/api/mail/oauth/callback?${query}`, { redirect: "manual" });
+    await res.arrayBuffer();
+    return { status: res.status, location: res.headers.get("location"), headers: res.headers };
+  }
+
+  async function appState(): Promise<string> {
+    const answer = await request(
+      "POST",
+      "/api/mail/mailboxes/oauth/start",
+      { provider: "gmail", services: ["mail", "calendars"], redirectTarget: "app" },
+      bearer,
+    );
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    return stateOf(new URL(startBody.parse(answer.body).authorizeUrl));
+  }
+
+  it("sends a state started with redirectTarget app to semprec://oauth with the state and code, and the state still completes", async () => {
+    const state = await appState();
+    const code = "4/0Ab-code_from.google";
+
+    // Whatever else the request carries does not reach the redirect.
+    const answer = await callback(
+      new URLSearchParams({ state, code, redirect_uri: "https://evil.example/", redirectTarget: "web" }).toString(),
+    );
+
+    expect(answer.status).toBe(302);
+    expect(answer.location).toBe(`semprec://oauth?${new URLSearchParams({ state, code }).toString()}`);
+    expect(answer.headers.get("cache-control")).toBe("no-store");
+    expect(answer.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(answer.headers.get("set-cookie")).toBeNull();
+    expect(await usedAt(state)).toBeNull();
+
+    providerRoutes = googleAccount(`${randomUUID()}@gmail.com`);
+    const completed = await complete(state, code);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(201);
+    // A used state names no redirect any more: the echo is JSON again.
+    const again = await request("GET", `/api/mail/oauth/callback?${new URLSearchParams({ state, code }).toString()}`);
+    expect(again).toMatchObject({ status: 200, body: { state, code } });
+  });
+
+  it("sends the provider's error of an app state to semprec://oauth too", async () => {
+    const state = await appState();
+
+    const answer = await callback(new URLSearchParams({ state, error: "access_denied" }).toString());
+
+    expect(answer.status).toBe(302);
+    expect(answer.location).toBe(
+      `semprec://oauth?${new URLSearchParams({ state, error: "access_denied" }).toString()}`,
+    );
+  });
+
+  it("answers a 500 and logs only the failure's name and code when the state lookup fails", async () => {
+    const errors = vi.spyOn(logger, "error");
+    // Nothing listens on port 1, so the lookup's connection is refused.
+    const unreachable = new pg.Pool({ connectionString: "postgres://semprec:SENTINEL-DB-PASSWORD@127.0.0.1:1/none" });
+    const listening = createServer(createMailOauthCallbackRequestListener(unreachable, { trustProxy: false }));
+    await new Promise<void>((resolve) => listening.listen(0, resolve));
+    try {
+      const res = await fetch(`${urlOf(listening)}/api/mail/oauth/callback?state=some-state&code=some-code`);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: { code: "internal_error" } });
+      expect(errors.mock.calls).toEqual([
+        [{ errorName: "Error", errorCode: "ECONNREFUSED" }, "Mail OAuth callback failed"],
+      ]);
+    } finally {
+      await new Promise<void>((resolve) => listening.close(() => resolve()));
+      await unreachable.end();
+    }
+  });
+
+  it("answers 429 rate_limited with Retry-After before the state lookup once an address is over its budget", async () => {
+    const errors = vi.spyOn(logger, "error");
+    // Nothing listens on port 1: a request that reaches the state lookup fails with a 500.
+    const unreachable = new pg.Pool({ connectionString: "postgres://semprec:none@127.0.0.1:1/none" });
+    const throttle = createClientIpThrottle({ limits: { mailOauthCallback: { maxEvents: 1, windowSeconds: 60 } } });
+    const listening = createServer(
+      createMailOauthCallbackRequestListener(unreachable, { trustProxy: false, clientIpThrottle: throttle }),
+    );
+    await new Promise<void>((resolve) => listening.listen(0, resolve));
+    try {
+      const url = `${urlOf(listening)}/api/mail/oauth/callback?state=some-state&code=some-code`;
+      expect((await fetch(url)).status).toBe(500);
+
+      const refused = await fetch(url);
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+      expect(refused.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(await refused.json()).toEqual({ error: { code: "rate_limited" } });
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve) => listening.close(() => resolve()));
+      await unreachable.end();
+    }
   });
 });
 

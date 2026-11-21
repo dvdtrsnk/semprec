@@ -40,5 +40,5 @@ read its error; nothing is released unless the push itself succeeded.
 
 Pushing a tag does not deploy anything by itself. A tag is deployed by hand with
 `deploy/deploy.sh <tag>` ([deploy/README.md](../../deploy/README.md#deploying-a-release-issue-190)).
-Rolling back to the previous release is `deploy/deploy.sh --rollback <tag>`, and the rules that
-keep it safe are in [migrations.md](migrations.md).
+Rolling back to the previous release is `deploy/deploy.sh --rollback <tag>`; when it is safe is in
+[migrations.md](migrations.md#rollback).

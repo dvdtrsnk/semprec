@@ -78,6 +78,7 @@ export async function readSempResolvedRecent(client: PoolClient, catalogs: Modul
 
   const itemIds = [
     ...ids(rows, "mailSyncError", (row) => row.source_id),
+    ...ids(rows, "calendarSyncError", (row) => row.source_id),
     ...ids(rows, "transcriptionFailed", (row) => row.source_id),
     ...ids(rows, "guidanceDrift", (row) => row.project_item_id),
   ];
@@ -150,6 +151,7 @@ export async function readSempResolvedRecent(client: PoolClient, catalogs: Modul
   const paramsOf = (row: z.infer<typeof resolvedRowSchema>): ResolutionTitleParams => {
     switch (row.kind) {
       case "mailSyncError":
+      case "calendarSyncError":
         return { mailbox: itemName(row.source_id) };
       case "transcriptionFailed":
         return { name: itemName(row.source_id) };

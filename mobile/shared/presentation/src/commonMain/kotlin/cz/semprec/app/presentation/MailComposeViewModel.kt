@@ -63,35 +63,35 @@ class MailComposeViewModel internal constructor(
         update { MailComposeState() }
         loadJob = viewModelScope.launch {
             val accounts = mailAttempt { mailboxes.mailboxes() }
-            val prepared: RepositoryResult<MailDraft?>? = when (accounts) {
+            val prepared: MailWrite<MailDraft?> = when (accounts) {
                 is RepositoryResult.Content -> prepare()
-                is RepositoryResult.Failure -> accounts
-                null -> null
+                is RepositoryResult.Failure -> MailWrite.Failed(accounts.kind)
+                null -> MailWrite.Failed(null)
             }
             ensureActive()
             val senders = (accounts as? RepositoryResult.Content)?.value.orEmpty().toSenders()
             when (prepared) {
-                is RepositoryResult.Content -> {
+                is MailWrite.Done -> {
                     draft = prepared.value
                     update { it.ready(senders, prepared.value) }
                 }
-                is RepositoryResult.Failure ->
-                    update { it.copy(phase = MailComposePhase.ERROR, failure = prepared.kind) }
-                null -> update { it.copy(phase = MailComposePhase.ERROR, failure = null) }
+                is MailWrite.Failed -> update {
+                    it.copy(phase = MailComposePhase.ERROR, failure = prepared.failure, refusal = prepared.refusal)
+                }
             }
         }
     }
 
     /** The draft the screen starts from, or none for a blank message. */
-    private suspend fun prepare(): RepositoryResult<MailDraft?>? = when (start) {
-        MailComposeStart.New -> RepositoryResult.Content(null)
+    private suspend fun prepare(): MailWrite<MailDraft?> = when (start) {
+        MailComposeStart.New -> MailWrite.Done(null)
         is MailComposeStart.Reply -> {
             val prefill = MailPrefill(start.mailboxId, start.mode.toDraftMode(), start.sourceEmailId, body = "")
-            val created = mailAttempt { drafts.createPrefilled(prefill) }
-            if (created is RepositoryResult.Content) madeHere = true
+            val created = mailWrite { drafts.createPrefilled(prefill) }
+            if (created is MailWrite.Done) madeHere = true
             created
         }
-        is MailComposeStart.Draft -> mailAttempt { drafts.read(start.draftId) }
+        is MailComposeStart.Draft -> mailAttempt { drafts.read(start.draftId) }.toWrite()
     }
 
     private fun searchContacts(text: String) {
@@ -134,7 +134,7 @@ class MailComposeViewModel internal constructor(
         val current = state.value
         val sender = current.senders.firstOrNull { it.mailboxId == current.senderId }
         if (sender == null || current.to.isEmpty() || current.sendPhase == MailSendPhase.SENDING) return
-        update { it.copy(sendPhase = MailSendPhase.SENDING, sendFailure = null) }
+        update { it.copy(sendPhase = MailSendPhase.SENDING, sendFailure = null, sendRefusal = null) }
         val fields = MailDraftFields(
             mailboxId = sender.mailboxId,
             from = sender.address,
@@ -146,13 +146,12 @@ class MailComposeViewModel internal constructor(
         )
         viewModelScope.launch {
             val saved = save(fields)
-            val sent: RepositoryResult<MailSentDraft>? = when (saved) {
-                is RepositoryResult.Content -> {
+            val sent: MailWrite<MailSentDraft> = when (saved) {
+                is MailWrite.Done -> {
                     draft = saved.value
-                    mailAttempt { drafts.send(saved.value.id) }
+                    mailWrite { drafts.send(saved.value.id) }
                 }
-                is RepositoryResult.Failure -> saved
-                null -> null
+                is MailWrite.Failed -> saved
             }
             ensureActive()
             afterSend(sent)
@@ -160,22 +159,23 @@ class MailComposeViewModel internal constructor(
     }
 
     /** Updates the draft this screen has, or makes one of a blank message. */
-    private suspend fun save(fields: MailDraftFields): RepositoryResult<MailDraft>? {
+    private suspend fun save(fields: MailDraftFields): MailWrite<MailDraft> {
         val existing = draft
-        if (existing != null) return mailAttempt { drafts.update(existing.id, existing.version, fields) }
-        val created = mailAttempt { drafts.create(fields, threadId = null) }
-        if (created is RepositoryResult.Content) madeHere = true
+        if (existing != null) return mailWrite { drafts.update(existing.id, existing.version, fields) }
+        val created = mailWrite { drafts.create(fields, threadId = null) }
+        if (created is MailWrite.Done) madeHere = true
         return created
     }
 
-    private fun afterSend(sent: RepositoryResult<MailSentDraft>?) {
+    private fun afterSend(sent: MailWrite<MailSentDraft>) {
         when (sent) {
-            is RepositoryResult.Content -> {
+            is MailWrite.Done -> {
                 draft = null
                 update { it.copy(sendPhase = MailSendPhase.SENT, sentFrom = sent.value.mailboxName) }
             }
-            is RepositoryResult.Failure -> update { it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = sent.kind) }
-            null -> update { it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = null) }
+            is MailWrite.Failed -> update {
+                it.copy(sendPhase = MailSendPhase.FAILED, sendFailure = sent.failure, sendRefusal = sent.refusal)
+            }
         }
     }
 
@@ -220,6 +220,7 @@ private fun MailComposeState.ready(senders: List<MailSender>, draft: MailDraft?)
     return copy(
         phase = MailComposePhase.EDITING,
         failure = null,
+        refusal = null,
         senders = known,
         senderId = draft?.mailboxId ?: known.firstOrNull()?.mailboxId,
         to = draft?.to.orEmpty().map { MailRecipient(it.name, it.address) },

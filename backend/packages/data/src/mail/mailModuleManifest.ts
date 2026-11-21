@@ -1,5 +1,8 @@
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mailboxRouteHandlers.js";
-export { createMailboxPasswordConnectRouteHandler } from "./mailboxPasswordRouteHandlers.js";
+export {
+  createMailboxPasswordConnectRouteHandler,
+  createMailboxPasswordReplaceRouteHandler,
+} from "./mailboxPasswordRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export {
   createMailThreadArchiveRouteHandler,
@@ -229,6 +232,15 @@ export const manifest: ModuleManifest = {
       path: "/api/mail/mailboxes",
       handlerExport: "createMailboxPasswordConnectRouteHandler",
       // Creates the Mailboxes item, sealed password, server settings, sync state and first sync job in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailboxPasswordReplace",
+      method: "PUT",
+      path: "/api/mail/mailboxes/:id/password",
+      handlerExport: "createMailboxPasswordReplaceRouteHandler",
+      // Replaces the sealed password and server settings, clears the mail and calendar reauthorization state and
+      // queues both syncs in one transaction.
       justification: "transactional-semantics",
     },
     {

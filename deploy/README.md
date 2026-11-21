@@ -89,9 +89,11 @@ In order, it:
    writes `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
    `/opt/semprec/shared/env/migrate.env` — and nothing else — and connects with its
-   `SEMPREC_MIGRATE_DATABASE_URL`, then runs the
-   seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it creates the
-   system databases on a fresh install and is a no-op once they exist (see
+   `SEMPREC_MIGRATE_DATABASE_URL` and applies the baseline schema to the database, which the
+   operator wipes before every deploy (`deploy.sh` never drops data; see
+   [`docs/operations/migrations.md`](../docs/operations/migrations.md)), then runs the
+   seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it provisions
+   tenant zero's system databases and leaves an already provisioned tenant as it is (see
    [`docs/operations/seeding.md`](../docs/operations/seeding.md)), and then runs the tenancy
    verification CLI (`verifyTenancyCli.js`) the same way, under the same URL — it checks the
    tenancy invariants of the migrated database's catalog (issue #1085) and refuses the release,
@@ -121,9 +123,10 @@ rerun first (see "Bootstrap secrets"). `deploy.test.sh` is the hermetic behavior
 sudo deploy/deploy.sh --rollback v1.2.2
 ```
 
-It builds nothing, fetches nothing and runs no migration — the schema stays as the newest release
-left it, which [the migration rules](../docs/operations/migrations.md) keep compatible with the
-code one release back. It refuses, before changing anything, unless:
+It builds nothing, fetches nothing and runs no migration — the database stays as the newest release
+left it. Nothing keeps that schema compatible with older code, so a rollback is safe only when both
+releases have the same baseline ([migrations](../docs/operations/migrations.md#rollback)). It
+refuses, before changing anything, unless:
 
 - `releases/<tag>` is a complete release directory whose `release.env` declares
   `APP_VERSION=<tag>`;

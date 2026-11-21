@@ -14,6 +14,7 @@ struct MediaItemContent: View {
 
     // MARK: - State
     @State private var titleDraft = ""
+    @FocusState private var isEditingTitle: Bool
 
     // MARK: - Body
     var body: some View {
@@ -61,7 +62,8 @@ private extension MediaItemContent {
             VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                 TextField(text: $titleDraft, axis: .vertical) { Text("item.title.placeholder", bundle: .module) }
                     .font(.title2.weight(.semibold))
-                    .onSubmit { send(.edit(.rename(titleDraft))) }
+                    .focused($isEditingTitle)
+                    .singleLineTitle($titleDraft) { renameTitle() }
                     .accessibilityIdentifier(CollectionsIdentifiers.itemTitle)
                 if let meta {
                     Text(meta).font(.subheadline).foregroundStyle(Theme.Colors.secondaryText)
@@ -72,6 +74,12 @@ private extension MediaItemContent {
             }
         }
         .padding(.vertical, Theme.Spacing.small)
+    }
+
+    /// Return in the title ends its editing and renames the item.
+    func renameTitle() {
+        isEditingTitle = false
+        send(.edit(.rename(titleDraft)))
     }
 
     func statusPicker(_ status: FieldView) -> some View {

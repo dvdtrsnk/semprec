@@ -1,7 +1,7 @@
 import type { ItemPurgeHook } from "../chokePoint/hooks.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { deleteMailFolderSyncStatesOfFoldersWithoutMailbox } from "./mailFolderSyncStateStore.js";
-import { deleteMailMessageMetaOfPurgedItem } from "./mailMessageMetaStore.js";
+import { deleteMailMessageMetaOfRemovedItem } from "./mailMessageMetaStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
 /**
@@ -17,7 +17,7 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 export const mailItemPurgeHook: ItemPurgeHook = async ({ client, database, item }) => {
   if (!database.system) return;
   if (database.ownerModuleId === EMAILS_MODULE_ID) {
-    await deleteMailMessageMetaOfPurgedItem(client, item.id);
+    await deleteMailMessageMetaOfRemovedItem(client, item.id);
   } else if (database.ownerModuleId === MAILBOXES_MODULE_ID) {
     const { foldersDatabaseId } = await resolveMailModuleIds(client);
     await deleteMailFolderSyncStatesOfFoldersWithoutMailbox(client, foldersDatabaseId);

@@ -169,7 +169,7 @@ export const MAIL_ROUTES: RouteMatrixEntry[] = [
     public: true,
     tenancy: "anonymous",
     publicReason:
-      "Issue gh-1686: Google or Microsoft redirects the browser here after the sign-in, before the app holds the result, so no session is required. The handler reads no row and no session and writes nothing; it only passes the code and state on, and the authenticated POST /api/mail/mailboxes/oauth/complete checks the state against the signed-in user.",
+      "Issue gh-1686: Google or Microsoft redirects the browser here after the sign-in, before the app holds the result, so no session is required. The handler reads no session and writes nothing. It reads only the state's redirect target, routed to its tenant by the state hash through route_mail_oauth_state, and passes the code and state on (as JSON, or as a 302 to semprec://oauth for a state started with redirectTarget app); the authenticated POST /api/mail/mailboxes/oauth/complete checks the state against the signed-in user.",
   },
   {
     name: "mail summary",

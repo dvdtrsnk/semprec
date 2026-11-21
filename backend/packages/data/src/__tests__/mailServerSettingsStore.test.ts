@@ -64,7 +64,7 @@ describe("mail server settings store (issue #1473)", () => {
       const id = randomUUID();
       await insertItemsWithIds(client, [id]);
       const stored = await upsertMailServerSettings(client, id, VALID);
-      expect(stored).toEqual({ mailboxItemId: id, ...VALID });
+      expect(stored).toEqual({ mailboxItemId: id, ...VALID, caldavUrl: null });
       expect(await getMailServerSettings(client, id)).toEqual(stored);
       const { rows } = await client.query(
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'mail_account_server_settings'",
@@ -79,11 +79,44 @@ describe("mail server settings store (issue #1473)", () => {
       await insertItemsWithIds(client, [id]);
       await upsertMailServerSettings(client, id, VALID);
       const smtpOnly = { imap: null, smtp: VALID.smtp, username: "bob" };
-      expect(await upsertMailServerSettings(client, id, smtpOnly)).toEqual({ mailboxItemId: id, ...smtpOnly });
+      expect(await upsertMailServerSettings(client, id, smtpOnly)).toEqual({
+        mailboxItemId: id,
+        ...smtpOnly,
+        caldavUrl: null,
+      });
       expect(await deleteMailServerSettings(client, id)).toBe(true);
       expect(await deleteMailServerSettings(client, id)).toBe(false);
       expect(await getMailServerSettings(client, id)).toBeNull();
     });
+  });
+
+  it("stores a CalDAV address as URL writes it and clears it on an upsert without one", async () => {
+    await inRolledBackTransaction(async (client) => {
+      const id = randomUUID();
+      await insertItemsWithIds(client, [id]);
+      const stored = await upsertMailServerSettings(client, id, {
+        ...VALID,
+        caldavUrl: " https://CalDAV.Example.com:443/dav/calendars/#top ",
+      });
+      expect(stored.caldavUrl).toBe("https://caldav.example.com/dav/calendars/");
+      expect((await getMailServerSettings(client, id))?.caldavUrl).toBe(stored.caldavUrl);
+      expect((await upsertMailServerSettings(client, id, VALID)).caldavUrl).toBeNull();
+    });
+  });
+
+  it.each([
+    "http://caldav.example.com/",
+    "https://10.0.0.1/dav/",
+    "https://[::1]/dav/",
+    "https://localhost/dav/",
+    "https://calendar.local/dav/",
+    "https://caldav.example.com:8443/dav/",
+    "https://user:secret@caldav.example.com/",
+    "caldav.example.com/dav/",
+    `https://caldav.example.com/${"a".repeat(2048)}`,
+    "",
+  ])("refuses the CalDAV address %s", async (caldavUrl) => {
+    await expectField({ ...VALID, caldavUrl }, "caldavUrl");
   });
 
   it("normalizes an upper-case host", async () => {

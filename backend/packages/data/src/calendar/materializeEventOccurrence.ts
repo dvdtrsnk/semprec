@@ -1,5 +1,6 @@
 // Turns one occurrence of a recurring Event into an Events item the first time a date of a series gets its own
-// change or something links to it: a copy of the series Event and its edges, in the caller's transaction.
+// change or something links to it: a copy of the series Event and its edges, in the caller's transaction. An
+// occurrence of a synced series becomes an override the calendar sync can send: it also names the original start.
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -21,8 +22,21 @@ import {
 } from "./duplicateCalendarItem.js";
 import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
 import { eventRecurrenceOccursOn } from "./eventRecurrenceRule.js";
-import { readEventSeries } from "./eventSeries.js";
+import { readEventSeries, readSyncedEventSeries } from "./eventSeries.js";
+import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
+import { isAccountCalendar } from "./calendarRowHooks.js";
+import { recurrenceDatesInZone } from "./recurrenceExpansion.js";
+import {
+  EVENT_RECURRENCE_ID_PROPERTY_KEY,
+  EVENT_TIME_ZONE_PROPERTY_KEY,
+  formatLocalStart,
+  namesLocalStart,
+  OVERRIDE_PROPERTY_KEYS,
+  readEventTimeZone,
+  withOverrideMaterialization,
+} from "./syncedEventFields.js";
+import { getSystemTimezone } from "../systemSettings.js";
 
 const seriesIdSchema = z.uuid();
 
@@ -53,7 +67,10 @@ async function lockOccurrenceKey(client: PoolClient, seriesId: string, occurrenc
   );
 }
 
-/** A live item is preferred to a trashed one. RLS confines the read to the current tenant. */
+/**
+ * A live item is preferred to a trashed one. An override the sync stored names its date by `recurrenceId` only.
+ * RLS confines the read to the current tenant.
+ */
 async function findOccurrenceItem(
   client: PoolClient,
   databaseId: string,
@@ -62,12 +79,44 @@ async function findOccurrenceItem(
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM items
-      WHERE database_id = $1 AND properties->>'seriesId' = $2 AND properties->>'occurrenceDate' = $3
+      WHERE database_id = $1 AND properties->>'seriesId' = $2
+        AND (properties->>'occurrenceDate' = $3 OR left(properties->>'recurrenceId', 10) = $3)
       ORDER BY deleted_at IS NOT NULL, id
       LIMIT 1`,
     [databaseId, seriesId, occurrenceDate],
   );
   return rows[0] ? itemsStore.getItemById(client, databaseId, rows[0].id) : null;
+}
+
+async function isInAccountCalendar(client: PoolClient, calendarId: string): Promise<boolean> {
+  const [calendar] = await itemsStore.getItemsByIds(client, [calendarId]);
+  return calendar !== undefined && isAccountCalendar(calendar.properties.kind);
+}
+
+/**
+ * `date` is a day of the series in its own zone. A raw rule is expanded there, without its `exceptionDates`; one
+ * outside the supported subset has no occurrence to materialize. `null` when the Event is no series.
+ */
+async function occursOn(
+  client: PoolClient,
+  properties: Record<string, unknown>,
+  date: string,
+): Promise<boolean | null> {
+  const fixed = readEventSeries(properties);
+  if (fixed !== null) return eventRecurrenceOccursOn(fixed.rule, fixed.startDate, date);
+  const synced = readSyncedEventSeries(properties);
+  if (synced === null) return null;
+  const zone = readEventTimeZone(properties);
+  if (synced.rule === null || zone === undefined) return false;
+  const timeFrom = readTime(properties.timeFrom, "timeFrom") ?? null;
+  const start = { date: synced.startDate, time: timeFrom ?? "00:00" };
+  const allDay = timeFrom === null;
+  const days = recurrenceDatesInZone(synced.rule, start, allDay, zone ?? (await getSystemTimezone(client)), {
+    from: date,
+    to: date,
+  });
+  const occurrence = { date, time: start.time };
+  return days.includes(date) && synced.exceptions.every((entry) => !namesLocalStart(entry, occurrence, allDay));
 }
 
 /**
@@ -98,9 +147,9 @@ export async function materializeEventOccurrence(
   if (existing) return { item: existing, created: false };
 
   const series = await itemsStore.lockItemById(client, events.id, seriesId);
-  const definition = series && series.deletedAt === null ? readEventSeries(series.properties) : null;
-  if (!series || !definition) throw new NotFoundError(`Series ${seriesId} not found`);
-  if (!eventRecurrenceOccursOn(definition.rule, definition.startDate, occurrenceDate)) {
+  const occurs = series && series.deletedAt === null ? await occursOn(client, series.properties, occurrenceDate) : null;
+  if (!series || occurs === null) throw new NotFoundError(`Series ${seriesId} not found`);
+  if (!occurs) {
     throw new ValidationError("The series has no occurrence on that date", { field: "date" });
   }
 
@@ -113,15 +162,31 @@ export async function materializeEventOccurrence(
     [EVENT_SERIES_ID_PROPERTY_KEY]: seriesId,
     [EVENT_OCCURRENCE_DATE_PROPERTY_KEY]: occurrenceDate,
   };
-  const createOptions: CreateItemWithClientOptions = {
-    ...options,
-    allowedSystemKeys: OCCURRENCE_PROPERTY_KEYS,
-    systemOwnerProcess: CALENDAR_MODULE_ID,
-  };
   const calendar = (await liveEdgesOf(client, events.id, series.id, EVENT_CALENDAR_RELATION_KEY))?.edges[0];
-  const created = calendar
-    ? await createEventInCalendar(client, { properties }, calendar.counterpartId, createOptions)
-    : await createItemWithClient(client, { databaseId: events.id, properties }, createOptions);
+  const synced =
+    readSyncedEventSeries(series.properties) !== null ||
+    (calendar !== undefined && (await isInAccountCalendar(client, calendar.counterpartId)));
+  const create = (createOptions: CreateItemWithClientOptions) =>
+    calendar
+      ? createEventInCalendar(client, { properties }, calendar.counterpartId, createOptions)
+      : createItemWithClient(client, { databaseId: events.id, properties }, createOptions);
+  let created: ItemRow;
+  if (synced) {
+    // The override keys have no owner process, so the write names none; the create hook admits them only here.
+    const timeFrom = readTime(series.properties.timeFrom, "timeFrom") ?? null;
+    const timeZone = readEventTimeZone(series.properties) ?? null;
+    properties[EVENT_RECURRENCE_ID_PROPERTY_KEY] = formatLocalStart({ date: occurrenceDate, time: timeFrom });
+    if (timeZone !== null) properties[EVENT_TIME_ZONE_PROPERTY_KEY] = timeZone;
+    created = await withOverrideMaterialization(() =>
+      create({ ...options, allowedSystemKeys: [...OCCURRENCE_PROPERTY_KEYS, ...OVERRIDE_PROPERTY_KEYS] }),
+    );
+  } else {
+    created = await create({
+      ...options,
+      allowedSystemKeys: OCCURRENCE_PROPERTY_KEYS,
+      systemOwnerProcess: CALENDAR_MODULE_ID,
+    });
+  }
 
   await copyEventEdges(client, {
     databaseId: events.id,

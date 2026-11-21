@@ -363,14 +363,16 @@ describe("the mail draft routes (issue gh-1867)", () => {
     });
   });
 
-  it("answers 400 for a mailbox that has no Drafts folder yet, and creates nothing", async () => {
+  it("answers 409 mail_drafts_folder_missing for a mailbox that has no Drafts folder, and creates nothing", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const emailsBefore = await count("emails");
 
-      await expect(createDraft(newDraft(f, { mailboxId: f.mailboxWithoutDraftsId }))).rejects.toBeInstanceOf(
-        ValidationError,
-      );
+      await expect(createDraft(newDraft(f, { mailboxId: f.mailboxWithoutDraftsId }))).rejects.toMatchObject({
+        status: 409,
+        code: "mail_drafts_folder_missing",
+        details: { mailboxId: f.mailboxWithoutDraftsId },
+      });
 
       expect(await count("emails")).toBe(emailsBefore);
     });

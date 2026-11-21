@@ -1,6 +1,5 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
 import { TASK_DISPLAY_DAY_SQL } from "../tasks/taskDisplayDaySql.js";
@@ -122,7 +121,7 @@ export async function readTaskTraceTimelineItems(
 ): Promise<CalendarTaskTraceTimelineItem[]> {
   // The range has no day before today, so nothing is traced.
   if (context.today <= context.from) return [];
-  const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  const tasks = await context.lookups.database(TASKS_MODULE_ID);
   if (!tasks) return [];
   const { rows } = await client.query<TraceCandidateRow>(TASK_TRACE_CANDIDATES_SQL, [
     tasks.id,
@@ -153,6 +152,7 @@ export async function readTaskTraceTimelineItems(
 
   const hostEvents = await readDecidingHostEvents(
     client,
+    context.lookups,
     traced
       .filter(({ chain }) => chain.completedOn === null && chain.status !== "missed")
       .map(({ chain }) => chain.taskId),

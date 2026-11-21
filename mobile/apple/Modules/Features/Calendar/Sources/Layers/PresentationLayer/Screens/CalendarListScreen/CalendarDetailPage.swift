@@ -3,7 +3,8 @@ import DesignSystem
 import SwiftUI
 
 /// The settings of one calendar inside the calendars sheet: its name, colour and notifications, and deleting it. The
-/// typed name stays here and is sent when the field is submitted, loses focus or the page is left.
+/// typed name stays here and is sent when the field is submitted, loses focus or the page is left. An account
+/// calendar is renamed and recoloured here only, can go back to the provider's colour and is not deleted.
 struct CalendarDetailPage: View {
 
     // MARK: - Dependencies
@@ -77,14 +78,21 @@ private extension CalendarDetailPage {
                     .accessibilityValue(Text(calendar.name))
                     .accessibilityIdentifier(CalendarSheetIdentifiers.calendarsName)
             }
+        } footer: {
+            if let providerName = calendar.providerName {
+                Text(providerName)
+            }
         }
     }
 
     var colorSection: some View {
         Section {
+            if calendar.group == .account, let remoteColor = calendar.remoteColor {
+                remoteColorRow(remoteColor)
+            }
             ForEach(swatches) { swatch in
-                let selected = swatch.matches(calendar.color)
-                Button { send(.setColor(calendarId: calendar.id, color: swatch.hex)) } label: {
+                let selected = !calendar.usesRemoteColor && swatch.matches(calendar.color)
+                Button { send(.change(.setColor(calendarId: calendar.id, color: swatch.hex))) } label: {
                     HStack(spacing: Theme.Spacing.medium) {
                         Circle()
                             .fill(Color(hex: swatch.hex) ?? Theme.Colors.accent)
@@ -111,6 +119,30 @@ private extension CalendarDetailPage {
 
     static let dotSize: CGFloat = 14
 
+    /// The provider's colour, chosen while nothing was set here; choosing it clears the colour set here.
+    func remoteColorRow(_ hex: String) -> some View {
+        Button { send(.change(.useRemoteColor(calendarId: calendar.id))) } label: {
+            HStack(spacing: Theme.Spacing.medium) {
+                Circle()
+                    .fill(Color(hex: hex) ?? Theme.Colors.accent)
+                    .frame(width: Self.dotSize, height: Self.dotSize)
+                Text("calendars.detail.remoteColor", tableName: "Sheets", bundle: .module)
+                    .foregroundStyle(Color.primary)
+                Spacer(minLength: 0)
+                if calendar.usesRemoteColor {
+                    Image(systemName: "checkmark")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Theme.Colors.accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .listRowButton()
+        .disabled(calendar.usesRemoteColor)
+        .accessibilityAddTraits(calendar.usesRemoteColor ? .isSelected : [])
+        .accessibilityIdentifier(CalendarSheetIdentifiers.calendarsRemoteColor)
+    }
+
     var notifySection: some View {
         Section {
             Toggle(isOn: notify) {
@@ -126,7 +158,7 @@ private extension CalendarDetailPage {
     var notify: Binding<Bool> {
         Binding(
             get: { calendar.notify },
-            set: { send(.setNotify(calendarId: calendar.id, notify: $0)) }
+            set: { send(.change(.setNotify(calendarId: calendar.id, notify: $0))) }
         )
     }
 
@@ -140,7 +172,7 @@ private extension CalendarDetailPage {
         }
         guard trimmed != (sentName ?? calendar.name) else { return }
         sentName = trimmed
-        send(.rename(calendarId: calendar.id, name: trimmed))
+        send(.change(.rename(calendarId: calendar.id, name: trimmed)))
     }
 }
 
@@ -149,6 +181,20 @@ private extension CalendarDetailPage {
     NavigationStack {
         CalendarDetailPage(
             calendar: CalendarRow(id: "work", name: "Práce", color: "#007AFF"),
+            swatches: CalendarListState.previewSwatches,
+            busy: false,
+            send: { _ in }
+        )
+    }
+}
+
+#Preview("Account") {
+    NavigationStack {
+        CalendarDetailPage(
+            calendar: CalendarRow(
+                id: "family", name: "Rodina", color: "#16A765", group: .account, canDelete: false, accountId: "m1",
+                remoteName: "Family", remoteColor: "#16A765", usesRemoteColor: true
+            ),
             swatches: CalendarListState.previewSwatches,
             busy: false,
             send: { _ in }

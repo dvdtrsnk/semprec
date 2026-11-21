@@ -16,11 +16,7 @@ import { createSempChatThread, sendSempMessage } from "../../sempThreads/sempThr
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { ensureQueueSchema } from "@semprec/queue";
 import { claimSempMessage, finishSempMessageTurn } from "../sempMessagesStore.js";
-import {
-  buildSempThreadMessageSearch,
-  reindexSempMessageSearch,
-  sempMessageSearchVectorSql,
-} from "../sempMessageSearch.js";
+import { buildSempThreadMessageSearch, sempMessageSearchVectorSql } from "../sempMessageSearch.js";
 import { listSempThreads } from "../sempThreadsListStore.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../sempTickThreadStore.js";
 
@@ -337,23 +333,6 @@ describe("Semp message search vector", () => {
       expect(reply?.has_vector).toBe(true);
       await expectIndexedPrefixOnly(tick.thread.id);
     });
-
-    it("reindexes a message longer than the limit together with the others of its batch", async () => {
-      const threadId = await startThread(own, []);
-      await inTenant(own, async (client) => {
-        // Raw SQL: messages as the migration found them, text without a vector.
-        await client.query(
-          "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', $2), ($1, 'user', 'Kratka faktura')",
-          [threadId, HUGE_TEXT],
-        );
-      });
-      expect(
-        await inTenant(own, (client) => reindexSempMessageSearch(client, { limit: 10, onlyMissing: true })),
-      ).not.toBeNull();
-      expect((await storedMessages(own, threadId)).map((message) => message.has_vector)).toEqual([true, true]);
-      await expectIndexedPrefixOnly(threadId);
-      expect(await findThreads(own, "faktura")).toEqual([threadId]);
-    });
   });
 
   describe("matching in the thread list", () => {
@@ -540,184 +519,6 @@ describe("Semp message search vector", () => {
       expect(word).not.toContain("$8");
     });
   });
-
-  describe("reindexSempMessageSearch", () => {
-    async function insertLegacyMessages(tenant: string, threadId: string, texts: readonly (string | null)[]) {
-      return inTenant(tenant, async (client) => {
-        const ids: string[] = [];
-        for (const text of texts) {
-          // Raw SQL: production writers set the vector; these are rows from before the column existed.
-          const { rows } = await client.query<{ id: string }>(
-            "INSERT INTO semp_messages (thread_id, role, text) VALUES ($1, 'user', $2) RETURNING id",
-            [threadId, text],
-          );
-          if (!rows[0]) throw new Error("No legacy message inserted");
-          ids.push(rows[0].id);
-        }
-        return ids;
-      });
-    }
-
-    async function loop(
-      tenant: string,
-      options: { limit: number; onlyMissing: boolean; afterMessageId?: string },
-    ): Promise<string[]> {
-      const returned: string[] = [];
-      let cursor = options.afterMessageId;
-      for (let round = 0; round < 50; round += 1) {
-        const last = await inTenant(tenant, (client) =>
-          reindexSempMessageSearch(client, {
-            limit: options.limit,
-            onlyMissing: options.onlyMissing,
-            ...(cursor === undefined ? {} : { afterMessageId: cursor }),
-          }),
-        );
-        if (last === null) return returned;
-        returned.push(last);
-        cursor = last;
-      }
-      throw new Error("The reindexing did not end");
-    }
-
-    it("indexes the existing non-system messages that have text, in id order, and returns the last id of each batch", async () => {
-      const threadId = await startThread(own, []);
-      const legacy = await insertLegacyMessages(own, threadId, ["Stara faktura", "Stara smlouva", "Stary dopis", null]);
-      const system = await insertSystemMessageWithText(own, threadId, "pokladna", false);
-      // The preview rule reads the last message, so a message with a vector follows the system message.
-      await sendMessage(own, threadId, "Konec");
-      expect(await findThreads(own, "stara")).toEqual([]);
-
-      const withText = legacy.slice(0, 3).sort();
-      const returned = await loop(own, { limit: 2, onlyMissing: true });
-      expect(returned).toEqual([withText[1], withText[2]]);
-      expect(await findThreads(own, "stara faktura")).toEqual([threadId]);
-      expect(await findThreads(own, "dopis")).toEqual([threadId]);
-      expect(await findThreads(own, "pokladna")).toEqual([]);
-      const messages = await storedMessages(own, threadId);
-      expect(
-        messages
-          .filter((message) => message.has_vector && message.text !== "Konec")
-          .map((message) => message.id)
-          .sort(),
-      ).toEqual(withText);
-      expect(messages.find((message) => message.id === system)?.has_vector).toBe(false);
-      expect(messages.find((message) => message.id === legacy[3])?.has_vector).toBe(false);
-      // Run again, every message with text has a vector, so nothing is left.
-      expect(await loop(own, { limit: 2, onlyMissing: true })).toEqual([]);
-    });
-
-    it("restricts onlyMissing to messages without a vector and recomputes the rest otherwise", async () => {
-      const threadId = await startThread(own, []);
-      const [first, second] = await insertLegacyMessages(own, threadId, ["Prvni text", "Druhy text"]);
-      if (!first || !second) throw new Error("Missing legacy messages");
-      await inTenant(own, async (client) => {
-        // Raw SQL: a vector made from other text stands for one that an older configuration made.
-        await client.query("UPDATE semp_messages SET search_vector = to_tsvector('simple', 'puvodni') WHERE id = $1", [
-          first,
-        ]);
-      });
-      await loop(own, { limit: 10, onlyMissing: true });
-      expect(await vectorText(own, first)).toBe("'puvodni':1");
-      expect(await vectorText(own, second)).toContain("'druhy'");
-      await loop(own, { limit: 10, onlyMissing: false });
-      expect(await vectorText(own, first)).toContain("'prvni'");
-      expect(await vectorText(own, first)).not.toContain("puvodni");
-    });
-
-    it("starts after the cursor and leaves updated_at alone", async () => {
-      const threadId = await startThread(own, []);
-      const ids = (await insertLegacyMessages(own, threadId, ["Jedna", "Dve", "Tri"])).sort();
-      const before = await inTenant(
-        own,
-        async (client) =>
-          (
-            await client.query<{ id: string; updated_at: Date }>(
-              "SELECT id, updated_at FROM semp_messages WHERE thread_id = $1",
-              [threadId],
-            )
-          ).rows,
-      );
-      const returned = await loop(own, { limit: 10, onlyMissing: true, afterMessageId: ids[0] });
-      expect(returned).toEqual([ids[2]]);
-      const messages = await storedMessages(own, threadId);
-      expect(messages.find((message) => message.id === ids[0])?.has_vector).toBe(false);
-      expect(messages.find((message) => message.id === ids[1])?.has_vector).toBe(true);
-      const after = await inTenant(
-        own,
-        async (client) =>
-          (
-            await client.query<{ id: string; updated_at: Date }>(
-              "SELECT id, updated_at FROM semp_messages WHERE thread_id = $1",
-              [threadId],
-            )
-          ).rows,
-      );
-      const stamp = (rows: { id: string; updated_at: Date }[]) =>
-        rows.map((row) => `${row.id}:${row.updated_at.toISOString()}`).sort();
-      expect(stamp(after)).toEqual(stamp(before));
-    });
-
-    it("processes only the messages of the caller's tenant", async () => {
-      const mine = await startThread(own, []);
-      const theirs = await startThread(foreign, []);
-      await insertLegacyMessages(own, mine, ["Moje faktura"]);
-      const [foreignMessage] = await insertLegacyMessages(foreign, theirs, ["Jejich faktura"]);
-      if (!foreignMessage) throw new Error("Missing foreign message");
-      await loop(own, { limit: 10, onlyMissing: true });
-      expect(await findThreads(own, "faktura")).toEqual([mine]);
-      expect(await vectorText(foreign, foreignMessage)).toBeNull();
-      await loop(foreign, { limit: 10, onlyMissing: true });
-      expect(await findThreads(foreign, "faktura")).toEqual([theirs]);
-    });
-
-    it("processes only the messages of the scope's tenant even on a pool that row-level security does not bind", async () => {
-      const mine = await startThread(own, []);
-      const theirs = await startThread(foreign, []);
-      const [mineId] = await insertLegacyMessages(own, mine, ["Moje faktura"]);
-      const [theirId] = await insertLegacyMessages(foreign, theirs, ["Jejich faktura"]);
-      if (!mineId || !theirId) throw new Error("Missing legacy messages");
-      // The superuser pool bypasses row-level security, so only the tenant condition of the statement
-      // keeps the foreign message out.
-      const last = await inTenant(
-        own,
-        (client) => reindexSempMessageSearch(client, { limit: 10, onlyMissing: true }),
-        admin,
-      );
-      expect(last).toBe(mineId);
-      expect(await vectorText(own, mineId)).toContain("'faktura'");
-      expect(await vectorText(foreign, theirId)).toBeNull();
-    });
-
-    it("rejects options outside the domain of the columns", async () => {
-      for (const limit of [0, -1, 1.5, 2_147_483_648]) {
-        await expect(
-          inTenant(own, (client) => reindexSempMessageSearch(client, { limit, onlyMissing: true })),
-          String(limit),
-        ).rejects.toThrow();
-      }
-      await expect(
-        inTenant(own, (client) =>
-          reindexSempMessageSearch(client, { limit: 1, onlyMissing: true, afterMessageId: "not-a-uuid" }),
-        ),
-      ).rejects.toThrow();
-    });
-
-    it("refuses to run outside a managed transaction and outside a tenant scope", async () => {
-      const client = await data.connect();
-      try {
-        await expect(
-          runInTenant(own, () => reindexSempMessageSearch(client, { limit: 1, onlyMissing: true })),
-        ).rejects.toThrow(/managed transaction/i);
-      } finally {
-        client.release();
-      }
-      await expect(
-        runAsSystem("test:reindex-without-tenant", () =>
-          withTransaction(data, (txClient) => reindexSempMessageSearch(txClient, { limit: 1, onlyMissing: true })),
-        ),
-      ).rejects.toThrow(/tenant scope/);
-    });
-  });
 });
 
 describe("Semp message search with the Hunspell configuration", () => {
@@ -804,44 +605,6 @@ describe("Semp message search with the Hunspell configuration", () => {
           expect(new Set(await findThreads(tenantId, "uctenka", pool))).toEqual(new Set([before, after]));
           expect(new Set(await findThreads(tenantId, "účtenka", pool))).toEqual(new Set([before, after]));
           expect(await findThreads(tenantId, "faktury odberatele", pool)).toEqual([after]);
-        } finally {
-          await removeAssets(pool);
-        }
-      });
-    },
-    FRESH_DATABASE_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "keeps the lemmas of earlier messages until they are reindexed with onlyMissing false",
-    async () => {
-      await withFreshDatabase(async (pool, tenantId) => {
-        const early = await startThread(tenantId, ["Faktury prisly"], pool);
-        const [message] = (await storedMessages(tenantId, early, pool)).filter((row) => row.role === "user");
-        if (!message) throw new Error("Missing early message");
-        expect(await vectorText(tenantId, message.id, pool)).toContain("'faktury'");
-
-        await installAssets(pool);
-        try {
-          expect(await activateHunspell(pool)).toBe(true);
-          // The stored vector still has the form the unaccent/simple configuration made of the word.
-          expect(await findThreads(tenantId, "fakturu", pool)).toEqual([]);
-          const missingOnly = await inTenant(
-            tenantId,
-            (client) => reindexSempMessageSearch(client, { limit: 10, onlyMissing: true }),
-            pool,
-          );
-          expect(missingOnly).toBeNull();
-          expect(await findThreads(tenantId, "fakturu", pool)).toEqual([]);
-
-          const last = await inTenant(
-            tenantId,
-            (client) => reindexSempMessageSearch(client, { limit: 10, onlyMissing: false }),
-            pool,
-          );
-          expect(last).toBe(message.id);
-          expect(await vectorText(tenantId, message.id, pool)).toContain("'faktura'");
-          expect(await findThreads(tenantId, "fakturu", pool)).toEqual([early]);
         } finally {
           await removeAssets(pool);
         }

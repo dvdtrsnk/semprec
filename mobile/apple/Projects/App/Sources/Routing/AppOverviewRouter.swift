@@ -21,7 +21,7 @@ extension AppOverviewRouter: OverviewRouting {
 
     func show(_ target: OverviewTarget) {
         switch target {
-        case .profile: context.presentSheet(.profile, from: .overview)
+        case .profile: context.presentSheet(.profile(), from: .overview)
         case .inbox: context.showInbox(in: .overview)
         case .mail: context.showMail(MailListStart(), in: .overview)
         case .recordings: context.push(.recordings(tab: .overview), in: .overview)

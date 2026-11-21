@@ -405,7 +405,7 @@ describe("validateSempMessageRefs for a mailThread ref (issue gh-1933)", () => {
 });
 
 describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
-  it("labels a thread with the subject of its latest message and names it as the current thread", async () => {
+  it("labels a thread with the subject of its first message, not of a later reply, and names it as the current thread", async () => {
     const fixture = await mailFixture(tenant);
     const inbox = await fixture.folder("inbox");
     const first = await fixture.message({
@@ -424,7 +424,7 @@ describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
 
     const [target] = await inTenant(tenant, (client) => resolveMailThreadRefTargets(client, [first.threadId]));
 
-    expect(target).toEqual({ currentThreadId: first.threadId, label: "Re: Original subject", state: "active" });
+    expect(target).toEqual({ currentThreadId: first.threadId, label: "Original subject", state: "active" });
   });
 
   it("translates a merged-away id to the surviving thread, its subject and its state", async () => {
@@ -434,7 +434,7 @@ describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
 
     const targets = await inTenant(tenant, (client) => resolveMailThreadRefTargets(client, [merged, survivor]));
 
-    const expected = { currentThreadId: survivor, label: "translate reply", state: "active" };
+    const expected = { currentThreadId: survivor, label: "translate root", state: "active" };
     expect(targets).toEqual([expected, expected]);
   });
 
@@ -457,7 +457,7 @@ describe("resolveMailThreadRefTargets (issue gh-1933)", () => {
 
     const [target] = await inTenant(tenant, (client) => resolveMailThreadRefTargets(client, [first.threadId]));
 
-    expect(target).toEqual({ currentThreadId: first.threadId, label: "Re: Gone", state: "trashed" });
+    expect(target).toEqual({ currentThreadId: first.threadId, label: "Gone", state: "trashed" });
   });
 
   it("keeps a thread active while one of its messages is outside the Trash folder", async () => {
@@ -592,8 +592,8 @@ describe("a mailThread ref in the Semp thread history (issue gh-1933)", () => {
 
     expect(shown.statements).toBe(1);
     expect(shown.context).toEqual([
-      { ...threadRef(survivor), resolved: { label: "history reply", databaseKey: null, state: "active" } },
-      { ...threadRef(merged), resolved: { label: "history reply", databaseKey: null, state: "active" } },
+      { ...threadRef(survivor), resolved: { label: "history root", databaseKey: null, state: "active" } },
+      { ...threadRef(merged), resolved: { label: "history root", databaseKey: null, state: "active" } },
       { ...threadRef(trashed), resolved: { label: "In the bin", databaseKey: null, state: "trashed" } },
       { ...threadRef(unknown), resolved: { label: null, databaseKey: null, state: "purged" } },
     ]);
@@ -625,7 +625,7 @@ describe("readSempRefContext for a mailThread ref (issue gh-1933)", () => {
     const { survivor, merged } = await mergedThreads(tenant, fixture, inbox, "expand");
 
     expect(await read(tenant, threadRef(merged))).toEqual({
-      label: "expand reply",
+      label: "expand root",
       state: "active",
       details: { threadId: survivor },
       blob: null,

@@ -59,6 +59,9 @@ private extension NotificationSettingsScreen {
                 toggle(.approvals, "notifications.approvals", "notifications.approvals.hint", choices)
                 toggle(.invites, "notifications.invites", "notifications.invites.hint", choices)
                 toggle(.reminders, "notifications.reminders", "notifications.reminders.hint", choices)
+                toggle(
+                    .calendarChanges, "notifications.calendarChanges", "notifications.calendarChanges.hint", choices
+                )
                 Picker(selection: problemsLevel(choices)) {
                     ForEach(AccountProblemsLevel.allCases, id: \.self) { level in
                         Text(Self.levelName(level)).tag(level)
@@ -139,6 +142,7 @@ private extension NotificationSettingsScreen {
         case .approvals: "approvals"
         case .invites: "invites"
         case .reminders: "reminders"
+        case .calendarChanges: "calendarChanges"
         case .problemsSummary: "problemsSummary"
         case .badgeApprovals: "badgeApprovals"
         case .badgeInvites: "badgeInvites"
@@ -154,7 +158,8 @@ private extension NotificationSettingsScreen {
             viewModel: NotificationSettingsViewModel(
                 model: ScriptedNotificationSettingsScreenModel(
                     state: NotificationSettingsState(phase: .content, choices: NotificationChoices())
-                )
+                ),
+                router: PreviewAccountRouter()
             )
         )
     }

@@ -29,6 +29,7 @@ import {
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
 import { logger } from "../logger.js";
+import { createCalendarTimelineLookups } from "../timelineLookups.js";
 import { readCalendarTimeline, readTaskTimelineItems } from "../timelineRead.js";
 import { createCalendarTimelineRouteHandler } from "../timelineRouteHandler.js";
 import type { CalendarTaskOccurrence, CalendarTimelineContext, CalendarTimelineEntry } from "../timelineSources.js";
@@ -468,6 +469,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date(at(16)),
           includeSleep: true,
+          lookups: createCalendarTimelineLookups(client),
         };
         return readTaskTimelineItems(client, context);
       }),
@@ -734,6 +736,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date(at(16)),
           includeSleep: true,
+          lookups: createCalendarTimelineLookups(client),
         }),
       ),
     );

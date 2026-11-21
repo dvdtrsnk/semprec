@@ -9,16 +9,17 @@ import {
 } from "../health/processHeartbeats.js";
 import {
   listAllMailAccountSyncStates,
-  lockMailAccountSyncState,
+  lockMailAccountStallState,
+  type MailAccountStallState,
   type MailAccountSyncStateRow,
 } from "../mail/mailAccountSyncStateStore.js";
 import {
   transitionObservabilityCheck,
   transitionTenantObservabilityCheck,
-  deleteOrphanedObservabilityChecks,
   deleteOrphanedTenantObservabilityChecks,
   type ObservabilityCheckStatus,
 } from "./observabilityChecksStore.js";
+import { getTenantObservabilityCheckStatus } from "./tenantObservabilityCheckStatus.js";
 import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { AGENTS_PROCESS_PROBLEM_KEY, mailProblemKey } from "../semp/sourceProblemKeys.js";
 import { resolveOperatorAlertProblems, writeOperatorAlert } from "./operatorAlerts.js";
@@ -30,14 +31,40 @@ export interface ObservabilityCheckSystemHelpers {
   job: { id: string };
 }
 
-/** Skips when the tenant has no bound user. Must run inside the tenant's transaction. */
+/**
+ * How long a mailbox may be past its `next_expected_activity_at`, or go without a successful pass while its live-sync
+ * heartbeat is stale, before it counts as stalled. An unfinished pass marks the account due at once; its follow-up, or
+ * failing that the five-minute sweep, runs within this window.
+ */
+const MAIL_SYNC_STALL_GRACE_MS = 10 * 60_000;
+
+/**
+ * Both mailbox checks: while a pass holds the lease the check keeps its status (`ok` when it has none), so a pass in
+ * flight is never reported stalled and an alerting check does not flap. A dead holder's lease expires.
+ */
+function mailboxCheckStatus(
+  previousStatus: ObservabilityCheckStatus | null,
+  account: MailAccountStallState,
+  stalled: boolean,
+): ObservabilityCheckStatus {
+  if (account.passRunning) return previousStatus ?? "ok";
+  return stalled ? "alerting" : "ok";
+}
+
+/**
+ * Skips when the tenant has no bound user, or when `otherCheckKey`, the mailbox's other stall check, is alerting
+ * already: that check notified for this episode. Must run inside the tenant's transaction, after the mailbox's sync
+ * state row was locked, which both checks lock before their own row.
+ */
 async function notifyMailSyncStalled(
   client: PoolClient,
   helpers: ObservabilityCheckSystemHelpers,
   checkKey: string,
   checkId: string,
+  otherCheckKey: string,
   detail: Record<string, unknown>,
 ): Promise<void> {
+  if ((await getTenantObservabilityCheckStatus(client, otherCheckKey)) === "alerting") return;
   const userId = await getTenantUserId(client);
   if (!userId) return;
   await writeNotification(client, {
@@ -127,11 +154,22 @@ async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSys
 
 const MAIL_SYNC_PROCESS_CHECK_PREFIX = "process:mailsync:";
 const MAIL_SYNC_PROCESS_PREFIX = "mailsync:";
+const MAIL_CHECK_KEY_PREFIX = "mail:";
+
+function mailCheckKey(mailboxItemId: string): string {
+  return `${MAIL_CHECK_KEY_PREFIX}${mailboxItemId}`;
+}
+
+function livenessCheckKey(mailboxItemId: string): string {
+  return `${MAIL_SYNC_PROCESS_CHECK_PREFIX}${mailboxItemId}`;
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Must run inside a tenant scope. Rows of no-longer-active mailboxes are removed first so none can
- * sit `alerting` forever.
+ * Alerts on a stale or missing `mailsync:<id>` heartbeat only while no pass of the mailbox succeeded within the
+ * grace. Must run inside a tenant scope. Rows of no-longer-active mailboxes are removed first so none can sit
+ * `alerting` forever.
  */
 async function checkMailSyncLiveness(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const statuses = (await withTransaction(pool, (client) => getExpectedProcessHeartbeatStatuses(client))).filter(
@@ -151,12 +189,15 @@ async function checkMailSyncLiveness(pool: Pool, helpers: ObservabilityCheckSyst
       throw new Error(`Unexpected non-mailbox process in the tenant liveness pass: ${processStatus.process}`);
     }
     await withTransaction(pool, async (client) => {
-      const transition = await transitionTenantObservabilityCheck(client, checkKey, () => ({
-        status: processStatus.stale ? "alerting" : "ok",
+      const account = await lockMailAccountStallState(client, mailboxItemId, MAIL_SYNC_STALL_GRACE_MS);
+      // The account was removed since the heartbeat statuses were read; the next tick drops its row.
+      if (!account) return;
+      const transition = await transitionTenantObservabilityCheck(client, checkKey, (previousStatus) => ({
+        status: mailboxCheckStatus(previousStatus, account, processStatus.stale && !account.recentlySynced),
         detail: { process: processStatus.process, present: processStatus.present, beatAt: processStatus.beatAt },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, {
+        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, mailCheckKey(mailboxItemId), {
           mailboxItemId,
           beatAt: processStatus.beatAt,
         });
@@ -258,10 +299,8 @@ async function checkPermanentlyFailedJobs(pool: Pool, helpers: ObservabilityChec
   });
 }
 
-const MAIL_CHECK_KEY_PREFIX = "mail:";
-
 /**
- * Alerts on overdue `next_expected_activity_at` or a non-null `last_error`, with no
+ * Alerts on a `next_expected_activity_at` overdue by more than the grace or a non-null `last_error`, with no
  * provider-specific branch. Must run inside a tenant scope. Tenant check rows may carry the
  * provider's `lastError` in `detail`; the user-facing notification never does (only a failure kind).
  *
@@ -270,20 +309,17 @@ const MAIL_CHECK_KEY_PREFIX = "mail:";
  */
 async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelpers): Promise<void> {
   const accounts = await withTransaction(pool, (client) => listAllMailAccountSyncStates(client));
-  const currentCheckKeys = accounts.map((account) => `${MAIL_CHECK_KEY_PREFIX}${account.itemId}`);
+  const currentCheckKeys = accounts.map((account) => mailCheckKey(account.itemId));
   await withTransaction(pool, (client) =>
     deleteOrphanedTenantObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, currentCheckKeys),
   );
   for (const snapshot of accounts) {
-    const checkKey = `${MAIL_CHECK_KEY_PREFIX}${snapshot.itemId}`;
+    const checkKey = mailCheckKey(snapshot.itemId);
     await withTransaction(pool, async (client) => {
-      const account = await lockMailAccountSyncState(client, snapshot.itemId);
+      const account = await lockMailAccountStallState(client, snapshot.itemId, MAIL_SYNC_STALL_GRACE_MS);
       if (!account) return;
-      const overdue =
-        account.nextExpectedActivityAt !== null && new Date(account.nextExpectedActivityAt).getTime() < Date.now();
-      const alerting = overdue || account.lastError !== null;
-      const transition = await transitionTenantObservabilityCheck(client, checkKey, () => ({
-        status: alerting ? "alerting" : "ok",
+      const transition = await transitionTenantObservabilityCheck(client, checkKey, (previousStatus) => ({
+        status: mailboxCheckStatus(previousStatus, account, account.overdue || account.lastError !== null),
         detail: {
           mailboxItemId: account.itemId,
           nextExpectedActivityAt: account.nextExpectedActivityAt,
@@ -291,7 +327,7 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
         },
       }));
       if (transition.transitionedToAlerting) {
-        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, {
+        await notifyMailSyncStalled(client, helpers, checkKey, transition.id, livenessCheckKey(account.itemId), {
           mailboxItemId: account.itemId,
           reason: account.lastFailureKind ?? "other",
         });
@@ -305,9 +341,7 @@ async function checkMailSync(pool: Pool, helpers: ObservabilityCheckSystemHelper
 
 /**
  * Every-minute cron task. Global families write content-free `observability_checks` rows; mailbox
- * checks run per active tenant. Global `mail:`/`process:mailsync:` rows are purged first so no
- * tenant content can linger in the global table. A failing tenant rejects only after every tenant
- * was attempted.
+ * checks run per active tenant. A failing tenant rejects only after every tenant was attempted.
  *
  * State lives in Postgres, so a sustained fault notifies once per ok -> alerting transition, even
  * across restarts. Exception: a failed operator-alert write rolls the transition back, so the next
@@ -320,10 +354,6 @@ export async function handleObservabilityCheckSystemTask(
   await checkProcessHeartbeats(pool, helpers);
   await checkQueueBacklog(pool, helpers);
   await checkPermanentlyFailedJobs(pool, helpers);
-  await withTransaction(pool, (client) => deleteOrphanedObservabilityChecks(client, MAIL_CHECK_KEY_PREFIX, []));
-  await withTransaction(pool, (client) =>
-    deleteOrphanedObservabilityChecks(client, MAIL_SYNC_PROCESS_CHECK_PREFIX, []),
-  );
   await forEachActiveTenant(pool, async () => {
     await checkMailSync(pool, helpers);
     await checkMailSyncLiveness(pool, helpers);

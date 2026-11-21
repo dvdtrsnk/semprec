@@ -107,7 +107,8 @@ public enum MailThreadPhase: Equatable, Sendable {
 }
 
 /// One thread. `archivedOrTrashed` is true when the toolbar offers to restore it; `actionFailed` says a flag, move,
-/// task or reload did not go through.
+/// task or reload did not go through. `sendRefusal` and `actionRefusal` name the reason the server gave for refusing
+/// the send or the flag or move.
 public struct MailThreadState: Equatable, Sendable {
 
     public var phase: MailThreadPhase
@@ -126,12 +127,14 @@ public struct MailThreadState: Equatable, Sendable {
     public var draft: MailSempDraft?
     public var sendPhase: MailSendPhase
     public var sendFailure: FailureKind?
+    public var sendRefusal: MailRefusal?
     public var sentFrom: String?
     public var archivedOrTrashed: Bool
     public var canReply: Bool
     public var acting: Bool
     public var creatingTask: Bool
     public var actionFailed: Bool
+    public var actionRefusal: MailRefusal?
 
     public init(
         phase: MailThreadPhase = .loading,
@@ -150,12 +153,14 @@ public struct MailThreadState: Equatable, Sendable {
         draft: MailSempDraft? = nil,
         sendPhase: MailSendPhase = .idle,
         sendFailure: FailureKind? = nil,
+        sendRefusal: MailRefusal? = nil,
         sentFrom: String? = nil,
         archivedOrTrashed: Bool = false,
         canReply: Bool = false,
         acting: Bool = false,
         creatingTask: Bool = false,
-        actionFailed: Bool = false
+        actionFailed: Bool = false,
+        actionRefusal: MailRefusal? = nil
     ) {
         self.phase = phase
         self.refreshing = refreshing
@@ -173,12 +178,14 @@ public struct MailThreadState: Equatable, Sendable {
         self.draft = draft
         self.sendPhase = sendPhase
         self.sendFailure = sendFailure
+        self.sendRefusal = sendRefusal
         self.sentFrom = sentFrom
         self.archivedOrTrashed = archivedOrTrashed
         self.canReply = canReply
         self.acting = acting
         self.creatingTask = creatingTask
         self.actionFailed = actionFailed
+        self.actionRefusal = actionRefusal
     }
 }
 

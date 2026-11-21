@@ -387,6 +387,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
           verifyPassword: async () => ({
             imap: { host: "imap.example.test", port: 993, security: "tls" },
             smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+            folders: null,
           }),
         },
       }),
@@ -406,6 +407,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
         return {
           imap: { host: "imap.example.test", port: 993, security: "tls" },
           smtp: { host: "smtp.example.test", port: 465, security: "tls" },
+          folders: null,
         };
       },
     };

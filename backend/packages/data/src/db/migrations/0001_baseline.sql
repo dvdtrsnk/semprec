@@ -211,6 +211,32 @@ ALTER FUNCTION public.route_gmail_address(email_address text) OWNER TO semprec_r
 REVOKE ALL ON FUNCTION public.route_gmail_address(email_address text) FROM PUBLIC;
 GRANT ALL ON FUNCTION public.route_gmail_address(email_address text) TO semprec_data;
 
+CREATE FUNCTION public.route_google_calendar_channel(channel_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'google' AND c.channel_id = route_google_calendar_channel.channel_id
+$$;
+
+ALTER FUNCTION public.route_google_calendar_channel(channel_id text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) TO semprec_data;
+
+CREATE FUNCTION public.route_graph_calendar_subscription(subscription_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'graph' AND c.channel_id = route_graph_calendar_subscription.subscription_id
+$$;
+
+ALTER FUNCTION public.route_graph_calendar_subscription(subscription_id text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) TO semprec_data;
+
 CREATE FUNCTION public.route_graph_subscription(subscription_id text) RETURNS uuid
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'public', 'pg_temp'
@@ -222,6 +248,19 @@ ALTER FUNCTION public.route_graph_subscription(subscription_id text) OWNER TO se
 
 REVOKE ALL ON FUNCTION public.route_graph_subscription(subscription_id text) FROM PUBLIC;
 GRANT ALL ON FUNCTION public.route_graph_subscription(subscription_id text) TO semprec_data;
+
+CREATE FUNCTION public.route_mail_oauth_state(state_hash text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT s.tenant_id FROM public.mail_oauth_states s
+  WHERE s.state_hash = route_mail_oauth_state.state_hash AND s.used_at IS NULL AND s.expires_at > now()
+$$;
+
+ALTER FUNCTION public.route_mail_oauth_state(state_hash text) OWNER TO semprec_router;
+
+REVOKE ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) TO semprec_data;
 
 CREATE FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
@@ -863,6 +902,68 @@ CREATE UNIQUE INDEX blobs_tenant_id_id_uq ON public.blobs USING btree (tenant_id
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.blobs TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- calendar_account_sync_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The calendar side of an internet account (a Mailboxes item): the outcome of its last calendar sync pass and the
+-- pass whose batches are applying (`apply_pass_id`, cleared by its success). Written by the calendar sync and the
+-- manual sync route while Calendars is on; deleted when Calendars is switched off or the account is removed.
+CREATE TABLE public.calendar_account_sync_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    account_item_id uuid NOT NULL,
+    status text DEFAULT 'never'::text NOT NULL,
+    last_successful_sync_at timestamp with time zone,
+    failing_since timestamp with time zone,
+    last_error_code text,
+    initial_sync_completed_at timestamp with time zone,
+    manual_sync_requested_at timestamp with time zone,
+    apply_pass_id uuid,
+    CONSTRAINT calendar_account_sync_state_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'error'::text, 'never'::text, 'needsReauthorization'::text, 'needsConsent'::text])))
+);
+
+COMMENT ON TABLE public.calendar_account_sync_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_pkey PRIMARY KEY (tenant_id, account_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_event_push_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The desired state of an account calendar Event that a user's or agent's change must bring to its provider: the
+-- operation last recorded, a revision every recorded change raises, the push job's outcome, and the lease of the one
+-- push job running for the Event (`lease_id` until `lease_until`). Written in the transaction of the Event's write
+-- and by the `calendarEventPush` job.
+CREATE TABLE public.calendar_event_push_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    operation text NOT NULL,
+    desired_revision bigint DEFAULT 1 NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_id uuid,
+    lease_until timestamp with time zone,
+    CONSTRAINT calendar_event_push_state_lease_check CHECK (((lease_id IS NULL) = (lease_until IS NULL))),
+    CONSTRAINT calendar_event_push_state_operation_check CHECK ((operation = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'move'::text]))),
+    CONSTRAINT calendar_event_push_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'sent'::text, 'conflict'::text, 'failed'::text]))),
+    CONSTRAINT calendar_event_push_state_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT calendar_event_push_state_desired_revision_check CHECK ((desired_revision >= 1))
+);
+
+COMMENT ON TABLE public.calendar_event_push_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE INDEX calendar_event_push_state_pending_idx ON public.calendar_event_push_state USING btree (tenant_id, event_item_id) WHERE (status = 'pending'::text);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_event_push_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- calendar_feed_state
 -- ----------------------------------------------------------------------------------------------------
 
@@ -883,6 +984,72 @@ ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_feed_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_push_channels
+-- ----------------------------------------------------------------------------------------------------
+
+-- The push channels of internet accounts' calendars at their provider: a Google Calendar `events.watch` channel per
+-- tracked calendar (`resource_id` is what stopping it takes), a Microsoft Graph subscription on `/me/events` per
+-- account. `secret` is the channel token or `clientState` the provider sends back with every notification, so the
+-- table is left out of the tenant export. Written by the calendar push maintenance and the account's removal.
+CREATE TABLE public.calendar_push_channels (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    provider text NOT NULL,
+    channel_id text NOT NULL,
+    account_item_id uuid NOT NULL,
+    calendar_item_id uuid,
+    resource_id text,
+    secret text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT calendar_push_channels_provider_check CHECK ((provider = ANY (ARRAY['google'::text, 'graph'::text]))),
+    CONSTRAINT calendar_push_channels_shape_check CHECK ((CASE WHEN (provider = 'google'::text) THEN ((calendar_item_id IS NOT NULL) AND (resource_id IS NOT NULL)) ELSE ((calendar_item_id IS NULL) AND (resource_id IS NULL)) END))
+);
+
+COMMENT ON TABLE public.calendar_push_channels IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_pkey PRIMARY KEY (tenant_id, provider, channel_id);
+
+CREATE INDEX calendar_push_channels_account_idx ON public.calendar_push_channels USING btree (tenant_id, account_item_id);
+
+CREATE INDEX calendar_push_channels_calendar_idx ON public.calendar_push_channels USING btree (tenant_id, calendar_item_id);
+
+-- For route_google_calendar_channel and route_graph_calendar_subscription, which look a channel up before any tenant
+-- is known.
+CREATE INDEX calendar_push_channels_channel_idx ON public.calendar_push_channels USING btree (provider, channel_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_push_channels TO semprec_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.calendar_push_channels TO semprec_router;
+
+GRANT SELECT(provider) ON TABLE public.calendar_push_channels TO semprec_router;
+
+GRANT SELECT(channel_id) ON TABLE public.calendar_push_channels TO semprec_router;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar's identity at its provider and its sync cursors; written by the calendar sync.
+CREATE TABLE public.calendar_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_url text,
+    sync_token text,
+    ctag text,
+    last_synced_at timestamp with time zone,
+    last_error_code text
+);
+
+COMMENT ON TABLE public.calendar_remote_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_remote_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- credential_access_log
@@ -1105,6 +1272,32 @@ CREATE UNIQUE INDEX docs_tenant_id_id_uq ON public.docs USING btree (tenant_id, 
 CREATE UNIQUE INDEX docs_tenant_item_id_uq ON public.docs USING btree (tenant_id, item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.docs TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- event_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar Event's identity at its provider and `base_snapshot`, the field values of the last sync (the
+-- base of the three-way merge); written by the calendar sync.
+CREATE TABLE public.event_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_href text,
+    etag text,
+    base_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT event_remote_state_base_snapshot_check CHECK ((jsonb_typeof(base_snapshot) = 'object'::text))
+);
+
+COMMENT ON TABLE public.event_remote_state IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE UNIQUE INDEX event_remote_state_tenant_calendar_remote_id_uq ON public.event_remote_state USING btree (tenant_id, calendar_item_id, remote_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.event_remote_state TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- external_credentials
@@ -1490,8 +1683,10 @@ CREATE TABLE public.mail_account_server_settings (
     smtp_port integer,
     smtp_security text,
     username text NOT NULL,
+    caldav_url text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mail_account_server_settings_caldav_url_length CHECK ((char_length(caldav_url) <= 2048)),
     CONSTRAINT mail_account_server_settings_imap_all_or_none CHECK ((((imap_host IS NULL) AND (imap_port IS NULL) AND (imap_security IS NULL)) OR ((imap_host IS NOT NULL) AND (imap_port IS NOT NULL) AND (imap_security IS NOT NULL)))),
     CONSTRAINT mail_account_server_settings_imap_port_check CHECK ((imap_port = ANY (ARRAY[993, 143, 465, 587]))),
     CONSTRAINT mail_account_server_settings_imap_security_check CHECK ((imap_security = ANY (ARRAY['tls'::text, 'starttls'::text]))),
@@ -1532,6 +1727,11 @@ CREATE TABLE public.mail_account_sync_state (
     initial_sync_completed_at timestamp with time zone,
     last_failure_kind text,
     provider_account_address text,
+    sync_paused_at timestamp with time zone,
+    granted_scopes text[],
+    pass_lease_token uuid,
+    pass_lease_expires_at timestamp with time zone,
+    pass_rerun_requested boolean DEFAULT false NOT NULL,
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
@@ -1639,6 +1839,7 @@ CREATE TABLE public.mail_folder_sync_state (
     uidvalidity bigint,
     uidnext bigint,
     highestmodseq bigint,
+    message_count bigint,
     last_full_reconcile_at timestamp with time zone,
     last_error text,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
@@ -1690,21 +1891,22 @@ CREATE TABLE public.mail_message_meta (
     delivered_to_address text,
     message_kind text DEFAULT 'message'::text NOT NULL,
     dsn_original_message_id text,
-    migration_status text DEFAULT 'stable'::text NOT NULL,
     mailbox_item_id uuid,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
-    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text]))),
-    CONSTRAINT mail_message_meta_migration_status_check CHECK ((migration_status = ANY (ARRAY['stable'::text, 'partial'::text, 'done'::text])))
+    folder_copy_removed_at timestamp with time zone,
+    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
 COMMENT ON TABLE public.mail_message_meta IS 'semprec:tenancy=tenant';
 
 COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview of the message body, whitespace collapsed, at most 200 characters.';
 
-COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim); backfilled rows use items.updated_at.';
+COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
+
+COMMENT ON COLUMN public.mail_message_meta.folder_copy_removed_at IS 'When an IMAP pass last removed one of the message''s folder edges; set until a pass''s final transaction decides whether the Email keeps a folder copy.';
 
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);
@@ -1712,6 +1914,8 @@ ALTER TABLE ONLY public.mail_message_meta
 CREATE INDEX mail_message_meta_dsn_original_message_id_idx ON public.mail_message_meta USING btree (dsn_original_message_id) WHERE (dsn_original_message_id IS NOT NULL);
 
 CREATE INDEX mail_message_meta_envelope_gin_idx ON public.mail_message_meta USING gin (envelope jsonb_path_ops);
+
+CREATE INDEX mail_message_meta_folder_copy_removed_idx ON public.mail_message_meta USING btree (tenant_id, mailbox_item_id) WHERE (folder_copy_removed_at IS NOT NULL);
 
 CREATE INDEX mail_message_meta_in_reply_to_idx ON public.mail_message_meta USING btree (in_reply_to) WHERE (in_reply_to IS NOT NULL);
 
@@ -1738,6 +1942,7 @@ CREATE TABLE public.mail_message_move_sync_state (
     desired_purpose text NOT NULL,
     source_evidence jsonb NOT NULL,
     current_purpose text,
+    restore_purpose text,
     desired_revision bigint DEFAULT 1 NOT NULL,
     operation_token uuid,
     captured_revision bigint,
@@ -1757,6 +1962,7 @@ CREATE TABLE public.mail_message_move_sync_state (
     CONSTRAINT mail_message_move_sync_state_current_purpose_check CHECK ((current_purpose = ANY (ARRAY['archive'::text, 'trash'::text, 'inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_desired_purpose_check CHECK ((desired_purpose = ANY (ARRAY['archive'::text, 'trash'::text, 'inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_desired_revision_check CHECK ((desired_revision > 0)),
+    CONSTRAINT mail_message_move_sync_state_restore_purpose_check CHECK ((restore_purpose = ANY (ARRAY['inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_failure_reason_check CHECK ((failure_reason = ANY (ARRAY['messageMissing'::text, 'providerRejected'::text, 'unsupportedCapability'::text]))),
     CONSTRAINT mail_message_move_sync_state_operation_evidence_check CHECK (((operation_evidence IS NULL) OR ((jsonb_typeof(operation_evidence) = 'object'::text) AND (octet_length((operation_evidence)::text) <= 8192)))),
     CONSTRAINT mail_message_move_sync_state_operation_phase_check CHECK ((operation_phase = ANY (ARRAY['in_flight'::text, 'between_steps'::text, 'uncertain'::text]))),
@@ -1793,7 +1999,11 @@ CREATE TABLE public.mail_oauth_states (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone DEFAULT (now() + '00:10:00'::interval) NOT NULL,
     used_at timestamp with time zone,
-    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text])))
+    services text[] NOT NULL,
+    redirect_target text,
+    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text]))),
+    CONSTRAINT mail_oauth_states_services_check CHECK (((cardinality(services) > 0) AND (services <@ ARRAY['mail'::text, 'calendars'::text]))),
+    CONSTRAINT mail_oauth_states_redirect_target_check CHECK ((redirect_target = 'app'::text))
 );
 
 COMMENT ON TABLE public.mail_oauth_states IS 'semprec:tenancy=tenant';
@@ -1809,7 +2019,18 @@ CREATE INDEX mail_oauth_states_tenant_mailbox_idx ON public.mail_oauth_states US
 
 CREATE INDEX mail_oauth_states_user_idx ON public.mail_oauth_states USING btree (user_id);
 
+-- For route_mail_oauth_state, which looks a state up before any tenant is known.
+CREATE INDEX mail_oauth_states_state_hash_idx ON public.mail_oauth_states USING btree (state_hash);
+
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_oauth_states TO semprec_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(state_hash) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(used_at) ON TABLE public.mail_oauth_states TO semprec_router;
+
+GRANT SELECT(expires_at) ON TABLE public.mail_oauth_states TO semprec_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_thread_aliases
@@ -1949,6 +2170,7 @@ CREATE TABLE public.notification_preferences (
     badge_approvals boolean DEFAULT true NOT NULL,
     badge_invites boolean DEFAULT true NOT NULL,
     badge_inbox boolean DEFAULT false NOT NULL,
+    calendar_changes boolean DEFAULT true NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT notification_preferences_problems_level_check CHECK ((problems_level = ANY (ARRAY['off'::text, 'critical'::text, 'all'::text])))
 );
@@ -1979,7 +2201,7 @@ CREATE TABLE public.notifications (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     resolved_at timestamp with time zone,
     body text,
-    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text])))
+    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text, 'calendar_event_added'::text, 'calendar_event_changed'::text, 'calendar_event_cancelled'::text, 'calendar_change_overwritten'::text])))
 );
 
 COMMENT ON TABLE public.notifications IS 'semprec:tenancy=tenant';
@@ -3038,8 +3260,23 @@ ALTER TABLE ONLY public.approval_requests
 ALTER TABLE ONLY public.blobs
     ADD CONSTRAINT blobs_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.credential_access_log
     ADD CONSTRAINT credential_access_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3461,8 +3698,29 @@ ALTER TABLE ONLY public.views
 ALTER TABLE ONLY public.agent_database_grants
     ADD CONSTRAINT agent_database_grants_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.docs
     ADD CONSTRAINT docs_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -3637,11 +3895,41 @@ CREATE POLICY tenant_isolation ON public.blobs AS RESTRICTIVE USING ((tenant_id 
 
 CREATE POLICY tenant_rows ON public.blobs USING (true) WITH CHECK (true);
 
+ALTER TABLE public.calendar_account_sync_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_account_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_account_sync_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_event_push_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_event_push_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_event_push_state USING (true) WITH CHECK (true);
+
 ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON public.calendar_feed_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.calendar_feed_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_push_channels ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_push_channels AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_push_channels USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_remote_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.event_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.event_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.event_remote_state USING (true) WITH CHECK (true);
 
 ALTER TABLE public.credential_access_log ENABLE ROW LEVEL SECURITY;
 

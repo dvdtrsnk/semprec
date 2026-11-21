@@ -227,6 +227,15 @@ class ItemViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a new name with line breaks is written on one line`() = runTest(dispatcher) {
+        arrange()
+        val vm = open()
+        vm.onAction(ItemAction.Edit.Rename("New\nname\n"))
+        runCurrent()
+        assertEquals(mapOf<String, FieldValue?>("name" to FieldValue.Text("New name")), fake.updates.single().third)
+        vm.close()
+    }
+
     @Test fun `each kind of value is written in its own shape and an empty one clears it`() = runTest(dispatcher) {
         arrange()
         val vm = open()

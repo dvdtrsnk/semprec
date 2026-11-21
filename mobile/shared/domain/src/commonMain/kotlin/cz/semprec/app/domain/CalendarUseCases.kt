@@ -81,22 +81,31 @@ class EditCalendarEntry(private val repository: CalendarRepository) {
         if (editable) RepositoryResult.Content(Unit) else RepositoryResult.Failure(FailureKind.REJECTED)
 }
 
+/** What creating a new item came to: the item, or a form the checks refused before the server was asked. */
+sealed interface NewCalendarItemOutcome {
+    data class Created(val itemId: String) : NewCalendarItemOutcome
+
+    /** No title, a kind that is neither an event nor a task, or an option out of its range. */
+    data object BreaksRules : NewCalendarItemOutcome
+}
+
 /** Creates a new event or task after the checks that need no server: a title and a schedule that fits its kind. */
 class CreateCalendarItem(private val repository: CalendarRepository) {
-    suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<String> {
+    suspend operator fun invoke(draft: NewCalendarItem): RepositoryResult<NewCalendarItemOutcome> {
         val kindFits = draft.kind == CalendarEntryKind.EVENT || draft.kind == CalendarEntryKind.TASK
-        val title = draft.title.trim()
-        return if (kindFits && title.isNotEmpty() && draft.optionsFit()) {
-            repository.create(
-                draft.copy(
-                    title = title,
-                    place = draft.place?.trim()?.ifEmpty { null },
-                    notes = draft.notes?.trim()?.ifEmpty { null },
-                    url = draft.url?.trim()?.ifEmpty { null },
-                ),
-            )
-        } else {
-            RepositoryResult.Failure(FailureKind.REJECTED)
+        val title = singleLineTitle(draft.title)
+        if (!kindFits || title.isEmpty() || !draft.optionsFit()) {
+            return RepositoryResult.Content(NewCalendarItemOutcome.BreaksRules)
+        }
+        val trimmed = draft.copy(
+            title = title,
+            place = draft.place?.trim()?.ifEmpty { null },
+            notes = draft.notes?.trim()?.ifEmpty { null },
+            url = draft.url?.trim()?.ifEmpty { null },
+        )
+        return when (val created = repository.create(trimmed)) {
+            is RepositoryResult.Failure -> created
+            is RepositoryResult.Content -> RepositoryResult.Content(NewCalendarItemOutcome.Created(created.value))
         }
     }
 }
@@ -115,12 +124,18 @@ private fun NewCalendarItem.optionsFit(): Boolean {
     }
 }
 
-/** The calendars and the rules for changing them: a name is never empty, only an own calendar is renamed. */
+/**
+ * The calendars and the rules for changing them: a name is never empty, only an own calendar or one of an internet
+ * account is renamed (the account's only here, not at the provider), and only an account calendar goes back to the
+ * provider's colour.
+ */
 class EditCalendars(private val repository: CalendarCatalogRepository) {
     suspend fun edit(calendar: CalendarInfo, change: CalendarEdit): RepositoryResult<Unit> {
         val name = change.name?.trim()
-        val renamesWrongly = name != null && (name.isEmpty() || calendar.kind != CalendarKind.OWN)
-        return if (renamesWrongly) {
+        val renamable = calendar.kind == CalendarKind.OWN || calendar.kind == CalendarKind.ACCOUNT
+        val renamesWrongly = name != null && (name.isEmpty() || !renamable)
+        val resetsWrongly = change.useRemoteColor && calendar.kind != CalendarKind.ACCOUNT
+        return if (renamesWrongly || resetsWrongly) {
             RepositoryResult.Failure(FailureKind.REJECTED)
         } else {
             repository.edit(calendar, change.copy(name = name))
@@ -130,7 +145,7 @@ class EditCalendars(private val repository: CalendarCatalogRepository) {
     suspend fun create(name: String, color: String): RepositoryResult<String> =
         if (name.isBlank()) RepositoryResult.Failure(FailureKind.REJECTED) else repository.create(name.trim(), color)
 
-    /** Only an own calendar that is not the default one can be deleted. */
+    /** Only an own calendar that is not the default one can be deleted; an account calendar goes with its account. */
     suspend fun delete(calendar: CalendarInfo): RepositoryResult<Unit> =
         if (calendar.kind == CalendarKind.OWN && !calendar.isDefault) {
             repository.delete(calendar.id)

@@ -6,6 +6,7 @@ import cz.semprec.app.domain.ItemChange
 import cz.semprec.app.domain.Schedule
 import cz.semprec.app.domain.ScheduleRules
 import cz.semprec.app.domain.WorkItem
+import cz.semprec.app.domain.singleLineTitle
 
 /** What an edit of the Podrobnosti sheet asks the server to change; `null` for an edit that changes nothing. */
 internal object ItemDetailsChanges {
@@ -13,7 +14,8 @@ internal object ItemDetailsChanges {
         field(action, item) ?: relation(action, item) ?: schedule(action, item)
 
     private fun field(action: ItemDetailsAction, item: WorkItem): ItemChange? = when (action) {
-        is ItemDetailsAction.SetTitle -> action.title.trim().takeIf { it.isNotEmpty() }?.let { ItemChange.Title(it) }
+        is ItemDetailsAction.SetTitle ->
+            singleLineTitle(action.title).takeIf { it.isNotEmpty() }?.let { ItemChange.Title(it) }
         ItemDetailsAction.ToggleDone -> ItemChange.Done(item.status != TaskStatus.DONE)
         is ItemDetailsAction.SetDescription -> ItemChange.Description(action.text)
         is ItemDetailsAction.SetPlace -> ItemChange.Place(action.text)

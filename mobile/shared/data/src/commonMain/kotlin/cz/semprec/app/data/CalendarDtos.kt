@@ -16,6 +16,19 @@ internal data class CalendarStoredItem(
     val id: String,
     val properties: JsonObject = JsonObject(emptyMap()),
     val version: String,
+    /** The targets of each relation the query asked to expand, by relation key; empty when none was asked for. */
+    val relations: Map<String, List<CalendarRelationTarget>> = emptyMap(),
+)
+
+/**
+ * An item a relation points to: its id, its title and the properties the query projected. A target the reader may not
+ * read arrives with its id only.
+ */
+@Serializable
+internal data class CalendarRelationTarget(
+    val id: String,
+    val title: String = "",
+    val properties: JsonObject = JsonObject(emptyMap()),
 )
 
 @Serializable
@@ -104,8 +117,15 @@ internal data class BadgeCountsResponse(val pendingInvites: Int = 0)
 @Serializable
 internal data class CalendarPatchRequest(val properties: JsonObject, val ifVersion: String? = null)
 
+/** A body that creates an item with [properties] and, in the same write, the edges of [relations]. */
 @Serializable
-internal data class CalendarCreateRequest(val properties: JsonObject)
+internal data class CalendarCreateRequest(
+    val properties: JsonObject,
+    val relations: List<CalendarCreateRelation>? = null,
+)
+
+@Serializable
+internal data class CalendarCreateRelation(val propertyKey: String, val targetItemIds: List<String>)
 
 @Serializable
 internal data class CancellationImpactDto(

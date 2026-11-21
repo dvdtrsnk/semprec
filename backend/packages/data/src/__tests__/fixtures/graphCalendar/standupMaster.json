@@ -1,0 +1,51 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/events/$entity",
+  "@odata.etag": "W/\"ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==\"",
+  "id": "AAMkSeries-standup",
+  "createdDateTime": "2026-10-28T07:12:44.1120000Z",
+  "lastModifiedDateTime": "2026-11-03T16:02:10.5530000Z",
+  "changeKey": "ZlnW4RIAV06KYYwlrfNZvQAAAAAGtA==",
+  "originalStartTimeZone": "Central Europe Standard Time",
+  "originalEndTimeZone": "Central Europe Standard Time",
+  "reminderMinutesBeforeStart": 5,
+  "isReminderOn": true,
+  "subject": "Standup",
+  "bodyPreview": "Daily sync",
+  "isAllDay": false,
+  "isCancelled": false,
+  "isOrganizer": true,
+  "seriesMasterId": null,
+  "type": "seriesMaster",
+  "webLink": "https://outlook.office365.com/owa/?itemid=AAMkSeries-standup&exvsurl=1&path=/calendar/item",
+  "onlineMeeting": null,
+  "body": { "contentType": "text", "content": "Daily sync" },
+  "start": { "dateTime": "2026-11-02T08:00:00.0000000", "timeZone": "UTC" },
+  "end": { "dateTime": "2026-11-02T08:15:00.0000000", "timeZone": "UTC" },
+  "location": { "displayName": "Room 2", "locationType": "default" },
+  "recurrence": {
+    "pattern": {
+      "type": "weekly",
+      "interval": 2,
+      "month": 0,
+      "dayOfMonth": 0,
+      "daysOfWeek": ["monday", "wednesday"],
+      "firstDayOfWeek": "sunday",
+      "index": "first"
+    },
+    "range": {
+      "type": "endDate",
+      "startDate": "2026-11-02",
+      "endDate": "2026-11-30",
+      "recurrenceTimeZone": "Central Europe Standard Time",
+      "numberOfOccurrences": 0
+    }
+  },
+  "attendees": [
+    {
+      "type": "required",
+      "status": { "response": "accepted", "time": "2026-10-28T08:00:00Z" },
+      "emailAddress": { "name": "Alex Doe", "address": "alex@example.test" }
+    }
+  ],
+  "organizer": { "emailAddress": { "name": "Me", "address": "me@example.test" } }
+}

@@ -13,7 +13,7 @@ import { readRefDocumentStates } from "../docs/docsStore.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
-import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
+import { getTaskRecurrenceBySeriesId } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { readMailDraftRefDetails } from "../mail/mailDraftRefExpansion.js";
@@ -191,7 +191,7 @@ async function readTaskOccurrenceContext(
   // Soft deletion keeps the recurrence row until purge, so a series whose owner item is gone is unavailable.
   const [instance] = await getItemsByIds(client, [series.itemId]);
   if (!instance) return null;
-  const template = publicTaskRecurrenceTemplate(series.template);
+  const template = series.template;
   return {
     label: Array.from(template.name ?? "")
       .slice(0, 500)

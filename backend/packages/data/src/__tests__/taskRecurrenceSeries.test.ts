@@ -453,7 +453,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
             timeFrom: "09:00",
             timeTo: "10:30",
             notifications: true,
-            persistent: true,
             flagged: false,
             description: "Template notes",
           },
@@ -463,8 +462,6 @@ describe("recurring task series (issues #1605, #1670)", () => {
       const next = (await occurrencesOf(tenant, seriesId)).find((o) => o.id !== task.id);
       if (!next) throw new Error("No next occurrence");
       const nextProperties = (await runInTenant(tenant, () => cp.getItem(tasks, next.id)))?.properties;
-      // The legacy template's `persistent: true` is not copied.
-      expect(nextProperties && Object.hasOwn(nextProperties, "persistent")).toBe(false);
       expect(nextProperties).toMatchObject({
         name: "Template name",
         timeFrom: "09:00",

@@ -2,6 +2,7 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.domain.MailLink
 import cz.semprec.app.domain.MailLinkKind
 import cz.semprec.app.domain.MailNamedRef
@@ -170,7 +171,7 @@ class MailThreadViewModelTest : MainDispatcherTest() {
         }
 
     @Test fun `flagging shows at once and takes the answer of the server`() = runTest(dispatcher) {
-        val mail = ScriptedMailRepository(flag = MailCall({ RepositoryResult.Content(true) }))
+        val mail = ScriptedMailRepository(flag = MailCall(mailDone(true)))
         val vm = viewModel(mail)
         runCurrent()
         vm.onAction(MailThreadAction.ToggleFlag)
@@ -189,6 +190,61 @@ class MailThreadViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertFalse(vm.state.value.flagged)
         assertTrue(vm.state.value.actionFailed)
+        vm.close()
+    }
+
+    @Test fun `a flag refused for a thread without a received message says why until dismissed`() =
+        runTest(dispatcher) {
+            val mail = ScriptedMailRepository(flag = MailCall(mailRefused(MailRefusal.NO_RECEIVED_MESSAGE)))
+            val vm = viewModel(mail)
+            runCurrent()
+            vm.onAction(MailThreadAction.ToggleFlag)
+            runCurrent()
+            assertFalse(vm.state.value.flagged)
+            assertTrue(vm.state.value.actionFailed)
+            assertEquals(MailRefusal.NO_RECEIVED_MESSAGE, vm.state.value.actionRefusal)
+            vm.onAction(MailThreadAction.DismissFailure)
+            assertFalse(vm.state.value.actionFailed)
+            assertNull(vm.state.value.actionRefusal)
+            vm.close()
+        }
+
+    @Test fun `a move refused for a known reason stays on the thread and says why`() = runTest(dispatcher) {
+        val cases = listOf(
+            MailThreadMove.ARCHIVE to MailRefusal.ARCHIVE_FOLDER_MISSING,
+            MailThreadMove.TRASH to MailRefusal.ALREADY_TRASHED,
+            MailThreadMove.TRASH to MailRefusal.MOVE_SOURCE_UNVERIFIED,
+            MailThreadMove.RESTORE to MailRefusal.SENT_FOLDER_MISSING,
+        )
+        for ((move, refusal) in cases) {
+            val mail = ScriptedMailRepository(moves = MailCall(mailRefused(refusal)))
+            val vm = viewModel(mail)
+            val effects = collectEffects(vm)
+            runCurrent()
+            vm.onAction(MailThreadAction.Move(move))
+            runCurrent()
+            assertTrue(vm.state.value.actionFailed, "$refusal")
+            assertEquals(refusal, vm.state.value.actionRefusal)
+            assertEquals(1, mail.thread.count, "$refusal")
+            assertEquals(emptyList(), effects, "$refusal")
+            vm.close()
+        }
+    }
+
+    @Test fun `a failure without a reason after a refused move shows no old reason`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            moves = MailCall(mailRefused(MailRefusal.TRASH_FOLDER_MISSING)),
+            tasks = MailCall(mailFailure(FailureKind.UNAVAILABLE)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadAction.Move(MailThreadMove.TRASH))
+        runCurrent()
+        assertEquals(MailRefusal.TRASH_FOLDER_MISSING, vm.state.value.actionRefusal)
+        vm.onAction(MailThreadAction.AddTask)
+        runCurrent()
+        assertTrue(vm.state.value.actionFailed)
+        assertNull(vm.state.value.actionRefusal)
         vm.close()
     }
 
@@ -270,7 +326,7 @@ class MailThreadViewModelTest : MainDispatcherTest() {
     @Test fun `a refused save does not send and a failed send can be tried again`() = runTest(dispatcher) {
         val drafts = ScriptedMailDraftRepository(
             update = MailCall(mailFailure(FailureKind.REJECTED)),
-            send = MailCall(mailFailure(FailureKind.REJECTED), mailContent(MailSentDraft("d1", "t1", "Gmail"))),
+            send = MailCall(mailFailure(FailureKind.REJECTED), mailDone(MailSentDraft("d1", "t1", "Gmail"))),
         )
         val vm = viewModel(ScriptedMailRepository(thread = MailCall(mailContent(withDraft))), drafts)
         runCurrent()
@@ -287,6 +343,28 @@ class MailThreadViewModelTest : MainDispatcherTest() {
         assertEquals(2, drafts.send.count)
         vm.close()
     }
+
+    @Test fun `a send refused for a missing Sent folder says why and sending again clears it`() =
+        runTest(dispatcher) {
+            val drafts = ScriptedMailDraftRepository(
+                send = MailCall(
+                    mailRefused(MailRefusal.SENT_FOLDER_MISSING),
+                    mailDone(MailSentDraft("d1", "t1", "Gmail")),
+                ),
+            )
+            val vm = viewModel(ScriptedMailRepository(thread = MailCall(mailContent(withDraft))), drafts)
+            runCurrent()
+            vm.onAction(MailThreadAction.SendDraft("Dobrý den"))
+            runCurrent()
+            assertEquals(MailSendPhase.FAILED, vm.state.value.sendPhase)
+            assertEquals(FailureKind.REJECTED, vm.state.value.sendFailure)
+            assertEquals(MailRefusal.SENT_FOLDER_MISSING, vm.state.value.sendRefusal)
+            vm.onAction(MailThreadAction.SendDraft("Dobrý den"))
+            assertNull(vm.state.value.sendRefusal)
+            runCurrent()
+            assertEquals(MailSendPhase.SENT, vm.state.value.sendPhase)
+            vm.close()
+        }
 
     @Test fun `a send that crashes fails without a kind and without a draft nothing is sent`() = runTest(dispatcher) {
         val drafts = ScriptedMailDraftRepository(send = MailCall(crashes()))

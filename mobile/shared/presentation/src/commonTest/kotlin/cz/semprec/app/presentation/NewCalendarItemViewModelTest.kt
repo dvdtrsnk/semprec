@@ -21,8 +21,13 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
     private val catalog = FakeCatalogRepository()
 
     private fun viewModel(source: CalendarCatalogRepository = catalog) =
-        CalendarViewModelFactory(repository, source, FakeInvitationRepository(), repository.changes)
-            .newCalendarItemViewModel("2026-10-17")
+        CalendarViewModelFactory(
+            repository,
+            source,
+            FakeInvitationRepository(),
+            repository.changes,
+            ScriptedInternetAccountRepository(),
+        ).newCalendarItemViewModel("2026-10-17")
 
     private fun TestScope.loaded(): NewCalendarItemViewModel = viewModel().also { runCurrent() }
 
@@ -51,6 +56,78 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         assertEquals(listOf("personal", "work"), vm.state.value.calendars.map { it.id })
         assertTrue(vm.state.value.calendars.first().isDefault)
         vm.close()
+    }
+
+    @Test fun `offers the writable account calendars but not the read-only ones`() = runTest(dispatcher) {
+        catalog.calendars += listOf(accountCalendar("g1", "m1"), accountCalendar("g2", "m1", readOnly = true))
+        val vm = viewModel()
+        runCurrent()
+        assertEquals(listOf("personal", "work", "g1"), vm.state.value.calendars.map { it.id })
+        assertEquals("#0B8043", vm.state.value.calendars.last().color)
+        vm.close()
+    }
+
+    @Test fun `the own calendars come first then each account's in the order they are listed`() = runTest(dispatcher) {
+        catalog.calendars += listOf(
+            synced("g1", "m1", "Family", "iCloud", "david@tresnak.cc"),
+            synced("o1", "m2", "Team", "Outlook", "david@work.cz"),
+            synced("g2", "m1", "Timelog", "iCloud", "david@tresnak.cc"),
+            synced("x1", null, "Shared", null, null),
+        )
+        val state = loaded().also { it.close() }.state.value
+        val icloud = NewItemAccount("m1", "iCloud", "david@tresnak.cc")
+        assertEquals(
+            listOf(null, icloud, NewItemAccount("m2", "Outlook", "david@work.cz"), NewItemAccount("", null, null)),
+            state.groups.map { it.account },
+        )
+        assertEquals(
+            listOf(listOf("personal", "work"), listOf("g1", "g2"), listOf("o1"), listOf("x1")),
+            state.groups.map { group -> group.calendars.map { it.id } },
+        )
+        assertEquals(listOf(icloud, icloud), state.groups[1].calendars.map { it.account })
+        assertEquals(listOf("personal", "work", "g1", "g2", "o1", "x1"), state.calendars.map { it.id })
+    }
+
+    @Test fun `read-only system and subscribed calendars are not offered and leave no empty group`() =
+        runTest(dispatcher) {
+            catalog.calendars += listOf(
+                synced("g1", "m1", "Holidays", "iCloud", "a@icloud.com", readOnly = true),
+                synced("o1", "m2", "Team", "Outlook", "b@work.cz"),
+            )
+            val state = loaded().also { it.close() }.state.value
+            assertEquals(listOf(null, "m2"), state.groups.map { it.account?.id })
+            assertEquals(listOf("personal", "work", "o1"), state.calendars.map { it.id })
+        }
+
+    @Test fun `a name another offered calendar has too is shown with its source`() = runTest(dispatcher) {
+        catalog.calendars = listOf(
+            own("own-personal", "Osobní"),
+            own("own-family", "Rodina"),
+            own("own-work", "Práce"),
+            synced("g1", "m1", " osobní ", "iCloud", "david@tresnak.cc"),
+            synced("g2", "m1", "Rodina", "iCloud", "david@tresnak.cc"),
+            synced("g3", "m1", "Work", "iCloud", "david@tresnak.cc"),
+            synced("g4", "m2", "Rodina", "Family", "family@icloud.com"),
+            synced("g5", "m3", "Rodina", "Family", "anna@icloud.com"),
+            synced("g6", "m4", "Rodina", null, "shared@example.com"),
+            synced("g7", "m5", "Rodina", null, null),
+        )
+        val qualifiers = loaded().also { it.close() }.state.value.calendars.associate { it.id to it.qualifier }
+        assertEquals(
+            mapOf(
+                "own-personal" to NewItemCalendarQualifier.OWN,
+                "own-family" to NewItemCalendarQualifier.OWN,
+                "own-work" to NewItemCalendarQualifier.NONE,
+                "g1" to NewItemCalendarQualifier.ACCOUNT_NAME,
+                "g2" to NewItemCalendarQualifier.ACCOUNT_NAME,
+                "g3" to NewItemCalendarQualifier.NONE,
+                "g4" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g5" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g6" to NewItemCalendarQualifier.ACCOUNT_ADDRESS,
+                "g7" to NewItemCalendarQualifier.ACCOUNT_NAME,
+            ),
+            qualifiers,
+        )
     }
 
     @Test fun `the form works when the calendars cannot be read`() = runTest(dispatcher) {
@@ -124,6 +201,63 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a refusal by the server is an unexpected failure not the form message`() = runTest(dispatcher) {
+        val vm = loaded()
+        repository.writeResult = RepositoryResult.Failure(FailureKind.REJECTED)
+        vm.onAction(event())
+        runCurrent()
+        assertEquals(NewItemPhase.FAILED, vm.state.value.phase)
+        assertNull(vm.state.value.failure)
+        vm.close()
+    }
+
+    @Test fun `the same form sent again after a failure keeps its submission key`() = runTest(dispatcher) {
+        val vm = loaded()
+        val effects = effectsOf(vm)
+        val keys = mutableListOf<String?>()
+        val answers: List<RepositoryResult<Unit>> =
+            listOf(unavailable, RepositoryResult.Failure(FailureKind.REJECTED), RepositoryResult.Content(Unit))
+        for (answer in answers) {
+            repository.writeResult = answer
+            vm.onAction(event())
+            runCurrent()
+            keys += repository.lastDraft?.submissionKey
+        }
+        assertEquals(1, keys.distinct().size)
+        assertEquals(listOf(NewItemEffect.Created("new1")), effects)
+        vm.close()
+    }
+
+    @Test fun `an edit or a different form starts a new submission key`() = runTest(dispatcher) {
+        val vm = loaded()
+        repository.writeResult = unavailable
+        val keys = mutableListOf<String?>()
+        val sends = listOf(
+            listOf(event()),
+            listOf(NewItemAction.Edited, event()),
+            listOf(event(title = "Dinner")),
+            listOf(event(calendarId = "personal")),
+        )
+        for (actions in sends) {
+            actions.forEach(vm::onAction)
+            runCurrent()
+            keys += repository.lastDraft?.submissionKey
+        }
+        assertEquals(4, keys.filterNotNull().distinct().size)
+        vm.close()
+    }
+
+    @Test fun `a new sheet submits under a key of its own`() = runTest(dispatcher) {
+        val keys = List(2) {
+            val vm = loaded()
+            vm.onAction(event())
+            runCurrent()
+            vm.close()
+            repository.lastDraft?.submissionKey
+        }
+        assertEquals(2, keys.filterNotNull().distinct().size)
+    }
+
     @Test fun `a second create is ignored while the first is saved`() = runTest(dispatcher) {
         val vm = loaded()
         vm.onAction(event())
@@ -154,4 +288,15 @@ class NewCalendarItemViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertTrue(repository.calls.none { it.startsWith("create") })
     }
+
+    private fun own(id: String, name: String) = calendarInfo(id).copy(name = name)
+
+    private fun synced(
+        id: String,
+        accountId: String?,
+        name: String,
+        accountName: String?,
+        address: String?,
+        readOnly: Boolean = false,
+    ) = accountCalendar(id, accountId, readOnly).copy(name = name, accountName = accountName, accountAddress = address)
 }

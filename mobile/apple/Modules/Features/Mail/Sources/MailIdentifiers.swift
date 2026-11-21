@@ -40,21 +40,4 @@ enum MailIdentifiers {
     static let smartPrefix = "mail.folders.smart."
     static let folderPrefix = "mail.folders.folder."
     static let accountTogglePrefix = "mail.folders.account."
-
-    static let accountsScreen = "mail.accounts.screen"
-    static let accountRowPrefix = "mail.accounts.row."
-    static let addAccount = "mail.accounts.add"
-    static let addSheet = "mail.accounts.addSheet"
-    static let addAddress = "mail.accounts.addSheet.address"
-    static let addPassword = "mail.accounts.addSheet.password"
-    static let addImap = "mail.accounts.addSheet.imap"
-    static let addSmtp = "mail.accounts.addSheet.smtp"
-    static let addSubmit = "mail.accounts.addSheet.submit"
-
-    static let accountScreen = "mail.account.screen"
-    static let accountName = "mail.account.name"
-    static let accountRemove = "mail.account.remove"
-    static let accountConfirmRemove = "mail.account.confirmRemove"
-    static let connectionsMore = "mail.account.connections.more"
-    static let connectionsLess = "mail.account.connections.less"
 }

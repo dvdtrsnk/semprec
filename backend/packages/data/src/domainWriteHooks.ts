@@ -19,6 +19,11 @@ import {
   mailboxConnectionLimitCreateHook,
   mailboxConnectionLimitUpdateHook,
 } from "./mail/mailboxConnectionLimitHook.js";
+import {
+  mailboxServiceItemCreateHook,
+  mailboxServiceItemUpdateHook,
+  mailboxServiceItemUpdatePreLockHook,
+} from "./mail/mailboxServiceHooks.js";
 import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./seed/emailModuleKeys.js";
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
@@ -89,6 +94,14 @@ import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
 import { registerCalendarFeedConsumer } from "./calendar/calendarSubscriptionSweep.js";
 import { importSubscribedEvents } from "./calendar/subscribedEventsImport.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
+import { prepareZonedEventEdit, zonedEventEditTransform } from "./calendar/zonedEventEdit.js";
+import {
+  eventPushEdgeChangedHook,
+  eventPushItemCreateHook,
+  eventPushItemDeleteHook,
+  eventPushItemRestoreHook,
+  eventPushItemUpdateHook,
+} from "./calendar/sync/eventPushHooks.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { nextOccurrenceDateTransform, prepareNextOccurrenceDate } from "./calendar/nextOccurrenceDateTransform.js";
 import {
@@ -99,11 +112,26 @@ import {
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
 import { eventRecurrenceItemCreateHook, eventRecurrenceItemUpdateHook } from "./calendar/eventRecurrenceHook.js";
 import {
+  prepareSyncedRecurrence,
+  syncedEventItemCreateHook,
+  syncedEventItemUpdateHook,
+  syncedRecurrenceTransform,
+} from "./calendar/syncedEventFields.js";
+import {
   eventReminderValuesItemCreateHook,
   eventReminderValuesItemUpdateHook,
 } from "./calendar/eventReminderValuesHook.js";
 import { eventParticipantEdgeWriteHook } from "./calendar/eventParticipantEdgeHook.js";
 import { defaultCalendarCreateHook } from "./calendar/defaultCalendarCreateHook.js";
+import {
+  accountCalendarEventDeleteApprovalGuard,
+  accountCalendarEventDeleteHook,
+  accountCalendarEventDeletePreLockHook,
+  accountCalendarEventEdgeDeleteHook,
+  accountCalendarEventEdgeWriteHook,
+  accountCalendarEventUpdateHook,
+  accountCalendarEventUpdatePreLockHook,
+} from "./calendar/accountCalendarWriteGuard.js";
 import { eventInvitationItemDeleteHook, eventInvitationItemUpdateHook } from "./calendar/eventInvitationHooks.js";
 import {
   calendarItemCreateHook,
@@ -241,7 +269,11 @@ const itemPreWriteTransforms: readonly (readonly [string, ItemPreWriteTransform,
   ],
   // Events: the time transform first, so the iCalendar sequence compares normalized times.
   [EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime],
+  // A user's or agent's time edit of an Event with its own zone, read in the tenant's zone, is stored in the Event's.
+  [EVENTS_MODULE_ID, zonedEventEditTransform, prepareZonedEventEdit],
   [EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity],
+  // A `recurrence` edit of a synced series clears its raw rule, before the next occurrence day reads the rule.
+  [EVENTS_MODULE_ID, syncedRecurrenceTransform, prepareSyncedRecurrence],
   // The next occurrence day of a recurring Event, after the time transform normalized it.
   [EVENTS_MODULE_ID, nextOccurrenceDateTransform, prepareNextOccurrenceDate],
   // A calendar subscription's `subscriptionUrl` is normalized and judged before the row is written.
@@ -258,6 +290,11 @@ const itemUpdatePreLockHooks: readonly (readonly [string, ItemUpdatePreLockHook]
   [CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook],
   // Lock order: the night's lock before the exception's row, as the PUT does.
   [SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook],
+  // Lock order: the mailbox's sync guard, the calendar sync guard and the sync state row before the Mailboxes row, as
+  // a removal takes them.
+  [MAILBOXES_MODULE_ID, mailboxServiceItemUpdatePreLockHook],
+  // Lock order: an Event's account calendar before the Event's row, as a calendar trash takes them.
+  [EVENTS_MODULE_ID, accountCalendarEventUpdatePreLockHook],
 ];
 
 const itemDeletePreLockHooks: readonly (readonly [string, ItemDeletePreLockHook])[] = [
@@ -265,6 +302,8 @@ const itemDeletePreLockHooks: readonly (readonly [string, ItemDeletePreLockHook]
   [CALENDARS_MODULE_ID, calendarItemDeletePreLockHook],
   // The whole recurring task series, before the cascade locks the named task.
   [TASKS_MODULE_ID, taskSeriesItemDeletePreLockHook],
+  // Lock order: an Event's account calendar before the Event's row, as a calendar trash takes them.
+  [EVENTS_MODULE_ID, accountCalendarEventDeletePreLockHook],
 ];
 
 const itemRestorePreLockHooks: readonly (readonly [string, ItemRestorePreLockHook])[] = [
@@ -281,6 +320,7 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   // Events: the date and time rules judge what the transforms stored.
   eventValidationItemCreateHook,
   eventRecurrenceItemCreateHook,
+  syncedEventItemCreateHook,
   blobReferenceItemCreateHook,
   mcpServerItemCreateHook,
   // After the blob reference hook.
@@ -295,12 +335,16 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   inboxItemCreateHook,
   inboxTypeItemCreateHook,
   mailboxConnectionLimitCreateHook,
+  // An account created with Calendars on queues its first calendar sync pass.
+  mailboxServiceItemCreateHook,
   areaItemCreateHook,
   // A company created with a `web` feeds the resolver rules like an update of its `web`.
   linkRuleItemCreateHook,
   eventReminderValuesItemCreateHook,
   // A new Event gets its calendar, after every Events rule above accepted it.
   defaultCalendarCreateHook,
+  // An Event created in a writable account calendar is queued for its provider, once its calendar edge exists.
+  eventPushItemCreateHook,
   // Calendars: name, colour and single-default rules.
   calendarItemCreateHook,
   personBirthdayItemCreateHook,
@@ -317,10 +361,13 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
 
 /** After the row update. */
 const itemUpdateHooks: readonly ItemUpdateHook[] = [
+  // A user's or agent's change of an Event in a read-only account calendar is refused before any other rule runs.
+  accountCalendarEventUpdateHook,
   // A cancelled, restored or moved occurrence recomputes its series' next occurrence day.
   nextOccurrenceSeriesItemUpdateHook,
   eventValidationItemUpdateHook,
   eventRecurrenceItemUpdateHook,
+  syncedEventItemUpdateHook,
   blobReferenceItemUpdateHook,
   mcpServerItemUpdateHook,
   recipePhotoWriteHook,
@@ -333,6 +380,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   libraryRatingItemUpdateHook,
   inboxTypeItemUpdateHook,
   mailboxConnectionLimitUpdateHook,
+  // Switching an account's Mail off pauses its sync and queues the removal of its mail; on resumes the sync.
+  mailboxServiceItemUpdateHook,
   areaItemUpdateHook,
   linkRuleItemHook,
   peopleLastContactItemUpdateHook,
@@ -350,6 +399,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   sleepResyncUpdateHook,
   // A moved Event queues an updated invitation.
   eventInvitationItemUpdateHook,
+  // A change of an account calendar Event's provider fields is queued for its provider, after every rule above.
+  eventPushItemUpdateHook,
   remindersResyncUpdateHook,
   // An open Processing proposals card that refers to an archived project becomes `invalid` in the same transaction.
   proposalReferenceItemUpdateHook,
@@ -360,6 +411,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
  * `transcriptCompanyLinkReleaseItemDeleteHook`, then `eventHostedTasksDeleteHook`) is part of the contract.
  */
 const itemDeleteHooks: readonly ItemDeleteHook[] = [
+  // A user's or agent's trash of an Event in a read-only account calendar is refused before any other hook runs.
+  accountCalendarEventDeleteHook,
   nextOccurrenceSeriesItemDeleteHook,
   itemSearchDeleteHook,
   // A user's or agent's trash of a Mailboxes item is refused (only the mailbox removal, as the system writer,
@@ -386,6 +439,8 @@ const itemDeleteHooks: readonly ItemDeleteHook[] = [
   sleepResyncDeleteHook,
   // A trashed Event queues a cancellation.
   eventInvitationItemDeleteHook,
+  // A trashed account calendar Event is queued for deletion at its provider.
+  eventPushItemDeleteHook,
   transcriptProblemDeleteHook,
   remindersResyncDeleteHook,
   proposalReferenceItemDeleteHook,
@@ -415,6 +470,8 @@ const itemRestoreHooks: readonly ItemRestoreHook[] = [
   taskSeriesItemRestoreHook,
   sleepResyncRestoreHook,
   remindersResyncRestoreHook,
+  // A restored account calendar Event is queued for its provider again.
+  eventPushItemRestoreHook,
   // A Processing proposals card returns to `proposed` when the item it refers to comes back.
   proposalReferenceItemRestoreHook,
 ];
@@ -434,12 +491,16 @@ const relationEdgeWriteHooks: readonly RelationEdgeWriteHook[] = [
   inboxTypeLockWriteHook,
   inboxSourceEdgeWriteHook,
   eventParticipantEdgeWriteHook,
+  // A user's or agent's move of an Event into a read-only account calendar.
+  accountCalendarEventEdgeWriteHook,
 ];
 
 const relationEdgeDeleteHooks: readonly RelationEdgeDeleteHook[] = [
   threadValueEdgeDeleteHook,
   inboxTypeEdgeDeleteHook,
   inboxSourceEdgeDeleteHook,
+  // A user's or agent's move of an Event out of a read-only account calendar.
+  accountCalendarEventEdgeDeleteHook,
 ];
 
 const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
@@ -471,6 +532,8 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // It touches nothing else, so its position does not matter.
   transcriptSpeakerSuggestionEdgeChangedHook,
   threadTaskPeopleEdgeChangedHook,
+  // An Event moved into, out of or between account calendars is queued for its providers.
+  eventPushEdgeChangedHook,
 ];
 
 /** A user or agent edge write, before the write ends a value link; lock only. */
@@ -510,6 +573,7 @@ registerItemUpdateCommand(TASKS_MODULE_ID, {
 });
 // An agent run's request to trash a Mailboxes item is refused before it is queued for approval.
 registerItemDeleteApprovalGuard(MAILBOXES_MODULE_ID, mailboxDeleteApprovalGuard);
+registerItemDeleteApprovalGuard(EVENTS_MODULE_ID, accountCalendarEventDeleteApprovalGuard);
 // A recurring task's trash covers its whole series; the delete impact reader feeds the delete preview and the
 // `item.delete` approval projection.
 registerItemCascadeExpansion(TASKS_MODULE_ID, taskSeriesCascadeExpansion);

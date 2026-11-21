@@ -146,6 +146,7 @@ public enum MailThreadsPhase: Equatable, Sendable {
 }
 
 /// The thread list. `actionFailed` says a refresh, a page or a read mark did not go through; the list stays.
+/// `actionRefusal` names the reason the server gave for refusing a read mark.
 public struct MailThreadsState: Equatable, Sendable {
 
     public var phase: MailThreadsPhase
@@ -166,6 +167,7 @@ public struct MailThreadsState: Equatable, Sendable {
     public var reauthorization: [MailAccountNotice]
     public var facets: MailFacetsState
     public var actionFailed: Bool
+    public var actionRefusal: MailRefusal?
 
     public init(
         phase: MailThreadsPhase = .loading,
@@ -185,7 +187,8 @@ public struct MailThreadsState: Equatable, Sendable {
         mailboxes: [MailMailboxChip] = [],
         reauthorization: [MailAccountNotice] = [],
         facets: MailFacetsState = MailFacetsState(),
-        actionFailed: Bool = false
+        actionFailed: Bool = false,
+        actionRefusal: MailRefusal? = nil
     ) {
         self.phase = phase
         self.refreshing = refreshing
@@ -205,6 +208,7 @@ public struct MailThreadsState: Equatable, Sendable {
         self.reauthorization = reauthorization
         self.facets = facets
         self.actionFailed = actionFailed
+        self.actionRefusal = actionRefusal
     }
 }
 

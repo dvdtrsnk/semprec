@@ -4,6 +4,7 @@ import type {
   HeartbeatRuleKindRegistry,
   MailSendAdapterFactory,
   VerifiedMailServerSettings,
+  VerifyCalDavServerInput,
   VerifyMailCredentialsInput,
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
@@ -27,11 +28,17 @@ export interface CustomRouteOAuthConfig {
 
 export interface MailServerClients {
   /**
-   * Resolves with the IMAP and SMTP endpoints that accepted the login, and rejects when none did.
-   * Runs before any mailbox is stored. A mount without it fails each request of the password
-   * connect route with a configuration error.
+   * Resolves with the IMAP and SMTP endpoints that accepted the login, and the folders listed on the
+   * verified IMAP connection when asked for; rejects when no endpoint did. Runs before any mailbox is
+   * stored. A mount without it fails each request of the password routes with a configuration error.
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
+  /**
+   * Resolves when the login finds a calendar home at the CalDAV address. The password connect
+   * route calls it only for a body with `caldavUrl`; a mount without it fails such a request with
+   * a configuration error.
+   */
+  verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<void>;
   /**
    * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.

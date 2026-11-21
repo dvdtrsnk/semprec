@@ -74,6 +74,7 @@ async function serve(options: MountOptions = {}): Promise<Mount> {
         return {
           imap: { host: input.imapHost ?? "imap.mail.me.com", port: 993, security: "tls" },
           smtp: { host: input.smtpHost ?? "smtp.mail.me.com", port: 465, security: "tls" },
+          folders: null,
         };
       },
     },

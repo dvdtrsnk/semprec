@@ -6,6 +6,7 @@ import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftFields
 import cz.semprec.app.domain.MailDraftMode
 import cz.semprec.app.domain.MailDraftRepository
+import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPrefill
 import cz.semprec.app.domain.MailSentDraft
 import cz.semprec.app.domain.RepositoryResult
@@ -22,29 +23,31 @@ private const val DRAFTS_PATH = "/api/mail/drafts"
 
 /**
  * The drafts of `/api/mail/drafts*`. A person's send goes through the server as that person; the server refuses a
- * send that is not the person's own, and an agent's send is a proposal the person approves elsewhere.
+ * send that is not the person's own, and an agent's send is a proposal the person approves elsewhere. A refusal with a
+ * known code is [MailOutcome.Refused].
  */
 class HttpMailDraftRepository(private val api: AuthenticatedApi) : MailDraftRepository {
 
-    override suspend fun create(fields: MailDraftFields, threadId: String?): RepositoryResult<MailDraft> {
+    override suspend fun create(
+        fields: MailDraftFields,
+        threadId: String?,
+    ): RepositoryResult<MailOutcome<MailDraft>> {
         val body = buildJsonObject {
             putFields(fields)
             put("mode", MODE_NEW)
             if (threadId != null) put("threadId", threadId)
         }
-        return api.send(HttpMethod.Post, DRAFTS_PATH, body = body.toString()).decode<MailDraftDto>()
-            .map { it.toDomain() }
+        return api.send(HttpMethod.Post, DRAFTS_PATH, body = body.toString()).draftOutcome()
     }
 
-    override suspend fun createPrefilled(prefill: MailPrefill): RepositoryResult<MailDraft> {
+    override suspend fun createPrefilled(prefill: MailPrefill): RepositoryResult<MailOutcome<MailDraft>> {
         val body = buildJsonObject {
             put("mailboxId", prefill.mailboxId)
             put("mode", prefill.mode.wire())
             put("sourceEmailId", prefill.sourceEmailId)
             put("body", prefill.body)
         }
-        return api.send(HttpMethod.Post, DRAFTS_PATH, body = body.toString()).decode<MailDraftDto>()
-            .map { it.toDomain() }
+        return api.send(HttpMethod.Post, DRAFTS_PATH, body = body.toString()).draftOutcome()
     }
 
     override suspend fun read(draftId: String): RepositoryResult<MailDraft> =
@@ -54,21 +57,21 @@ class HttpMailDraftRepository(private val api: AuthenticatedApi) : MailDraftRepo
         draftId: String,
         version: String,
         fields: MailDraftFields,
-    ): RepositoryResult<MailDraft> {
+    ): RepositoryResult<MailOutcome<MailDraft>> {
         val body = buildJsonObject {
             put("ifVersion", version)
             putFields(fields)
         }
-        return api.send(HttpMethod.Patch, draftPath(draftId), body = body.toString()).decode<MailDraftDto>()
-            .map { it.toDomain() }
+        return api.send(HttpMethod.Patch, draftPath(draftId), body = body.toString()).draftOutcome()
     }
 
     override suspend fun discard(draftId: String): RepositoryResult<Unit> =
         api.send(HttpMethod.Delete, draftPath(draftId)).ignoreBody()
 
-    override suspend fun send(draftId: String): RepositoryResult<MailSentDraft> =
-        api.send(HttpMethod.Post, "${draftPath(draftId)}/send", body = "{}").decode<MailSentDto>()
-            .map { MailSentDraft(it.emailId, it.threadId, it.mailbox.name) }
+    override suspend fun send(draftId: String): RepositoryResult<MailOutcome<MailSentDraft>> =
+        api.send(HttpMethod.Post, "${draftPath(draftId)}/send", body = "{}").mailOutcome {
+            decode<MailSentDto>().map { MailSentDraft(it.emailId, it.threadId, it.mailbox.name) }
+        }
 
     override suspend fun contacts(query: String, exclude: List<String>): RepositoryResult<List<MailContact>> {
         val parameters = listOfNotNull(
@@ -87,6 +90,9 @@ class HttpMailDraftRepository(private val api: AuthenticatedApi) : MailDraftRepo
 }
 
 private fun draftPath(draftId: String) = "$DRAFTS_PATH/${draftId.encodeURLPathPart()}"
+
+private fun ApiResponse.draftOutcome(): RepositoryResult<MailOutcome<MailDraft>> =
+    mailOutcome { decode<MailDraftDto>().map { it.toDomain() } }
 
 private fun MailDraftMode.wire(): String = when (this) {
     MailDraftMode.NEW -> "new"

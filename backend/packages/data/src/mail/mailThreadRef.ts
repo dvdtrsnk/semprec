@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 export interface MailThreadRefTarget {
   currentThreadId: string;
-  /** Subject of the latest live message, else the thread's subject hint. */
+  /** Subject of the earliest live message, else the thread's subject hint. */
   label: string | null;
   /** `trashed` when every live copy is in Trash or no live copy is left. */
   state: "active" | "trashed";
@@ -72,7 +72,7 @@ FROM wanted w
 LEFT JOIN mail_threads t ON t.tenant_id = app_tenant_default() AND t.id = w.thread_id
 LEFT JOIN LATERAL (
   SELECT count(*)::int AS live_copies, bool_and(l.in_trash) AS all_in_trash,
-    (array_agg(l.subject ORDER BY l.activity DESC NULLS LAST, l.item_id DESC))[1] AS subject
+    (array_agg(l.subject ORDER BY l.activity ASC NULLS LAST, l.item_id ASC))[1] AS subject
   FROM live l WHERE l.thread_id = w.thread_id
 ) s ON true
 ORDER BY w.ordinal`,

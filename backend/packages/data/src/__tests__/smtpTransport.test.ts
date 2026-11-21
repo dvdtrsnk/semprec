@@ -937,7 +937,7 @@ const unusedReconcileMethods: Omit<ImapMailClient, "appendMessage" | "close"> = 
   listFolders: notCalled,
   selectFolder: notCalled,
   fetchMessagesSince: notCalled,
-  fetchVanishedSince: notCalled,
+  fetchChangesSince: notCalled,
   fetchAllUids: notCalled,
   fetchFlagsChangedSince: notCalled,
   setMessageFlag: notCalled,
@@ -1035,6 +1035,9 @@ async function createMailbox(
   });
 }
 
+/** The submission's outcome a saver called on its own is given: the server took the message. */
+const ACCEPTED = Promise.resolve(true);
+
 describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
   let pool: Pool;
   let mailboxId: string;
@@ -1078,7 +1081,8 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     expect(server.accepted).toHaveLength(1);
     expect(imap.opened).toEqual([{ endpoint: imapEndpoint, username }]);
     expect(imap.appends).toEqual([{ path: "Sent Items", raw: rawMessage, flags: ["\\Seen"] }]);
-    expect(events).toEqual(["smtp-close", "imap-open", "imap-append", "imap-close"]);
+    expect(events.filter((event) => event !== "imap-open")).toEqual(["smtp-close", "imap-append", "imap-close"]);
+    expect(events.filter((event) => event === "imap-open")).toHaveLength(1);
   });
 
   it("keeps no copy when the server refuses the submission", async () => {
@@ -1087,7 +1091,8 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
     await addSentFolder(pool, mailboxId, "Sent Items");
     const server = await startFakeSmtp({ acceptedPassword: "another-password" });
-    const imap = recordingImap([]);
+    const events: string[] = [];
+    const imap = recordingImap(events);
     const transport = createSmtpMailTransport(
       mailboxId,
       settingsFor("mail.test", server.port),
@@ -1100,8 +1105,11 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
 
     expect(error).toBeInstanceOf(MailSendAuthFailedError);
     expect(server.accepted).toHaveLength(0);
-    expect(imap.opened).toEqual([]);
     expect(imap.appends).toEqual([]);
+    // The connection opened alongside the submission is closed before the refusal is answered.
+    expect(events.filter((event) => event === "imap-open")).toHaveLength(
+      events.filter((e) => e === "imap-close").length,
+    );
   });
 
   it("a copy the server refuses leaves the send successful, logs a fixed stage, and closes the IMAP connection", async () => {
@@ -1161,12 +1169,84 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(rawMessage.toString());
   });
 
+  describe("overlapping the Sent-copy connection with the submission", () => {
+    const LATENCY_MS = 300;
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** A transporter whose submission takes `LATENCY_MS` and settles as `outcome` says. */
+    function slowSmtp(events: string[], outcome: "accepted" | "refused"): SmtpTransporterOpener {
+      return () => ({
+        verify: () => Promise.resolve(true),
+        sendMail: async () => {
+          events.push("smtp-start");
+          await delay(LATENCY_MS);
+          events.push(`smtp-${outcome}`);
+          if (outcome === "refused") throw Object.assign(new Error("535"), { code: "EAUTH" });
+          return { refusedRecipientCount: 0 };
+        },
+        close: () => {},
+      });
+    }
+
+    /** An IMAP connection whose setup takes `LATENCY_MS`, like the SMTP one. */
+    function slowImap(events: string[]): ImapConnectionOpener {
+      const recording = recordingImap(events);
+      return async (settings, password) => {
+        events.push("imap-connect");
+        await delay(LATENCY_MS);
+        return recording.open(settings, password);
+      };
+    }
+
+    it("opens the IMAP connection while SMTP submits and appends after acceptance, one connection setup faster", async () => {
+      await addSentFolder(pool, mailboxId, "Sent Items");
+      const events: string[] = [];
+      const transport = createSmtpMailTransport(
+        mailboxId,
+        settingsFor("mail.test", 465),
+        credential,
+        slowSmtp(events, "accepted"),
+        createSentCopySaver(pool, mailboxId, credential, slowImap(events)),
+      );
+
+      const started = performance.now();
+      await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+      const elapsed = performance.now() - started;
+
+      expect(events.indexOf("imap-connect")).toBeLessThan(events.indexOf("smtp-accepted"));
+      expect(events.indexOf("imap-append")).toBeGreaterThan(events.indexOf("smtp-accepted"));
+      expect(events.at(-1)).toBe("imap-close");
+      // In sequence the two setups took 2 × LATENCY_MS; overlapped, the send takes about one.
+      expect(elapsed).toBeLessThan(2 * LATENCY_MS);
+    });
+
+    it("closes the overlapped connection without an APPEND when the server refuses, before answering", async () => {
+      await addSentFolder(pool, mailboxId, "Sent Items");
+      const events: string[] = [];
+      const transport = createSmtpMailTransport(
+        mailboxId,
+        settingsFor("mail.test", 465),
+        credential,
+        slowSmtp(events, "refused"),
+        createSentCopySaver(pool, mailboxId, credential, slowImap(events)),
+      );
+
+      const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+
+      expect(error).toBeInstanceOf(MailSendAuthFailedError);
+      expect(events).not.toContain("imap-append");
+      expect(events.at(-1)).toBe("imap-close");
+    });
+  });
+
   it("keeps no copy when the mailbox has no Sent folder yet, and logs the reason", async () => {
     const warn = vi.spyOn(logger, "warn");
     const events: string[] = [];
     const imap = recordingImap(events);
 
-    await expect(createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage)).resolves.toBeUndefined();
+    await expect(
+      createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage, ACCEPTED),
+    ).resolves.toBeUndefined();
 
     expect(events).toEqual([]);
     expect(warn).toHaveBeenCalledWith({ mailboxItemId: mailboxId, reason: "no_sent_folder" }, expect.any(String));
@@ -1177,7 +1257,7 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     await addSentFolder(pool, mailboxId, "Sent Items");
     const imap = recordingImap([]);
 
-    const error = await rejectionOf(createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage));
+    const error = await rejectionOf(createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage, ACCEPTED));
 
     expect(error).toBeInstanceOf(ValidationError);
     expect(error).toMatchObject({ details: { field: "imap" } });
@@ -1189,7 +1269,7 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     const events: string[] = [];
     const imap = recordingImap(events);
 
-    await createSentCopySaver(pool, mailboxId, credential, imap.open, recordingLimiter(events))(rawMessage);
+    await createSentCopySaver(pool, mailboxId, credential, imap.open, recordingLimiter(events))(rawMessage, ACCEPTED);
 
     expect(events).toEqual([`limit:${mailboxId}:2`, "imap-open", "imap-append", "imap-close"]);
   });
@@ -1206,7 +1286,13 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
     const events: string[] = [];
     const imap = recordingImap(events);
 
-    await createSentCopySaver(pool, limitedMailboxId, credential, imap.open, recordingLimiter(events))(rawMessage);
+    await createSentCopySaver(
+      pool,
+      limitedMailboxId,
+      credential,
+      imap.open,
+      recordingLimiter(events),
+    )(rawMessage, ACCEPTED);
 
     expect(events).toEqual([`limit:${limitedMailboxId}:1`, "imap-open", "imap-append", "imap-close"]);
   });
