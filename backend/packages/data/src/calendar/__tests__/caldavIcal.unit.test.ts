@@ -1,4 +1,5 @@
 import ICAL from "ical.js";
+import { DateTime } from "luxon";
 import { describe, expect, it } from "vitest";
 import type { RemoteEventFields } from "../sync/adapter.js";
 import {
@@ -168,6 +169,48 @@ describe("a generated VTIMEZONE", () => {
     return timezone.utcOffset(time) / 3600;
   }
 
+  /** `kind dtstart rrule-or-RDATE-count` per observance, in order. */
+  function observances(vtimezone: ICAL.Component): string[] {
+    return vtimezone.getAllSubcomponents().map((observance) => {
+      const rule: unknown = observance.getFirstPropertyValue("rrule");
+      const rdates = observance.getAllProperties("rdate").length;
+      const start: unknown = observance.getFirstPropertyValue("dtstart");
+      return `${observance.name} ${String(start)} ${rule instanceof ICAL.Recur ? rule.toString() : `${rdates} RDATE`}`;
+    });
+  }
+
+  /**
+   * Local wall times at which ical.js reading `vtimezone` and the zone itself must agree: noon of every day from
+   * `fromYear` to `toYear`, and three hours either side of every offset change in that span.
+   */
+  function disagreements(zone: string, vtimezone: ICAL.Component, fromYear: number, toYear: number): string[] {
+    const timezone = new ICAL.Timezone(vtimezone);
+    const locals: DateTime[] = [];
+    for (let day = DateTime.utc(fromYear, 1, 1, 12); day.year <= toYear; day = day.plus({ days: 1 })) {
+      locals.push(day);
+      const before = DateTime.fromObject({ year: day.year, month: day.month, day: day.day }, { zone });
+      const after = before.plus({ days: 1 });
+      if (before.offset === after.offset) continue;
+      let low = before.toMillis();
+      let high = after.toMillis();
+      while (high - low > 60_000) {
+        const middle = low + Math.floor((high - low) / 120_000) * 60_000;
+        if (DateTime.fromMillis(middle, { zone }).offset === before.offset) low = middle;
+        else high = middle;
+      }
+      locals.push(DateTime.fromMillis(high - 3 * 3_600_000 + before.offset * 60_000, { zone: "UTC" }));
+      locals.push(DateTime.fromMillis(high + 3 * 3_600_000 + after.offset * 60_000, { zone: "UTC" }));
+    }
+    return locals.flatMap((local) => {
+      const expected = DateTime.fromObject(
+        { year: local.year, month: local.month, day: local.day, hour: local.hour, minute: local.minute },
+        { zone },
+      ).offset;
+      const actual = timezone.utcOffset(ICAL.Time.fromDateTimeString(local.toFormat("yyyy-MM-dd'T'HH:mm:ss"))) / 60;
+      return actual === expected ? [] : [`${local.toISO() ?? ""}: ${actual} instead of ${expected}`];
+    });
+  }
+
   it.each<[string, string, number]>([
     ["Europe/Prague", "2026-07-01T12:00:00", 2],
     ["Europe/Prague", "2026-12-01T12:00:00", 1],
@@ -177,6 +220,75 @@ describe("a generated VTIMEZONE", () => {
     ["Asia/Tokyo", "2026-07-01T12:00:00", 9],
   ])("gives %s the offset of %s", (zone, local, hours) => {
     expect(offsetHours(generateVtimezone(zone, 2026), local)).toBe(hours);
+  });
+
+  it.each<[string, number, string[]]>([
+    [
+      "Europe/Prague",
+      2026,
+      [
+        "standard 2025-01-01T00:00:00 0 RDATE",
+        "daylight 2025-03-30T02:00:00 FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU",
+        "standard 2025-10-26T03:00:00 FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
+      ],
+    ],
+    [
+      "America/New_York",
+      2026,
+      [
+        "standard 2025-01-01T00:00:00 0 RDATE",
+        "daylight 2025-03-09T02:00:00 FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+        "standard 2025-11-02T02:00:00 FREQ=YEARLY;BYMONTH=11;BYDAY=1SU",
+      ],
+    ],
+    [
+      "Europe/Prague",
+      2090,
+      [
+        "standard 2089-01-01T00:00:00 0 RDATE",
+        "daylight 2089-03-27T02:00:00 FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU",
+        "standard 2089-10-30T03:00:00 FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
+      ],
+    ],
+    ["Asia/Kolkata", 2026, ["standard 2025-01-01T00:00:00 0 RDATE"]],
+  ])("writes %s around %i as its yearly rule, or its one offset", (zone, year, expected) => {
+    const vtimezone = generateVtimezone(zone, year);
+
+    expect(observances(vtimezone)).toEqual(expected);
+    expect(vtimezone.toString().split("\r\n").length).toBeLessThan(25);
+    expect(disagreements(zone, vtimezone, year - 1, year + 30)).toEqual([]);
+  });
+
+  it("writes the changes of a zone that ended daylight saving time as dates, and its last offset holds after them", () => {
+    // Mexico City kept standard time from 30 October 2022.
+    const vtimezone = generateVtimezone("America/Mexico_City", 2023);
+
+    expect(observances(vtimezone)).toEqual([
+      "standard 2022-01-01T00:00:00 0 RDATE",
+      "daylight 2022-04-03T02:00:00 1 RDATE",
+      "standard 2022-10-30T02:00:00 1 RDATE",
+    ]);
+    expect(disagreements("America/Mexico_City", vtimezone, 2022, 2050)).toEqual([]);
+  });
+
+  it("writes the changes before a zone's new rule as dates and the new rule as an RRULE", () => {
+    // Nuuk moved from UTC−3 to UTC−2 on 25 March 2023 and keeps daylight saving time at UTC−1 from 2024.
+    const vtimezone = generateVtimezone("America/Nuuk", 2023);
+
+    expect(observances(vtimezone).filter((line) => line.endsWith("RDATE")).length).toBeGreaterThan(0);
+    expect(observances(vtimezone).filter((line) => line.includes("FREQ=YEARLY"))).toHaveLength(2);
+    expect(disagreements("America/Nuuk", vtimezone, 2022, 2050)).toEqual([]);
+  });
+
+  it.each<[string, number]>([
+    ["Asia/Jerusalem", 2026],
+    ["Australia/Sydney", 2026],
+    ["America/Santiago", 2026],
+    ["Africa/Casablanca", 2026],
+  ])("gives %s around %i the zone's offset at every change and around it", (zone, year) => {
+    const vtimezone = generateVtimezone(zone, year);
+
+    expect(disagreements(zone, vtimezone, year - 1, year + 11)).toEqual([]);
   });
 
   it("is written into a new resource with a zoned start, and only then", () => {

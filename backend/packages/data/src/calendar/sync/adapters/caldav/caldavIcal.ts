@@ -14,9 +14,13 @@ const MAX_TEXT_LENGTH = 100_000;
 const MAX_ID_LENGTH = 2048;
 const MAX_PARTICIPANTS = 500;
 const MAX_EXCEPTION_DATES = 1000;
-/** How far a generated VTIMEZONE lists the zone's transitions around the Event's year. */
+/**
+ * The years around the Event's year whose offset changes a generated VTIMEZONE is derived from. A yearly change on a
+ * weekday falls on each of the seven days it can take within any twelve years, which is what pins its rule down.
+ */
 const VTIMEZONE_YEARS_BEFORE = 1;
-const VTIMEZONE_YEARS_AFTER = 25;
+const VTIMEZONE_YEARS_AFTER = 11;
+const RRULE_WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] as const;
 
 /** A floating time is wall clock in the tenant's zone (`null`); a zone ical.js can only convert reads as `UTC`. */
 type SeriesZone = string | null;
@@ -381,35 +385,19 @@ function utcOffset(minutes: number): ICAL.UtcOffset {
   return ICAL.UtcOffset.fromSeconds(minutes * 60);
 }
 
-/**
- * A VTIMEZONE for an IANA zone, from luxon's rules: every offset change between one year before and 25 years after
- * `year`, grouped into one STANDARD or DAYLIGHT observance per offset pair with every change as an RDATE.
- */
-export function generateVtimezone(zone: string, year: number): ICAL.Component {
-  const vtimezone = new ICAL.Component("vtimezone");
-  vtimezone.addPropertyWithValue("tzid", zone);
-  const groups = new Map<string, { kind: string; from: number; to: number; starts: ICAL.Time[] }>();
-  const observe = (instant: DateTime, from: number, to: number): void => {
-    const kind = instant.isInDST ? "daylight" : "standard";
-    // An observance's DTSTART is the local time of the change, in the offset before it.
-    const local = DateTime.fromMillis(instant.toMillis() + from * 60_000, { zone: "UTC" });
-    const start = ICAL.Time.fromData({
-      year: local.year,
-      month: local.month,
-      day: local.day,
-      hour: local.hour,
-      minute: local.minute,
-      second: 0,
-      isDate: false,
-    });
-    const key = `${kind}|${from}|${to}`;
-    const group = groups.get(key);
-    if (group) group.starts.push(start);
-    else groups.set(key, { kind, from, to, starts: [start] });
-  };
-  let cursor = DateTime.fromObject({ year: year - VTIMEZONE_YEARS_BEFORE, month: 1, day: 1 }, { zone });
-  const end = cursor.plus({ years: VTIMEZONE_YEARS_BEFORE + VTIMEZONE_YEARS_AFTER + 1 });
-  observe(cursor, cursor.offset, cursor.offset);
+/** One change of the zone's offset; `local` is its wall time in the offset before it, held in UTC fields. */
+interface OffsetChange {
+  kind: "standard" | "daylight";
+  from: number;
+  to: number;
+  local: DateTime;
+}
+
+/** The zone's offset changes from 1 January of `firstYear` to the end of `lastYear`, to the minute. */
+function offsetChanges(zone: string, firstYear: number, lastYear: number): OffsetChange[] {
+  const changes: OffsetChange[] = [];
+  let cursor = DateTime.fromObject({ year: firstYear, month: 1, day: 1 }, { zone });
+  const end = DateTime.fromObject({ year: lastYear + 1, month: 1, day: 1 }, { zone });
   while (cursor < end) {
     const next = cursor.plus({ days: 7 });
     if (next.offset !== cursor.offset) {
@@ -420,21 +408,148 @@ export function generateVtimezone(zone: string, year: number): ICAL.Component {
         if (DateTime.fromMillis(middle, { zone }).offset === cursor.offset) low = middle;
         else high = middle;
       }
-      observe(DateTime.fromMillis(high, { zone }), cursor.offset, next.offset);
+      const after = DateTime.fromMillis(high, { zone });
+      if (after < end) {
+        changes.push({
+          kind: after.isInDST ? "daylight" : "standard",
+          from: cursor.offset,
+          to: next.offset,
+          local: DateTime.fromMillis(high + cursor.offset * 60_000, { zone: "UTC" }),
+        });
+      }
     }
     cursor = next;
   }
+  return changes;
+}
+
+/** What makes changes of one direction the same yearly rule, but for the day of the month. */
+function ruleKey(change: OffsetChange): string {
+  const { kind, from, to, local } = change;
+  return [kind, from, to, local.month, local.weekday, local.hour, local.minute].join("|");
+}
+
+/** Which day of the month a change falls on: the nth or last weekday, or the first weekday on or after `day`. */
+type DayRule = { kind: "nth"; nth: number } | { kind: "last" } | { kind: "onOrAfter"; day: number };
+
+/**
+ * The rule of changes on one weekday of one month: the first such weekday on or after day N, where N is known only
+ * once the changes fell on all seven days from N on. `null` before that.
+ */
+function dayRuleOf(changes: readonly OffsetChange[]): DayRule | null {
+  const days = changes.map((change) => change.local.day);
+  const first = Math.min(...days);
+  if (Math.max(...days) - first !== 6) return null;
+  if (first % 7 === 1 && first <= 22) return { kind: "nth", nth: (first + 6) / 7 };
+  const monthLengths = new Set(changes.map((change) => change.local.daysInMonth));
+  if (monthLengths.size === 1 && first === (changes[0]?.local.daysInMonth ?? 0) - 6) return { kind: "last" };
+  return { kind: "onOrAfter", day: first };
+}
+
+function recurrenceOf(change: OffsetChange, rule: DayRule): ICAL.Recur {
+  const weekday = RRULE_WEEKDAYS[change.local.weekday - 1] ?? "SU";
+  const days =
+    rule.kind === "nth"
+      ? `BYDAY=${rule.nth}${weekday}`
+      : rule.kind === "last"
+        ? `BYDAY=-1${weekday}`
+        : `BYDAY=${weekday};BYMONTHDAY=${Array.from({ length: 7 }, (_, index) => rule.day + index).join(",")}`;
+  return ICAL.Recur.fromString(`FREQ=YEARLY;BYMONTH=${change.local.month};${days}`);
+}
+
+/**
+ * The yearly rule the zone follows at the end of `changes`: the longest tail in which each direction repeats one
+ * rule every year and reaches `lastYear`, with the day of each direction pinned down. `null` without one.
+ */
+function yearlyRule(
+  changes: readonly OffsetChange[],
+  lastYear: number,
+): { start: number; rules: { first: OffsetChange; day: DayRule }[] } | null {
+  let start = changes.length;
+  const keys = new Map<OffsetChange["kind"], string>();
+  while (start > 0) {
+    const change = changes[start - 1];
+    const later = changes[start];
+    if (change === undefined) break;
+    const key = keys.get(change.kind) ?? ruleKey(change);
+    const alternates = later === undefined || (later.kind !== change.kind && later.from === change.to);
+    const yearly = later === undefined || later.local.year - change.local.year <= 1;
+    if (key !== ruleKey(change) || !alternates || !yearly) break;
+    keys.set(change.kind, key);
+    start -= 1;
+  }
+  const tail = changes.slice(start);
+  if (keys.size !== 2 || tail[tail.length - 1]?.local.year !== lastYear) return null;
+  const rules: { first: OffsetChange; day: DayRule }[] = [];
+  for (const kind of keys.keys()) {
+    const ofKind = tail.filter((change) => change.kind === kind);
+    const day = dayRuleOf(ofKind);
+    const [first] = ofKind;
+    const years = ofKind.map((change) => change.local.year);
+    const everyYear = years.every((year, index) => index === 0 || year === (years[index - 1] ?? year) + 1);
+    if (first === undefined || day === null || !everyYear) return null;
+    rules.push({ first, day });
+  }
+  rules.sort((a, b) => a.first.local.toMillis() - b.first.local.toMillis());
+  return { start, rules };
+}
+
+function localTime(value: DateTime): ICAL.Time {
+  return ICAL.Time.fromData({
+    year: value.year,
+    month: value.month,
+    day: value.day,
+    hour: value.hour,
+    minute: value.minute,
+    second: 0,
+    isDate: false,
+  });
+}
+
+function observance(kind: OffsetChange["kind"], from: number, to: number, start: DateTime): ICAL.Component {
+  const component = new ICAL.Component(kind);
+  component.addPropertyWithValue("dtstart", localTime(start));
+  component.addPropertyWithValue("tzoffsetfrom", utcOffset(from));
+  component.addPropertyWithValue("tzoffsetto", utcOffset(to));
+  return component;
+}
+
+/**
+ * A VTIMEZONE for an IANA zone, from luxon's rules for one year before to eleven years after `year`: the offset on
+ * 1 January of the first year, then the zone's changes. The yearly rule the zone follows at the end of that window is
+ * one STANDARD and one DAYLIGHT observance with an RRULE, valid as long as the rule is; changes before it (a rule
+ * changed in the window) are RDATEs. Without such a rule every change in the window is an RDATE, grouped into one
+ * observance per offset pair, and the last offset holds after it.
+ */
+export function generateVtimezone(zone: string, year: number): ICAL.Component {
+  const vtimezone = new ICAL.Component("vtimezone");
+  vtimezone.addPropertyWithValue("tzid", zone);
+  const firstYear = year - VTIMEZONE_YEARS_BEFORE;
+  const lastYear = year + VTIMEZONE_YEARS_AFTER;
+  const changes = offsetChanges(zone, firstYear, lastYear);
+  // The offset the window starts in: a reader knows no offset before the first onset it is given.
+  const start = DateTime.fromObject({ year: firstYear, month: 1, day: 1 }, { zone });
+  vtimezone.addSubcomponent(observance(start.isInDST ? "daylight" : "standard", start.offset, start.offset, start));
+  const rule = yearlyRule(changes, lastYear);
+  const listed = changes.slice(0, rule?.start ?? changes.length);
+  const groups = new Map<string, OffsetChange[]>();
+  for (const change of listed) {
+    const key = `${change.kind}|${change.from}|${change.to}`;
+    groups.set(key, [...(groups.get(key) ?? []), change]);
+  }
   for (const group of groups.values()) {
-    const observance = new ICAL.Component(group.kind);
-    const [first] = group.starts;
+    const [first] = group;
     if (first === undefined) continue;
-    observance.addPropertyWithValue("dtstart", first);
-    observance.addPropertyWithValue("tzoffsetfrom", utcOffset(group.from));
-    observance.addPropertyWithValue("tzoffsetto", utcOffset(group.to));
+    const component = observance(first.kind, first.from, first.to, first.local);
     // One RDATE per onset, the first one included: ical.js reads only the first value of an RDATE, and with RDATEs
     // present it takes the onsets from them alone.
-    for (const start of group.starts) observance.addPropertyWithValue("rdate", start);
-    vtimezone.addSubcomponent(observance);
+    for (const change of group) component.addPropertyWithValue("rdate", localTime(change.local));
+    vtimezone.addSubcomponent(component);
+  }
+  for (const { first, day } of rule?.rules ?? []) {
+    const component = observance(first.kind, first.from, first.to, first.local);
+    component.addPropertyWithValue("rrule", recurrenceOf(first, day));
+    vtimezone.addSubcomponent(component);
   }
   return vtimezone;
 }
