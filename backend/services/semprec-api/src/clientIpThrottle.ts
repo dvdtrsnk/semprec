@@ -1,11 +1,17 @@
 import { isIPv4, isIPv6 } from "node:net";
 
 /**
- * `mailboxCredentialVerification` (the password mailbox connect login check) is counted per user;
- * the other four are public pre-authentication actions counted per client address.
+ * `mailboxCredentialVerification` (the password mailbox connect login check) and `mailContentFetch` (a message body
+ * or an attachment fetched from the mail provider on demand) are counted per user; the other four are public
+ * pre-authentication actions counted per client address.
  */
 export type ThrottledAction =
-  "login" | "passwordResetRequest" | "passwordResetConsume" | "invitationAccept" | "mailboxCredentialVerification";
+  | "login"
+  | "passwordResetRequest"
+  | "passwordResetConsume"
+  | "invitationAccept"
+  | "mailboxCredentialVerification"
+  | "mailContentFetch";
 
 export interface ClientIpThrottleLimit {
   maxEvents: number;
@@ -19,6 +25,7 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   passwordResetConsume: { maxEvents: 10, windowSeconds: 60 * 60 },
   invitationAccept: { maxEvents: 10, windowSeconds: 60 * 60 },
   mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
+  mailContentFetch: { maxEvents: 120, windowSeconds: 15 * 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];
@@ -76,12 +83,11 @@ export function throttleKeyForIp(ip: string): string {
     .join(":")}::/64`;
 }
 
-/**
- * `mailboxCredentialVerification` is keyed by the user id as is; every other action by client
- * address via `throttleKeyForIp`.
- */
+/** The actions keyed by the user id as is; every other action by client address via `throttleKeyForIp`. */
+const PER_USER_ACTIONS: ReadonlySet<ThrottledAction> = new Set(["mailboxCredentialVerification", "mailContentFetch"]);
+
 function throttleKey(action: ThrottledAction, subject: string): string {
-  return action === "mailboxCredentialVerification" ? subject : throttleKeyForIp(subject);
+  return PER_USER_ACTIONS.has(action) ? subject : throttleKeyForIp(subject);
 }
 
 export interface ClientIpThrottleOptions {
@@ -91,7 +97,7 @@ export interface ClientIpThrottleOptions {
   limits?: Partial<typeof CLIENT_IP_THROTTLE_LIMITS>;
 }
 
-/** `subject` is the user id for `mailboxCredentialVerification`, the client address otherwise. */
+/** `subject` is the user id for the per-user actions, the client address otherwise. */
 export interface ClientIpThrottle {
   /**
    * `null` while under the limit; otherwise whole seconds (>= 1) until the oldest counted event

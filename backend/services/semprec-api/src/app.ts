@@ -59,6 +59,7 @@ import {
 import { createMailOauthCallbackRequestListener, MAIL_OAUTH_CALLBACK_PATH } from "./mailOauthCallbackHandler.js";
 import { sendJson } from "./adapter/http.js";
 import { createClientIpThrottle } from "./clientIpThrottle.js";
+import { createMailContentProviders } from "./mailSyncAdapters.js";
 import { isAllowedOrigin } from "./originCheck.js";
 import { logger } from "./logger.js";
 
@@ -137,6 +138,16 @@ export async function createDispatcher(
     // The draft attachment limit of a mailbox without a provider limit is this dispatcher's upload
     // cap, whatever the container carries.
     maxFileSizeBytes: options.maxFileSizeBytes,
+    // The on-demand content reads use the sync's provider factories and kept IMAP sessions, built
+    // from the container's OAuth clients. A caller's own providers are kept.
+    mailContent:
+      callerDependencies.mailContent ??
+      createMailContentProviders({
+        pool,
+        oauth: callerDependencies.oauth ?? {},
+        ...(callerDependencies.outboundHttp ? { fetchImpl: callerDependencies.outboundHttp } : {}),
+        attachmentStorage: options.mailAttachmentStorage ?? options.blobStorage,
+      }),
     // Transports of the mailbox's sync mode, built from the container's OAuth clients. A caller's
     // own `send` is kept.
     mailServerClients: {

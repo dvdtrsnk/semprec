@@ -207,6 +207,10 @@ async function startedByHeartbeat(client: PoolClient, run: AgentRunRow): Promise
   return false;
 }
 
+/** What `mail.thread.get` says of a message whose body is with the provider only. */
+const REMOTE_CONTENT_NOTE =
+  "The content of this older message is not downloaded; bodyText is only its stored preview of up to 200 characters.";
+
 /** Cuts by code points, never splitting a surrogate pair. */
 function cutText(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("");
@@ -236,7 +240,11 @@ function mailThreadGet(pool: Pool): MailToolCore {
           const thread = await getMailThreadDetail(client, args.data.threadId, false);
           let remaining = MAX_THREAD_TEXT_LENGTH;
           const messages = [...thread.messages].reverse().map((message) => {
-            const bodyText = cutText(message.bodyText, Math.max(0, Math.min(MAX_MESSAGE_TEXT_LENGTH, remaining)));
+            // An older message whose content was never fetched (or whose fetched copy expired) shows its preview;
+            // nothing is fetched from the provider here.
+            const remote = message.contentState === "remote";
+            const text = remote ? (message.preview ?? "") : message.bodyText;
+            const bodyText = cutText(text, Math.max(0, Math.min(MAX_MESSAGE_TEXT_LENGTH, remaining)));
             remaining -= bodyText.length;
             return {
               emailId: message.emailId,
@@ -248,7 +256,8 @@ function mailThreadGet(pool: Pool): MailToolCore {
               cc: message.cc,
               date: message.date,
               bodyText,
-              bodyTruncated: bodyText.length < message.bodyText.length,
+              bodyTruncated: bodyText.length < text.length,
+              ...(remote ? { contentNote: REMOTE_CONTENT_NOTE } : {}),
               attachments: message.attachments.map((attachment) => attachment.filename),
             };
           });

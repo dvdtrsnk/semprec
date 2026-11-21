@@ -211,4 +211,20 @@ export const MAIL_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "mail message content",
+    method: "GET",
+    path: `/api/mail/messages/${EXAMPLE_ID}/content`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mail attachment save",
+    method: "POST",
+    path: `/api/mail/messages/${EXAMPLE_ID}/attachments/${EXAMPLE_ID}/save`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

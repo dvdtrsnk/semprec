@@ -68,6 +68,7 @@ import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.
 import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
+import { handleMailContentCacheSweepTask } from "./mail/mailContentCacheSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
 import { handleMcpServerSyncTask } from "./mcp/mcpSync.js";
 import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
@@ -116,6 +117,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 30 4 * * * ${CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE}
 10 * * * * ${CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP}
 */10 * * * * ${CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP}
+55 3 * * * ${CORE_TASK_NAMES.MAIL_CONTENT_CACHE_SWEEP}
 40 4 * * * ${CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP}
 50 4 * * * ${CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
@@ -341,6 +343,9 @@ export function createCoreTaskList(
     },
     [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: async () => {
       await handleMailOauthStatesSweepTask(pool);
+    },
+    [CORE_TASK_NAMES.MAIL_CONTENT_CACHE_SWEEP]: async () => {
+      await handleMailContentCacheSweepTask(pool);
     },
     [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: async () => {
       await handleAgentRunEventsRetentionTask(pool);

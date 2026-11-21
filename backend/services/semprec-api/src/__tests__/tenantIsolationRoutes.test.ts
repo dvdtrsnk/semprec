@@ -1439,6 +1439,29 @@ function seedMailThread(
   });
 }
 
+/**
+ * The one message of a thread `seedMailThread` wrote: its Emails item and its attachment with its Files item (empty
+ * strings for a message without one).
+ */
+function mailMessageOf(
+  fixture: TenantFixture,
+  threadId: string,
+): Promise<{ emailId: string; attachmentId: string; fileItemId: string }> {
+  return inTenantTransaction(fixture.tenantId, async (client) => {
+    const { rows } = await client.query<{ email_id: string; attachment_id: string | null; file_id: string | null }>(
+      `SELECT m.item_id AS email_id, a.id AS attachment_id,
+         (SELECT f.id FROM items f WHERE f.properties->'file'->>'blobId' = a.blob_id::text AND f.deleted_at IS NULL
+           ORDER BY f.id LIMIT 1) AS file_id
+       FROM mail_message_meta m LEFT JOIN mail_attachments a ON a.message_item_id = m.item_id
+       WHERE m.thread_id = $1`,
+      [threadId],
+    );
+    const [row] = rows;
+    if (!row) throw new Error("Missing ingested message");
+    return { emailId: row.email_id, attachmentId: row.attachment_id ?? "", fileItemId: row.file_id ?? "" };
+  });
+}
+
 function addFolderToThreadMailbox(
   fixture: TenantFixture,
   threadId: string,
@@ -2530,6 +2553,47 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [foreignTask, ...Object.values(foreignValues), foreignFile, foreignFileProject],
       [ownTask, ownFile, ownFileProject],
     );
+  },
+  "mail message content": async () => {
+    const seed = async (fixture: TenantFixture) =>
+      mailMessageOf(
+        fixture,
+        await seedMailThread(
+          fixture,
+          `<${randomUUID()}@example.test>`,
+          `content-${randomUUID()}`,
+          `thread-${randomUUID()}`,
+        ),
+      );
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const content = (id: string | undefined): Request => GET(`/api/mail/messages/${id}/content`);
+    expectText(await sendOk(b.member, content(own.emailId)), [own.emailId, '"contentState":"full"'], []);
+    await expectForeign404(b.member, [foreign.emailId], ([id]) => content(id));
+    expectText(await sendOk(a.member, content(foreign.emailId)), [foreign.emailId], [own.emailId]);
+  },
+  "mail attachment save": async () => {
+    const seed = async (fixture: TenantFixture) =>
+      mailMessageOf(
+        fixture,
+        await seedMailThread(
+          fixture,
+          `<${randomUUID()}@example.test>`,
+          `save-${randomUUID()}`,
+          `thread-${randomUUID()}`,
+          [`saved-${randomUUID()}.pdf`],
+        ),
+      );
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const save = (emailId: string | undefined, attachmentId: string | undefined): Request =>
+      POST(`/api/mail/messages/${emailId}/attachments/${attachmentId}/save`);
+    expectText(await sendOk(b.member, save(own.emailId, own.attachmentId)), [own.fileItemId], []);
+    await expectForeign404(b.member, [foreign.emailId, foreign.attachmentId], ([emailId, attachmentId]) =>
+      save(emailId, attachmentId),
+    );
+    await expectForeign404(b.member, [foreign.attachmentId], ([attachmentId]) => save(own.emailId, attachmentId));
+    expectText(await sendOk(a.member, save(foreign.emailId, foreign.attachmentId)), [foreign.fileItemId], []);
   },
   "mail draft create": async () => {
     const ofA = await mailboxForDrafts(a);

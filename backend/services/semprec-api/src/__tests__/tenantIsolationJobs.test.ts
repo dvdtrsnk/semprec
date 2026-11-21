@@ -1825,6 +1825,26 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.MAIL_CONTENT_CACHE_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const itemId = await inTenant(tenant, async () => {
+        const database = await chokePoint.createDatabase({ name: `Cached ${randomUUID()}` });
+        const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+        // Production only writes rows valid for seven days.
+        await pool.query(
+          `INSERT INTO mail_message_content_cache (item_id, body_text, fetched_at, expires_at)
+           VALUES ($1, 'cached', now() - interval '8 days', now() - interval '1 day')`,
+          [item.id],
+        );
+        return item.id;
+      });
+      return marked([itemId], () =>
+        expectRows(tenant, "SELECT 1 FROM mail_message_content_cache WHERE item_id = $1", [itemId], []),
+      );
+    },
+  },
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
