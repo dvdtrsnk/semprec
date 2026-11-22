@@ -1310,8 +1310,16 @@ describe("mail move intent store", () => {
     const reconciledFlag = vi.fn(async () => {});
     const reconcileClient = {
       getCapabilities: async () => new Set<string>(),
-      listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
-      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
+      listFolders: async () => [
+        { path: "INBOX", specialUse: "\\Inbox" },
+        { path: "Archive", specialUse: "\\Archive" },
+      ],
+      selectFolder: async (path: string) => ({
+        uidvalidity: path === "INBOX" ? 42 : 43,
+        uidnext: 30,
+        highestModSeq: null,
+        messages: 0,
+      }),
       fetchMessagesSince: async () => fakeImapRange([]),
       fetchMessagesBefore: async () => fakeImapRange([]),
       fetchSnippets: async () => new Map<number, string>(),
