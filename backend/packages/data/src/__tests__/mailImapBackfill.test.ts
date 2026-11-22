@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { withTransaction } from "../db/pool.js";
 import {
   IMAP_FULL_MESSAGES_PER_PASS,
+  IMAP_BACKFILL_MESSAGES_PER_BATCH,
   IMAP_INDEX_MESSAGES_PER_PASS,
   IMAP_MESSAGES_PER_BATCH,
 } from "../mail/imapReconcile.js";
@@ -335,9 +336,9 @@ describe("IMAP history as an index, backfilled newest first", () => {
     {
       history: "older history, stored as an index",
       daysAgo: 200,
-      count: 3 * IMAP_MESSAGES_PER_BATCH,
+      count: 3 * IMAP_BACKFILL_MESSAGES_PER_BATCH,
       // The batch it was writing.
-      firstPass: IMAP_MESSAGES_PER_BATCH,
+      firstPass: IMAP_BACKFILL_MESSAGES_PER_BATCH,
     },
     {
       history: "recent history, downloaded in full",

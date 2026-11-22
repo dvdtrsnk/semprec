@@ -147,6 +147,11 @@ export const IMAP_FULL_MESSAGES_PER_PASS = 25;
 export const IMAP_INDEX_MESSAGES_PER_PASS = 500;
 /** Messages one write transaction ingests, which bounds how long a batch holds the tenant's mail-thread guard. */
 export const IMAP_MESSAGES_PER_BATCH = 50;
+/**
+ * Messages one backfill write transaction ingests. History can take hours to index, and every user action on mail
+ * waits for the tenant's mail-thread guard, so a backfill batch holds it for a few seconds at most.
+ */
+export const IMAP_BACKFILL_MESSAGES_PER_BATCH = 10;
 
 export interface ReconcileImapFolderResult {
   ingested: number;
@@ -681,7 +686,8 @@ async function syncImapFolderLive(
 
 /**
  * The backfill step of one folder: from `backfill_below_uid` downwards (highest UIDs first) while the budget lasts,
- * in write transactions of at most `IMAP_MESSAGES_PER_BATCH` messages, each moving the cursor down once it commits.
+ * in write transactions of at most `IMAP_BACKFILL_MESSAGES_PER_BATCH` messages, each moving the cursor down once it
+ * commits.
  * A UIDVALIDITY changed since the live step leaves the folder to the next pass, which establishes it anew. A folder
  * whose backfill a native client holds under a lease is left to it, without a SELECT.
  */
@@ -719,7 +725,7 @@ async function backfillImapFolder(
       ctx,
       folderPath,
       liveFromUid,
-      candidates.slice(offset, offset + IMAP_MESSAGES_PER_BATCH),
+      candidates.slice(offset, offset + IMAP_BACKFILL_MESSAGES_PER_BATCH),
       true,
     );
     const rangeEnd = !exhausted && offset + prepared.length === candidates.length ? { belowUid: rangeBelowUid } : null;
@@ -894,7 +900,7 @@ function inboxFirst(folders: ImapFolderRef[]): ImapFolderRef[] {
  * short transactions, each of which re-enters the pass under the mailbox guard and the tenant's mail-thread guard. A
  * prepare transaction discovers Folder items and reads their sync state; then every folder's live step (inbox first)
  * is one write transaction, and only after all of them every folder's backfill (inbox first) runs, newest first, in
- * write transactions of at most `IMAP_MESSAGES_PER_BATCH` messages; the write-back's confirmations are another; a
+ * write transactions of at most `IMAP_BACKFILL_MESSAGES_PER_BATCH` messages; the write-back's confirmations are another; a
  * final one records the activity and calls `pass.finish`. A failure ends the pass with the batches committed before
  * it kept; recording it is the caller's job.
  */

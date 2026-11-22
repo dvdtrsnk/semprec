@@ -266,7 +266,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   message's body parts and attachment bytes (spooled to a temp file, `mail/mailAttachmentSpool.ts`) and every index
   message's snippet are fetched with no transaction open and no guard held; the writes then run in short
   transactions: a prepare transaction (Folder items, each folder's sync state), one transaction per folder batch
-  (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
+  (a folder's live step of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages, or a backfill batch of at most
+  `IMAP_BACKFILL_MESSAGES_PER_BATCH` = 10, so an index running for hours keeps every mail action waiting a few
+  seconds at most), one for the flag
   write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
   activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
   batch locks its `mail_folder_sync_state` row and writes only while it still holds the cursors its fetch started
@@ -372,7 +374,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` above
   the last UID the step's `UID SEARCH` took when it wrote them all, else after the last ingested UID. Then every
   folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`, highest (newest) first, in write
-  transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
+  transactions of at most 10 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
   of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
   left. New mail is therefore ingested before older history. A trigger that arrives while the backfill runs (an IDLE
   signal, a write-back; it sets `pass_rerun_requested`) makes the backfill stop before its next batch, before the
