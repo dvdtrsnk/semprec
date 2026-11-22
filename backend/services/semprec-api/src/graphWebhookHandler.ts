@@ -5,7 +5,7 @@ import { runAsSystem } from "@semprec/shared";
 import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { createClientIpThrottle, type ClientIpThrottle } from "./clientIpThrottle.js";
-import { distinctGraphNotifications } from "./graphNotificationBatch.js";
+import { answerGraphValidationHandshake, distinctGraphNotifications } from "./graphNotificationBatch.js";
 import { logger } from "./logger.js";
 
 export interface GraphWebhookRequestListenerOptions {
@@ -29,8 +29,8 @@ const MAX_BODY_BYTES = 256 * 1024;
  * Every POST, the handshake included, counts under `mailWebhook` per client address first, before
  * the body is read or the database is; over the limit it answers an empty 429 with `Retry-After`.
  *
- * The validation handshake (`?validationToken=`, body not a notification batch) is handled next,
- * answering the literal token as `text/plain`, which Graph matches byte-for-byte.
+ * The validation handshake (`?validationToken=`, body not a notification batch) is handled next
+ * by `answerGraphValidationHandshake`, as on the Graph calendar webhook.
  *
  * A repeated `(subscriptionId, clientState)` pair is looked up once, and at most
  * `MAX_GRAPH_NOTIFICATIONS` distinct pairs per batch (`distinctGraphNotifications`).
@@ -39,8 +39,6 @@ export function createGraphWebhookRequestListener(pool: Pool, options: GraphWebh
   const throttle = options.clientIpThrottle ?? createClientIpThrottle();
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", "http://localhost");
-
     if (req.method !== "POST") {
       sendJson(res, 404, { error: "Not found" });
       return;
@@ -56,12 +54,7 @@ export function createGraphWebhookRequestListener(pool: Pool, options: GraphWebh
       return;
     }
 
-    const validationToken = url.searchParams.get("validationToken");
-    if (validationToken !== null) {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": NO_STORE });
-      res.end(validationToken);
-      return;
-    }
+    if (answerGraphValidationHandshake(req, res)) return;
 
     try {
       const raw = await readRawBody(req, { maxBytes: MAX_BODY_BYTES });

@@ -1,3 +1,8 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { NO_STORE, sendJson } from "./adapter/http.js";
+
+/** Far above the tokens Graph sends, but bounds what a handshake echoes. */
+const MAX_VALIDATION_TOKEN_LENGTH = 1024;
 /** Entries of one Graph batch read; anything after them is ignored. */
 const MAX_GRAPH_BATCH_ENTRIES = 100;
 /**
@@ -42,4 +47,26 @@ export function distinctGraphNotifications(entries: unknown[]): RawGraphNotifica
     if (seen.size === MAX_GRAPH_NOTIFICATIONS) break;
   }
   return [...seen.values()];
+}
+
+/**
+ * Answers a Graph subscription validation handshake (`?validationToken=`): the literal token as `text/plain`, which
+ * Graph matches byte for byte, with `nosniff` so a browser never renders the echo as anything else; a token over
+ * `MAX_VALIDATION_TOKEN_LENGTH` is 400. `false` when the request is no handshake and nothing was answered; the body of
+ * a handshake is never read.
+ */
+export function answerGraphValidationHandshake(req: IncomingMessage, res: ServerResponse): boolean {
+  const validationToken = new URL(req.url ?? "/", "http://localhost").searchParams.get("validationToken");
+  if (validationToken === null) return false;
+  if (validationToken.length > MAX_VALIDATION_TOKEN_LENGTH) {
+    sendJson(res, 400, { error: "validationToken is too long" });
+    return true;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": NO_STORE,
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(validationToken);
+  return true;
 }

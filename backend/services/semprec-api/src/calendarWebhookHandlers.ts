@@ -5,7 +5,7 @@ import { runAsSystem } from "@semprec/shared";
 import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { createClientIpThrottle, type ClientIpThrottle } from "./clientIpThrottle.js";
-import { distinctGraphNotifications } from "./graphNotificationBatch.js";
+import { answerGraphValidationHandshake, distinctGraphNotifications } from "./graphNotificationBatch.js";
 import { logger } from "./logger.js";
 
 export interface CalendarWebhookRequestListenerOptions {
@@ -23,7 +23,6 @@ const MAX_GOOGLE_BODY_BYTES = 16 * 1024;
 /** Generous for a real Graph batch, but bounds a malicious POST. */
 const MAX_GRAPH_BODY_BYTES = 256 * 1024;
 const MAX_SECRET_LENGTH = 256;
-const MAX_VALIDATION_TOKEN_LENGTH = 1024;
 /** Google's channel id alphabet and length; this server's ids are UUIDs. */
 const GOOGLE_CHANNEL_ID = /^[A-Za-z0-9\-_+/=]{1,64}$/;
 
@@ -119,7 +118,7 @@ export function createGoogleCalendarWebhookRequestListener(pool: Pool, options: 
 /**
  * `POST /api/calendar/graph/webhook`, unauthenticated by design: Microsoft Graph is the caller, and each
  * notification's `clientState` (compared in constant time) is the check. The validation handshake
- * (`?validationToken=`) is answered first with the literal token as `text/plain`, which Graph matches byte for byte.
+ * (`?validationToken=`) is answered by `answerGraphValidationHandshake` before the body is read.
  * A batch answers 202 whatever its notifications' outcomes, because Graph drops a subscription whose endpoint keeps
  * failing; rejected ones are logged and queue nothing. A repeated `(subscriptionId, clientState)` pair is looked up
  * once, and at most `MAX_GRAPH_NOTIFICATIONS` distinct pairs per batch. Every POST, the handshake included, counts
@@ -133,20 +132,7 @@ export function createGraphCalendarWebhookRequestListener(pool: Pool, options: C
       return;
     }
     if (!admitWebhookRequest(req, res, throttle, options)) return;
-    const validationToken = new URL(req.url ?? "/", "http://localhost").searchParams.get("validationToken");
-    if (validationToken !== null) {
-      if (validationToken.length > MAX_VALIDATION_TOKEN_LENGTH) {
-        sendJson(res, 400, { error: "validationToken is too long" });
-        return;
-      }
-      res.writeHead(200, {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": NO_STORE,
-        "X-Content-Type-Options": "nosniff",
-      });
-      res.end(validationToken);
-      return;
-    }
+    if (answerGraphValidationHandshake(req, res)) return;
 
     let raw: Buffer;
     try {

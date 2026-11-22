@@ -282,7 +282,10 @@ tenant by earliest, first or `LIMIT 1`.
   budget shared by the two) and the Graph mail webhook (`mailWebhook`, its own budget) count every
   request before any database read; a refused one gets `429` with `Retry-After` (an empty body on
   the webhooks). A Graph calendar or mail batch looks each distinct `(subscriptionId, clientState)`
-  pair up once, at most 20 per batch (`distinctGraphNotifications`).
+  pair up once, at most 20 per batch (`distinctGraphNotifications`). Both Graph webhooks answer the
+  validation handshake through `answerGraphValidationHandshake`: the token echoed as
+  `text/plain; charset=utf-8` with `X-Content-Type-Options: nosniff`, a token over 1024 characters
+  refused with 400.
 - `tryAcquire` reserves a slot before the body is read. Outcomes that must not count release the
   slot. A refused attempt gets `429 rate_limited` with `Retry-After`.
 - An IPv4 address is its own key, an IPv4-mapped address counts as its IPv4 address, and any other

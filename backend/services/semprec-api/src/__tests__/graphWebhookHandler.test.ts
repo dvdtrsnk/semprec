@@ -80,9 +80,24 @@ describe("createGraphWebhookRequestListener (issue #198)", () => {
     const elapsedMs = Date.now() - start;
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("a-validation-token");
     expect(elapsedMs).toBeLessThan(3000);
+  });
+
+  it("refuses a validation token over 1024 characters with 400 and echoes one of exactly 1024", async () => {
+    const tooLong = await fetch(`${baseUrl}/api/mail/graph/webhook?validationToken=${"v".repeat(1025)}`, {
+      method: "POST",
+    });
+    expect(tooLong.status).toBe(400);
+    expect(await tooLong.text()).not.toContain("v".repeat(1025));
+
+    const longest = await fetch(`${baseUrl}/api/mail/graph/webhook?validationToken=${"v".repeat(1024)}`, {
+      method: "POST",
+    });
+    expect(longest.status).toBe(200);
+    expect(await longest.text()).toBe("v".repeat(1024));
   });
 
   it("never treats a validation POST's body as a notification batch", async () => {
