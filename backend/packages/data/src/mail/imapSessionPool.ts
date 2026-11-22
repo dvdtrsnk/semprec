@@ -150,11 +150,12 @@ export function createImapSessionPool(
       wrapped.executeMoveStep = (step, sourcePath, uid, uidValidity, targetPath) =>
         use((c) => c.executeMoveStep!(step, sourcePath, uid, uidValidity, targetPath));
     }
-    // So are the on-demand content reads. A part's stream is read after `downloadPart` resolved; a failure of it
-    // leaves the client itself not reusable.
+    // So are the on-demand content reads and the text search. A part's stream is read after `downloadPart` resolved;
+    // a failure of it leaves the client itself not reusable.
     if (client.fetchMessageBody) wrapped.fetchMessageBody = (path, uid) => use((c) => c.fetchMessageBody!(path, uid));
     if (client.searchMessageId)
       wrapped.searchMessageId = (path, messageId) => use((c) => c.searchMessageId!(path, messageId));
+    if (client.searchText) wrapped.searchText = (path, terms) => use((c) => c.searchText!(path, terms));
     if (client.downloadPart) wrapped.downloadPart = (path, uid, part) => use((c) => c.downloadPart!(path, uid, part));
     return wrapped;
   }

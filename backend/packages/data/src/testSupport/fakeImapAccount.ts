@@ -202,6 +202,15 @@ export class FakeImapAccount {
           if ((await parsed(message)).messageId.includes(messageId)) uids.push(message.uid);
         return uids;
       },
+      searchText: async (path, terms) => {
+        const uids: number[] = [];
+        for (const message of this.folder(path).messages) {
+          const text = message.raw.toString("utf8").toLowerCase();
+          const holds = (term: string) => text.includes(term.toLowerCase());
+          if (terms.include.every(holds) && !terms.exclude.some(holds)) uids.push(message.uid);
+        }
+        return uids;
+      },
       downloadPart: async (path, uid, part) => {
         const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
         if (!message) return null;
@@ -233,6 +242,7 @@ export class FakeImapAccount {
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
       fetchMessageBody: logged("fetchMessageBody", methods.fetchMessageBody),
       searchMessageId: logged("searchMessageId", methods.searchMessageId),
+      searchText: logged("searchText", methods.searchText),
       downloadPart: logged("downloadPart", methods.downloadPart),
       close: async () => {},
     };

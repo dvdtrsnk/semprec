@@ -4,6 +4,7 @@ import type {
   FetchMessageObject,
   MessageAddressObject,
   MessageStructureObject,
+  SearchObject,
   StatusObject,
 } from "imapflow";
 import { Readable } from "node:stream";
@@ -23,6 +24,7 @@ import { htmlToPlainText } from "./mailPlainText.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
+import { searchTextUntilAccepted, type MailSearchTerms } from "./mailSearchTerms.js";
 import { logger } from "./logger.js";
 
 // The fallback makes at most MAX_ATTACHMENT_BYTES / IMAP_PARTIAL_FETCH_BYTES requests plus one
@@ -620,14 +622,24 @@ export class ImapFlowMailClient implements ImapMailClient {
     return { bodyText, bodyHtml };
   }
 
-  async searchMessageId(path: string, messageId: string): Promise<number[]> {
-    await this.ensureSelected(path);
-    const found = await this.withDeadline(
-      () => this.providerCall(() => this.client.search({ header: { "message-id": messageId } }, { uid: true })),
+  /** `UID SEARCH` under the search deadline; `false` when the server refuses the command. */
+  private searchUids(query: SearchObject): Promise<number[] | false> {
+    return this.withDeadline(
+      () => this.providerCall(() => this.client.search(query, { uid: true })),
       IMAP_SEARCH_TIMEOUT_MS,
       "search",
     );
+  }
+
+  async searchMessageId(path: string, messageId: string): Promise<number[]> {
+    await this.ensureSelected(path);
+    const found = await this.searchUids({ header: { "message-id": messageId } });
     return found === false ? [] : found;
+  }
+
+  async searchText(path: string, terms: MailSearchTerms): Promise<number[]> {
+    await this.ensureSelected(path);
+    return searchTextUntilAccepted(terms, (query) => this.searchUids(query));
   }
 
   async downloadPart(path: string, uid: number, part: string): Promise<Readable | null> {

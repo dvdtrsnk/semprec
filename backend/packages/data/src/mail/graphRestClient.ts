@@ -8,6 +8,7 @@ import { privateSendOperation, readSendBody, reportSendCleanupFailure } from "./
 import { Readable, Transform } from "node:stream";
 import type { ClassifiedAttachment } from "./attachments.js";
 import { GRAPH_IMMUTABLE_ID_PREFERENCE } from "./graphImmutableIds.js";
+import { searchHitIds, type MailSearchTerms } from "./mailSearchTerms.js";
 import type {
   GraphChangedMessage,
   GraphDeltaPage,
@@ -376,15 +377,23 @@ export class GraphRestClient implements GraphMailClient {
     };
   }
 
+  /** 30 s per request; a caller's `signal` ends it earlier. */
   private request<T>(url: string): Promise<T>;
+  private request<T>(url: string, tolerated: undefined, prefer: undefined, signal: AbortSignal | undefined): Promise<T>;
   private request<T>(url: string, tolerated: 404 | 410, prefer?: string): Promise<T | null>;
-  private async request<T>(url: string, tolerated?: 404 | 410, prefer?: string): Promise<T | null> {
+  private async request<T>(
+    url: string,
+    tolerated?: 404 | 410,
+    prefer?: string,
+    signal?: AbortSignal,
+  ): Promise<T | null> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(30_000);
       response = await this.fetchImpl(url, {
         headers: { Authorization: `Bearer ${token}`, Prefer: prefer ?? GRAPH_IMMUTABLE_ID_PREFERENCE },
-        signal: AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch (error) {
       void error;
@@ -570,6 +579,22 @@ export class GraphRestClient implements GraphMailClient {
       (id) => this.listAttachmentMetadata(id),
       (id, attachmentId) => this.fetchAttachmentStream(id, attachmentId),
     );
+  }
+
+  /**
+   * The immutable ids of at most `limit` messages Graph's `$search` finds for every included and no excluded term, in
+   * every folder (Deleted Items and Junk Email included), one page. Messages need no `ConsistencyLevel` header for
+   * `$search`; the terms hold no quote or backslash (`parseMailSearchTerms`).
+   */
+  async searchMessageIds(terms: MailSearchTerms, limit: number, signal?: AbortSignal): Promise<string[]> {
+    const kql = [...terms.include, ...terms.exclude.map((term) => `NOT ${term}`)].join(" ");
+    const page = await this.request<{ value?: unknown }>(
+      `${BASE_URL}/messages?$search=${encodeURIComponent(`"${kql}"`)}&$top=${limit}&$select=id`,
+      undefined,
+      undefined,
+      signal,
+    );
+    return searchHitIds(page.value, limit);
   }
 
   /** One file attachment's bytes by the message's immutable id, streamed and capped; `null` when Graph has no such one. */

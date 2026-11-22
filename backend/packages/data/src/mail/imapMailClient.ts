@@ -1,6 +1,7 @@
 import type { Readable } from "node:stream";
 import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapSnippetPart } from "./imapReconcile.js";
 import type { SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
+import type { MailSearchTerms } from "./mailSearchTerms.js";
 import type { WritableImapFlag } from "./messageFlags.js";
 
 /** The body parts of a message fetched on demand. */
@@ -67,6 +68,12 @@ export interface ImapMailClient {
   fetchMessageBody?(path: string, uid: number): Promise<ImapMessageBody | null>;
   /** The UIDs of the messages in `path` whose Message-ID header contains `messageId` (`UID SEARCH HEADER`). */
   searchMessageId?(path: string, messageId: string): Promise<number[]>;
+  /**
+   * The UIDs of the messages in `path` whose header or body holds every included term and no excluded one
+   * (`UID SEARCH TEXT`), with `CHARSET UTF-8` for a non-ASCII term and, when the server refuses that, again with the
+   * terms folded to US-ASCII. Rejects when the server refuses the search.
+   */
+  searchText?(path: string, terms: MailSearchTerms): Promise<number[]>;
   /**
    * The decoded bytes of the leaf body part `part` of the message at `uid`, capped at `MAX_ATTACHMENT_BYTES`; `null`
    * when the folder holds no message with that UID or the message has no such leaf. The stream reads the connection,

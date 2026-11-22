@@ -21,6 +21,7 @@ import { readFreshMailContentCache, writeMailContentCache, type MailContentCache
 import { readMailMessageAttachments, type MailMessageAttachment } from "./mailMessageAttachments.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { htmlToPlainText } from "./mailPlainText.js";
+import type { MailSearchTerms } from "./mailSearchTerms.js";
 import { AttachmentCapExceededError, MailReauthorizationRequiredError } from "./providerTypes.js";
 import { logger } from "./logger.js";
 
@@ -47,19 +48,22 @@ export class MailContentUnavailableError extends ConflictError {
   }
 }
 
-/** The sync's full message read, and an attachment's bytes by its payload part id and name. */
+/** The sync's full message read, an attachment's bytes by its payload part id and name, and Gmail's own search. */
 export interface MailContentGmailClient extends Pick<GmailMailClient, "fetchMessage"> {
   openAttachmentContent(messageId: string, partId: string, filename: string): Promise<Readable | null>;
+  searchMessageIds(query: string, limit: number, signal?: AbortSignal): Promise<string[]>;
 }
 
-/** The sync's full message read, and a file attachment's bytes by its attachment id. */
+/** The sync's full message read, a file attachment's bytes by its attachment id, and Graph's `$search`. */
 export interface MailContentGraphClient extends Pick<GraphMailClient, "fetchMessageContent"> {
   openAttachmentContent(messageId: string, attachmentId: string): Promise<Readable | null>;
+  searchMessageIds(terms: MailSearchTerms, limit: number, signal?: AbortSignal): Promise<string[]>;
 }
 
 /**
- * The provider clients the on-demand content reads use, built by the composition root from the same factories as the
- * sync's: an IMAP client is the account's kept sync session or a new connection under the shared connection limiter.
+ * The provider clients the on-demand content reads and the provider search use, built by the composition root from
+ * the same factories as the sync's: an IMAP client is the account's kept sync session or a new connection under the
+ * shared connection limiter.
  */
 export interface MailContentProviders {
   createImapClient?: (mailboxItemId: string, credential: string, accountLimit: number) => Promise<ImapMailClient>;

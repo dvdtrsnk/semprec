@@ -36,6 +36,8 @@ export interface FakeImapServerOptions {
   latencyMs: number;
   /** When set, a LOGIN with another password is refused with `AUTHENTICATIONFAILED`; otherwise every LOGIN succeeds. */
   password?: string;
+  /** A SEARCH naming a CHARSET is refused with `NO [BADCHARSET (US-ASCII)]`, as a server without UTF-8 search does. */
+  refuseSearchCharset?: boolean;
 }
 
 type Token = string | Token[];
@@ -265,7 +267,7 @@ function inRange(uid: number, set: string, maxUid: number): boolean {
  * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and messages of
  * one part or of one level of `multipart/*` parts, configurable capabilities, a fixed delay before every response, a
  * log of every command verb it received and of every body part a FETCH read. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
- * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH (by UID set and HEADER), UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
+ * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH (by UID set, HEADER and [NOT] TEXT, literals included), UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
  * (whole or partial, `N` and `N.MIME` of a multipart message; with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
  * LOGOUT. Another client's expunge or move is pushed to an idling connection as VANISHED (QRESYNC enabled) or EXPUNGE,
  * a delivery as EXISTS.
@@ -280,6 +282,8 @@ export class FakeImapServer {
   readonly bodyFetches: Array<{ path: string; uid: number; section: string; length?: number }> = [];
   /** Command verbs answered with `NO` instead of their result. */
   readonly refusedVerbs = new Set<string>();
+  /** The criteria atoms of every SEARCH, in order (a quoted or literal string as its octets). */
+  readonly searches: string[][] = [];
   private readonly folders = new Map<string, ServerFolder>();
   private readonly sockets = new Set<Socket>();
   private readonly sessions = new Set<Session>();
@@ -427,11 +431,26 @@ export class FakeImapServer {
     this.sessions.add(session);
     socket.on("close", () => this.sessions.delete(session));
     let buffered = "";
+    let pendingLiteralAcknowledged = false;
     socket.on("data", (chunk) => {
       buffered += chunk.toString("latin1");
       let end: number;
       while ((end = buffered.indexOf("\r\n")) !== -1) {
         const line = buffered.slice(0, end);
+        // A literal (`{N}` or `{N+}`) is read as a quoted string of its N octets; a synchronizing one is acknowledged.
+        const literal = /\{(\d+)(\+?)\}$/.exec(line);
+        if (literal) {
+          const size = Number(literal[1]);
+          if (literal[2] === "" && !pendingLiteralAcknowledged) {
+            pendingLiteralAcknowledged = true;
+            socket.write("+ go ahead\r\n");
+          }
+          if (buffered.length < end + 2 + size) break;
+          const octets = buffered.slice(end + 2, end + 2 + size);
+          buffered = `${line.slice(0, literal.index)}${quoted(octets)}${buffered.slice(end + 2 + size)}`;
+          pendingLiteralAcknowledged = false;
+          continue;
+        }
         buffered = buffered.slice(end + 2);
         queue = queue.then(async () => {
           const response = this.respond(line, session);
@@ -533,6 +552,23 @@ export class FakeImapServer {
       case "SEARCH": {
         if (!selected) return { text: `${String(tag)} BAD no mailbox selected\r\n` };
         const criteria = atoms(args);
+        this.searches.push(criteria);
+        if (this.options.refuseSearchCharset && criteria.some((token) => token.toUpperCase() === "CHARSET"))
+          return { text: `${String(tag)} NO [BADCHARSET (US-ASCII)] charset not supported\r\n` };
+        // `TEXT <string>` (after `NOT`: must not hold it): the raw message, read as UTF-8, holds the string,
+        // case-insensitively. A quoted or literal argument arrives as its octets.
+        const texts = criteria.flatMap((token, index) =>
+          token.toUpperCase() === "TEXT" && criteria[index + 1] !== undefined
+            ? [
+                {
+                  negated: criteria[index - 1]?.toUpperCase() === "NOT",
+                  value: Buffer.from(criteria[index + 1]!, "latin1")
+                    .toString("utf8")
+                    .toLowerCase(),
+                },
+              ]
+            : [],
+        );
         const maxUid = selected.messages.at(-1)?.uid ?? 0;
         const uidIndex = criteria.findIndex((token) => token.toUpperCase() === "UID");
         const set = uidIndex === -1 ? undefined : criteria[uidIndex + 1];
@@ -544,7 +580,8 @@ export class FakeImapServer {
           (message) =>
             (set === undefined || inRange(message.uid, set, maxUid)) &&
             (field === undefined ||
-              (partsOf(message.raw).fields.get(field) ?? "").toLowerCase().includes(contained ?? "")),
+              (partsOf(message.raw).fields.get(field) ?? "").toLowerCase().includes(contained ?? "")) &&
+            texts.every((text) => message.raw.toString("utf8").toLowerCase().includes(text.value) !== text.negated),
         );
         return { text: `* SEARCH${found.map((message) => ` ${message.uid}`).join("")}\r\n${ok()}` };
       }

@@ -4,6 +4,7 @@ import {
   gmailMoveRequest,
   type GmailMoveResult,
 } from "./mailMoveProviderAdapters.js";
+import { searchHitIds } from "./mailSearchTerms.js";
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
@@ -420,13 +421,15 @@ export class GmailRestClient implements GmailMailClient {
     };
   }
 
-  private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
+  /** 30 s per request; a caller's `signal` ends it earlier. */
+  private async request<T>(path: string, signal?: AbortSignal): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(30_000);
       response = await this.fetchImpl(`${BASE_URL}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch (error) {
       // This boundary cannot expose a provider rejection that may contain bearer credentials.
@@ -502,6 +505,16 @@ export class GmailRestClient implements GmailMailClient {
       `/messages?${params.toString()}`,
     );
     return { ids: (json?.messages ?? []).map((m) => m.id), nextPageToken: json?.nextPageToken ?? null };
+  }
+
+  /**
+   * The ids of at most `limit` messages (newest first) Gmail's own search finds for `query`, one `messages.list` page;
+   * Trash and Spam are left out as Gmail leaves them out by default.
+   */
+  async searchMessageIds(query: string, limit: number, signal?: AbortSignal): Promise<string[]> {
+    const params = new URLSearchParams({ maxResults: String(limit), q: query });
+    const { json } = await this.request<{ messages?: unknown }>(`/messages?${params.toString()}`, signal);
+    return searchHitIds(json?.messages, limit);
   }
 
   /** One attachment's decoded bytes (`attachments.get`) by the attachment id of the `format=full` read just made. */
