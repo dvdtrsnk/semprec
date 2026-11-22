@@ -47,7 +47,7 @@ struct InternetAccountsScreen: View {
                         Text("common.ok", bundle: .module)
                     }
                 },
-                message: { Text(viewModel.state.signInFailure?.message ?? "", bundle: .module) }
+                message: { Text(viewModel.state.signInFailure?.message ?? "") }
             )
             .onChange(of: viewModel.connections) { adding = false }
             .accessibilityElement(children: .contain)

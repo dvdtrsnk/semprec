@@ -41,7 +41,7 @@ struct InternetAccountScreen: View {
                 Text("profile.failed.title", bundle: .module),
                 isPresented: signInFailed,
                 actions: { dismissButton },
-                message: { Text(viewModel.state.signInFailure?.message ?? "", bundle: .module) }
+                message: { Text(viewModel.state.signInFailure?.message ?? "") }
             )
             .confirmationDialog(
                 Text(offTitle, bundle: .module),
