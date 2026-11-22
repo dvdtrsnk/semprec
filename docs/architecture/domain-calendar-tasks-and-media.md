@@ -208,18 +208,32 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   the tracked calendars before the fetch), `putEvent` (a new override names its series' `seriesRef`),
   `deleteEvent`, `getEvent` (one Event as the provider has it now) and the optional `moveEvent`, each honouring the
   pass's deadline signal
-  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag) is the one
-  `CalendarSyncEventConflictError` of every adapter; a new Event's `icalUid` becomes its Google `iCalUID` or CalDAV
-  `UID` (Graph assigns its own). The factory gets the account and the tenant's zone. An adapter holds no database
+  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag), and an update of an
+  Event the provider no longer has (404, 410), is the one `CalendarSyncEventConflictError` of every adapter, so the
+  push reads the provider's version and a provider deletion wins; a delete of an Event already gone succeeds. A new
+  Event's `icalUid` becomes its Google `iCalUID` or CalDAV `UID` (Graph assigns its own). A new Event also carries its
+  local Event's id (`createKey`): Google gets an event id (base32hex of a hash of calendar, Event and a generation; a
+  409 for a live event there writes the fields onto it with `If-Match`, a deleted one moves to the next generation)
+  and CalDAV a resource name (and, without an `icalUid`, a UID) from it, so a create repeated after a lost answer
+  finds what the first one made and writes onto it; Graph's `transactionId` repeats only for the same Event with the
+  same fields. The factory gets the account and the tenant's zone. An adapter holds no database
   client; it does network and OAuth refreshes. The registry
   (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
   is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
-  answer is the provider error `invalidResponse`.
+  answer is the provider error `invalidResponse`. Inside a fetch, an Event the provider sends that cannot be read
+  (a Graph or Google item outside its schema or with an unreadable time, a CalDAV resource ical.js cannot read) is
+  left out and logged without its content, and a Graph series with an unreadable master or instance is left out whole;
+  only an unusable page envelope fails the pass. A full fetch then treats a stored copy of a left-out Event as one the
+  provider no longer lists. Reading one Event (`getEvent`) still fails as `invalidResponse`.
 - **CalDAV** (`adapters/caldav/`, sync mode `imap`: iCloud and generic accounts). The protocol is `tsdav`'s request
   builders and multistatus parser; every `tsdav` call gets the session fetch of `caldavHttp.ts`, built on
   `createOutboundHttp()`: the stored user name and password as Basic credentials, 20 s per request, a 10 MiB body cap,
   at most three redirects each vetted by the outbound policy, and a refused address and an unreachable server both
-  `providerUnavailable` with one message. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
+  `providerUnavailable` with one message. The credential is scoped (`caldavCredentialScope`) to the origin discovery
+  starts at and, for iCloud only, to https hosts under `icloud.com` on the default port, where Apple's discovery
+  delegates; a request, a redirect or an address in an answer (principal, calendar home, resource) outside it is
+  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. A server
+  whose well-known address redirects to another host is set up with its CalDAV address instead. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
   account's `caldav_url` (`mail_account_server_settings`) or `https://<address domain>/.well-known/caldav`:
   `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
   the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
@@ -234,9 +248,11 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
   the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
   the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
-  changed in the resource as the server has it now (read by a plain GET), adds a generated VTIMEZONE for a zone the resource lacks, and is
+  changed in the resource as the server has it now (read by a plain GET and read whole first: a value ical.js cannot
+  read makes the write `invalidResponse` before anything is sent), adds a generated VTIMEZONE for a zone the resource lacks, and is
   conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
-  stored one is `CalendarSyncEventConflictError`, not a provider error. Deleting an override cancels the occurrence
+  stored one is `CalendarSyncEventConflictError`, not a provider error, except a create's 412 at the resource named
+  after the same local Event, which is read and replaced with the fields. Deleting an override cancels the occurrence
   in its series' resource. The password connect route verifies a body's `caldavUrl` by the same discovery
   (`caldav_auth_failed`, `caldav_server_unreachable`, `caldav_server_invalid`).
 - **Microsoft Graph adapter** (`adapters/graph/`). Its only database access is the token refresh through mail's
@@ -250,8 +266,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   RRULE, a rule occurrence of the window without an instance or a cancelled one an exception date, an `exception`
   instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`), the tenant's zone when it
   shares the Windows id (a Prague tenant reads "Central Europe Standard Time" as `Europe/Prague`); an unknown one is
-  `Etc/UTC`. Writes: `PATCH /me/events/{id}` with `If-Match` (412 is `CalendarSyncEventConflictError`), `POST
-  /me/calendars/{id}/events` with a `transactionId` derived from calendar and fields; an Event without its own zone is
+  `Etc/UTC`. Every request refuses a redirect (`redirect: "error"`), so the bearer token stays on Graph. A 403 is
+  `CalendarSyncConsentRequiredError` (`needsConsent`) only for the account's own calendar listing or with an
+  `insufficient_scope` challenge; any other 403 (one shared calendar or Event) is `GraphCalendarRequestError`
+  (`unexpected`). Writes: `PATCH /me/events/{id}` with `If-Match` (412, 404 and 410 are
+  `CalendarSyncEventConflictError`), `POST /me/calendars/{id}/events` with a `transactionId` derived from calendar,
+  local Event and fields; an Event without its own zone is
   written in the tenant's; RRULEs no Graph pattern expresses and a new override are refused
   (`GraphCalendarWriteUnsupportedError`).
 - **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
@@ -291,9 +311,14 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   of a writable tracked account calendar, records the desired state in `calendar_event_push_state` (`operation`
   `create` | `update` | `delete` | `move`, a `desired_revision` every change raises, `status` `pending` | `sent` |
   `conflict` | `failed`, `attempts`, `last_error_code`) in the write's transaction and queues `calendarEventPush` (key
-  `calendar-event-push:<event>`, replaced). The job decides from the Event, its remote state and its calendar, with
+  `calendar-event-push:<event>`, replaced). One job runs per Event at a time: its first transaction takes the push's
+  lease (`lease_id`, `lease_until`: the adapter deadline plus 8 min; an expired one is taken over), and a job that
+  finds it held is queued again for the lease's end; the holder ends the lease when it settles and queues a change
+  recorded meanwhile at once. The job decides from the Event, its remote state and its calendar, with
   no transaction open calls the adapter, and stores each result in its own transaction under the account's guard and
-  the Event's locks, setting the status only while its revision is current. What it sends: the Event's fields, a
+  the Event's locks, setting the status only while its revision is current. A created provider Event that a pass
+  gave an Event of its own between the write and the store trashes that one only when it has no push state (nothing
+  here changed it); otherwise the push is `conflict` and both stay. What it sends: the Event's fields, a
   timed Event without a zone in the tenant's, a `recurrence` rule as its RRULE; a new override as a change of its
   series' occurrence (`seriesRef`); a cancelled occurrence the provider never had as an override as an exception date
   of its series. After a push the sent fields are the new `base_snapshot`, so the next fetch of them is no change. A
@@ -349,9 +374,10 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   or `unexpected`, and raises the account's Semp problem `calendarSyncError` (`calendar:<account>`, category `mail`,
   critical for the first two). Calendars and Events stay as they were. Only `error` is rethrown for the queue's retry.
 - **Triggers.** An account created with Calendars on or switched on queues a pass; the sweep
-  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, not `ok`, or
-  last synced 4 min ago or more; `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for
-  another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
+  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, `never` or
+  `error`, or `ok` and last synced 4 min ago or more; a `needsReauthorization` or `needsConsent` account is left out
+  until a new sign-in (a replaced password or OAuth grant) sets it back to `never` and queues its pass;
+  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
   dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
   under the account row's share lock. With none in the last 60 s the pass runs now; a request inside the window of a
   pass that started queues one at the window's end; while that one is still ahead it serves the request too. The

@@ -38,7 +38,7 @@ class HttpAuthRepository(
             mutableStatus.value = SessionStatus.SignedOut
             return
         }
-        val response = client.send(stored.serverUrl, HttpMethod.Get, SESSION_PATH, stored.token)
+        val response = client.send(stored.serverUrl, HttpMethod.Get, AuthenticatedApi.SESSION_PATH, stored.token)
         mutableStatus.value = when (response) {
             is ApiResponse.Success -> response.readSession(stored.serverUrl)
             is ApiResponse.Failure -> when (response.kind) {
@@ -107,7 +107,6 @@ class HttpAuthRepository(
         if (this == FailureKind.REJECTED) FailureKind.UNAUTHORIZED else this
 
     private companion object {
-        const val SESSION_PATH = "/api/auth/session"
         const val LOGIN_PATH = "/api/auth/login"
         const val LOGOUT_PATH = "/api/auth/logout"
         const val RESET_PATH = "/api/auth/password-reset/request"

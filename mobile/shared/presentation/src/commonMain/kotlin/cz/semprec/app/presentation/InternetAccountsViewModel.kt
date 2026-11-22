@@ -256,7 +256,9 @@ private fun InternetAccountsAction.Connect.toAccount(): MailPasswordAccount? {
 internal fun RepositoryResult.Failure?.toProblem(): InternetConnectFailure = when (this?.kind) {
     FailureKind.REJECTED -> InternetConnectFailure.REFUSED
     FailureKind.UNAVAILABLE -> InternetConnectFailure.UNAVAILABLE
-    else -> InternetConnectFailure.UNEXPECTED
+    // A signed-in connect is not refused for its session (a rejected session signs the window out), and no other
+    // kind names something the person can change.
+    FailureKind.UNAUTHORIZED, FailureKind.NOT_FOUND, FailureKind.INVALID_DATA, null -> InternetConnectFailure.UNEXPECTED
 }
 
 private fun InternetOAuthProvider.toDomain() = when (this) {

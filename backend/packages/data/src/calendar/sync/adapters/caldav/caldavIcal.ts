@@ -657,15 +657,34 @@ export function serializeNewResource(uid: string, fields: RemoteEventFields): st
 
 /** The resource could not be read as one Event series; the caller treats it as changed under it. */
 export class CalendarResourceUnreadableError extends Error {
-  constructor() {
-    super("The calendar resource is not a readable iCalendar Event");
+  constructor(options?: { cause: unknown }) {
+    super("The calendar resource is not a readable iCalendar Event", options);
     this.name = "CalendarResourceUnreadableError";
   }
 }
 
+/** Reads every value of `component` and its subcomponents once, which is when ical.js parses each. */
+function readWhole(component: ICAL.Component): void {
+  for (const property of component.getAllProperties()) property.getValues();
+  for (const subcomponent of component.getAllSubcomponents()) readWhole(subcomponent);
+}
+
+/**
+ * The resource as the server has it, read whole before anything is changed: a value ical.js cannot read (it throws a
+ * plain Error on first access) makes the resource unreadable here, so the edit after this meets only values already
+ * read. A failure while writing the new fields is the edit's own and stays as it is.
+ */
 function editableParts(text: string): ResourceParts {
   const root = parseRoot(text);
-  const parts = root === null ? null : resourceParts(root);
+  if (root === null) throw new CalendarResourceUnreadableError();
+  let parts: ResourceParts | null;
+  try {
+    readWhole(root);
+    parts = resourceParts(root);
+  } catch (error) {
+    if (error instanceof Error) throw new CalendarResourceUnreadableError({ cause: error });
+    throw error;
+  }
   if (parts === null) throw new CalendarResourceUnreadableError();
   return parts;
 }

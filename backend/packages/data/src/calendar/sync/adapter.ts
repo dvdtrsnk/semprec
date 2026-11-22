@@ -121,6 +121,13 @@ export interface PutRemoteEventInput {
    */
   icalUid?: string | null;
   /**
+   * For a new Event (`ref` `null`, no `recurrenceId`): the id of the local Event it is made for. Google and CalDAV name
+   * the provider's Event after it, so a create repeated after a lost answer finds the Event the first one made and
+   * writes these fields onto it instead of making a second. Microsoft Graph names its Events itself and recognises
+   * only a repeat with the same fields (its `transactionId`).
+   */
+  createKey?: string | null;
+  /**
    * For a new override (`ref` `null`, `fields.recurrenceId` set): its series' Event at the provider, whose
    * occurrence at `recurrenceId` the override changes.
    */

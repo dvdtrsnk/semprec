@@ -3,8 +3,9 @@ import { isIPv4, isIPv6 } from "node:net";
 /**
  * `mailboxCredentialVerification` (the password mailbox connect login check), `mailContentFetch` (a message body or an
  * attachment fetched from the mail provider on demand), `mailRemoteSearch` (a mail search that asks the providers)
- * and `mailHistoryUpload` (a native client's claim or upload of IMAP history) are counted per user; the other four
- * are public pre-authentication actions counted per client address.
+ * and `mailHistoryUpload` (a native client's claim or upload of IMAP history) are counted per user; the others are
+ * public actions reachable without a session, counted per client address. `mailOauthCallback` is the provider's OAuth
+ * redirect target and `calendarWebhook` a Google or Microsoft Graph calendar change notification.
  */
 export type ThrottledAction =
   | "login"
@@ -14,7 +15,9 @@ export type ThrottledAction =
   | "mailboxCredentialVerification"
   | "mailContentFetch"
   | "mailRemoteSearch"
-  | "mailHistoryUpload";
+  | "mailHistoryUpload"
+  | "mailOauthCallback"
+  | "calendarWebhook";
 
 export interface ClientIpThrottleLimit {
   maxEvents: number;
@@ -32,6 +35,10 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   mailRemoteSearch: { maxEvents: 30, windowSeconds: 15 * 60 },
   // 500 messages a request: a 15-minute window takes up to 300 000 messages of history.
   mailHistoryUpload: { maxEvents: 600, windowSeconds: 15 * 60 },
+  mailOauthCallback: { maxEvents: 30, windowSeconds: 15 * 60 },
+  // A provider delivers every subscribed account's notifications from a few addresses, so the
+  // budget is per minute and well above one user's edit rate.
+  calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];

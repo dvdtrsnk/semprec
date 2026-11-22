@@ -46,13 +46,14 @@ export function calendarEventPushJobKey(eventItemId: string): string {
 
 /**
  * Called in the transaction that recorded the Event's desired state; a newer change replaces the queued job. The push
- * counts its own attempts and gives up before the queue would (`MAX_EVENT_PUSH_ATTEMPTS` in `eventPushJob.ts`).
+ * counts its own attempts and gives up before the queue would (`MAX_EVENT_PUSH_ATTEMPTS` in `eventPushJob.ts`). A
+ * job queued while another runs waits for that one's lease (`claimEventPush`); `runAt` is when it runs again then.
  */
-export async function enqueueCalendarEventPush(client: Queryable, eventItemId: string): Promise<void> {
+export async function enqueueCalendarEventPush(client: Queryable, eventItemId: string, runAt?: Date): Promise<void> {
   await enqueueJob(
     client,
     CORE_TASK_NAMES.CALENDAR_EVENT_PUSH,
     { eventItemId },
-    { jobKey: calendarEventPushJobKey(eventItemId), maxAttempts: 10 },
+    { jobKey: calendarEventPushJobKey(eventItemId), maxAttempts: 10, ...(runAt === undefined ? {} : { runAt }) },
   );
 }

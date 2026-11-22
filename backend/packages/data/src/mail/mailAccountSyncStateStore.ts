@@ -1,6 +1,8 @@
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { isLockNotAvailable } from "../db/tenantAdvisoryGuard.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { ChokePointError, ValidationError } from "../errors.js";
+import { MailboxSyncBusyError } from "./mailboxSyncGuard.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { PoolClient } from "pg";
 import {
@@ -844,23 +846,57 @@ export async function listAllMailAccountSyncStates(client: Queryable): Promise<M
 /** What `claimMailSyncPass` found: the lease is now this pass's, another live pass holds it, or there is no row. */
 export type MailSyncPassClaim = "claimed" | "busy" | "missing";
 
+export interface ClaimMailSyncPassOptions {
+  /** How long the claim waits for the sync state row's lock; without it only the pool's statement timeout bounds it. */
+  maxWaitMs?: number;
+}
+
 /**
  * Takes the account's pass lease for `token` until `leaseMs` from now, unless another pass holds an unexpired one;
  * then that pass is asked for one more run (`pass_rerun_requested`) and `busy` is returned. Locks the sync state row,
  * so a claim and `releaseMailSyncPass` never interleave: a trigger either reaches the running pass's rerun flag or
  * finds the lease free. A claim clears the flag, because the claiming pass is the requested run.
+ *
+ * Each write transaction of a running pass holds the row from its lease renewal to its commit, and a removal or the
+ * Mail switch for its own transaction, so `maxWaitMs` bounds the wait with a transaction-local `lock_timeout`,
+ * restored right after the grant. When it expires the transaction is aborted and
+ * `MailboxSyncBusyError` is thrown: the row's holder (a running pass, a removal or the Mail switch) decides the
+ * account's state, and the trigger is not recorded as a rerun.
  */
 export async function claimMailSyncPass(
   client: PoolClient,
   itemId: string,
   token: string,
   leaseMs: number,
+  options: ClaimMailSyncPassOptions = {},
 ): Promise<MailSyncPassClaim> {
-  const { rows } = await client.query<{ held: boolean }>(
-    `SELECT (pass_lease_token IS NOT NULL AND pass_lease_expires_at > now()) AS held
-       FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
-    [itemId],
-  );
+  const { maxWaitMs } = options;
+  let restoredLockTimeout: string | undefined;
+  if (maxWaitMs !== undefined) {
+    // `lock_timeout` of 0 means no timeout at all, so a bound of 0 would silently be none.
+    if (!Number.isInteger(maxWaitMs) || maxWaitMs <= 0) {
+      throw new RangeError("The mail sync pass claim's maximum wait must be a positive integer of milliseconds");
+    }
+    const { rows: settings } = await client.query<{ lockTimeout: string }>(
+      `SELECT current_setting('lock_timeout') AS "lockTimeout"`,
+    );
+    restoredLockTimeout = settings[0]?.lockTimeout;
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [`${maxWaitMs}ms`]);
+  }
+  let rows: Array<{ held: boolean }>;
+  try {
+    ({ rows } = await client.query<{ held: boolean }>(
+      `SELECT (pass_lease_token IS NOT NULL AND pass_lease_expires_at > now()) AS held
+         FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE`,
+      [itemId],
+    ));
+  } catch (error) {
+    if (isLockNotAvailable(error)) throw new MailboxSyncBusyError();
+    throw error;
+  }
+  if (restoredLockTimeout !== undefined) {
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [restoredLockTimeout]);
+  }
   const row = rows[0];
   if (!row) return "missing";
   // The row is locked above, so each update below finds it.

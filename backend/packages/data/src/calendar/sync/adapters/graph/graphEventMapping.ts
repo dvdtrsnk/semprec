@@ -64,8 +64,26 @@ export const graphEventSchema = z.object({
 });
 export type GraphEvent = z.infer<typeof graphEventSchema>;
 
-function invalidResponse(): CalendarSyncProviderError {
-  return new CalendarSyncProviderError("invalidResponse", "Microsoft Graph sent an unusable Event");
+/**
+ * One Event Graph sent cannot be read (its shape or one of its times). An `invalidResponse` provider error, so a read
+ * of that one Event fails as such; a fetch catches it and leaves that Event out.
+ */
+export class GraphEventUnreadableError extends CalendarSyncProviderError {
+  constructor() {
+    super("invalidResponse", "Microsoft Graph sent an unusable Event");
+    this.name = "GraphEventUnreadableError";
+  }
+}
+
+function invalidResponse(): GraphEventUnreadableError {
+  return new GraphEventUnreadableError();
+}
+
+/** An Event of a Graph answer; a value outside `graphEventSchema` is a `GraphEventUnreadableError`. */
+export function parseGraphEvent(value: unknown): GraphEvent {
+  const parsed = graphEventSchema.safeParse(value);
+  if (!parsed.success) throw invalidResponse();
+  return parsed.data;
 }
 
 function text(value: string | null | undefined, max: number): string | null {
@@ -286,12 +304,20 @@ export function graphEventBodyOf(fields: RemoteEventFields, tenantZone: string):
 }
 
 /**
- * The same fields in the same calendar give the same id, so a create Graph received but whose answer was lost is
- * not made twice when the write is retried.
+ * The same local Event (`createKey`) with the same fields in the same calendar gives the same id, so a create Graph
+ * received but whose answer was lost is not made twice when the write is retried; two local Events with equal fields
+ * get different ids. The fields are part of the id because Graph may answer a known id with the Event as it was first
+ * made: a repeat after the Event changed here is a create of its own.
  */
-export function graphTransactionIdOf(calendarRemoteId: string, fields: RemoteEventFields): string {
+export function graphTransactionIdOf(
+  calendarRemoteId: string,
+  createKey: string | null,
+  fields: RemoteEventFields,
+): string {
   return createHash("sha256")
     .update(calendarRemoteId)
+    .update("\n")
+    .update(createKey ?? "")
     .update("\n")
     .update(JSON.stringify(fields))
     .digest("hex")

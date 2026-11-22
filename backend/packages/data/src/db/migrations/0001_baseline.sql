@@ -933,8 +933,9 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO
 -- ----------------------------------------------------------------------------------------------------
 
 -- The desired state of an account calendar Event that a user's or agent's change must bring to its provider: the
--- operation last recorded, a revision every recorded change raises, and the push job's outcome. Written in the
--- transaction of the Event's write and by the `calendarEventPush` job.
+-- operation last recorded, a revision every recorded change raises, the push job's outcome, and the lease of the one
+-- push job running for the Event (`lease_id` until `lease_until`). Written in the transaction of the Event's write
+-- and by the `calendarEventPush` job.
 CREATE TABLE public.calendar_event_push_state (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     event_item_id uuid NOT NULL,
@@ -944,6 +945,9 @@ CREATE TABLE public.calendar_event_push_state (
     attempts integer DEFAULT 0 NOT NULL,
     last_error_code text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_id uuid,
+    lease_until timestamp with time zone,
+    CONSTRAINT calendar_event_push_state_lease_check CHECK (((lease_id IS NULL) = (lease_until IS NULL))),
     CONSTRAINT calendar_event_push_state_operation_check CHECK ((operation = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'move'::text]))),
     CONSTRAINT calendar_event_push_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'sent'::text, 'conflict'::text, 'failed'::text]))),
     CONSTRAINT calendar_event_push_state_attempts_check CHECK ((attempts >= 0)),
@@ -1959,6 +1963,7 @@ CREATE TABLE public.mail_message_meta (
     is_bulk boolean DEFAULT false NOT NULL,
     arrival text NOT NULL,
     content_state text NOT NULL,
+    folder_copy_removed_at timestamp with time zone,
     CONSTRAINT mail_message_meta_arrival_check CHECK ((arrival = ANY (ARRAY['live'::text, 'backfill'::text]))),
     CONSTRAINT mail_message_meta_content_state_check CHECK ((content_state = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
@@ -1974,12 +1979,16 @@ COMMENT ON COLUMN public.mail_message_meta.arrival IS 'live = new mail after the
 
 COMMENT ON COLUMN public.mail_message_meta.content_state IS 'full = body and attachment bytes stored, index = envelope, preview and attachment metadata only; decided once at ingest.';
 
+COMMENT ON COLUMN public.mail_message_meta.folder_copy_removed_at IS 'When an IMAP pass last removed one of the message''s folder edges; set until a pass''s final transaction decides whether the Email keeps a folder copy.';
+
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);
 
 CREATE INDEX mail_message_meta_dsn_original_message_id_idx ON public.mail_message_meta USING btree (dsn_original_message_id) WHERE (dsn_original_message_id IS NOT NULL);
 
 CREATE INDEX mail_message_meta_envelope_gin_idx ON public.mail_message_meta USING gin (envelope jsonb_path_ops);
+
+CREATE INDEX mail_message_meta_folder_copy_removed_idx ON public.mail_message_meta USING btree (tenant_id, mailbox_item_id) WHERE (folder_copy_removed_at IS NOT NULL);
 
 CREATE INDEX mail_message_meta_in_reply_to_idx ON public.mail_message_meta USING btree (in_reply_to) WHERE (in_reply_to IS NOT NULL);
 

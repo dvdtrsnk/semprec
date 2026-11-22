@@ -28,9 +28,12 @@ import {
 import { mailArrivalOf, type MailArrival } from "./mailArrival.js";
 import { mailContentStateOf, type MailContentState } from "./mailContentState.js";
 import {
+  clearMailMessageFolderCopyRemoved,
   deleteMailMessageMetaOfRemovedItem,
   getMailMessageMetaByMailboxAndMessageId,
   listKnownMailMessageIds,
+  listMailMessagesWithFolderCopyRemoved,
+  markMailMessageFolderCopyRemoved,
 } from "./mailMessageMetaStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
@@ -585,6 +588,9 @@ async function applyImapFolder(
         },
         EMAILS_RELATION_CONTEXT,
       );
+      // Committed with the edge's removal, so a pass that ends before its final transaction leaves the Email to the
+      // next pass's decision instead of without any folder edge for good.
+      await markMailMessageFolderCopyRemoved(dbClient, emailItemId);
     }
   }
 
@@ -738,10 +744,12 @@ async function backfillImapFolder(
 }
 
 /**
- * Trashes, as the system writer, each of `emailItemIds` that has no folder edge left and no move in flight, and
- * deletes its meta row (and a thread no other message names), so the message leaves every thread count and a later
- * delivery of the same Message-ID is ingested anew. An Emails item with a copy in another folder is kept: a move by
- * another client shows as the source copy gone and the target copy ingested onto the same item. Repeating it is a
+ * Decides each of `emailItemIds` and each Email of the mailbox an earlier pass marked
+ * (`markMailMessageFolderCopyRemoved`) and left undecided because it ended early. One with no folder edge left and no
+ * move in flight is trashed as the system writer and loses its meta row (and a thread no other message names), so the
+ * message leaves every thread count and a later delivery of the same Message-ID is ingested anew. One with a copy in
+ * another folder is kept and its mark cleared: a move by another client shows as the source copy gone and the target
+ * copy ingested onto the same item. One with a move in flight keeps its mark for a later pass. Repeating it is a
  * no-op. Runs under the mail-thread guard of the caller's transaction.
  */
 async function removeEmailsWithoutFolderCopy(
@@ -753,16 +761,23 @@ async function removeEmailsWithoutFolderCopy(
   >,
   relationDefinitionId: string,
 ): Promise<void> {
-  if (emailItemIds.size === 0) return;
+  const candidates = new Set([
+    ...emailItemIds,
+    ...(await listMailMessagesWithFolderCopyRemoved(dbClient, params.mailboxItemId)),
+  ]);
+  if (candidates.size === 0) return;
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
     params.mailboxItemId,
     params.moveBaseline,
     params.protectedMoveMessageIds,
   );
-  for (const emailItemId of emailItemIds) {
+  for (const emailItemId of candidates) {
     if (protectedMoveMessageIds.has(emailItemId) || (await hasUnsettledMailMove(dbClient, emailItemId))) continue;
-    if ((await listRelationsForItem(dbClient, relationDefinitionId, emailItemId)).length > 0) continue;
+    if ((await listRelationsForItem(dbClient, relationDefinitionId, emailItemId)).length > 0) {
+      await clearMailMessageFolderCopyRemoved(dbClient, emailItemId);
+      continue;
+    }
     await itemDeleteWithClient(dbClient, params.emailsDatabaseId, emailItemId, {
       queueAffinity: createActionQueueAffinity(),
       writer: SYSTEM_WRITER,

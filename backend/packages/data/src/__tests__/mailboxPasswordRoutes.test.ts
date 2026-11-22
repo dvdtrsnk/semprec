@@ -1343,6 +1343,8 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
       dependencies?: MailboxPasswordRouteDependencies;
       tenantId?: string;
       restarted?: string[];
+      /** Replaces the recording restart, e.g. with one that fails. */
+      restartAccount?: (mailboxItemId: string) => Promise<void>;
     }
 
     function replace(
@@ -1355,9 +1357,11 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         ...(options.dependencies ?? acceptingVerifier().dependencies),
         throttle: recordingThrottle().throttle,
         mailLiveSync: {
-          restartAccount: async (id) => {
-            restarted.push(id);
-          },
+          restartAccount:
+            options.restartAccount ??
+            (async (id) => {
+              restarted.push(id);
+            }),
         },
       });
       return runInTenant(options.tenantId ?? tenant, () =>
@@ -1457,6 +1461,27 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         expect(restarted).toEqual([mailboxId]);
       },
     );
+
+    it("answers 200 with the password replaced when the live sync restart after the commit fails, and logs it without the password", async () => {
+      const mailboxId = await passwordMailbox({ credential: PASSWORD });
+      const logs = recordLogCalls();
+
+      const answer = await replace(
+        mailboxId,
+        { password: NEW_PASSWORD },
+        {
+          restartAccount: async () => {
+            throw new Error(`the live sync refused ${NEW_PASSWORD}`);
+          },
+        },
+      );
+
+      expect(answer.status).toBe(200);
+      expect(answer.item.id).toBe(mailboxId);
+      expect(await accountState(mailboxId)).toMatchObject({ password: NEW_PASSWORD, mailJobs: [mailboxId] });
+      expect(logs()).toContain("Restarting the mail live sync after a password replacement failed");
+      expect(logs()).not.toContain(NEW_PASSWORD);
+    });
 
     it("keeps the stored user name, verifies iCloud's CalDAV address with Calendars on, and seals an app password", async () => {
       const mailboxId = await passwordMailbox({ provider: "icloud", credential: null, calendarsEnabled: true });

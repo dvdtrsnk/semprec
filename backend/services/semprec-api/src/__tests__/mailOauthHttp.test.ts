@@ -30,6 +30,7 @@ import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createMailLiveSyncControl } from "../mailLiveSyncControl.js";
 import { logger } from "../logger.js";
 import { createMailOauthCallbackRequestListener } from "../mailOauthCallbackHandler.js";
+import { createClientIpThrottle } from "../clientIpThrottle.js";
 
 /** These tests host no IMAP sync session to close. */
 const keptNoImapSessions = { closeAccount: async () => {} };
@@ -399,7 +400,7 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
     const errors = vi.spyOn(logger, "error");
     // Nothing listens on port 1, so the lookup's connection is refused.
     const unreachable = new pg.Pool({ connectionString: "postgres://semprec:SENTINEL-DB-PASSWORD@127.0.0.1:1/none" });
-    const listening = createServer(createMailOauthCallbackRequestListener(unreachable));
+    const listening = createServer(createMailOauthCallbackRequestListener(unreachable, { trustProxy: false }));
     await new Promise<void>((resolve) => listening.listen(0, resolve));
     try {
       const res = await fetch(`${urlOf(listening)}/api/mail/oauth/callback?state=some-state&code=some-code`);
@@ -409,6 +410,31 @@ describe("GET /api/mail/oauth/callback (issue gh-1686)", () => {
       expect(errors.mock.calls).toEqual([
         [{ errorName: "Error", errorCode: "ECONNREFUSED" }, "Mail OAuth callback failed"],
       ]);
+    } finally {
+      await new Promise<void>((resolve) => listening.close(() => resolve()));
+      await unreachable.end();
+    }
+  });
+
+  it("answers 429 rate_limited with Retry-After before the state lookup once an address is over its budget", async () => {
+    const errors = vi.spyOn(logger, "error");
+    // Nothing listens on port 1: a request that reaches the state lookup fails with a 500.
+    const unreachable = new pg.Pool({ connectionString: "postgres://semprec:none@127.0.0.1:1/none" });
+    const throttle = createClientIpThrottle({ limits: { mailOauthCallback: { maxEvents: 1, windowSeconds: 60 } } });
+    const listening = createServer(
+      createMailOauthCallbackRequestListener(unreachable, { trustProxy: false, clientIpThrottle: throttle }),
+    );
+    await new Promise<void>((resolve) => listening.listen(0, resolve));
+    try {
+      const url = `${urlOf(listening)}/api/mail/oauth/callback?state=some-state&code=some-code`;
+      expect((await fetch(url)).status).toBe(500);
+
+      const refused = await fetch(url);
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+      expect(refused.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(await refused.json()).toEqual({ error: { code: "rate_limited" } });
+      expect(errors).toHaveBeenCalledTimes(1);
     } finally {
       await new Promise<void>((resolve) => listening.close(() => resolve()));
       await unreachable.end();

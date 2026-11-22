@@ -9,6 +9,7 @@ import { createEventInCalendar } from "../calendar/defaultCalendarCreateHook.js"
 import {
   CalendarSyncReauthorizationRequiredError,
   CalendarSyncProviderError,
+  type CalendarSyncAdapter,
   type RemoteEvent,
 } from "../calendar/sync/adapter.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
@@ -172,6 +173,38 @@ async function overwrittenNotifications() {
     [tenant],
   );
   return rows;
+}
+
+/** A Saturday Event made in the app in `calendarItemId`. */
+async function createEvent(calendarItemId: string, name: string): Promise<string> {
+  const created = await inTenant((client) =>
+    createEventInCalendar(
+      client,
+      { properties: { name, date: "2026-11-28", timeFrom: "08:00", timeTo: "09:00" } },
+      calendarItemId,
+      { writer: USER },
+    ),
+  );
+  return created.id;
+}
+
+async function liveEventsNamed(name: string): Promise<string[]> {
+  const { eventsDatabaseId } = await ids();
+  const { rows } = await admin.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'name' = $2 ORDER BY id",
+    [eventsDatabaseId, name],
+  );
+  return rows.map((row) => row.id);
+}
+
+/** Whether the Event's queued push job is due now. */
+async function pushJobDue(eventItemId: string): Promise<boolean> {
+  const { rows } = await admin.query<{ due: boolean }>(
+    "SELECT run_at <= now() AS due FROM graphile_worker.jobs WHERE key = $1",
+    [`calendar-event-push:${eventItemId}`],
+  );
+  if (rows.length !== 1) throw new Error(`expected one push job, found ${rows.length}`);
+  return rows[0]!.due;
 }
 
 function patchEvent(eventItemId: string, patch: Record<string, unknown>, writer = USER) {
@@ -487,6 +520,101 @@ describe("pushing local changes of synced Events", () => {
 
     await patchEvent(call, { timeFrom: "12:00", timeTo: "13:00" }, CALENDAR_SYNC_WRITER);
     expect(await properties(call)).toMatchObject({ timeFrom: "12:00", timeTo: "13:00", timeZone: "America/New_York" });
+  });
+
+  it("repeats a create whose answer was lost onto the provider's Event the first attempt made", async () => {
+    const fake = provider();
+    await syncedAccount(fake);
+    const swim = await createEvent(await calendarOf("family"), "Swim");
+    fake.beforeNextPutAnswer = async () => {
+      throw new CalendarSyncProviderError("providerUnavailable");
+    };
+    await expect(runPush(swim, fake)).rejects.toBeInstanceOf(CalendarSyncProviderError);
+    await patchEvent(swim, { place: "Lake" });
+
+    expect(await runPush(swim, fake)).toEqual({ kind: "sent", operation: "create" });
+
+    const swims = fake.events("family").filter((event) => event.fields.name === "Swim");
+    expect(swims.map((event) => event.fields.place)).toEqual(["Lake"]);
+    expect(await eventOf(swims[0]!.remoteId)).toBe(swim);
+    expect(await pushState(swim)).toMatchObject({ status: "sent" });
+  });
+
+  it("trashes the Event a pass made for a create meanwhile, but never one changed here", async () => {
+    const fake = provider();
+    const accountId = await syncedAccount(fake);
+    const family = await calendarOf("family");
+    const swim = await createEvent(family, "Swim");
+    // A pass reads the provider between the write and its store, and makes an Event of its own for it.
+    fake.beforeNextPutAnswer = async () => {
+      expect((await runPass(accountId, fake))?.kind).toBe("applied");
+    };
+    expect(await runPush(swim, fake)).toEqual({ kind: "sent", operation: "create" });
+    expect(await liveEventsNamed("Swim")).toEqual([swim]);
+
+    // A provider answering a create with the Event another Event here holds takes nothing from that one.
+    const run = await createEvent(family, "Run");
+    expect(await runPush(run, fake)).toEqual({ kind: "sent", operation: "create" });
+    const runRemoteId = fake.events("family").find((event) => event.fields.name === "Run")!.remoteId;
+    const walk = await createEvent(family, "Walk");
+    const base = fake.adapter();
+    const answering: CalendarSyncAdapter = {
+      ...base,
+      putEvent: async (calendar, input, signal) => ({
+        ...(await base.putEvent(calendar, input, signal)),
+        remoteId: runRemoteId,
+      }),
+    };
+    const adapters = { imap: () => answering, gmail_api: () => answering, graph_api: () => answering };
+    expect(
+      await runInTenant(tenant, () => handleCalendarEventPushTask(runtime, { eventItemId: walk }, { adapters })),
+    ).toEqual({ kind: "conflict" });
+    expect(await liveEventsNamed("Run")).toEqual([run]);
+    expect(await eventOf(runRemoteId)).toBe(run);
+    expect(await pushState(walk)).toMatchObject({ status: "conflict" });
+  });
+
+  it("runs one push of an Event at a time, and a change made meanwhile is pushed after it", async () => {
+    const fake = provider();
+    await syncedAccount(fake);
+    const swim = await createEvent(await calendarOf("family"), "Swim");
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let written = () => {};
+    const writing = new Promise<void>((resolve) => (written = resolve));
+    fake.beforeNextPutAnswer = async () => {
+      written();
+      await released;
+    };
+    const first = runPush(swim, fake);
+    await writing;
+    await patchEvent(swim, { place: "Lake" });
+
+    expect(await runPush(swim, fake)).toEqual({ kind: "deferred" });
+    expect(await pushJobDue(swim)).toBe(false);
+    release();
+    expect(await first).toEqual({ kind: "sent", operation: "create" });
+    expect(await pushJobDue(swim)).toBe(true);
+
+    expect(await runPush(swim, fake)).toEqual({ kind: "sent", operation: "update" });
+    const swims = fake.events("family").filter((event) => event.fields.name === "Swim");
+    expect(swims.map((event) => event.fields.place)).toEqual(["Lake"]);
+    expect(fake.writes.filter((write) => write.kind === "put")).toHaveLength(2);
+  });
+
+  it("refuses to push from a stored base whose fields break their contract", async () => {
+    const fake = provider();
+    await syncedAccount(fake);
+    const dinner = await eventOf("dinner");
+    await admin.query(
+      "UPDATE event_remote_state SET base_snapshot = jsonb_set(base_snapshot, '{fields,date}', '5') WHERE event_item_id = $1",
+      [dinner],
+    );
+    await patchEvent(dinner, { place: "Garden" });
+
+    await expect(runPush(dinner, fake)).rejects.toThrow("stored base snapshot");
+    expect(fake.writes.filter((write) => write.kind === "put")).toEqual([]);
+    expect(await pushState(dinner)).toMatchObject({ status: "pending", attempts: 1, last_error_code: "unexpected" });
   });
 
   it("pushes nothing for another tenant's Event", async () => {

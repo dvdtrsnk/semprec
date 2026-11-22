@@ -1,6 +1,8 @@
 // The push of one account calendar Event's local change to its provider (task `calendarEventPush`). A short read
 // transaction decides what the provider needs; the adapter calls run with no transaction open; each result is stored
-// in its own transaction under the account's calendar sync guard, so a sync pass never applies in between.
+// in its own transaction under the account's calendar sync guard, so a sync pass never applies in between. One push
+// job runs for an Event at a time: the prologue takes the lease in `calendar_event_push_state`, and a job that finds
+// it taken is queued again for after it.
 //
 // A conditional write the provider refuses means the Event changed there too: the provider's version is read and
 // merged with the local one field by field against the base the last sync or push stored (the provider wins a field
@@ -41,6 +43,7 @@ import {
   type RemoteEventRef,
 } from "./adapter.js";
 import { CALENDAR_SYNC_ADAPTERS } from "./adapters/index.js";
+import { enqueueCalendarEventPush } from "./calendarAccountSyncEnqueue.js";
 import { lockCalendarAccountSync } from "./calendarAccountSyncGuard.js";
 import {
   failureRecordOf,
@@ -50,8 +53,9 @@ import {
   syncWindow,
   type CalendarSyncAccountContext,
 } from "./calendarAccountSyncJob.js";
-import { REMOTE_EVENT_FIELD_KEYS, snapshotFields, snapshotOf } from "./calendarSyncApply.js";
+import { REMOTE_EVENT_FIELD_KEYS, remoteEventFieldsSchema, snapshotFields, snapshotOf } from "./calendarSyncApply.js";
 import {
+  claimEventPush,
   deleteEventRemoteStates,
   findEventByRemoteId,
   getAccountOfCalendar,
@@ -61,6 +65,7 @@ import {
   getEventRemoteState,
   recordEventPushAttemptFailure,
   recordEventPushOutcome,
+  releaseEventPush,
   resolveCalendarSyncIds,
   upsertEventRemoteState,
   type CalendarEventPushOperation,
@@ -81,6 +86,11 @@ const EVENT_PUSH_TIMEOUT_MS = 2 * 60_000;
  * since a retried push repeats a write the provider already took.
  */
 const EVENT_PUSH_GUARD_WAIT_MS = 30_000;
+/**
+ * How much longer than its adapter deadline a push job holds the Event's lease: its result stores, each waiting at
+ * most `EVENT_PUSH_GUARD_WAIT_MS` for the guard, fit in it many times over.
+ */
+const EVENT_PUSH_LEASE_MARGIN_MS = 8 * 60_000;
 
 const payloadSchema = z.strictObject({ eventItemId: z.uuid() });
 const SYNC_EVENT_SYSTEM_KEYS = [...SYNCED_EVENT_PROPERTY_KEYS, EVENT_SERIES_ID_PROPERTY_KEY] as const;
@@ -111,7 +121,9 @@ export type CalendarEventPushResult =
   /** The account needs a new sign-in or grant; the push stays pending until a sync pass reaches the provider. */
   | { kind: "waiting"; code: string }
   /** A newer local change was recorded meanwhile; its own push carries on. */
-  | { kind: "superseded" };
+  | { kind: "superseded" }
+  /** Another push job of the Event is running; this one runs again after it. */
+  | { kind: "deferred" };
 
 export interface CalendarEventPushOptions {
   adapters?: CalendarSyncAdapterRegistry;
@@ -129,6 +141,8 @@ export interface Endpoint {
 
 type Plan =
   | { kind: "nothing" }
+  /** The Event no longer exists. */
+  | { kind: "gone" }
   | { kind: "failed"; code: string }
   | { kind: "delete"; endpoint: Endpoint; stored: StoredRemoteEvent }
   | { kind: "create"; endpoint: Endpoint; fields: RemoteEventFields; icalUid: string | null; series: Series | null }
@@ -171,20 +185,42 @@ export async function handleCalendarEventPushTask(
   options: CalendarEventPushOptions = {},
 ): Promise<CalendarEventPushResult> {
   const { eventItemId } = payloadSchema.parse(payload);
+  const timeoutMs = options.timeoutMs ?? EVENT_PUSH_TIMEOUT_MS;
+  const leaseId = randomUUID();
   const prologue = await withTransaction(pool, async (client) => {
     const ids = await resolveCalendarSyncIds(client);
-    if (ids === null) return null;
-    const state = await getEventPushState(client, eventItemId);
-    if (state === null || state.status !== "pending") return null;
+    if (ids === null) return { kind: "none" } as const;
+    const claim = await claimEventPush(client, eventItemId, leaseId, timeoutMs + EVENT_PUSH_LEASE_MARGIN_MS);
+    if (claim.kind === "none") return claim;
+    if (claim.kind === "leased") {
+      // The running job queues this one again when it ends; the lease's end bounds the wait should it die.
+      await enqueueCalendarEventPush(client, eventItemId, claim.until);
+      return claim;
+    }
     const item = await getItemById(client, ids.eventsDatabaseId, eventItemId);
-    if (item === null) return null;
     const tenantZone = await getSystemTimezone(client);
     assertValidTimezone(tenantZone);
-    const plan = await planPush(client, ids, item, tenantZone);
-    return { ids, revision: state.desiredRevision, tenantZone, plan };
+    const plan: Plan = item === null ? { kind: "gone" } : await planPush(client, ids, item, tenantZone);
+    return { kind: "claimed", ids, revision: claim.desiredRevision, tenantZone, plan } as const;
   });
-  if (prologue === null) return { kind: "nothing" };
+  if (prologue.kind === "none") return { kind: "nothing" };
+  if (prologue.kind === "leased") return { kind: "deferred" };
+  try {
+    return await runPush(pool, eventItemId, prologue, timeoutMs, options);
+  } finally {
+    await releasePush(pool, eventItemId, leaseId, prologue.revision);
+  }
+}
+
+async function runPush(
+  pool: Pool,
+  eventItemId: string,
+  prologue: { ids: CalendarSyncIds; revision: number; tenantZone: string; plan: Plan },
+  timeoutMs: number,
+  options: CalendarEventPushOptions,
+): Promise<CalendarEventPushResult> {
   const { plan } = prologue;
+  if (plan.kind === "gone") return { kind: "nothing" };
   if (plan.kind === "nothing" || plan.kind === "failed") {
     await withTransaction(pool, (client) =>
       recordEventPushOutcome(client, eventItemId, prologue.revision, {
@@ -196,7 +232,7 @@ export async function handleCalendarEventPushTask(
     return plan.kind === "nothing" ? { kind: "nothing" } : plan;
   }
 
-  const signal = AbortSignal.timeout(options.timeoutMs ?? EVENT_PUSH_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(timeoutMs);
   const context: PushContext = {
     pool,
     ids: prologue.ids,
@@ -214,6 +250,25 @@ export async function handleCalendarEventPushTask(
     return result;
   } catch (error) {
     return await recordPushFailure(context, accountItemId, error, options.jobId ?? randomUUID());
+  }
+}
+
+/**
+ * Ends the job's lease and queues the push of a change recorded while it ran, which waited for the lease. A failure
+ * here never replaces the push's own outcome: the lease then ends on its own and the waiting job runs at that time.
+ */
+async function releasePush(pool: Pool, eventItemId: string, leaseId: string, revision: number): Promise<void> {
+  try {
+    await withTransaction(pool, async (client) => {
+      if (await releaseEventPush(client, eventItemId, leaseId, revision)) {
+        await enqueueCalendarEventPush(client, eventItemId);
+      }
+    });
+  } catch (error) {
+    logger.error(
+      { eventItemId, errorName: error instanceof Error ? error.name : typeof error },
+      "Calendar event push could not end its lease",
+    );
   }
 }
 
@@ -438,7 +493,7 @@ async function adapterFor(context: PushContext, endpoint: Endpoint): Promise<Cal
 
 async function executePlan(
   context: PushContext,
-  plan: Exclude<Plan, { kind: "nothing" | "failed" }>,
+  plan: Exclude<Plan, { kind: "nothing" | "gone" | "failed" }>,
 ): Promise<CalendarEventPushResult> {
   switch (plan.kind) {
     case "delete":
@@ -551,7 +606,13 @@ async function createRemote(
   try {
     ref = await adapter.putEvent(
       endpoint.remote,
-      { ref: null, fields, icalUid, ...(series ? { seriesRef: refOf(series.stored) } : {}) },
+      {
+        ref: null,
+        fields,
+        icalUid,
+        createKey: context.eventItemId,
+        ...(series ? { seriesRef: refOf(series.stored) } : {}),
+      },
       context.signal,
     );
   } catch (error) {
@@ -560,10 +621,16 @@ async function createRemote(
     return { kind: "conflict" };
   }
   const seriesRemoteId = series === null ? null : series.stored.remoteId;
+  let taken = false;
   await storeResult(context, endpoint.account.accountItemId, async (client) => {
-    // A sync pass that read the provider between the write and this store made an Event of its own for it.
     const duplicate = await findEventByRemoteId(client, endpoint.calendarItemId, ref.remoteId);
     if (duplicate !== null && duplicate !== context.eventItemId) {
+      // Another Event here holds the provider's Event. Only one the sync made for it (a pass that read the provider
+      // between the write and this store), which no change here has touched since, is this Event twice.
+      if ((await getEventPushState(client, duplicate)) !== null) {
+        taken = true;
+        return "conflict";
+      }
       await deleteEventRemoteStates(client, [duplicate]);
       await itemDeleteWithClient(client, context.ids.eventsDatabaseId, duplicate, {
         queueAffinity: createActionQueueAffinity(),
@@ -580,6 +647,10 @@ async function createRemote(
     });
     return "sent";
   });
+  if (taken) {
+    logger.warn({ eventItemId: context.eventItemId }, "Calendar event push met a provider Event another Event holds");
+    return { kind: "conflict" };
+  }
   return { kind: "sent", operation };
 }
 
@@ -610,14 +681,13 @@ async function updateRemote(
   return { kind: "sent", operation };
 }
 
-/**
- * The base's fields with every missing one `null`, for comparing with `RemoteEventFields`. The values come from a
- * stored snapshot and are compared, never sent.
- */
+/** The base's fields with every missing one `null`, held to the fields' contract the sync stores them by. */
 function baseFieldsOf(base: Record<string, unknown>): RemoteEventFields {
-  return Object.fromEntries(
-    REMOTE_EVENT_FIELD_KEYS.map((key) => [key, base[key] ?? null]),
-  ) as unknown as RemoteEventFields;
+  const parsed = remoteEventFieldsSchema.safeParse(
+    Object.fromEntries(REMOTE_EVENT_FIELD_KEYS.map((key) => [key, base[key] ?? null])),
+  );
+  if (!parsed.success) throw new Error("The Event's stored base snapshot has invalid fields");
+  return parsed.data;
 }
 
 /** The pushed fields become the base: what the provider holds now, so the next fetch of it is not a change. */

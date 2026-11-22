@@ -38,6 +38,8 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       mailContentFetch: { maxEvents: 120, windowSeconds: 900 },
       mailRemoteSearch: { maxEvents: 30, windowSeconds: 900 },
       mailHistoryUpload: { maxEvents: 600, windowSeconds: 900 },
+      mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
+      calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
     });
   });
 });

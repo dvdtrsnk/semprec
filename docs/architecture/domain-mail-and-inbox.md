@@ -136,9 +136,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   transaction: unlocked sanity read → `ensureMailAccountSyncState` → lock sync state row → lock Mailboxes item →
   re-check on the locked rows → `storeCredential`, the verified endpoints and the user name
   (`upsertMailServerSettings`), `clearMailSyncFailure` (last error, failure kind, failing since, next expected
-  activity), `clearCalendarSyncReauthorization` (`needsReauthorization` → `never`), enqueue `mailAccountSync` and,
-  with Calendars on, `calendarAccountSync`. After the commit the route awaits `mailLiveSync.restartAccount`.
-  Refusals answer 400 with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
+  activity), `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueue
+  `mailAccountSync` and, with Calendars on, `calendarAccountSync`. After the commit the route awaits
+  `mailLiveSync.restartAccount`; a failed restart is logged (`mailboxItemId`, `errorName`) and the route still
+  answers 200, because the replacement is committed and the queued pass reads the new password. Refusals answer 400
+  with the connect's codes and change nothing. `syncStatus` is left to the queued pass.
 
 ### OAuth connect and reauthorization
 
@@ -188,9 +190,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
   property) must match the state's provider (`gmail_api`↔`gmail`, `graph_api`↔`outlook`). A different stored
-  account address is 400 `mail_reauth_wrong_account`. It replaces the token, clears the sync failure record
-  (`clearMailSyncFailure`, as the password route does), enqueues a sync, and does not write `syncStatus` or the
-  watch address.
+  account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes, clears the sync
+  failure record (`clearMailSyncFailure`, as the password route does) and the calendar credential refusal
+  (`clearCalendarSyncCredentialRefusal`: `needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
+  and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
 - After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
   restart is a 500 although the token was replaced.
 
@@ -219,6 +222,13 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
   pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
   When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
+  Each write transaction of a running pass holds the row from its lease renewal to its commit, and a removal or the
+  Mail switch holds it for its own transaction, so the claim waits for the row lock at most
+  `MAILBOX_SYNC_PASS_WAIT_MS` (a transaction-local `lock_timeout`); then it throws `MailboxSyncBusyError` and the job
+  is skipped like one that finds the mailbox sync guard held. Only a job holding the lease records a failure: one
+  that fails before it holds the lease (it has made no provider call yet) writes no error, status, backoff, problem
+  or notification, is logged and rethrown, and is not retried (`maxAttempts` 1); the sweep queues the account again
+  once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
   ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
   rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
@@ -304,14 +314,17 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
   known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
   UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
-- A vanished UID removes that folder's Emails–Folders edge. In the pass's final transaction every Emails item the
-  pass removed an edge from and that has no folder edge left (and no unsettled or protected move) is trashed as the
+- A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
+  row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
+  transaction every marked Emails item of the mailbox (marked by this pass or by an earlier one that ended before its
+  final transaction) that has no folder edge left (and no unsettled or protected move) is trashed as the
   system writer and loses its meta row through `deleteMailMessageMetaOfRemovedItem` (a thread no other message names
   goes too), as the Mail-off removal does, so it leaves every thread count and a re-delivery is ingested anew. The
   decision waits for the final transaction because another client's move shows as the target folder's new UID,
   ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
-  move keeps its item. A target UID left beyond the pass's budget makes the move a removal and a new item in the
-  next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
+  move keeps its item and its mark is cleared. A marked Email with a move in flight keeps its mark for a later pass.
+  A target UID left beyond the pass's budget makes the move a removal and a new item in the next pass. The
+  standalone `reconcileImapFolder` removes in its own write transaction.
 - IMAP cursors, per folder in `mail_folder_sync_state`. When the folder's state is established (its first pass, or
   the first after a UIDVALIDITY change, which `resetForUidvalidityChange` clears it for) the selected UIDNEXT becomes
   `live_from_uid`, the live cursor `uidnext` and `backfill_below_uid` (`NULL` for a UIDNEXT of 1). Every UID at or
@@ -941,7 +954,7 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
 - The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
-  account with Mail off: each chunk takes the mail-thread guard, the paused sync state row and the live
+  account with Mail off: each chunk takes the paused sync state row `FOR SHARE`, the mail-thread guard and the live
   Mailboxes item `FOR SHARE`, trashes with `deletedAtExact` = `sync_paused_at`, and deletes each trashed
   Email's meta row with a thread no other message names (`deleteMailMessageMetaOfRemovedItem`: Threads item
   trashed, `mail_threads` row deleted), so a later sync ingests the mail anew. An account no longer paused, or
@@ -1080,13 +1093,14 @@ on-demand content and attachment reads and the provider search.
 
 ## Lock orders to keep
 
-- Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
+- Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
+  folder/item rows.
 - History claim, release and upload: mailbox sync guard → (upload) mail-thread guard → folder sync state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
-  → Mailboxes item. Mail-off chunk: mail-thread guard → sync
-  state row (share) → Mailboxes item (share) → member rows.
+  → Mailboxes item. Mail-off chunk: sync state row (share) → mail-thread guard → Mailboxes item (share) → member
+  rows.
 - Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.

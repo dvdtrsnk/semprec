@@ -29,6 +29,7 @@ import {
   type GraphRecurrence,
 } from "../calendar/sync/adapters/graph/graphRecurrence.js";
 import { graphZoneOfIanaZone, ianaZoneOfGraphZone } from "../calendar/sync/adapters/graph/graphTimeZones.js";
+import { logger as calendarLogger } from "../calendar/logger.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import { resolveCalendarSyncIds, type CalendarSyncIds } from "../calendar/sync/calendarSyncStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -61,6 +62,7 @@ interface Recorded {
   url: URL;
   headers: Headers;
   body: unknown;
+  redirect: RequestInit["redirect"];
 }
 
 type Route = (url: URL, recorded: Recorded) => Response | Promise<Response>;
@@ -84,6 +86,7 @@ class FakeGraph {
       url,
       headers: new Headers(init?.headers),
       body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : (init?.body ?? null),
+      redirect: init?.redirect,
     };
     this.requests.push(recorded);
     if (url.href === MICROSOFT_TOKEN_URL) {
@@ -138,6 +141,10 @@ function cursorFor(deltaLink: string, window = WINDOW) {
 const STANDUP_RULE = "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;UNTIL=20261130T225959Z";
 
 describe("Microsoft Graph calendar adapter", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe("calendars", () => {
     it("lists name, colour and a calendar without canEdit as read-only", async () => {
       const graph = new FakeGraph(workRoutes());
@@ -155,6 +162,15 @@ describe("Microsoft Graph calendar adapter", () => {
       const [request] = graph.graphRequests();
       expect(request?.headers.get("authorization")).toBe("Bearer graph-access");
       expect(request?.headers.get("prefer")).toContain('outlook.timezone="UTC"');
+    });
+
+    it("asks fetch to refuse a redirect on every request, so the bearer token never leaves Graph", async () => {
+      const graph = new FakeGraph(workRoutes());
+      const adapter = adapterOn(graph);
+      await adapter.fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+      await adapter.listCalendars(signal());
+      expect(graph.graphRequests().length).toBeGreaterThan(2);
+      expect(new Set(graph.graphRequests().map((request) => request.redirect))).toEqual(new Set(["error"]));
     });
   });
 
@@ -233,6 +249,83 @@ describe("Microsoft Graph calendar adapter", () => {
       const graph = new FakeGraph(workRoutes());
       const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
       expect(changes.upserts.find((event) => event.remoteId === remoteId)?.fields).toMatchObject(expected);
+    });
+
+    it("leaves out an Event it cannot read and keeps every other Event of the round", async () => {
+      const warn = vi.spyOn(calendarLogger, "warn");
+      const page = z
+        .object({ value: z.array(z.unknown()) })
+        .loose()
+        .parse(fixture("deltaInitialPage1"));
+      const malformed = [
+        { id: "AAMkEv-new-kind", type: "somethingNew", subject: "Private" },
+        {
+          id: "AAMkEv-bad-time",
+          type: "singleInstance",
+          subject: "Private",
+          start: { dateTime: "not a time", timeZone: "UTC" },
+          end: { dateTime: "2026-11-21T10:00:00", timeZone: "UTC" },
+        },
+        { id: "AAMkEv-orphan", type: "occurrence", subject: "Private" },
+        { subject: "Private" },
+      ];
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/calendars/AAMkCal-work/calendarView/delta": (url) =>
+          url.searchParams.get("$skiptoken") === "page-2"
+            ? json(fixture("deltaInitialPage2"))
+            : json({ ...page, value: [...page.value, ...malformed] }),
+      });
+
+      const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+
+      expect(changes.upserts.map((event) => event.remoteId).sort()).toEqual(
+        [
+          "AAMkEv-call",
+          "AAMkEv-christmas",
+          "AAMkEv-party",
+          "AAMkEv-review",
+          "AAMkEv-trip",
+          "AAMkSeries-standup",
+          "AAMkSeries-standup-exc-1104",
+        ].sort(),
+      );
+      expect(warn).toHaveBeenCalledWith({ unreadable: 4 }, "Microsoft Graph Events left out of the calendar sync");
+    });
+
+    it("leaves out a series with an instance it cannot read, neither upserted nor deleted", async () => {
+      const instances = z
+        .object({ value: z.array(z.unknown()) })
+        .loose()
+        .parse(fixture("standupInstances"));
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/events/AAMkSeries-standup/instances": () =>
+          json({
+            ...instances,
+            value: [
+              ...instances.value,
+              { id: "AAMkSeries-standup-occ-bad", type: "occurrence", originalStart: "never" },
+            ],
+          }),
+      });
+
+      const changes = await adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() });
+
+      expect(changes.upserts.map((event) => event.remoteId).sort()).toEqual(
+        ["AAMkEv-call", "AAMkEv-christmas", "AAMkEv-party", "AAMkEv-review", "AAMkEv-trip"].sort(),
+      );
+      expect(changes.deletions).toEqual([]);
+    });
+
+    it("still fails a page whose envelope is not Graph's", async () => {
+      const graph = new FakeGraph({
+        ...workRoutes(),
+        "GET /me/calendars/AAMkCal-work/calendarView/delta": () => json({ value: "not a list" }),
+      });
+      await expect(
+        adapterOn(graph).fetchChanges(WORK, null, { window: WINDOW, signal: signal() }),
+      ).rejects.toMatchObject({ code: "invalidResponse" });
     });
 
     it("asks the window a day wider in UTC, follows nextLink and stores the deltaLink with its window", async () => {
@@ -450,18 +543,26 @@ describe("Microsoft Graph calendar adapter", () => {
     });
     const saved = (id: string, etag: string) => json({ id, "@odata.etag": etag, type: "singleInstance" });
 
-    it("creates in the calendar with a transactionId that a retried create repeats", async () => {
+    it("creates in the calendar with a transactionId that a retried create of the same Event repeats", async () => {
       const graph = new FakeGraph({
         "POST /me/calendars/AAMkCal-work/events": () => saved("AAMkEv-new", 'W/"n1"'),
       });
       const adapter = adapterOn(graph);
-      expect(await adapter.putEvent(WORK, { ref: null, fields }, signal())).toEqual({
+      const createKey = randomUUID();
+      expect(await adapter.putEvent(WORK, { ref: null, fields, createKey }, signal())).toEqual({
         remoteId: "AAMkEv-new",
         href: null,
         etag: 'W/"n1"',
       });
-      await adapter.putEvent(WORK, { ref: null, fields }, signal());
-      const [first, second] = graph.graphRequests();
+      await adapter.putEvent(WORK, { ref: null, fields, createKey }, signal());
+      // Another Event with the same fields, and the same Event changed since, are creates of their own.
+      await adapter.putEvent(WORK, { ref: null, fields, createKey: randomUUID() }, signal());
+      await adapter.putEvent(WORK, { ref: null, fields: { ...fields, place: "Room 2" }, createKey }, signal());
+      const [first, second, other, changed] = graph.graphRequests();
+      const transactionIdOf = (request: Recorded | undefined) =>
+        z.object({ transactionId: z.string() }).parse(request?.body).transactionId;
+      expect(transactionIdOf(other)).not.toBe(transactionIdOf(first));
+      expect(transactionIdOf(changed)).not.toBe(transactionIdOf(first));
       expect(first?.body).toEqual({
         subject: "Planning",
         body: { contentType: "text", content: "Bring numbers" },
@@ -492,6 +593,22 @@ describe("Microsoft Graph calendar adapter", () => {
         CalendarSyncEventConflictError,
       );
     });
+
+    it.each([404, 410])(
+      "an update of an Event Microsoft no longer has (%i) is a conflict, and reading it back finds it gone",
+      async (status) => {
+        const graph = new FakeGraph({
+          "PATCH /me/events/AAMkEv-review": () => json({ error: { code: "ErrorItemNotFound" } }, status),
+          "GET /me/events/AAMkEv-review": () => json({ error: { code: "ErrorItemNotFound" } }, 404),
+        });
+        const adapter = adapterOn(graph);
+        const ref = { remoteId: "AAMkEv-review", href: null, etag: 'W/"r1"' };
+        await expect(adapter.putEvent(WORK, { ref, fields }, signal())).rejects.toBeInstanceOf(
+          CalendarSyncEventConflictError,
+        );
+        expect(await adapter.getEvent(WORK, ref, { window: WINDOW, signal: signal() })).toBeNull();
+      },
+    );
 
     it("writes a timed Event without a zone of its own in the tenant's zone", async () => {
       const graph = new FakeGraph({
@@ -736,6 +853,31 @@ describe("Microsoft Graph calendar adapter", () => {
       expect(matches(error)).toBe(true);
       // No error text carries what Graph sent.
       expect(error instanceof Error ? error.message : "").not.toMatch(/html|graph\.microsoft\.com/);
+    });
+
+    it.each<[string, () => Response, (error: unknown) => boolean]>([
+      [
+        "a 403 for one calendar as that request's failure, not as missing consent",
+        () => json({ error: { code: "ErrorAccessDenied" } }, 403),
+        (error) => error instanceof GraphCalendarRequestError && error.status === 403,
+      ],
+      [
+        "a 403 with a scope challenge as missing consent",
+        () =>
+          json({ error: { code: "ErrorAccessDenied" } }, 403, {
+            "WWW-Authenticate": 'Bearer realm="", error="insufficient_scope"',
+          }),
+        (error) => error instanceof CalendarSyncConsentRequiredError,
+      ],
+    ])("maps %s", async (_case, answer, matches) => {
+      const graph = new FakeGraph({ "GET /me/calendars/AAMkCal-work/calendarView/delta": answer });
+      const error = await adapterOn(graph)
+        .fetchChanges(WORK, null, { window: WINDOW, signal: signal() })
+        .then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+      expect(matches(error)).toBe(true);
     });
 
     it("waits out a short Retry-After and retries", async () => {

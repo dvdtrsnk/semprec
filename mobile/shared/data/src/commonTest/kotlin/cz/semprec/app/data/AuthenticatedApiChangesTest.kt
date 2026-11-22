@@ -1,5 +1,6 @@
 package cz.semprec.app.data
 
+import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.ItemChanges
@@ -7,6 +8,8 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.cancel
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -79,6 +82,28 @@ class AuthenticatedApiChangesTest {
         val body = RawBody("audio/m4a", byteArrayOf(1))
         assertEquals(0, announcements { api.upload("/api/blobs", body, emptyList()) })
         assertEquals(1, announcements { api.upload("/api/recordings", body, emptyList()) })
+    }
+
+    @Test fun `a 401 whose body breaks off still rejects the session`() = runTest {
+        val engine = MockEngine {
+            val body = ByteChannel()
+            body.cancel(IllegalStateException("connection reset"))
+            respond(body, HttpStatusCode.Unauthorized)
+        }
+        val storage = InMemorySessionStorage().apply { save(StoredSession("https://s.example", "tok")) }
+        var rejected = 0
+        val api = AuthenticatedApi(ApiClient(engine), storage, changes) { rejected += 1 }
+        assertEquals(
+            ApiResponse.Failure(FailureKind.UNAUTHORIZED, 401, null),
+            api.send(HttpMethod.Get, "/api/items/i1"),
+        )
+        val recording = RawBody("audio/m4a", byteArrayOf(1))
+        assertEquals(
+            ApiResponse.Failure(FailureKind.UNAUTHORIZED, 401),
+            api.upload("/api/recordings", recording, emptyList()),
+        )
+        assertEquals(ApiBytesResponse.Failure(FailureKind.UNAUTHORIZED, 401), api.download("/api/blobs/b1"))
+        assertEquals(3, rejected)
     }
 
     @Test fun `the query string does not change what a path means`() {

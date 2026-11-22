@@ -19,7 +19,10 @@ const MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 30_000;
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 
-/** A Graph status the adapter has no meaning for (400, 404 outside a delete, …); recorded as `unexpected`. */
+/**
+ * A Graph status the adapter has no meaning for (400, a 403 for one calendar or Event, 404 outside a delete or an
+ * update, …); recorded as `unexpected`.
+ */
 export class GraphCalendarRequestError extends Error {
   readonly status: number;
 
@@ -137,6 +140,12 @@ export interface GraphRequest {
   prefer?: string;
   /** Statuses returned to the caller instead of thrown (410 for an expired delta, 404 for a gone Event). */
   tolerate?: readonly number[];
+  /**
+   * A 403 means the grant lacks calendar access: set for the account's own calendar listing, which any grant with the
+   * calendar scope may read. Elsewhere only a scope challenge (`WWW-Authenticate: ... insufficient_scope`) means
+   * that; a 403 for one calendar or Event (a shared calendar the account may not read) is that request's failure.
+   */
+  forbiddenMeansConsent?: boolean;
 }
 
 export interface GraphResponse {
@@ -172,7 +181,7 @@ export class GraphCalendarHttp {
         }
         throw new CalendarSyncProviderError(response.status === 429 ? "rateLimited" : "providerUnavailable");
       }
-      throw this.failureOf(response.status);
+      throw this.failureOf(request, response);
     }
   }
 
@@ -193,6 +202,8 @@ export class GraphCalendarHttp {
         },
         ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}),
         signal: AbortSignal.any([signal, deadline]),
+        // Graph answers its API directly; a redirect would take the bearer token to an address no check vetted.
+        redirect: "error",
       });
     } catch (error) {
       void error;
@@ -213,9 +224,13 @@ export class GraphCalendarHttp {
     }
   }
 
-  private failureOf(status: number): Error {
+  private failureOf(request: GraphRequest, response: Response): Error {
+    const { status } = response;
     if (status === 401) return new CalendarSyncReauthorizationRequiredError("Microsoft Graph refused the access token");
-    if (status === 403) return new CalendarSyncConsentRequiredError("Microsoft Graph refused calendar access");
+    const scopeChallenge = /insufficient_scope/i.test(response.headers.get("www-authenticate") ?? "");
+    if (status === 403 && (request.forbiddenMeansConsent === true || scopeChallenge)) {
+      return new CalendarSyncConsentRequiredError("Microsoft Graph refused calendar access");
+    }
     if (status === 412)
       return new CalendarSyncEventConflictError("The Event changed at Microsoft since it was last synced");
     if (status >= 500) return new CalendarSyncProviderError("providerUnavailable");

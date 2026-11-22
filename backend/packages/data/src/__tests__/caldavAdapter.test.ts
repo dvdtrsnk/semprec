@@ -1,4 +1,5 @@
 import "../domainWriteHooks.js";
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -19,7 +20,12 @@ import {
 import { CALENDAR_SYNC_ADAPTERS } from "../calendar/sync/adapters/index.js";
 import { createCalDavAdapter } from "../calendar/sync/adapters/caldav/caldavAdapter.js";
 import { verifyCalDavServer } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
-import { CalDavAuthFailedError, CalDavServerUnreachableError } from "../calendar/sync/adapters/caldav/caldavErrors.js";
+import {
+  CalDavAuthFailedError,
+  CalDavServerInvalidError,
+  CalDavServerUnreachableError,
+} from "../calendar/sync/adapters/caldav/caldavErrors.js";
+import { caldavCredentialScope } from "../calendar/sync/adapters/caldav/caldavHttp.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import {
   listEventRemoteStates,
@@ -596,6 +602,31 @@ describe("CalDAV adapter against a fake server", () => {
     expect(server.files("work")).toHaveLength(4);
   });
 
+  it("names a local Event's resource after it, so a repeated create writes onto the first one's resource", async () => {
+    const caldav = adapter();
+    const work = await calendarNamed(caldav, "Work");
+    const lunch = eventNamed((await caldav.fetchChanges(work, null, fetchOptions())).upserts, "Lunch");
+    const createKey = randomUUID();
+    const before = server.files("work").length;
+
+    const created = await caldav.putEvent(work, { ref: null, fields: lunch.fields, createKey }, signal());
+    // Its answer lost, the create is repeated with the fields changed here meanwhile.
+    const repeated = await caldav.putEvent(
+      work,
+      { ref: null, fields: { ...lunch.fields, name: "Brunch" }, createKey },
+      signal(),
+    );
+    expect(repeated).toEqual({ remoteId: created.remoteId, href: created.href, etag: expect.any(String) });
+    expect(repeated.etag).not.toBe(created.etag);
+    expect(server.files("work")).toHaveLength(before + 1);
+    const name = created.href?.slice(work.url?.length ?? 0) ?? "";
+    expect(server.resource("work", name)?.text).toContain("SUMMARY:Brunch");
+
+    const other = await caldav.putEvent(work, { ref: null, fields: lunch.fields, createKey: randomUUID() }, signal());
+    expect(other.href).not.toBe(created.href);
+    expect(other.remoteId).not.toBe(created.remoteId);
+  });
+
   it("deletes a single Event with If-Match and cancels one occurrence inside its series", async () => {
     const caldav = adapter();
     const work = await calendarNamed(caldav, "Work");
@@ -648,6 +679,44 @@ describe("CalDAV adapter against a fake server", () => {
     );
   });
 
+  describe("an edit of a resource that holds a value ical.js cannot read", () => {
+    const UNREADABLE_STANDUP_ICS = STANDUP_ICS.replace(
+      "DTEND;TZID=Europe/Prague:20261118T091500",
+      "DTEND;TZID=Europe/Prague:garbage",
+    );
+
+    it.each<[string, (caldav: CalendarSyncAdapter, work: RemoteCalendar, ref: RemoteEventRef) => Promise<unknown>]>([
+      ["an update", (caldav, work, ref) => caldav.putEvent(work, { ref, fields: STANDUP_FIELDS }, signal())],
+      [
+        "an invitation answer",
+        (caldav, work, ref) =>
+          caldav.respondToInvitation(work, ref, { response: "accepted", attendeeEmails: [LOGIN.username] }, signal()),
+      ],
+      [
+        "an occurrence's cancellation",
+        (caldav, work, ref) =>
+          caldav.deleteEvent(work, { ...ref, remoteId: JSON.stringify(["standup-uid", "2026-11-25T09:00"]) }, signal()),
+      ],
+    ])("fails %s as an unreadable resource and writes nothing", async (_case, edit) => {
+      const caldav = adapter();
+      const work = await calendarNamed(caldav, "Work");
+      // Changed at the server after the last sync stored the Event.
+      const etag = server.putResource("work", "standup.ics", UNREADABLE_STANDUP_ICS);
+      const ref = { remoteId: "standup-uid", href: `${server.origin}${server.calendarPath("work")}standup.ics`, etag };
+      const requestsBefore = server.requests.length;
+
+      const error = await edit(caldav, work, ref).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(CalendarSyncProviderError);
+      expect(error).toMatchObject({ code: "invalidResponse", message: "The CalDAV resource is unreadable" });
+      expect(requestsSince(requestsBefore)).toEqual([`GET ${server.calendarPath("work")}standup.ics`]);
+      expect(server.resource("work", "standup.ics")).toEqual({ text: UNREADABLE_STANDUP_ICS, etag });
+    });
+  });
+
   it("answers a refused login as needing reauthorization", async () => {
     const caldav = adapter({ credential: "wrong" });
     await expect(caldav.listCalendars(signal())).rejects.toBeInstanceOf(CalendarSyncReauthorizationRequiredError);
@@ -690,7 +759,7 @@ describe("CalDAV adapter against a fake server", () => {
     expect(refused?.connect).toEqual(unreachable?.connect);
   });
 
-  it("does not follow a redirect to an address the policy refuses, so tsdav never fetches by itself", async () => {
+  it("does not follow a redirect off the account's server, so tsdav never fetches by itself", async () => {
     let hits = 0;
     const target = await listen(() => {
       hits += 1;
@@ -698,7 +767,7 @@ describe("CalDAV adapter against a fake server", () => {
     try {
       server.redirects.set("/start/", `http://localhost:${target.port}/`);
       await expect(adapter({}, `${server.origin}/start/`).listCalendars(signal())).rejects.toMatchObject({
-        code: "providerUnavailable",
+        code: "invalidResponse",
       });
       expect(hits).toBe(0);
       expect(server.requests.map((request) => request.path)).toEqual(["/start/"]);
@@ -717,6 +786,62 @@ describe("CalDAV adapter against a fake server", () => {
     });
     server.redirects.delete("/a/");
     await expect(adapter({}, `${server.origin}/b/`).listCalendars(signal())).resolves.toHaveLength(2);
+  });
+
+  describe("the login stays with the account's server", () => {
+    let other: FakeCalDavServer;
+
+    beforeEach(async () => {
+      // Another server that would accept the same login, as one that collects it would.
+      other = new FakeCalDavServer(LOGIN);
+      await other.start();
+      other.addCalendar("work", { displayName: "Elsewhere", color: null, privileges: ["all"], components: [] });
+    });
+
+    afterEach(async () => {
+      await other.close();
+    });
+
+    it("refuses a redirect to another origin before any request reaches it", async () => {
+      server.redirects.set("/start/", `${other.origin}/`);
+      await expect(adapter({}, `${server.origin}/start/`).listCalendars(signal())).rejects.toMatchObject({
+        code: "invalidResponse",
+      });
+      await expect(
+        verifyCalDavServer({ caldavUrl: `${server.origin}/start/`, ...LOGIN }, { policy: LOOPBACK_LITERAL_POLICY }),
+      ).rejects.toBeInstanceOf(CalDavServerInvalidError);
+      expect(other.requests).toEqual([]);
+    });
+
+    it("refuses a calendar home another origin serves and never requests it", async () => {
+      server.calendarHomeOrigin = other.origin;
+      await expect(adapter().listCalendars(signal())).rejects.toMatchObject({ code: "invalidResponse" });
+      expect(other.requests).toEqual([]);
+    });
+
+    it("sends the login on every request to its own server", async () => {
+      const caldav = adapter();
+      const work = await calendarNamed(caldav, "Work");
+      await caldav.fetchChanges(work, null, fetchOptions());
+      // The well-known address answers its redirect before it asks for a login.
+      expect(server.requests.filter((request) => request.path !== "/.well-known/caldav").length).toBeGreaterThan(3);
+      expect(
+        server.requests.filter((request) => request.path !== "/.well-known/caldav" && !request.withAuthorization),
+      ).toEqual([]);
+    });
+  });
+
+  it.each<[string, string, string, boolean]>([
+    ["the start's own origin", "https://dav.example.test/.well-known/caldav", "https://dav.example.test/cal/", true],
+    ["another port of the start's host", "https://dav.example.test/", "https://dav.example.test:8443/cal/", false],
+    ["another host of a generic start", "https://dav.example.test/", "https://caldav.icloud.com/", false],
+    ["iCloud's per-account host", "https://caldav.icloud.com/", "https://p42-caldav.icloud.com/123/principal/", true],
+    ["a look-alike of iCloud", "https://caldav.icloud.com/", "https://p42-caldav.icloud.com.example.test/", false],
+    ["iCloud over plain http", "https://caldav.icloud.com/", "http://p42-caldav.icloud.com/", false],
+    ["iCloud on another port", "https://caldav.icloud.com/", "https://p42-caldav.icloud.com:8443/", false],
+    ["an iCloud host from a generic start", "https://dav.example.test/", "https://p42-caldav.icloud.com/", false],
+  ])("scopes the login: %s", (_case, start, target, allowed) => {
+    expect(caldavCredentialScope(new URL(start)).allows(new URL(target))).toBe(allowed);
   });
 });
 

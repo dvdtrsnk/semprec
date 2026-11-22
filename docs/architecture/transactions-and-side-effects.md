@@ -124,7 +124,8 @@ Reference implementation: project agent guidance drift
 - Account calendar Events record a user's or agent's change as a pending row of
   `calendar_event_push_state` (a revision every change raises) in the Event write's transaction, which
   holds the Event's row lock, and queue `calendarEventPush` in the same transaction
-  (`data/calendar/sync/eventPushHooks.ts`). The job calls the provider with no transaction open and
+  (`data/calendar/sync/eventPushHooks.ts`). One job runs per Event at a time, under the lease its first
+  transaction takes on the push's row. The job calls the provider with no transaction open and
   stores each result in its own transaction under the account's calendar sync guard, the Event's
   account calendar `FOR SHARE` and its row; it sets the status only while the revision it pushed is
   still current. A sync pass leaves an Event with a pending push unwritten (checked under the Event's

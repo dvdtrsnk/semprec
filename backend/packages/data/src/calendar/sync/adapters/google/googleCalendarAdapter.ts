@@ -1,6 +1,7 @@
 // The calendar sync adapter of Google accounts (`gmail_api`), over Google Calendar API v3. Events are listed with
 // `singleEvents=false`, so a series is its master plus one event per changed or cancelled instance: a changed
 // instance becomes an override, a cancelled one an exception date of its master.
+import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { refreshAndPersistAccessToken } from "../../../../mail/mailOAuthAccess.js";
@@ -8,6 +9,7 @@ import { GOOGLE_TOKEN_URL } from "../../../../mail/oauthTokenExchange.js";
 import { logger } from "../../../logger.js";
 import { shiftDays } from "../../../recurrenceExpansion.js";
 import {
+  CalendarSyncEventConflictError,
   CalendarSyncProviderError,
   CalendarSyncWriteUnsupportedError,
   type CalendarChanges,
@@ -66,8 +68,9 @@ const calendarListPageSchema = z.object({
   nextPageToken: z.string().optional(),
 });
 
+/** Each item is read on its own (`readableEvents`): an item that is no readable event leaves only itself out. */
 const eventsPageSchema = z.object({
-  items: z.array(googleEventSchema).optional(),
+  items: z.array(z.unknown()).optional(),
   nextPageToken: z.string().optional(),
   nextSyncToken: z.string().optional(),
   timeZone: z.string().optional(),
@@ -94,6 +97,43 @@ export interface GoogleCalendarSyncRuntime {
 
 function calendarPath(calendar: RemoteCalendar): string {
   return `/calendars/${encodeURIComponent(calendar.remoteId)}`;
+}
+
+/** How many ids one local Event gets in one calendar: a later one only after the earlier ones were deleted there. */
+const MAX_CREATE_ID_GENERATIONS = 8;
+const BASE32HEX = "0123456789abcdefghijklmnopqrstuv";
+
+/**
+ * The id a new Event is created with: base32hex (Google's id alphabet) of a hash of the calendar, the local Event and
+ * the generation, so a repeated create names the same Google event. A generation is used once the earlier ones
+ * name events deleted in that calendar, whose ids Google does not give out again.
+ */
+export function googleEventIdOf(calendarRemoteId: string, createKey: string, generation: number): string {
+  const digest = createHash("sha256")
+    .update(calendarRemoteId)
+    .update("\n")
+    .update(createKey)
+    .update("\n")
+    .update(String(generation))
+    .digest();
+  let id = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of digest.subarray(0, 20)) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      id += BASE32HEX.charAt((buffer >> bits) & 31);
+    }
+    buffer &= (1 << bits) - 1;
+  }
+  return id;
+}
+
+function refOfWritten(body: unknown): RemoteEventRef {
+  const written = parseGoogleBody(googleEventSchema, body);
+  return { remoteId: written.id, href: null, etag: written.etag ?? null };
 }
 
 function invalidResponse(message: string): CalendarSyncProviderError {
@@ -229,30 +269,81 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     // in its Google calendar's zone, as the adapter does not know the tenant's.
     const zone = fields.timeFrom === null ? "UTC" : (fields.timeZone ?? (await this.calendarZone(calendar, signal)));
     const body = googleEventBody(fields, zone);
+    if (ref === null) {
+      const created = event.icalUid ? { ...body, iCalUID: event.icalUid } : body;
+      return event.createKey
+        ? this.createNamed(calendar, event.createKey, created, body, signal)
+        : this.writeEvent(calendar, { method: "POST", body: created }, signal);
+    }
+    return this.writeEvent(calendar, { method: "PATCH", eventId: ref.remoteId, body, ifMatch: ref.etag }, signal);
+  }
+
+  /**
+   * Creates the event under the id of `createKey`. Google answers 409 when that id is taken: a live event there is the
+   * one an earlier attempt made, and gets `body`; a deleted one moves on to the next generation's id.
+   */
+  private async createNamed(
+    calendar: RemoteCalendar,
+    createKey: string,
+    created: Record<string, unknown>,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
+    for (let generation = 0; generation < MAX_CREATE_ID_GENERATIONS; generation += 1) {
+      const id = googleEventIdOf(calendar.remoteId, createKey, generation);
+      const answer = await this.http.request(
+        {
+          method: "POST",
+          path: `${calendarPath(calendar)}/events`,
+          query: new URLSearchParams({ sendUpdates: "none" }),
+          body: { ...created, id },
+        },
+        signal,
+        [409],
+      );
+      if (answer.status !== 409) return refOfWritten(answer.body);
+      const existing = await this.readEvent(calendar, id, signal);
+      // A 409 for an id Google does not have is a clash of the iCalendar UID with another event.
+      if (existing === null) throw new Error("Google Calendar refused the request with status 409");
+      if (!isCancelled(existing)) {
+        return this.writeEvent(
+          calendar,
+          { method: "PATCH", eventId: id, body, ifMatch: existing.etag ?? null },
+          signal,
+        );
+      }
+    }
+    // Every id of the Event was used and deleted in this calendar; Google names this one.
+    return this.writeEvent(calendar, { method: "POST", body: created }, signal);
+  }
+
+  private async writeEvent(
+    calendar: RemoteCalendar,
+    write:
+      | { method: "POST"; body: Record<string, unknown> }
+      | { method: "PATCH"; eventId: string; body: Record<string, unknown>; ifMatch: string | null },
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
     const query = new URLSearchParams({ sendUpdates: "none" });
-    const { body: response } =
-      ref === null
-        ? await this.http.request(
-            {
-              method: "POST",
-              path: `${calendarPath(calendar)}/events`,
-              query,
-              body: event.icalUid ? { ...body, iCalUID: event.icalUid } : body,
-            },
-            signal,
-          )
-        : await this.http.request(
-            {
-              method: "PATCH",
-              path: `${calendarPath(calendar)}/events/${encodeURIComponent(ref.remoteId)}`,
-              query,
-              body,
-              ifMatch: ref.etag,
-            },
-            signal,
-          );
-    const written = parseGoogleBody(googleEventSchema, response);
-    return { remoteId: written.id, href: null, etag: written.etag ?? null };
+    const patch = write.method === "PATCH";
+    const { status, body } = await this.http.request(
+      patch
+        ? {
+            method: "PATCH",
+            path: `${calendarPath(calendar)}/events/${encodeURIComponent(write.eventId)}`,
+            query,
+            body: write.body,
+            ifMatch: write.ifMatch,
+          }
+        : { method: "POST", path: `${calendarPath(calendar)}/events`, query, body: write.body },
+      signal,
+      patch ? [404, 410] : [],
+    );
+    // Deleted at Google since the last sync: the caller reads it again and lets the deletion win.
+    if (status === 404 || status === 410) {
+      throw new CalendarSyncEventConflictError("Google Calendar no longer has the Event the update was written to");
+    }
+    return refOfWritten(body);
   }
 
   /** A cancelled event, or one Google no longer has, is `null`; an override is read with its series' zone. */
@@ -350,7 +441,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       { method: "GET", path: `${calendarPath(calendar)}/events/${encodeURIComponent(seriesId)}/instances`, query },
       signal,
     );
-    const instance = (parseGoogleBody(eventsPageSchema, body).items ?? []).find(
+    const instance = this.readableEvents(parseGoogleBody(eventsPageSchema, body).items).find(
       (item) =>
         !isCancelled(item) &&
         item.originalStartTime !== undefined &&
@@ -424,7 +515,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       if (status === 410) return null;
       const page = parseGoogleBody(eventsPageSchema, body);
       context = { zone: validZone(page.timeZone), defaultReminders: page.defaultReminders ?? [] };
-      for (const event of page.items ?? []) events.set(event.id, event);
+      for (const event of this.readableEvents(page.items)) events.set(event.id, event);
       read += page.items?.length ?? 0;
       if (read > MAX_EVENTS_PER_CALENDAR) throw invalidResponse("The Google calendar has too many events to sync");
       pageToken = page.nextPageToken;
@@ -483,7 +574,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     for (const masterId of touchedSeries) {
       const listed = listing.events.get(masterId);
       const master =
-        listed !== undefined && !isCancelled(listed) ? listed : await this.readEvent(calendar, masterId, signal);
+        listed !== undefined && !isCancelled(listed) ? listed : await this.readListedMaster(calendar, masterId, signal);
       if (master === null || isCancelled(master) || master.recurringEventId !== undefined) continue;
       const cancelled = await this.cancelledInstances(calendar, masterId, window, signal);
       const mapped = this.masterEvent(master, listing.context, cancelled, window);
@@ -503,6 +594,26 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
   }
 
   private async readEvent(calendar: RemoteCalendar, eventId: string, signal: AbortSignal): Promise<GoogleEvent | null> {
+    const read = await this.readEventBody(calendar, eventId, signal);
+    return read.found ? parseGoogleBody(googleEventSchema, read.body) : null;
+  }
+
+  /** The master of a series an incremental listing touched; an unreadable one leaves the series out. */
+  private async readListedMaster(
+    calendar: RemoteCalendar,
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<GoogleEvent | null> {
+    const read = await this.readEventBody(calendar, eventId, signal);
+    return read.found ? (this.readableEvents([read.body])[0] ?? null) : null;
+  }
+
+  /** The event's body; not `found` when Google no longer has it (404, 410). */
+  private async readEventBody(
+    calendar: RemoteCalendar,
+    eventId: string,
+    signal: AbortSignal,
+  ): Promise<{ found: true; body: unknown } | { found: false }> {
     const { status, body } = await this.http.request(
       {
         method: "GET",
@@ -512,7 +623,18 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       signal,
       [404, 410],
     );
-    return status === 200 ? parseGoogleBody(googleEventSchema, body) : null;
+    return status === 200 ? { found: true, body } : { found: false };
+  }
+
+  /** The items that are Google events; each one that is not is logged and left out. */
+  private readableEvents(items: readonly unknown[] | undefined): GoogleEvent[] {
+    const events: GoogleEvent[] = [];
+    for (const item of items ?? []) {
+      const parsed = googleEventSchema.safeParse(item);
+      if (parsed.success) events.push(parsed.data);
+      else this.logSkipped("unreadableEvent");
+    }
+    return events;
   }
 
   private async cancelledInstances(
@@ -539,7 +661,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       );
       if (status !== 200) return [];
       const page = parseGoogleBody(eventsPageSchema, body);
-      for (const event of page.items ?? []) if (isCancelled(event)) cancelled.push(event);
+      for (const event of this.readableEvents(page.items)) if (isCancelled(event)) cancelled.push(event);
       read += page.items?.length ?? 0;
       if (read > MAX_INSTANCES_PER_SERIES) throw invalidResponse("A Google series has too many instances to sync");
       pageToken = page.nextPageToken;
@@ -608,7 +730,9 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     return mapped;
   }
 
-  private logSkipped(tag: "unreadableTimes" | "unreadableExceptionDate" | "unreadableOverride"): void {
+  private logSkipped(
+    tag: "unreadableEvent" | "unreadableTimes" | "unreadableExceptionDate" | "unreadableOverride",
+  ): void {
     logger.warn({ accountItemId: this.accountItemId, tag }, "Google Calendar sync left out part of an event");
   }
 }

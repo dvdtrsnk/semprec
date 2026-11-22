@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getCredentialType, storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -16,6 +16,7 @@ import {
   recordGmailSyncCursor,
   recordGraphSyncCursor,
   listAccountsDueForSync,
+  renewMailSyncPass,
 } from "../mail/mailAccountSyncStateStore.js";
 import { createMailDraftCreateRouteHandler, createMailDraftSendRouteHandler } from "../mail/mailDraftRouteHandlers.js";
 import { prepareSend } from "../mail/mailDraftSendInput.js";
@@ -34,6 +35,7 @@ import { removeMailbox } from "../mail/mailboxRemoval.js";
 import { handleMailboxRemovalTask, mailboxMailOffJobKey, mailboxRemovalJobKey } from "../mail/mailboxRemovalJob.js";
 import { createMailboxDetailRouteHandler, createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
 import { bindMailboxServiceLiveSyncStop } from "../mail/mailboxServiceHooks.js";
+import { lockMailThreadMutation } from "../mail/mailThreadMutationGuard.js";
 import { sendDraftEmail } from "../mail/send.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -429,6 +431,34 @@ describe("internet account service switches", () => {
       expect(await getMailServerSettings(client, mailboxId)).toMatchObject({ username: OWN_ADDRESS });
       expect(await getMailAccountSyncState(client, mailboxId)).toMatchObject({ syncMode: "imap" });
     });
+  });
+
+  it("a Mail-off chunk takes the sync state row before the mail-thread guard, the order of a pass's transaction, so the two never deadlock", async () => {
+    const mailboxId = await connectAccount();
+    await switchMail(mailboxId, false);
+    // How many backends wait for a lock other than the advisory guards: the chunk waiting for the sync state row.
+    const rowLockWaiters = async () =>
+      (
+        await admin.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event <> 'advisory'`,
+        )
+      ).rows[0]?.n ?? 0;
+
+    // A transaction locking as a pass's does: the lease renewal on the sync state row, then the mail-thread guard.
+    let job: Promise<unknown> = Promise.resolve();
+    await inTenant(async (client) => {
+      expect(await renewMailSyncPass(client, mailboxId, randomUUID(), 60_000)).toBe(true);
+      job = runMailOffJob(mailboxId).then(
+        () => "done",
+        (error: unknown) => error,
+      );
+      await vi.waitFor(async () => expect(await rowLockWaiters()).toBe(1), { timeout: 10_000, interval: 10 });
+      await lockMailThreadMutation(client);
+    });
+
+    expect(await job).toBe("done");
+    expect(await tenantMail()).toEqual({ liveEmails: [], liveFolders: [], threadRows: 0, liveThreadItems: 0 });
   });
 
   it("switching Mail on queues a sync in the same transaction, and the mail downloads again as for a new account", async () => {

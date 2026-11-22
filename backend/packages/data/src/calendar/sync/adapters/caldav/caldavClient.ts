@@ -95,12 +95,19 @@ function listOf(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function resolve(href: string, base: URL): URL {
+function parseHref(href: string, base: URL): URL {
   try {
     return new URL(href, base);
   } catch {
     throw invalidResponse("The CalDAV server sent an unreadable address");
   }
+}
+
+/** An address the server named; one outside the session's credential scope is refused, never requested. */
+function resolve(session: CalDavSession, href: string, base: URL): URL {
+  const url = parseHref(href, base);
+  if (!session.inScope(url)) throw invalidResponse("The CalDAV server named an address outside its own");
+  return url;
 }
 
 function sameCollection(a: URL, b: URL): boolean {
@@ -131,11 +138,11 @@ export async function discoverCalendarHome(session: CalDavSession, start: URL): 
   const principal = await propfindOne(session, start, { "d:current-user-principal": {} });
   const principalHref = davHref(principal.response.props?.currentUserPrincipal);
   if (principalHref === null) throw invalidResponse("The CalDAV server named no principal");
-  const principalUrl = resolve(principalHref, principal.base);
+  const principalUrl = resolve(session, principalHref, principal.base);
   const home = await propfindOne(session, principalUrl, { "c:calendar-home-set": {} });
   const homeHref = davHref(home.response.props?.calendarHomeSet);
   if (homeHref === null) throw invalidResponse("The CalDAV server named no calendar home");
-  return resolve(homeHref, home.base);
+  return resolve(session, homeHref, home.base);
 }
 
 /** `#RRGGBB` from Apple's `#RRGGBB` or `#RRGGBBAA`. */
@@ -189,8 +196,9 @@ export async function listCalendarCollections(session: CalDavSession, home: URL)
     const props = response.props ?? {};
     if (!response.ok || response.href === undefined) continue;
     if (!elementNames(props.resourcetype).includes("calendar") || !holdsEvents(props)) continue;
-    const url = resolve(response.href, base);
-    if (sameCollection(url, home)) continue;
+    const url = parseHref(response.href, base);
+    // A calendar on another host (one shared from elsewhere) cannot be read with this login.
+    if (!session.inScope(url) || sameCollection(url, home)) continue;
     calendars.push({
       remoteId: url.pathname,
       url: url.href,
@@ -255,7 +263,7 @@ export async function listEventHrefs(
   const base = baseOf(session, calendar);
   return members(responses)
     .filter((response) => response.ok && response.href !== undefined)
-    .map((response) => resolve(response.href ?? "", base))
+    .map((response) => resolve(session, response.href ?? "", base))
     .filter((url) => !sameCollection(url, calendar));
 }
 
@@ -281,7 +289,7 @@ export async function listResourceEtags(session: CalDavSession, calendar: URL): 
   const listed: ListedResource[] = [];
   for (const response of members(responses)) {
     if (response.href === undefined) continue;
-    const href = resolve(response.href, base);
+    const href = resolve(session, response.href, base);
     // A truncated listing would read as every resource it left out deleted.
     if (response.status === 507) throw invalidResponse("The CalDAV server truncated the calendar's listing");
     if (!response.ok || sameCollection(href, calendar)) continue;
@@ -321,7 +329,7 @@ export async function fetchResources(
       if (!response.ok || response.href === undefined) continue;
       const text = davText(response.props?.calendarData);
       if (text === null) continue;
-      resources.push({ href: resolve(response.href, base), etag: davText(response.props?.getetag), text });
+      resources.push({ href: resolve(session, response.href, base), etag: davText(response.props?.getetag), text });
     }
   }
   return resources;
@@ -375,7 +383,7 @@ export async function syncChanges(session: CalDavSession, calendar: URL, syncTok
     const base = baseOf(session, calendar);
     let truncated = false;
     for (const response of listed) {
-      const url = resolve(response.href ?? "", base);
+      const url = resolve(session, response.href ?? "", base);
       if (sameCollection(url, calendar)) {
         if (response.status === 507) truncated = true;
         continue;

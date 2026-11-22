@@ -2531,6 +2531,41 @@ describe("OAuth scopes per service", () => {
     expect(liveSync.restarted).toEqual([mailboxId]);
   });
 
+  it.each(["needsReauthorization", "needsConsent"])(
+    "reauthorization of a mailbox with Calendars on whose calendar sync stopped at %s makes it due and queues a pass",
+    async (status) => {
+      const granted = [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE];
+      const mailboxId = await connectGoogle(["mail", "calendars"], granted.join(" "));
+      await admin.query(
+        `INSERT INTO calendar_account_sync_state (tenant_id, account_item_id, status, last_error_code, failing_since)
+         VALUES ($1, $2, $3, 'refused', now())`,
+        [caller.tenantId, mailboxId, status],
+      );
+      await admin.query("DELETE FROM graphile_worker._private_jobs");
+      const url = await reauthorize(mailboxId, caller, { services: ["mail", "calendars"] });
+      const provider = fakeProvider({
+        ...googleAccount(GOOGLE_ACCOUNT),
+        [GOOGLE_TOKEN_URL]: tokensGranting(granted.join(" ")),
+      });
+
+      const result = await completeReauthorization(stateOf(url), provider, liveSyncSpy().control);
+
+      expect(result).toEqual({ status: 200, body: { mailboxId } });
+      const { rows } = await admin.query<{
+        status: string;
+        last_error_code: string | null;
+        failing_since: Date | null;
+      }>("SELECT status, last_error_code, failing_since FROM calendar_account_sync_state WHERE account_item_id = $1", [
+        mailboxId,
+      ]);
+      expect(rows).toEqual([{ status: "never", last_error_code: null, failing_since: null }]);
+      expect((await queuedJobs()).filter((job) => job.task !== "itemSearchReindexDependents")).toEqual([
+        { task: "calendarAccountSync", key: `calendar-account-sync:${mailboxId}` },
+        { task: "mailAccountSync", key: `mail-account-sync:${mailboxId}` },
+      ]);
+    },
+  );
+
   it.each<[string, boolean, Record<string, unknown>, string[]]>([
     ["a mail-only mailbox without services", false, {}, GMAIL_SCOPES],
     ["a mailbox with Calendars on, without services", true, {}, [...GMAIL_SCOPES, GOOGLE_CALENDAR_SCOPE]],

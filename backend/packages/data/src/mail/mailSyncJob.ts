@@ -221,9 +221,14 @@ export async function handleSyncMailAccountTask(
     }
 
     // One pass per mailbox at a time. A trigger while a pass runs (IDLE, push, write-back, sweep) only asks that pass
-    // for one more run, which its release enqueues; nothing of the provider is touched here.
+    // for one more run, which its release enqueues; nothing of the provider is touched here. A pass's write
+    // transaction, a removal and the Mail switch hold the sync state row until they commit: a claim still waiting after
+    // `MAILBOX_SYNC_PASS_WAIT_MS` throws `MailboxSyncBusyError` and the trigger is skipped like one that finds the
+    // mailbox guard held.
     const claim = await withTransaction(pool, (client) =>
-      claimMailSyncPass(client, payload.mailboxItemId, passToken, MAIL_SYNC_PASS_LEASE_MS),
+      claimMailSyncPass(client, payload.mailboxItemId, passToken, MAIL_SYNC_PASS_LEASE_MS, {
+        maxWaitMs: MAILBOX_SYNC_PASS_WAIT_MS,
+      }),
     );
     // The row was there a moment ago: a removal deleted it meanwhile, and there is nothing to sync.
     if (claim === "missing") {
@@ -359,14 +364,24 @@ export async function handleSyncMailAccountTask(
       return;
     }
 
-    // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
-    const message = err instanceof Error ? err.message : String(err);
     // Provider errors can include complete IMAP/OAuth authentication exchanges: log stable identifiers and a fixed
     // classification, never the raw error or message.
-    logger.error(
-      { mailboxItemId: payload.mailboxItemId, mailboxProvider, failureKind: mailSyncFailureKind(err) },
-      "Mail sync failed",
-    );
+    const failure = { mailboxItemId: payload.mailboxItemId, mailboxProvider, failureKind: mailSyncFailureKind(err) };
+
+    // Only the lease holder records the mailbox's outcome. A job that failed before it held the lease may run beside a
+    // pass that does, whose outcome it would overwrite, and it made no provider call yet: it is logged and rethrown,
+    // not retried (`maxAttempts` 1), and the sweep queues the account again once it is due.
+    if (!leased) {
+      logger.error(
+        { ...failure, errorName: err instanceof Error ? err.name : typeof err },
+        "Mail sync failed before holding the pass lease",
+      );
+      throw err;
+    }
+
+    // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(failure, "Mail sync failed");
 
     if (err instanceof MailConnectionLimitError) {
       // Too many IMAP sessions for this account is contention, not an account failure, but mail is not syncing, so

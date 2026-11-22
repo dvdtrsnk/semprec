@@ -20,6 +20,8 @@ interface StoredCalendar {
   calendar: RemoteCalendar;
   events: Map<string, { event: RemoteEvent; version: number }>;
   tombstones: Map<string, number>;
+  /** The Event each `createKey` made. */
+  created: Map<string, string>;
 }
 
 /** An Event's fields with every optional one empty. */
@@ -58,9 +60,14 @@ export class FakeCalendarProvider {
   readonly responses: Array<{ remoteId: string; response: InvitationResponse; attendeeEmails: readonly string[] }> = [];
   /** Thrown by the next adapter write (`putEvent`, `deleteEvent`), then cleared. */
   failNextWrite: Error | null = null;
+  /**
+   * Run by the next `putEvent` once the provider holds the write, before it answers, then cleared; what it throws is
+   * the answer (a lost one).
+   */
+  beforeNextPutAnswer: ((ref: RemoteEventRef) => Promise<void>) | null = null;
 
   addCalendar(calendar: RemoteCalendar): void {
-    this.calendars.set(calendar.remoteId, { calendar, events: new Map(), tombstones: new Map() });
+    this.calendars.set(calendar.remoteId, { calendar, events: new Map(), tombstones: new Map(), created: new Map() });
   }
 
   updateCalendar(remoteId: string, patch: Partial<RemoteCalendar>): void {
@@ -117,7 +124,13 @@ export class FakeCalendarProvider {
         this.throwPendingFailure();
         return this.changesOf(calendar.remoteId, syncState);
       },
-      putEvent: async (calendar, input) => this.adapterPut(calendar.remoteId, input),
+      putEvent: async (calendar, input) => {
+        const ref = this.adapterPut(calendar.remoteId, input);
+        const hook = this.beforeNextPutAnswer;
+        this.beforeNextPutAnswer = null;
+        if (hook !== null) await hook(ref);
+        return ref;
+      },
       deleteEvent: async (calendar, ref) => this.adapterDelete(calendar.remoteId, ref),
       respondToInvitation: async (calendar, ref, answer) => this.adapterRespond(calendar.remoteId, ref, answer),
       getEvent: async (calendar, ref) => {
@@ -145,8 +158,16 @@ export class FakeCalendarProvider {
       seriesRemoteId = input.seriesRef.remoteId;
       remoteId = `${seriesRemoteId}@${input.fields.recurrenceId}`;
     } else {
-      remoteId = input.icalUid || `fake-${this.version + 1}`;
-      if (stored.events.has(remoteId)) throw new CalendarSyncEventConflictError();
+      // A create repeated for the same local Event writes onto the Event the first one made, as Google and CalDAV do.
+      const earlier = input.createKey ? stored.created.get(input.createKey) : undefined;
+      previous = earlier === undefined ? undefined : stored.events.get(earlier)?.event;
+      if (earlier !== undefined && previous !== undefined) {
+        remoteId = earlier;
+      } else {
+        remoteId = input.icalUid || `fake-${this.version + 1}`;
+        if (stored.events.has(remoteId)) throw new CalendarSyncEventConflictError();
+      }
+      if (input.createKey) stored.created.set(input.createKey, remoteId);
     }
     this.version += 1;
     const event: RemoteEvent = {
