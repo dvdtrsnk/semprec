@@ -63,9 +63,12 @@ enum class MailConnectRefusal {
     RATE_LIMITED,
 }
 
-/** How a checked password login ended: the mailbox is [Connected] (new or signed in again), or [Refused]. */
+/**
+ * How a checked password login ended: the mailbox [Connected.mailboxId] is connected (new or signed in again), or the
+ * login was [Refused].
+ */
 sealed interface MailConnectOutcome {
-    data object Connected : MailConnectOutcome
+    data class Connected(val mailboxId: String) : MailConnectOutcome
 
     data class Refused(val reason: MailConnectRefusal) : MailConnectOutcome
 }

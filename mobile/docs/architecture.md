@@ -398,6 +398,31 @@ it opens and on each `Refresh` (the app back in front, the screen shown again), 
 calendars sheet when it is pulled to refresh. A `CALENDAR` change never asks, so a sync
 that changes something does not cause the next one.
 
+## Mail history from the device
+
+An IMAP account connected with a password on the accounts list then has its older history indexed from the device
+(`docs/architecture/domain-mail-and-inbox.md`, "History upload from a native client"):
+
+- `IndexMailHistory` (`shared/domain`) claims the mailbox's index-only folders, repeating a claim that leases nothing
+  every 30 s for up to 20 minutes while the server still backfills its window. Over one IMAP connection it opens each
+  leased folder read-only, skips one whose UIDVALIDITY is not the leased one, and walks it from the server's cursor
+  down: a `UID SEARCH` per 2000 UIDs, a `UID FETCH` per 200 messages, uploads of at most 6 MiB of base64 each, every
+  slice starting where the server's cursor is. A cursor the server reports elsewhere (`mail_history_range_stale`) is
+  taken over; a FETCH response over 64 KiB ends the device's work on that folder just above it. The lease is renewed
+  by claiming again with the same token every 4 minutes. The run ends on a lost lease, an unavailable mailbox or any
+  failure of either server, and always releases the lease.
+- `ImapClient` and its transport (`shared/data`) are a minimal read-only IMAP4rev1 client over implicit TLS on port
+  993: Network.framework on Apple (`appleMain`), `javax.net.ssl` with `HTTPS` endpoint identification on the JVM and
+  Android (`jvmAndAndroidMain`). Each untagged FETCH response is uploaded byte for byte as the server sent it.
+  `HttpMailHistoryRepository` speaks the three `history-index` routes, which `AuthenticatedApi` does not announce as
+  writes.
+- `InternetAccountsViewModel` queues the login of each account it connected (`MailHistoryLogin`: host, user name,
+  password; never stored) and indexes one account at a time in its `viewModelScope`; `historyIndexing` in its state
+  says which account and how far (folders done of those leased, messages uploaded). A cleared ViewModel drops every
+  login and releases the lease. The Apple accounts list shows it below the account's row
+  (`internetAccounts.history.waiting`, `internetAccounts.history.progress`, identifier
+  `internetAccounts.history.<accountId>`); Android has no accounts screen.
+
 ## Copy and localization
 
 Shared state carries typed values only (phases, `FailureKind`, ordinals and ids),
@@ -602,4 +627,5 @@ it holds the steps. Following the Settings feature, a new feature touches:
 - [`docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md`](../../docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md)
 - [`docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md`](../../docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md)
 - [`docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md`](../../docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md)
+- [`docs/adr/2026-11-22-mobile-apps-index-imap-history-over-their-own-tls-connection.md`](../../docs/adr/2026-11-22-mobile-apps-index-imap-history-over-their-own-tls-connection.md)
 - [`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`](../../docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md)

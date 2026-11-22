@@ -46,7 +46,7 @@ internal class PasswordSignInFlow(
             val result = mailAttempt { mailboxes.updatePassword(current.accountId, step.password, username) }
             ensureActive()
             val failure = when (val outcome = (result as? RepositoryResult.Content)?.value) {
-                MailConnectOutcome.Connected -> null
+                is MailConnectOutcome.Connected -> null
                 is MailConnectOutcome.Refused -> outcome.reason.toFailure()
                 null -> (result as? RepositoryResult.Failure).toProblem()
             }

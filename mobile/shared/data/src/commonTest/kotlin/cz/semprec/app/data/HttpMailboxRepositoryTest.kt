@@ -131,7 +131,7 @@ class HttpMailboxRepositoryTest {
             MailPasswordAccount(MailPasswordProvider.ICLOUD, "me@icloud.com", "app-pass", null, null),
         )
 
-        assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected), answer)
+        assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected("new")), answer)
         val body = Json.parseToJsonElement(server.bodies.single()).jsonObject
         assertEquals(setOf("provider", "address", "password"), body.keys)
         assertEquals("icloud", body.getValue("provider").jsonPrimitive.content)
@@ -248,9 +248,10 @@ class HttpMailboxRepositoryTest {
         }
         val mailboxes = server.mailboxes()
 
-        assertEquals(RepositoryResult.Content(MailConnectOutcome.Connected), mailboxes.updatePassword(BOX, "pw", null))
+        val connected = RepositoryResult.Content(MailConnectOutcome.Connected(BOX))
+        assertEquals(connected, mailboxes.updatePassword(BOX, "pw", null))
         assertEquals(
-            RepositoryResult.Content(MailConnectOutcome.Connected),
+            connected,
             mailboxes.updatePassword(BOX, "pw", "me@firma.cz"),
         )
 

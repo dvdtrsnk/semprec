@@ -21,6 +21,7 @@ import cz.semprec.app.domain.then
 import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.parseUrl
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
@@ -219,12 +220,12 @@ private val REFUSALS = mapOf(
 )
 
 /**
- * The answer of a checked password login: a success connected it, a refusal with a known code (or a `429`, which
- * these routes answer only when rate limited) is [MailConnectOutcome.Refused], and any other failure stays its
- * [FailureKind].
+ * The answer of a checked password login: a success connected the mailbox the answered item is, a refusal with a
+ * known code (or a `429`, which these routes answer only when rate limited) is [MailConnectOutcome.Refused], and any
+ * other failure stays its [FailureKind].
  */
 private fun ApiResponse.connectOutcome(): RepositoryResult<MailConnectOutcome> = when (this) {
-    is ApiResponse.Success -> RepositoryResult.Content(MailConnectOutcome.Connected)
+    is ApiResponse.Success -> decode<MailConnectedItemDto>().map { MailConnectOutcome.Connected(it.id) }
     is ApiResponse.Failure -> {
         val refusal = REFUSALS[errorCode()] ?: MailConnectRefusal.RATE_LIMITED.takeIf { status == TOO_MANY_REQUESTS }
         if (refusal == null) {
@@ -253,3 +254,7 @@ private fun ApiResponse.signIn(): RepositoryResult<OAuthSignIn> =
             RepositoryResult.Content(OAuthSignIn(dto.authorizeUrl, state))
         }
     }
+
+/** The item a password route answers with, the mailbox connected or signed in again; only its id is read. */
+@Serializable
+private data class MailConnectedItemDto(val id: String)

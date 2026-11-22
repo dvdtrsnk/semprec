@@ -129,6 +129,24 @@ public enum InternetPasswordSignInStep: Equatable, Sendable {
     case cancel
 }
 
+/// The older mail history the device indexes for the account `accountId` it connected, while the password typed is in
+/// memory: `foldersTotal` folders the server leased to the device so far, `foldersDone` of them finished, and
+/// `messagesUploaded` messages the server took. `foldersTotal` is 0 while the server has not leased a folder yet.
+public struct InternetHistoryIndexing: Equatable, Sendable {
+
+    public let accountId: String
+    public let foldersDone: Int
+    public let foldersTotal: Int
+    public let messagesUploaded: Int
+
+    public init(accountId: String, foldersDone: Int, foldersTotal: Int, messagesUploaded: Int) {
+        self.accountId = accountId
+        self.foldersDone = foldersDone
+        self.foldersTotal = foldersTotal
+        self.messagesUploaded = messagesUploaded
+    }
+}
+
 public enum InternetAccountsPhase: Equatable, Sendable {
 
     case loading
@@ -140,7 +158,8 @@ public enum InternetAccountsPhase: Equatable, Sendable {
 /// browser came back and the server answered. `existingAccountId` is the listed account that already holds the
 /// address of a connect refused as `alreadyConnected`. `signingIn` is true while a listed account signs in again in a
 /// browser, and `signInFailure` says why the last one did not succeed; `passwordSignIn` is the password sign-in of a
-/// listed account, while it is open.
+/// listed account, while it is open. `historyIndexing` is the history indexing of an account connected with a
+/// password, while it runs.
 public struct InternetAccountsState: Equatable, Sendable {
 
     public var phase: InternetAccountsPhase
@@ -152,6 +171,7 @@ public struct InternetAccountsState: Equatable, Sendable {
     public var signingIn: Bool
     public var signInFailure: InternetConnectFailure?
     public var passwordSignIn: InternetPasswordSignIn?
+    public var historyIndexing: InternetHistoryIndexing?
 
     public init(
         phase: InternetAccountsPhase = .loading,
@@ -162,7 +182,8 @@ public struct InternetAccountsState: Equatable, Sendable {
         existingAccountId: String? = nil,
         signingIn: Bool = false,
         signInFailure: InternetConnectFailure? = nil,
-        passwordSignIn: InternetPasswordSignIn? = nil
+        passwordSignIn: InternetPasswordSignIn? = nil,
+        historyIndexing: InternetHistoryIndexing? = nil
     ) {
         self.phase = phase
         self.refreshing = refreshing
@@ -173,6 +194,7 @@ public struct InternetAccountsState: Equatable, Sendable {
         self.signingIn = signingIn
         self.signInFailure = signInFailure
         self.passwordSignIn = passwordSignIn
+        self.historyIndexing = historyIndexing
     }
 }
 

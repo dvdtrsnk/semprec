@@ -1793,6 +1793,38 @@
         }
       }
     },
+    "internetAccounts.history.progress" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexuji starší poštu: složky %1$lld z %2$lld, zprávy %3$lld"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexing older mail: folders %1$lld of %2$lld, messages %3$lld"
+          }
+        }
+      }
+    },
+    "internetAccounts.history.waiting" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexuji starší poštu: čekám na server…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indexing older mail: waiting for the server…"
+          }
+        }
+      }
+    },
     "internetAccounts.service.calendars" : {
       "localizations" : {
         "cs" : {

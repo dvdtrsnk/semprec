@@ -29,11 +29,16 @@ final class InternetAccountMappingTests: XCTestCase {
                 accountId: "m1", address: "me@icloud.com", icloud: true, submitting: true, failure: .rateLimited
             )
         )
+        XCTAssertEqual(
+            state.historyIndexing,
+            CoreKit.InternetHistoryIndexing(accountId: "m1", foldersDone: 1, foldersTotal: 3, messagesUploaded: 250)
+        )
         let empty = SharedInternetAccountsScreenModel.state(accountsState(.content, signedIn: false))
         XCTAssertNil(empty.connectFailure)
         XCTAssertNil(empty.existingAccountId)
         XCTAssertNil(empty.signInFailure)
         XCTAssertNil(empty.passwordSignIn)
+        XCTAssertNil(empty.historyIndexing)
         XCTAssertFalse(empty.signingIn)
     }
 
@@ -259,6 +264,11 @@ private extension InternetAccountMappingTests {
             passwordSignIn: signedIn
                 ? SharedSDK.InternetPasswordSignIn(
                     accountId: "m1", address: "me@icloud.com", icloud: true, submitting: true, failure: .rateLimited
+                )
+                : nil,
+            historyIndexing: signedIn
+                ? SharedSDK.InternetHistoryIndexing(
+                    accountId: "m1", foldersDone: 1, foldersTotal: 3, messagesUploaded: 250
                 )
                 : nil
         )
