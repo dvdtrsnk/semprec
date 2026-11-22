@@ -356,6 +356,8 @@ export async function sendDraftEmail(
         ...(providerIdentity.providerThreadId === undefined
           ? {}
           : { providerThreadId: providerIdentity.providerThreadId }),
+        folderRelationPropertyId: moduleIds.folderRelationPropertyId,
+        sentFolderItemId,
       });
     }
     await updateItemWithClient(

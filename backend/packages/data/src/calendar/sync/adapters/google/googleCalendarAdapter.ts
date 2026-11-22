@@ -102,6 +102,8 @@ function calendarPath(calendar: RemoteCalendar): string {
 /** How many ids one local Event gets in one calendar: a later one only after the earlier ones were deleted there. */
 const MAX_CREATE_ID_GENERATIONS = 8;
 const BASE32HEX = "0123456789abcdefghijklmnopqrstuv";
+/** The private extended property naming the local Event a Google event was created for. */
+const CREATE_KEY_PROPERTY = "semprecCreateKey";
 
 /**
  * The id a new Event is created with: base32hex (Google's id alphabet) of a hash of the calendar, the local Event and
@@ -271,7 +273,7 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     const body = googleEventBody(fields, zone);
     if (ref === null) {
       // Google refuses an insert naming both an id and an iCalUID; it derives the id from the iCalUID itself.
-      if (event.icalUid) return this.createWithIcalUid(calendar, event.icalUid, body, signal);
+      if (event.icalUid) return this.createWithIcalUid(calendar, event.icalUid, event.createKey ?? null, body, signal);
       return event.createKey
         ? this.createNamed(calendar, event.createKey, body, body, signal)
         : this.writeEvent(calendar, { method: "POST", body }, signal);
@@ -319,27 +321,33 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
   }
 
   /**
-   * Creates the event under `icalUid`. Google keeps one event per iCalUID in a calendar, deleted ones included, and
-   * answers 409 for a taken one: the event an earlier attempt made (or one Google already had under that iCalUID)
-   * gets `body`, a deleted one being restored as confirmed.
+   * Creates the event under `icalUid`, marked with `createKey` (the local Event) in its private extended properties.
+   * Google keeps one event per iCalUID in a calendar, deleted ones included, and answers 409 for a taken one: the event
+   * an earlier attempt for the same `createKey` made gets `body`, a deleted one being restored as confirmed. A taken
+   * iCalUID of any other event (one another client made, or one without the mark) is a clash and refused.
    */
   private async createWithIcalUid(
     calendar: RemoteCalendar,
     icalUid: string,
+    createKey: string | null,
     body: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<RemoteEventRef> {
+    const marked =
+      createKey === null ? body : { ...body, extendedProperties: { private: { [CREATE_KEY_PROPERTY]: createKey } } };
     const answer = await this.http.request(
       {
         method: "POST",
         path: `${calendarPath(calendar)}/events`,
         query: new URLSearchParams({ sendUpdates: "none" }),
-        body: { ...body, iCalUID: icalUid },
+        body: { ...marked, iCalUID: icalUid },
       },
       signal,
       [409],
     );
     if (answer.status !== 409) return refOfWritten(answer.body);
+    const clash = new Error("Google Calendar refused the request with status 409");
+    if (createKey === null) throw clash;
     const { body: page } = await this.http.request(
       {
         method: "GET",
@@ -349,9 +357,12 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
       signal,
     );
     const existing = this.readableEvents(parseGoogleBody(eventsPageSchema, page).items).find(
-      (candidate) => candidate.iCalUID === icalUid && candidate.recurringEventId === undefined,
+      (candidate) =>
+        candidate.iCalUID === icalUid &&
+        candidate.recurringEventId === undefined &&
+        candidate.extendedProperties?.private?.[CREATE_KEY_PROPERTY] === createKey,
     );
-    if (existing === undefined) throw new Error("Google Calendar refused the request with status 409");
+    if (existing === undefined) throw clash;
     return this.writeEvent(
       calendar,
       {

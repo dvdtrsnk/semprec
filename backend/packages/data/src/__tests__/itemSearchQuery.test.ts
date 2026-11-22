@@ -79,6 +79,7 @@ describe("shared item search query", () => {
       // Typed without the country code, a number also matches the international digits phones are indexed as.
       expect(await search("605001253")).toEqual([phone.id]);
       expect(await search("605 001 253")).toEqual([phone.id]);
+      expect(await search("00420605001253")).toEqual([phone.id]);
       expect(await search("4000429171")).toEqual([]);
     });
   });

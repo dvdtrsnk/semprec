@@ -84,13 +84,6 @@ export interface AdapterRequestListenerOptions {
 }
 
 /**
- * The handler runs inside `retryingTransientConflicts`: a READ COMMITTED transaction it opens that fails
- * with a serialization failure or deadlock is re-run up to three times. A Postgres error that still
- * reaches here with a classified SQLSTATE gets its status (`databaseErrorResponse`). Anything else
- * other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with a generic 500,
- * never leaking details.
- */
-/**
  * Node's own error for a request whose client hung up before the request was read (`ECONNRESET`, "aborted"), once the
  * request is destroyed: nothing is wrong on the server and no answer can reach the client.
  */
@@ -100,6 +93,13 @@ function isClientAbort(req: IncomingMessage, err: unknown): boolean {
   );
 }
 
+/**
+ * The handler runs inside `retryingTransientConflicts`: a READ COMMITTED transaction it opens that fails
+ * with a serialization failure or deadlock is re-run up to three times. A Postgres error that still
+ * reaches here with a classified SQLSTATE gets its status (`databaseErrorResponse`). Anything else
+ * other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with a generic 500,
+ * never leaking details.
+ */
 export function createAdapterRequestListener(
   pool: Pool,
   handler: AdapterHandler,

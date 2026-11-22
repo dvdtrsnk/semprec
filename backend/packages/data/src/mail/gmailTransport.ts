@@ -44,7 +44,9 @@ export function createGmailMailTransport(options: GmailMailTransportOptions): Ma
       // submitted Message-ID and the later synced copy is ingested beside it.
       let messageId: string | undefined;
       try {
-        messageId = (await client.fetchMessage(sent.id, "metadata"))?.message.messageId;
+        const filed = (await client.fetchMessage(sent.id, "metadata"))?.message.messageId;
+        // The reader names a message without a Message-ID header `<id@gmail-api>`; that is no header anyone saw.
+        messageId = filed?.endsWith("@gmail-api>") ? undefined : filed;
       } catch (err) {
         logger.warn(
           { mailboxItemId, errorName: err instanceof Error ? err.name : typeof err },

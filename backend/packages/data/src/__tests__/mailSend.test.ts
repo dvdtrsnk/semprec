@@ -615,15 +615,23 @@ describe("drafts and authorized SMTP sending", () => {
         tenantIt("keeps one Email under the provider's identity, in one thread", async () => {
           const providerMessageId = "<provider-own-1@mail.gmail.com>";
           const draftItemId = await newDraft();
+          // Mail to oneself: the synced copy is in the Inbox as well as in Sent.
+          const inboxFolderId = await withTransaction(pool, (client) =>
+            createFolderOf(client, mailboxId, "Inbox", "inbox"),
+          );
+          const syncCopy = async () => {
+            await ingestSynced(providerMessageId);
+            await ingestSynced(providerMessageId, mailboxId, inboxFolderId);
+          };
           const provider = recordingTransport({
             async send() {
-              if (syncFirst) await ingestSynced(providerMessageId);
+              if (syncFirst) await syncCopy();
               return { providerMessageId: "gmail-1", providerThreadId: "gmail-thread-1", messageId: providerMessageId };
             },
           });
 
           const result = await send(draftItemId, provider);
-          if (!syncFirst) await ingestSynced(providerMessageId);
+          if (!syncFirst) await syncCopy();
 
           expect(result.messageId).toBe(providerMessageId);
           expect(await liveCopies(providerMessageId)).toEqual([draftItemId]);
@@ -633,6 +641,13 @@ describe("drafts and authorized SMTP sending", () => {
           );
           expect(rows).toEqual([{ provider_message_id: "gmail-1", provider_thread_id: "gmail-thread-1" }]);
           expect(await threadCount()).toBe(1);
+          const folders = await pool.query<{ purpose: string }>(
+            `SELECT f.properties ->> 'specialPurpose' AS purpose FROM item_relations r
+               JOIN items f ON f.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AND f.database_id = $2
+              WHERE (r.item_a = $1 OR r.item_b = $1) ORDER BY 1`,
+            [draftItemId, foldersId],
+          );
+          expect(folders.rows.map((row) => row.purpose)).toEqual(["inbox", "sent"]);
         });
       },
     );

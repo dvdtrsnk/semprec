@@ -9,14 +9,16 @@ const PHONE_CANDIDATE = /(?<![\p{L}\p{N}])(?:\+|00)?\d[\d ()-]*\d(?![\p{L}\p{N}]
  * as the prefix of a simple one, and in the forms the text parser gives numbers: with a leading minus or plus (it
  * indexes `AB-1234`, `2026-11-22` and `+420` as `-1234`, `-22` and `+420`) and with the Czech country code (phone
  * properties are indexed as international digits). A phone number written with a prefix or separators becomes one
- * normalized term; a run of digits typed together stays as typed, so an order or invoice number is found.
+ * normalized term; a run of digits typed together stays as typed (unless it starts with `00`), so an order or invoice
+ * number is found.
  */
 export function buildItemSearchQuery(text: string, firstParameter = 1): { sql: string; params: string[] } {
   if (!Number.isSafeInteger(firstParameter) || firstParameter < 1) throw new RangeError("Invalid parameter position");
   const phonesJoined = text.replace(PHONE_CANDIDATE, (candidate) => {
     const digits = candidate.replace(/\D/g, "");
     if (digits.length < 9) return candidate;
-    return /^\d+$/.test(candidate) ? candidate : normalizeSearchPhone(candidate);
+    // Typed together, digits stay as typed unless they start with the international `00` prefix.
+    return /^\d+$/.test(candidate) && !candidate.startsWith("00") ? candidate : normalizeSearchPhone(candidate);
   });
   const params = phonesJoined.match(/[\p{L}\p{N}]+/gu) ?? [];
   if (params.length === 0) return { sql: "''::tsquery", params };
