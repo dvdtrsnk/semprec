@@ -14,7 +14,7 @@ updatedAt: "2026-11-22T07:01:31.328Z"
 closedAt: "2026-11-22T07:01:31.328Z"
 source: null
 approval: {"specSha256":"b99c4541555bbc31a249e00023cb817e0ea5c7d2a9e61be2efd6637f9e50d5b8","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-22T06:52:48.432Z"}
-resolution: {"pullRequests":[],"commit":"89cb9d902f607d95a4490c5f64278ec49c3ab01a","at":"2026-11-22T07:01:31.328Z"}
+resolution: {"pullRequests":[],"commit":"040d6eeffb0a669bd6cb899e796438b9a8bdbbf9","at":"2026-11-22T07:01:31.328Z"}
 ---
 **Blocked by:** none
 **Model tier:** medium
