@@ -373,8 +373,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
   of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
   left. New mail is therefore ingested before older history. A trigger that arrives while the backfill runs (an IDLE
-  signal, a write-back; it sets `pass_rerun_requested`) makes the backfill stop before its next batch and before the
-  next folder's backfill, and the pass ends unfinished: the follow-up pass takes the new mail in its live step, so it
+  signal, a write-back; it sets `pass_rerun_requested`) makes the backfill stop before its next batch, before the
+  next full download of the batch it prepares (keeping what it prepared) and before the next folder's backfill, and the
+  pass ends unfinished: the follow-up pass takes the new mail in its live step, so it
   waits for at most one batch of history, not for the rest of the pass's budget. The first batch that writes a message whose Date lies before
   the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
   older history, stored as an index, which a native client may then upload (see

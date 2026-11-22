@@ -194,6 +194,7 @@ async function prepareImapBatch(
   path: string,
   liveFromUid: number,
   candidates: readonly ImapFetchedMessage[],
+  backfill = false,
 ): Promise<{ prepared: PreparedImapMessage[]; exhausted: boolean }> {
   if (candidates.length === 0) return { prepared: [], exhausted: false };
   const known = await withTransaction(ctx.pool, (client) =>
@@ -228,6 +229,9 @@ async function prepareImapBatch(
     snippetRequests.length > 0 ? await ctx.imap.fetchSnippets(path, snippetRequests) : new Map<number, string>();
   const prepared: PreparedImapMessage[] = [];
   for (const { candidate, arrival, state } of taken) {
+    // A full download can take long; a backfill yields to a trigger before the next one, keeping what it prepared.
+    if (backfill && state === "full" && prepared.length > 0 && (await ctx.triggered()))
+      return { prepared, exhausted: true };
     let content: IngestedMailContent | null = null;
     if (state === "full") {
       const { attachments, ...bodies } = await candidate.fetchContent();
@@ -711,6 +715,7 @@ async function backfillImapFolder(
       folderPath,
       liveFromUid,
       candidates.slice(offset, offset + IMAP_MESSAGES_PER_BATCH),
+      true,
     );
     const rangeEnd = !exhausted && offset + prepared.length === candidates.length ? { belowUid: rangeBelowUid } : null;
     if (prepared.length === 0 && !rangeEnd) break;
