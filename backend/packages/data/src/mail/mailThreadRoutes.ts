@@ -25,9 +25,50 @@ import {
   type MailThreadMoveSelection,
 } from "./mailThreadActions.js";
 import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
+import {
+  encodeMailThreadChangesCursor,
+  listMailThreadsChangedSince,
+  MAIL_THREAD_CHANGES_LIMIT,
+  mailThreadChangesCursorIsStale,
+  parseMailThreadChangesCursor,
+  readMailThreadChangePoint,
+} from "./mailThreadChanges.js";
 import type { CustomRouteResult, RouteParams, RouteUrl } from "../customRoute.js";
 import { requestUrl } from "../customRoute.js";
 
+type MailThreadViewFilters = Pick<
+  NonNullable<Parameters<typeof listMailThreads>[3]>,
+  "box" | "folderId" | "mailboxId" | "projectId" | "areaId" | "personId" | "unread"
+>;
+
+/** The filters naming one list view: the list's and the delta's query parameters. */
+function parseMailThreadViewFilters(url: URL): MailThreadViewFilters {
+  const box = url.searchParams.get("box") ?? "inbox";
+  if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
+    throw new ValidationError("Invalid box", { field: "box" });
+  const uuidParam = (field: string) => {
+    const value = url.searchParams.get(field);
+    if (value !== null && !z.uuid().safeParse(value).success) throw new ValidationError(`Invalid ${field}`, { field });
+    return value;
+  };
+  const rawUnread = url.searchParams.get("unread");
+  if (rawUnread !== null && rawUnread !== "true" && rawUnread !== "false")
+    throw new ValidationError("Invalid unread", { field: "unread" });
+  return {
+    box,
+    folderId: uuidParam("folderId"),
+    mailboxId: uuidParam("mailboxId"),
+    projectId: uuidParam("projectId"),
+    areaId: uuidParam("areaId"),
+    personId: uuidParam("personId"),
+    unread: rawUnread === "true",
+  };
+}
+
+/**
+ * One page of the view, newest first. `changesCursor` is the tenant's mail change point read in the page's own
+ * snapshot, so `GET /api/mail/threads/changes?since=` from it lists exactly the changes the page does not show.
+ */
 export function createMailThreadListRouteHandler(pool: Pool) {
   return async (ctx: RouteUrl) => {
     const url = requestUrl(ctx.req);
@@ -38,38 +79,18 @@ export function createMailThreadListRouteHandler(pool: Pool) {
     if (limit < 1 || limit > 200) throw new ValidationError("Invalid limit", { field: "limit" });
     const rawCursor = url.searchParams.get("cursor");
     const cursor = rawCursor === null ? null : parseMailThreadListCursor(rawCursor);
-    const box = url.searchParams.get("box") ?? "inbox";
-    if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
-      throw new ValidationError("Invalid box", { field: "box" });
-    const uuidParam = (field: string) => {
-      const value = url.searchParams.get(field);
-      if (value !== null && !z.uuid().safeParse(value).success)
-        throw new ValidationError(`Invalid ${field}`, { field });
-      return value;
-    };
-    const folderId = uuidParam("folderId");
-    const mailboxId = uuidParam("mailboxId");
-    const projectId = uuidParam("projectId");
-    const areaId = uuidParam("areaId");
-    const personId = uuidParam("personId");
-    const rawUnread = url.searchParams.get("unread");
-    if (rawUnread !== null && rawUnread !== "true" && rawUnread !== "false")
-      throw new ValidationError("Invalid unread", { field: "unread" });
+    const filters = parseMailThreadViewFilters(url);
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q.length > 1000) throw new ValidationError("Invalid q", { field: "q" });
     const search = q ? parseMailSearchQuery(q, true) : undefined;
     if (search && hasInvalidMailSearchDate(search)) throw new ValidationError("Invalid search date", { field: "q" });
-    const rows = await withTransaction(pool, (client) =>
-      listMailThreads(client, limit, cursor, {
-        box,
-        folderId,
-        mailboxId,
-        projectId,
-        areaId,
-        personId,
-        unread: rawUnread === "true",
-        search,
-      }),
+    const { rows, point } = await withTransaction(
+      pool,
+      async (client) => {
+        const point = await readMailThreadChangePoint(client);
+        return { rows: await listMailThreads(client, limit, cursor, { ...filters, search }), point };
+      },
+      { isolation: "repeatable_read" },
     );
     const hasMore = rows.length > limit;
     const threads = rows.slice(0, limit);
@@ -78,7 +99,45 @@ export function createMailThreadListRouteHandler(pool: Pool) {
       hasMore && last
         ? Buffer.from(JSON.stringify({ at: last.lastMessageAt, id: last.threadId })).toString("base64url")
         : null;
-    return { status: 200, body: { threads, nextCursor } };
+    return { status: 200, body: { threads, nextCursor, changesCursor: encodeMailThreadChangesCursor(point) } };
+  };
+}
+
+/**
+ * `GET /api/mail/threads/changes?since=` with the list's view filters (no `q`: search results are not a view).
+ * Answers the rows of the threads stamped after `since` that are in the view (`threads`, as the list shapes them) and
+ * the ids of those that are not, or no longer exist (`removed`), all read in one snapshot with the `cursor` to ask
+ * from next. `reset: true` (with no rows) when `since` belongs to another counter, names a step the tenant never
+ * reached, lies before a change of every row, or more than `MAIL_THREAD_CHANGES_LIMIT` threads changed since: the
+ * client then reads the view's first page again. A malformed `since` is a 400.
+ */
+export function createMailThreadChangesRouteHandler(pool: Pool) {
+  return async (ctx: RouteUrl) => {
+    const url = requestUrl(ctx.req);
+    const rawSince = url.searchParams.get("since");
+    if (rawSince === null) throw new ValidationError("Missing since", { field: "since" });
+    const since = parseMailThreadChangesCursor(rawSince);
+    if (url.searchParams.has("q")) throw new ValidationError("Search results have no changes", { field: "q" });
+    const filters = parseMailThreadViewFilters(url);
+    const body = await withTransaction(
+      pool,
+      async (client) => {
+        const point = await readMailThreadChangePoint(client);
+        const cursor = encodeMailThreadChangesCursor(point);
+        const reset = { cursor, threads: [], removed: [], reset: true };
+        if (mailThreadChangesCursorIsStale(since, point)) return reset;
+        const changed = await listMailThreadsChangedSince(client, since.seq, MAIL_THREAD_CHANGES_LIMIT);
+        if (changed === null) return reset;
+        const threads =
+          changed.length === 0
+            ? []
+            : await listMailThreads(client, changed.length, null, { ...filters, changedThreadIds: changed });
+        const shown = new Set(threads.map((thread) => thread.threadId));
+        return { cursor, threads, removed: changed.filter((threadId) => !shown.has(threadId)), reset: false };
+      },
+      { isolation: "repeatable_read" },
+    );
+    return { status: 200, body };
   };
 }
 

@@ -1,4 +1,7 @@
+import type { PoolClient } from "pg";
+import { z } from "zod";
 import type { Queryable } from "../db/pool.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 
 export function normalizeEmailAddress(address: string): string {
   return address.trim().toLowerCase();
@@ -23,7 +26,7 @@ export interface ReindexPersonEmailsResult {
  * `ON CONFLICT DO NOTHING` lets two concurrent claims leave the first writer's row without rejecting.
  */
 export async function reindexPersonEmails(
-  client: Queryable,
+  client: PoolClient,
   personItemId: string,
   addresses: string[],
 ): Promise<ReindexPersonEmailsResult> {
@@ -31,8 +34,9 @@ export async function reindexPersonEmails(
   return { conflicts };
 }
 
+/** Stamps the thread list rows of the messages from every address it released or claimed (their sender person). */
 export async function reindexPersonEmailsWithClaims(
-  client: Queryable,
+  client: PoolClient,
   personItemId: string,
   addresses: string[],
 ): Promise<ReindexPersonEmailsResult & { claimed: string[] }> {
@@ -45,10 +49,10 @@ export async function reindexPersonEmailsWithClaims(
   const ownedByOther = new Set(existing.filter((row) => row.item_id !== personItemId).map((row) => row.email));
   const toClaim = normalized.filter((email) => !ownedByOther.has(email));
 
-  await client.query(`DELETE FROM person_email_index WHERE item_id = $1 AND email != ALL($2::text[])`, [
-    personItemId,
-    normalized,
-  ]);
+  const released = await client.query<{ email: string }>(
+    `DELETE FROM person_email_index WHERE item_id = $1 AND email != ALL($2::text[]) RETURNING email`,
+    [personItemId, normalized],
+  );
 
   const claimed: string[] = [];
   if (toClaim.length > 0) {
@@ -59,6 +63,19 @@ export async function reindexPersonEmailsWithClaims(
     claimed.push(...rows.map((row) => row.email));
   }
 
+  const changed = [...(released.rowCount === 0 ? [] : released.rows.map((row) => row.email)), ...claimed];
+  if (changed.length > 0) {
+    const { rows } = await client.query<{ thread_id: unknown }>(
+      `SELECT DISTINCT thread_id FROM mail_message_meta
+       WHERE tenant_id = app_tenant_default() AND thread_id IS NOT NULL
+         AND lower(btrim(envelope->'from'->>'address', E' \\t\\n\\r')) = ANY($1::text[])`,
+      [changed],
+    );
+    touchMailThreads(
+      client,
+      rows.map((row) => z.uuid().parse(row.thread_id)),
+    );
+  }
   return { conflicts: [...ownedByOther], claimed };
 }
 

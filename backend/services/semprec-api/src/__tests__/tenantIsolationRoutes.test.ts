@@ -1690,6 +1690,15 @@ const mailHistoryClaimBody = z.object({
   ),
 });
 
+const mailThreadListCursorBody = z.object({ changesCursor: z.string() });
+
+const mailThreadChangesBody = z.object({
+  cursor: z.string(),
+  threads: z.array(z.object({ threadId: z.string() })),
+  removed: z.array(z.string()),
+  reset: z.boolean(),
+});
+
 const mailThreadFacetsBody = z.object({
   areas: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
   projects: z.object({
@@ -3174,6 +3183,34 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       projects: { total: 0, items: [] },
     });
     expect(await sendOk(a.member, facets)).toContain(ofA.projectId);
+  },
+  // Each tenant counts its own changes: B's delta lists only B's thread, and a cursor of A's counter is a reset for B
+  // that names nothing of A.
+  "mail thread changes": async () => {
+    const changesCursorOf = async (caller: Caller): Promise<string> =>
+      mailThreadListCursorBody.parse(JSON.parse(await sendOk(caller, GET("/api/mail/threads")))).changesCursor;
+    const sinceB = await changesCursorOf(b.member);
+    const seed = (fixture: TenantFixture) =>
+      seedMailThread(fixture, `<${randomUUID()}@example.test>`, `changes-${randomUUID()}`, `thread-${randomUUID()}`);
+    const ofA = await seed(a);
+    const ofB = await seed(b);
+    const changes = (since: string): Request => GET(`/api/mail/threads/changes?since=${since}`);
+    const own = await expectExcludesA(b.member, changes(sinceB), [ofB]);
+    expectNoneOf(own.text, [ofA], "B's changes");
+    const delta = mailThreadChangesBody.parse(JSON.parse(own.text));
+    expect({ reset: delta.reset, threads: delta.threads.map((row) => row.threadId), removed: delta.removed }).toEqual({
+      reset: false,
+      threads: [ofB],
+      removed: [],
+    });
+    const sinceA = await changesCursorOf(a.member);
+    const crossed = mailThreadChangesBody.parse(JSON.parse(await sendOk(b.member, changes(sinceA))));
+    expect({ reset: crossed.reset, threads: crossed.threads, removed: crossed.removed }).toEqual({
+      reset: true,
+      threads: [],
+      removed: [],
+    });
+    expect(crossed.cursor).toBe(delta.cursor);
   },
   "mail oauth start": async () => {
     await startMailOauth(a.member);

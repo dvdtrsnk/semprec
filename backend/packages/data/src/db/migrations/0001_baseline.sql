@@ -2118,6 +2118,54 @@ CREATE INDEX mail_thread_aliases_to_thread_idx ON public.mail_thread_aliases USI
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_aliases TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- mail_thread_change_counters
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_change_counters (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    epoch uuid DEFAULT gen_random_uuid() NOT NULL,
+    seq bigint DEFAULT 0 NOT NULL,
+    reset_seq bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT mail_thread_change_counters_reset_seq_check CHECK ((reset_seq <= seq))
+);
+
+COMMENT ON TABLE public.mail_thread_change_counters IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.seq IS 'The tenant''s mail list change sequence: one step per committed transaction that changed a thread list row, taken under this row''s lock right before COMMIT, so its order is the commit order.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.reset_seq IS 'The step of the last change too wide to list per thread (a mailbox''s name or addresses, a folder''s purpose); a delta cursor before it is answered with reset.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.epoch IS 'Names this counter in a delta cursor, so a cursor of a recreated database is not read against it.';
+
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_pkey PRIMARY KEY (tenant_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_change_counters TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_thread_changes
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_changes (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    thread_id uuid NOT NULL,
+    seq bigint NOT NULL
+);
+
+COMMENT ON TABLE public.mail_thread_changes IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_changes.thread_id IS 'A mail thread id, live, merged away or deleted: no foreign key, so the row outlives its thread and a delta reports it removed.';
+
+COMMENT ON COLUMN public.mail_thread_changes.seq IS 'mail_thread_change_counters.seq of the last committed transaction that changed the thread''s list row.';
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_pkey PRIMARY KEY (tenant_id, thread_id);
+
+CREATE INDEX mail_thread_changes_tenant_seq_idx ON public.mail_thread_changes USING btree (tenant_id, seq);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_changes TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- mail_threads
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3542,6 +3590,12 @@ ALTER TABLE ONLY public.mail_thread_aliases
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_to_thread_fkey FOREIGN KEY (tenant_id, to_thread_id) REFERENCES public.mail_threads(tenant_id, id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_threads
     ADD CONSTRAINT mail_threads_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -4209,6 +4263,18 @@ ALTER TABLE public.mail_thread_aliases ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.mail_thread_aliases AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mail_thread_aliases USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_change_counters ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_change_counters AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_change_counters USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_changes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_changes AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_changes USING (true) WITH CHECK (true);
 
 ALTER TABLE public.mail_threads ENABLE ROW LEVEL SECURITY;
 

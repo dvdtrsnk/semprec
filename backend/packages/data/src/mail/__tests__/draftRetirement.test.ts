@@ -593,10 +593,8 @@ describe("a send of the user's own (issue gh-1902)", () => {
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
     expect((await stateOf(tenant, mine)).sentAt).toEqual(expect.any(Date));
     expect(await stateOf(tenant, otherUserDraft)).toEqual(UNTOUCHED);
-    expect(events).toEqual([
-      { scope: "mailThread", threadId },
-      { scope: "mailThread", threadId },
-    ]);
+    // One invalidation per thread per transaction, however many of its writes changed the row.
+    expect(events).toEqual([{ scope: "mailThread", threadId }]);
   });
 
   it("changes nothing else when the user sends the Semp draft itself", async () => {
@@ -667,10 +665,8 @@ describe("an own message that is ingested (issue gh-1902)", () => {
     expect(own.created).toBe(true);
     expect(await stateOf(tenant, draftId)).toEqual(RETIRED);
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
-    expect(events).toEqual([
-      { scope: "mailThread", threadId },
-      { scope: "mailThread", threadId },
-    ]);
+    // One invalidation per thread per transaction, however many of its writes changed the row.
+    expect(events).toEqual([{ scope: "mailThread", threadId }]);
   });
 
   it("retires it for a message in the Sent folder whose sender is not a registered address", async () => {

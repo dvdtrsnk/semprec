@@ -198,6 +198,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "mailbox folder list": "packages/data/src/mail/mailFolderList.ts",
   "mailbox reauthorize": "packages/data/src/mail/mailOauthRouteHandlers.ts",
   "mail thread facets": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread changes": "packages/data/src/mail/mailThreadRoutes.ts",
   "mail message content": "packages/data/src/mail/mailMessageContent.ts",
   "mail search": "packages/data/src/mail/mailRemoteSearch.ts",
   "mail attachment save": "packages/data/src/mail/mailAttachmentSave.ts",

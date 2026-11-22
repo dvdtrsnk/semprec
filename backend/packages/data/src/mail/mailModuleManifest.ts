@@ -6,6 +6,7 @@ export {
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export {
   createMailThreadArchiveRouteHandler,
+  createMailThreadChangesRouteHandler,
   createMailThreadDetailRouteHandler,
   createMailThreadFacetsRouteHandler,
   createMailThreadFlagRouteHandler,
@@ -302,6 +303,14 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/mail/threads/facets",
       handlerExport: "createMailThreadFacetsRouteHandler",
+      // Declared before `mailThreadDetail`, whose `:threadId` also matches this path: the first declared match answers.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailThreadChanges",
+      method: "GET",
+      path: "/api/mail/threads/changes",
+      handlerExport: "createMailThreadChangesRouteHandler",
       // Declared before `mailThreadDetail`, whose `:threadId` also matches this path: the first declared match answers.
       justification: "single-consumer-read",
     },

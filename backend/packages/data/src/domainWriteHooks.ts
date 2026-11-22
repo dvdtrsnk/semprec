@@ -77,6 +77,12 @@ import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
 import { recipeSourceUrlWriteHook } from "./recipes/recipeSourceUrlHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { mailItemPurgeHook } from "./mail/mailPurgeHook.js";
+import {
+  mailThreadChangeEdgeChangedHook,
+  mailThreadChangeItemDeleteHook,
+  mailThreadChangeItemRestoreHook,
+  mailThreadChangeItemUpdateHook,
+} from "./mail/mailThreadChangeHooks.js";
 import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
 import {
   AREAS_MODULE_ID,
@@ -171,11 +177,7 @@ import {
   taskSeriesItemRestoreHook,
   taskSeriesItemRestorePreLockHook,
 } from "./tasks/taskSeriesTrash.js";
-import {
-  threadValueEdgeChangedHook,
-  threadValueEdgeDeleteHook,
-  threadValueEdgeWriteHook,
-} from "./mail/threadValueEdges.js";
+import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptProblemDeleteHook } from "./transcription/transcriptProblemDeleteHook.js";
 import { transcriptSpeakerSuggestionEdgeChangedHook } from "./transcription/transcriptSpeakerSuggestion.js";
@@ -373,6 +375,8 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   recipePhotoWriteHook,
   recipeSourceUrlWriteHook,
   mailMessageFlagsItemUpdateHook,
+  // A change of a property a thread list row reads stamps the rows it reaches.
+  mailThreadChangeItemUpdateHook,
   taskRecurrenceItemUpdateHook,
   itemSearchUpdateHook,
   itemSearchTitleUpdateHook,
@@ -418,6 +422,8 @@ const itemDeleteHooks: readonly ItemDeleteHook[] = [
   // A user's or agent's trash of a Mailboxes item is refused (only the mailbox removal, as the system writer,
   // trashes it).
   mailboxDeleteHook,
+  // A trashed message, mailbox, folder, project, company or person stamps the thread list rows it reaches.
+  mailThreadChangeItemDeleteHook,
   valueLinkSourceDeleteHook,
   peopleLastContactItemDeleteHook,
   // A transcript's company link ends when its Event is trashed.
@@ -460,6 +466,7 @@ const itemRestoreHooks: readonly ItemRestoreHook[] = [
   // A restored mailbox without a sync state gets a default one; its folders and messages of its deletion epoch
   // return.
   mailboxItemRestoreHook,
+  mailThreadChangeItemRestoreHook,
   // Restore brings back the subpages of the item's deletion epoch.
   hostItemRestoreHook,
   // Restore brings back the calendar's Events of its deletion epoch.
@@ -510,9 +517,9 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // file's `projects` link, which that hook deletes.
   eventAttachmentLinkReleaseEdgeChangedHook,
   linkRuleEdgeHook,
-  // Every change of a thread's company or project (link engine's included) publishes `mailThread`. After
-  // `linkRuleEdgeHook`, which queues the rule evaluation that follows the change.
-  threadValueEdgeChangedHook,
+  // An edge of an Emails or Threads item, or between a project and an area, stamps the thread list rows it changes
+  // and publishes their `mailThread` invalidations (the company and project edges, the link engine's included).
+  mailThreadChangeEdgeChangedHook,
   peopleLastContactEdgeChangedHook,
   // Removing a transcript's Event edge ends its company link and detaches the Event from the transcript's project
   // and people links.
