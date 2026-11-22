@@ -99,7 +99,7 @@ class InternetAccountsHistoryIndexingTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `closing the screen ends the indexing, releases the lease and drops every held password`() =
+    @Test fun `closing the screen ends the indexing and releases the lease and every held password`() =
         runTest(dispatcher) {
             val history = ScriptedMailHistory()
             val imap = ScriptedHistoryImap()

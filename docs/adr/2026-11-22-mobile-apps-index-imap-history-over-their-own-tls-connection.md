@@ -35,9 +35,9 @@ that opens a connection; this adds a second one, to a server that is not Semprec
   TLS, unreachable, timeout, protocol, refused) that carries no server text and no credential.
 - The password is never stored on the device. The use case `IndexMailHistory` (`:shared:domain`) takes it as a
   `MailHistoryLogin` (whose `toString` omits it) for one run; the accounts list's ViewModel queues the logins of the
-  accounts it connected and runs them one at a time, one IMAP connection at most, in its `viewModelScope`. A login is
-  dropped when its run ends or the screen's ViewModel is cleared; a closed screen ends the run, logs out and releases
-  the lease.
+  accounts it connected and runs them one at a time, so one IMAP connection at most per screen, in its
+  `viewModelScope`. A login is dropped when its run ends or the screen's ViewModel is cleared; a closed screen ends the
+  run, logs out and releases the lease.
 - The history routes are not announced as writes of the window (`AuthenticatedApi.announces`): their leases change
   nothing a screen shows, and their slices, every few seconds, only add history older than the server's window.
 

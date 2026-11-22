@@ -34,8 +34,8 @@ private fun openTls(factory: SSLSocketFactory, host: String): SSLSocket {
     val plain = Socket()
     return try {
         plain.connect(InetSocketAddress(host, IMAP_TLS_PORT), IMAP_CONNECT_TIMEOUT_MILLIS.toInt())
-        val layered = factory.createSocket(plain, host, IMAP_TLS_PORT, true)
-        val tls = layered as? SSLSocket ?: throw ImapException(ImapFailure.TLS_FAILED)
+        val tls = factory.createSocket(plain, host, IMAP_TLS_PORT, true) as? SSLSocket
+            ?: throw SSLException("The TLS socket factory made no TLS socket")
         tls.sslParameters = verifyingHost(tls, host)
         tls.soTimeout = IMAP_CONNECT_TIMEOUT_MILLIS.toInt()
         tls.startHandshake()

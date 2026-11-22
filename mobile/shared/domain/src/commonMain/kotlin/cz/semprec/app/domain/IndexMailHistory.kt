@@ -103,7 +103,7 @@ private class Range<T>(val high: Long, val low: Long, val items: List<T>)
 
 /**
  * The ranges of [groups] (each newest first, the groups too) from [high] down to [low]: each starts where the one
- * before ends and ends at its own oldest item, the last at [low]. No group is one empty range.
+ * before ends and ends at its own oldest item, the last at [low]. Without groups, one empty range.
  */
 private fun <T> ranges(groups: List<List<T>>, high: Long, low: Long, uid: (T) -> Long): List<Range<T>> {
     if (groups.isEmpty()) return listOf(Range(high, low, emptyList()))
