@@ -4,6 +4,7 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // Test-only re-exports of production writers for cross-package fixtures, kept off the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState, recordProviderAccountAddress } from "../mail/mailAccountSyncStateStore.js";
+export { ensureMailFolderSyncState, recordBackfill, recordReconcile } from "../mail/mailFolderSyncStateStore.js";
 export { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 export { ingestEmailMessage } from "../mail/ingest.js";

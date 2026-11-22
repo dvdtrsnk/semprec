@@ -24,10 +24,13 @@ import {
   createTestTenant,
   ensureFolderItem,
   ensureMailAccountSyncState,
+  ensureMailFolderSyncState,
   getTenantZeroId,
   getTestPool,
   reconcileGmailAccount,
   recentGmailListing,
+  recordBackfill,
+  recordReconcile,
   resetDatabase,
   UNGUARDED_MAIL_SYNC_PASS,
   setTenantAiBudget,
@@ -1246,6 +1249,41 @@ async function ensureMailboxFolder(
   });
 }
 
+/** The UID below which `mailboxWithIndexOnlyHistory`'s INBOX history still awaits its backfill. */
+const HISTORY_BACKFILL_BELOW_UID = 50;
+
+/**
+ * An IMAP mailbox whose INBOX history below `HISTORY_BACKFILL_BELOW_UID` is index-only and unleased, its states written
+ * the way the sync's reconcile and backfill write them.
+ */
+function mailboxWithIndexOnlyHistory(tenant: TenantFixture): Promise<{ mailboxId: string; folderId: string }> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+    const mailbox = await createItemWithClient(client, {
+      databaseId: mailboxesDatabaseId,
+      properties: { name: "With history", provider: "generic" },
+    });
+    await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
+    const folderId = await ensureMailboxFolder(client, mailbox.id, {
+      providerId: "INBOX",
+      name: "INBOX",
+      behavior: "folder",
+      specialPurpose: "inbox",
+    });
+    await ensureMailFolderSyncState(client, folderId);
+    await recordReconcile(client, {
+      itemId: folderId,
+      uidvalidity: "1",
+      uidnext: "100",
+      messageCount: "99",
+      liveFromUid: "100",
+      backfillBelowUid: "100",
+    });
+    await recordBackfill(client, folderId, String(HISTORY_BACKFILL_BELOW_UID), { indexOnly: true });
+    return { mailboxId: mailbox.id, folderId };
+  });
+}
+
 function mailboxWithInboxFolder(tenant: TenantFixture): Promise<{ mailboxId: string; folderId: string }> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const mailboxId = await createMailbox(client, "With a folder");
@@ -1644,6 +1682,13 @@ function removableMailboxRows(fixture: TenantFixture, mailboxItemId: string): Pr
     return rows;
   });
 }
+
+const mailHistoryClaimBody = z.object({
+  leaseToken: z.string(),
+  folders: z.array(
+    z.object({ folderId: z.string(), path: z.string(), uidvalidity: z.number(), backfillBelowUid: z.number() }),
+  ),
+});
 
 const mailThreadFacetsBody = z.object({
   areas: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
@@ -2676,6 +2721,70 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expectText(openOfA, [threadOfA], [threadOfB, b.projectItemId]);
     expect(JSON.parse(await sendOk(b.member, apply(b.projectItemId, threadOfB)))).toEqual({ assigned: 1, skipped: 0 });
     expectText(await sendOk(a.member, GET(`/api/mail/threads/${threadOfA}`)), [], [b.projectItemId]);
+  },
+  // B's claim of A's mailbox leases nothing of it: A's own claim still gets its folder.
+  "mail history claim": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const claim = (mailboxId: string | undefined): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {});
+    const own = mailHistoryClaimBody.parse(JSON.parse(await sendOk(b.member, claim(ofB.mailboxId))));
+    expect(own.folders).toEqual([
+      { folderId: ofB.folderId, path: "INBOX", uidvalidity: 1, backfillBelowUid: HISTORY_BACKFILL_BELOW_UID },
+    ]);
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => claim(id));
+    const ofAClaim = mailHistoryClaimBody.parse(JSON.parse(await sendOk(a.member, claim(ofA.mailboxId))));
+    expect(ofAClaim.folders.map((folder) => folder.folderId)).toEqual([ofA.folderId]);
+  },
+  // B, even holding A's lease token, ends no lease of A's: A's release still ends its own.
+  "mail history release": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const claimed = async (member: Caller, mailboxId: string) =>
+      mailHistoryClaimBody.parse(
+        JSON.parse(await sendOk(member, POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {}))),
+      ).leaseToken;
+    const tokenOfA = await claimed(a.member, ofA.mailboxId);
+    const tokenOfB = await claimed(b.member, ofB.mailboxId);
+    const release = (mailboxId: string | undefined, leaseToken: string): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index/release`, { leaseToken });
+    expect(JSON.parse(await sendOk(b.member, release(ofB.mailboxId, tokenOfB)))).toEqual({ released: 1 });
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => release(id, tokenOfA));
+    expect(JSON.parse(await sendOk(a.member, release(ofA.mailboxId, tokenOfA)))).toEqual({ released: 1 });
+  },
+  // An empty slice moves a folder's backfill cursor: B's upload to A's mailbox, or naming A's folder, moves none of A's.
+  "mail history upload": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const leaseTokenOf = async (member: Caller, mailboxId: string) =>
+      mailHistoryClaimBody.parse(
+        JSON.parse(await sendOk(member, POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {}))),
+      ).leaseToken;
+    const slice = (leaseToken: string, folderId: string | undefined) => ({
+      leaseToken,
+      folderId,
+      uidvalidity: 1,
+      rangeHigh: HISTORY_BACKFILL_BELOW_UID,
+      rangeLow: 40,
+      uids: [],
+      messages: [],
+    });
+    const upload = (mailboxId: string | undefined, body: unknown): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index`, body);
+    const tokenOfA = await leaseTokenOf(a.member, ofA.mailboxId);
+    const tokenOfB = await leaseTokenOf(b.member, ofB.mailboxId);
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => upload(id, slice(tokenOfA, ofA.folderId)));
+    await expectForeign404(b.member, [ofA.folderId], ([id]) => upload(ofB.mailboxId, slice(tokenOfB, id)));
+    for (const [member, ofTenant, token] of [
+      [b.member, ofB, tokenOfB],
+      [a.member, ofA, tokenOfA],
+    ] as const) {
+      expect(JSON.parse(await sendOk(member, upload(ofTenant.mailboxId, slice(token, ofTenant.folderId))))).toEqual({
+        accepted: 0,
+        backfillBelowUid: 40,
+        leaseExpiresAt: expect.any(String),
+      });
+    }
   },
   "mail draft create": async () => {
     const ofA = await mailboxForDrafts(a);
