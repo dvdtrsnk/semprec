@@ -5,7 +5,7 @@ import { currentTenantScope } from "@semprec/shared";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
-import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { getDecryptedCredential, type CredentialActorType } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, NotFoundError, RateLimitedError, ValidationError } from "../errors.js";
 import type { CustomRouteResult, RouteParams, RouteUrl, RouteUser } from "../customRoute.js";
@@ -66,6 +66,15 @@ export interface MailContentGraphClient extends Pick<GraphMailClient, "fetchMess
 }
 
 /**
+ * Who asks a Gmail or Graph provider on demand and for what, so the token refresh's credential access is logged as
+ * that user or agent run, with a purpose of the use.
+ */
+export interface MailProviderAccess {
+  actor: { actorType: Extract<CredentialActorType, "user" | "ai_agent">; actorId: string };
+  use: "content" | "search";
+}
+
+/**
  * The provider clients the on-demand content reads and the provider search use, built by the composition root from
  * the same factories as the sync's: an IMAP client is the account's kept sync session or a new connection under the
  * shared connection limiter.
@@ -78,8 +87,8 @@ export interface MailContentProviders {
     accountLimit: number,
     signal?: AbortSignal,
   ) => Promise<ImapMailClient>;
-  createGmailClient?: (mailboxItemId: string) => MailContentGmailClient;
-  createGraphClient?: (mailboxItemId: string) => MailContentGraphClient;
+  createGmailClient?: (mailboxItemId: string, access: MailProviderAccess) => MailContentGmailClient;
+  createGraphClient?: (mailboxItemId: string, access: MailProviderAccess) => MailContentGraphClient;
   /** Where a saved attachment's bytes are written: the mail attachment root. */
   attachmentStorage?: BlobStorageWriter;
 }
@@ -350,19 +359,20 @@ async function fetchProviderBody(
   }
   const providerMessageId = locator.providerMessageId;
   if (providerMessageId === null) return null;
+  const access: MailProviderAccess = { actor: { actorType: "user", actorId: userId }, use: "content" };
   // The body parts the sync's full read gives; its attachment streams are lazy and never opened here.
   if (locator.syncMode === "gmail_api") {
     const create = providers.createGmailClient;
     if (!create) throw new Error("No Gmail adapter configured for this composition root");
     const fetched = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).fetchMessage(providerMessageId, "full"),
+      create(locator.mailboxItemId, access).fetchMessage(providerMessageId, "full"),
     );
     return fetched === null ? null : { bodyText: fetched.message.bodyText, bodyHtml: fetched.message.bodyHtml };
   }
   const create = providers.createGraphClient;
   if (!create) throw new Error("No Graph adapter configured for this composition root");
   const content = await providerPhase(locator, () =>
-    create(locator.mailboxItemId).fetchMessageContent(providerMessageId),
+    create(locator.mailboxItemId, access).fetchMessageContent(providerMessageId),
   );
   return content === null ? null : { bodyText: content.bodyText, bodyHtml: content.bodyHtml };
 }

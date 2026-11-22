@@ -43,7 +43,7 @@ import { createMailLiveSyncRoot, type MailLiveSyncRoot } from "@semprec/data";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
-import { createMailSyncAdapters } from "../mailSyncAdapters.js";
+import { createMailContentProviders, createMailSyncAdapters } from "../mailSyncAdapters.js";
 import {
   createIdleImapFlowClient,
   createImapIdleLifecycleFactory,
@@ -497,6 +497,61 @@ describe("createMailSyncAdapters", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+
+  it.each([
+    { provider: "Gmail", use: "content", actorType: "user", purpose: "gmail_api_content" },
+    { provider: "Gmail", use: "search", actorType: "ai_agent", purpose: "gmail_api_search" },
+    { provider: "Graph", use: "content", actorType: "user", purpose: "graph_api_content" },
+    { provider: "Graph", use: "search", actorType: "user", purpose: "graph_api_search" },
+  ] as const)(
+    "logs a $provider $use read on demand as the $actorType asking, with purpose $purpose",
+    async ({ provider, use, actorType, purpose }) => {
+      const mailboxId =
+        provider === "Gmail" ? await createGmailMailbox("On demand") : await createGraphMailbox("On demand");
+      const google = createFakeGoogle({});
+      const microsoft = createFakeMicrosoft({});
+      const providers = createMailContentProviders({
+        pool,
+        oauth: {
+          gmail: { clientId: GMAIL_CLIENT_ID, clientSecret: GMAIL_CLIENT_SECRET },
+          msGraph: { clientId: GRAPH_CLIENT_ID, clientSecret: GRAPH_CLIENT_SECRET },
+        },
+        fetchImpl: provider === "Gmail" ? google.fetchImpl : microsoft.fetchImpl,
+        attachmentStorage: {
+          writeStream: async () => {
+            throw new Error("not written");
+          },
+          delete: async () => {},
+          readStream: () => {
+            throw new Error("not read");
+          },
+        },
+      });
+      const actorId = randomUUID();
+      const access = { actor: { actorType, actorId }, use };
+
+      await inTenantZero(async () => {
+        if (provider === "Gmail") {
+          const client = providers.createGmailClient?.(mailboxId, access);
+          if (!client) throw new Error("expected a Gmail content client");
+          if (use === "content") await client.fetchMessage("m-1", "full");
+          else await client.searchMessageIds("offer", 10);
+        } else {
+          const client = providers.createGraphClient?.(mailboxId, access);
+          if (!client) throw new Error("expected a Graph content client");
+          // The fake answers no search; the token is refreshed, and its access logged, before the request.
+          if (use === "content") await client.fetchMessageContent("g-1");
+          else await client.searchMessageIds({ include: ["offer"], exclude: [] }, 10).catch(() => []);
+        }
+      });
+
+      const { rows } = await pool.query<{ actor_type: string; actor_id: string | null; purpose: string }>(
+        "SELECT actor_type, actor_id, purpose FROM credential_access_log WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(rows).toEqual([{ actor_type: actorType, actor_id: actorId, purpose }]);
+    },
+  );
 
   it("loads Gmail labels through the mailbox OAuth adapter", async () => {
     const mailboxId = await createGmailMailbox("Cleanup");

@@ -399,7 +399,7 @@ async function searchMailboxAtProvider(context: ProviderSearchContext, ids: Mail
       if (!create) noAdapter(context);
       // Gmail reads the user's query with its own operators, which `q` shares.
       providerIds = await providerPhase(context, () =>
-        create(mailbox.mailboxItemId).searchMessageIds(
+        create(mailbox.mailboxItemId, { actor: context.actor, use: "search" }).searchMessageIds(
           context.search.rawQuery,
           MAIL_REMOTE_SEARCH_MAX_HITS,
           context.signal,
@@ -409,7 +409,7 @@ async function searchMailboxAtProvider(context: ProviderSearchContext, ids: Mail
       const create = providers.createGraphClient;
       if (!create) noAdapter(context);
       providerIds = await providerPhase(context, () =>
-        create(mailbox.mailboxItemId).searchMessageIds(
+        create(mailbox.mailboxItemId, { actor: context.actor, use: "search" }).searchMessageIds(
           context.search.terms,
           MAIL_REMOTE_SEARCH_MAX_HITS,
           context.signal,

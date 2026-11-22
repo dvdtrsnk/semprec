@@ -25,6 +25,7 @@ import {
   type MailContentProviders,
   type MailContentRouteDependencies,
   type MailMessageLocator,
+  type MailProviderAccess,
 } from "./mailMessageContent.js";
 import { AttachmentCapExceededError } from "./providerTypes.js";
 import { logger } from "./logger.js";
@@ -179,18 +180,19 @@ async function fetchAttachmentBytes(
   }
   const providerMessageId = locator.providerMessageId;
   if (providerMessageId === null) throw new MailContentUnavailableError("messageNotFound");
+  const access: MailProviderAccess = { actor: { actorType: "user", actorId: userId }, use: "content" };
   let source: Readable | null;
   if (locator.syncMode === "gmail_api") {
     const create = providers.createGmailClient;
     if (!create) throw new Error("No Gmail adapter configured for this composition root");
     source = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).openAttachmentContent(providerMessageId, providerPart, filename),
+      create(locator.mailboxItemId, access).openAttachmentContent(providerMessageId, providerPart, filename),
     );
   } else {
     const create = providers.createGraphClient;
     if (!create) throw new Error("No Graph adapter configured for this composition root");
     source = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).openAttachmentContent(providerMessageId, providerPart),
+      create(locator.mailboxItemId, access).openAttachmentContent(providerMessageId, providerPart),
     );
   }
   if (source === null) throw new MailContentUnavailableError("messageNotFound");

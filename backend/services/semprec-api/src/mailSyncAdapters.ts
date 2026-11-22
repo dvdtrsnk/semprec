@@ -13,6 +13,7 @@ import {
   type ImapMailClient,
   type ImapSessionPool,
   type MailContentProviders,
+  type MailProviderAccess,
   type MailSyncAdapterFactory,
 } from "@semprec/data";
 import { logger } from "./logger.js";
@@ -23,9 +24,14 @@ const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 60_000;
 /** Must match mailSyncJob.ts's `syncPurpose` map. */
 const GMAIL_SYNC_PURPOSE = "gmail_api_sync";
 const GRAPH_SYNC_PURPOSE = "graph_api_sync";
-/** `credential_access_log.purpose` of a token refresh for a read on demand. */
-const GMAIL_CONTENT_PURPOSE = "gmail_api_content";
-const GRAPH_CONTENT_PURPOSE = "graph_api_content";
+/**
+ * `credential_access_log.purpose` of a token refresh for a read on demand or a provider search. An explicit map, so the
+ * column only ever carries values written here.
+ */
+const ON_DEMAND_PURPOSES: Record<"gmail" | "graph", Record<MailProviderAccess["use"], string>> = {
+  gmail: { content: "gmail_api_content", search: "gmail_api_search" },
+  graph: { content: "graph_api_content", search: "graph_api_search" },
+};
 
 export interface CreateMailSyncAdaptersOptions {
   pool: Pool;
@@ -136,28 +142,30 @@ export function createMailContentProviders(options: CreateMailContentProvidersOp
   };
   const { gmail, msGraph } = oauth;
   if (gmail) {
-    providers.createGmailClient = (mailboxItemId) =>
+    providers.createGmailClient = (mailboxItemId, access) =>
       new GmailRestClient(
         createOAuthAccessTokenSource({
           pool,
           mailboxItemId,
           tokenUrl: GOOGLE_TOKEN_URL,
           ...gmail,
-          purpose: GMAIL_CONTENT_PURPOSE,
+          purpose: ON_DEMAND_PURPOSES.gmail[access.use],
+          actor: access.actor,
           fetchImpl,
         }),
         fetchImpl,
       );
   }
   if (msGraph) {
-    providers.createGraphClient = (mailboxItemId) =>
+    providers.createGraphClient = (mailboxItemId, access) =>
       new GraphRestClient(
         createOAuthAccessTokenSource({
           pool,
           mailboxItemId,
           tokenUrl: MICROSOFT_TOKEN_URL,
           ...msGraph,
-          purpose: GRAPH_CONTENT_PURPOSE,
+          purpose: ON_DEMAND_PURPOSES.graph[access.use],
+          actor: access.actor,
           fetchImpl,
         }),
         fetchImpl,
@@ -220,8 +228,10 @@ interface OAuthAccessTokenSourceInput {
   tokenUrl: string;
   clientId: string;
   clientSecret: string;
-  /** Names the sync mode in `credential_access_log`. */
+  /** Names the use in `credential_access_log`. */
   purpose: string;
+  /** Who reads the stored refresh token; the sync worker when absent. */
+  actor?: MailProviderAccess["actor"];
   fetchImpl: typeof fetch | undefined;
 }
 
@@ -242,6 +252,7 @@ function createOAuthAccessTokenSource(input: OAuthAccessTokenSourceInput): () =>
       clientId: input.clientId,
       clientSecret: input.clientSecret,
       purpose: input.purpose,
+      ...(input.actor ? { actor: input.actor } : {}),
       ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     });
     kept = refreshed;

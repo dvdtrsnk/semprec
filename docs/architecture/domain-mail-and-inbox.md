@@ -505,7 +505,9 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     `ImapFolderUnavailableError`) is passed over and the next edge tried; any other failure, a dropped connection
     included, ends the read. The body parts are chosen as the full ingest chooses them
     (`walkBodyStructure`), each read up to 16 MiB (`IMAP_CONTENT_MAX_PART_BYTES`) under a 60 s deadline; a SEARCH has
-    30 s. Gmail and Graph read the body with the sync's own full read, so it is chosen and annotated as the full ingest
+    30 s. Gmail and Graph refresh the access token as the sync does, the stored refresh token's access logged as the
+    user with purpose `gmail_api_content` or `graph_api_content` (an attachment save too), and read the body with the
+    sync's own full read, so it is chosen and annotated as the full ingest
     stores it: Gmail `fetchMessage(id, "full")` (`messages.get format=full` by `provider_message_id`), Graph
     `fetchMessageContent` (`GET /me/messages/{id}?$select=body,bodyPreview,hasAttachments`, then the attachment list
     of a message that has attachments, item and reference attachments annotated into the body; no attachment byte is
@@ -579,6 +581,8 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     folder's stored UIDVALIDITY equals the one the search selected, as the search began and again in the mapping's
     transaction (a pass that established the folder anew meanwhile gave its edges other UIDs); otherwise, or without an
     edge, it is unindexed.
+  - Gmail and Graph refresh the access token with the stored refresh token's access logged as the user, or `ai_agent`
+    with the run id, purpose `gmail_api_search` or `graph_api_search`.
   - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
     Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
     `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
