@@ -483,7 +483,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   upserts on `(tenant_id, item_id)`, so a repeat fetch replaces the row and two writers never fail on each other.
   Trash, Mail off and removal leave rows to expire; a purge removes them with the item.
 - `mailContentCacheSweep` (daily 03:55, `api` runtime, system task) deletes expired rows, one transaction per active
-  tenant (`forEachActiveTenant`); a failing tenant does not stop the others.
+  tenant (`forEachActiveTenant`, as every scheduled sweep); a failing tenant does not stop the others. A suspended
+  tenant's expired rows wait for its reactivation (no reader serves an expired row, and a suspended tenant has no
+  reader), a deleted tenant's go with its purge.
 - `GET /api/mail/messages/:emailId/content[?allowRemoteImages=true]` (`mail/mailMessageContent.ts`) answers
   `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt, attachments }` (the two times
   `null` for a stored body; `attachments` as the thread detail lists them, `{ attachmentId, filename, contentType,
