@@ -7,7 +7,6 @@ import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 
 export interface GmailWatchRegistration {
-  historyId: string;
   expiresAt: Date;
 }
 

@@ -1988,7 +1988,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
         transport: {
           async registerWatch(_mailboxItemId, credential) {
             registered.push(credential);
-            return { historyId: "1", expiresAt: new Date("2031-01-01T00:00:00Z") };
+            return { expiresAt: new Date("2031-01-01T00:00:00Z") };
           },
           pull: async () => [],
           acknowledge: async () => undefined,

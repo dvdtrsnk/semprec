@@ -254,7 +254,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   the Gmail folder-state guard after the mail-thread guard, locks the sync state row and writes only while the
   stored cursor is still the one its fetch started from; otherwise it writes nothing and ends the pass incomplete.
   - Cursor (`mail_account_sync_state`): `gmail_history_id`, the start of the live step, and the listing cursor
-    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`.
+    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`. Only the sync
+    pass writes `gmail_history_id`: a watch registration (`recordGmailWatchRegistration`) records the watch's expiry
+    and routing address alone, so a first pass lists the mailbox whether the watch was registered before it or while
+    it ran.
   - A first pass (no history id) captures the current history id (`users.getProfile`) before anything is listed
     and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which also records
     the invalidation as `last_error`. Every later pass applies the history since the stored id first, then

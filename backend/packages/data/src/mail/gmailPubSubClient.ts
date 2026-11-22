@@ -100,14 +100,11 @@ export function createGmailPubSubTransport(options: GmailPubSubClientOptions): G
           ...(options.labelIds ? { labelIds: options.labelIds } : {}),
         }),
       });
-      if (typeof json.historyId !== "string" || !json.historyId) {
-        throw new Error("users.watch response is missing a string historyId");
-      }
       // Google returns `expiration` as a string of milliseconds-since-epoch, not an ISO date.
       if (typeof json.expiration !== "string" || !json.expiration) {
         throw new Error("users.watch response is missing a string expiration");
       }
-      return { historyId: json.historyId, expiresAt: new Date(Number(json.expiration)) };
+      return { expiresAt: new Date(Number(json.expiration)) };
     },
 
     async pull(): Promise<GmailPubSubNotification[]> {

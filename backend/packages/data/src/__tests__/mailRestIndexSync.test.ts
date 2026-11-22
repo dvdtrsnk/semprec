@@ -15,6 +15,7 @@ import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
   recordGmailSyncCursor,
+  recordGmailWatchRegistration,
   recordGraphSyncCursor,
 } from "../mail/mailAccountSyncStateStore.js";
 import {
@@ -337,6 +338,36 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
     expect(account.probe.openAtCalls.length).toBeGreaterThan(0);
     expect(account.probe.openAtCalls.every((open) => open === 0)).toBe(true);
   });
+
+  it.each(["before the first pass", "while the first pass captures its history id"] as const)(
+    "lists the mailbox on its first pass when the Gmail watch is registered %s",
+    async (when) => {
+      const params = await setup("gmail_api");
+      const register = () =>
+        inTenant((client) =>
+          recordGmailWatchRegistration(client, params.mailboxItemId, {
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            emailAddress: "user@gmail.test",
+          }),
+        );
+      if (when === "before the first pass") await register();
+      const account = gmailAccount({ recent: ["recent"], old: ["old"] });
+      const client: GmailMailClient = {
+        ...account.client,
+        getCurrentHistoryId: async () => {
+          if (when !== "before the first pass") await register();
+          return account.client.getCurrentHistoryId();
+        },
+      };
+
+      await expect(reconcile(params, client)).resolves.toEqual({ ran: true, complete: true });
+
+      expect(account.historyStarts).toEqual([]);
+      expect(account.listings).toHaveLength(2);
+      expect((await storedMessages(params.mailboxItemId)).map((m) => m.providerMessageId)).toEqual(["old", "recent"]);
+      expect(await syncState(params.mailboxItemId)).toMatchObject({ gmailHistoryId: "1000", gmailListingPhase: null });
+    },
+  );
 
   it("ingests a message reached through history.list as live and in full, from the history id captured before the listing", async () => {
     const params = await setup("gmail_api");

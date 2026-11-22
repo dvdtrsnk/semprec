@@ -200,7 +200,6 @@ function createMailbox(fixture: MailboxFixture, tenantId = tenant): Promise<stri
     if (fixture.gmailWatch) {
       if (gmailAccount === null) throw new Error("a mailbox with a recorded watch records its Google account");
       await recordGmailWatchRegistration(client, mailbox.id, {
-        historyId: "1",
         expiresAt: WATCH_EXPIRY,
         emailAddress: gmailAccount,
       });

@@ -409,16 +409,15 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
 }
 
 export interface RecordGmailWatchRegistrationInput {
-  historyId: string;
   expiresAt: Date;
   /** Normalized; the key `route_gmail_address` matches notifications against. */
   emailAddress: string;
 }
 
 /**
- * `gmail_history_id` is only seeded via `COALESCE` when absent: overwriting an existing cursor
- * could skip changes the reconcile pass has not yet observed. The routing address is replaced on
- * every registration; the OAuth connect flow sets it once beforehand.
+ * The watch's expiry and the routing address, replaced on every registration (the OAuth connect flow sets the address
+ * once beforehand). The history cursor is not the watch's: only the sync pass writes `gmail_history_id`, so the first
+ * pass, which finds none, runs the full listing whether the watch was registered before it or while it ran.
  */
 export async function recordGmailWatchRegistration(
   client: Queryable,
@@ -427,10 +426,9 @@ export async function recordGmailWatchRegistration(
 ): Promise<void> {
   const result = await client.query(
     `UPDATE mail_account_sync_state
-     SET gmail_watch_expires_at = $2, gmail_history_id = COALESCE(gmail_history_id, $3),
-         gmail_watch_email_address = $4
+     SET gmail_watch_expires_at = $2, gmail_watch_email_address = $3
      WHERE item_id = $1`,
-    [itemId, input.expiresAt, input.historyId, input.emailAddress],
+    [itemId, input.expiresAt, input.emailAddress],
   );
   requireAffectedRows(result, `gmail watch registration for item ${itemId}`);
 }
