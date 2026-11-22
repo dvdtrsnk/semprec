@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { runMigrations } from "../db/migrate.js";
 import { withTransaction } from "../db/pool.js";
@@ -682,8 +682,7 @@ describe("offline compatible tenant keys", () => {
       // The schema steps of runMigrationsCli.ts that create objects naming cluster roles.
       await runAsSystem("backup key restore test", async () => {
         await runMigrations(migrated);
-        await ensureQueueSchema(migrated);
-        await grantQueueSchemaPrivileges(migrated);
+        await installQueueSchema(migrated);
       });
       const dump = await fixture.exec([
         "pg_dump",

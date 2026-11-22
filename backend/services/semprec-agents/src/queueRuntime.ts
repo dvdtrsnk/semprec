@@ -1,12 +1,6 @@
 import type { Pool } from "pg";
 import type { AiGatewayClientPort } from "@semprec/shared";
-import {
-  AGENT_TASK_NAMES,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
-  resolveSempChatQueueConcurrency,
-  runWorker,
-} from "@semprec/queue";
+import { AGENT_TASK_NAMES, resolveSempChatQueueConcurrency, runWorker } from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
   createAgentTaskList,
@@ -14,6 +8,7 @@ import {
   resolveTaskAffinitySets,
   type AgentQueueTaskHandler,
   type RunAgentFn,
+  installQueueSchema,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "./actionRegistryComposition.js";
@@ -50,8 +45,7 @@ export async function createAgentsQueueRuntime(
   options: AgentsQueueRuntimeOptions = {},
 ): Promise<AgentsQueueRuntime> {
   // Idempotent: this runtime may start before the API runtime's own install.
-  await ensureQueueSchema(pool);
-  await grantQueueSchemaPrivileges(pool);
+  await installQueueSchema(pool);
 
   const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent, options.aiGateway);
   const coreTaskList = createAgentTaskList(

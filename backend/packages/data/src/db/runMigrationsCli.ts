@@ -1,8 +1,8 @@
-import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import { runAsSystem } from "@semprec/shared";
 import { createPool } from "./pool.js";
 import { logger } from "./logger.js";
 import { runMigrations } from "./migrate.js";
+import { installQueueSchema } from "./queueSchema.js";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -15,10 +15,9 @@ const pool = createPool(connectionString, { statementTimeoutMs: 0 });
 try {
   await runAsSystem("deploy migrations", async () => {
     await runMigrations(pool);
-    // graphile-worker's schema exists only after ensureQueueSchema, so semprec_side's grants on it cannot
-    // live in the SQL migrations; testSupport/globalSetup.ts makes the same two calls for tests.
-    await ensureQueueSchema(pool);
-    await grantQueueSchemaPrivileges(pool);
+    // graphile-worker's schema exists only after installQueueSchema, so semprec_side's grants on it cannot
+    // live in the SQL migrations; testSupport/globalSetup.ts makes the same calls for tests.
+    await installQueueSchema(pool);
   });
 } finally {
   try {

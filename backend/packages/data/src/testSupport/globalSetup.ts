@@ -7,7 +7,8 @@ import path from "node:path";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
-import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
+import { ensureQueueSchema } from "@semprec/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { runMigrations } from "../db/migrate.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
@@ -160,8 +161,7 @@ export default async function setup(): Promise<() => Promise<void>> {
     const pool = new Pool({ connectionString });
     await runAsSystem("test database setup", async () => {
       await runMigrations(pool);
-      await ensureQueueSchema(pool);
-      await grantQueueSchemaPrivileges(pool);
+      await installQueueSchema(pool);
     });
 
     // `resetDatabase` re-creates tenant zero with this id.

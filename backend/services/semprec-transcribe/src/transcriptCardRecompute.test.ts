@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges, registerTask, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { AiGatewayFailedError } from "@semprec/shared";
@@ -20,6 +20,7 @@ import {
   updateItemWithClient,
   withTransaction,
   writeComputed,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   confirmProposalWithClient,
@@ -361,8 +362,7 @@ function relationAnswer(target: string, properties: Record<string, unknown>, rea
 beforeAll(async () => {
   adminPool = getTestPool();
   dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
-  await ensureQueueSchema(adminPool);
-  await grantQueueSchemaPrivileges(adminPool);
+  await installQueueSchema(adminPool);
 });
 
 beforeEach(async () => {

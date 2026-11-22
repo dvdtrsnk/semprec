@@ -14,8 +14,6 @@ import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
   enqueueJob,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
   registerTask,
   runOnce,
   type TaskList,
@@ -87,6 +85,7 @@ import {
   type BlobStorageWriter,
   type InvalidationEvent,
   type MailTransportFactory,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -2385,8 +2384,7 @@ describe("background task isolation across two tenants: api runtime", () => {
 
     adminPool = getTestPool();
     await resetDatabase(adminPool);
-    await ensureQueueSchema(adminPool);
-    await grantQueueSchemaPrivileges(adminPool);
+    await installQueueSchema(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
     const role = await runAsSystem("test:title-registry-role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(

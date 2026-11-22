@@ -12,9 +12,9 @@ things, as the migrating role:
 
 1. `runMigrations` (`src/db/migrate.ts`) applies `0001_baseline.sql` to the empty database, in one
    transaction together with its `schema_migrations` row.
-2. `ensureQueueSchema` and `grantQueueSchemaPrivileges` (`@semprec/queue`) install graphile-worker's
-   own schema and give the runtime roles their grants on it; that schema does not exist before
-   graphile-worker creates it, so its grants cannot live in a SQL file.
+2. `installQueueSchema` (`src/db/queueSchema.ts`) installs graphile-worker's own schema and gives the
+   runtime roles their grants on it; that schema does not exist before graphile-worker creates it, so
+   its grants cannot live in a SQL file. Every queue runtime runs the same step at start.
 
 The seed CLI runs next ([seeding](seeding.md)), then the tenancy verifier. Integration tests build
 their database the same way (`src/testSupport/globalSetup.ts`).

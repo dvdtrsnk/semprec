@@ -663,6 +663,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "insertMailDraft",
   "insertSempUserTurn",
   "insertValueLink",
+  "installQueueSchema",
   "instantToWallClock",
   "invalidReasonSchema",
   "invitationIngestHeartbeat",

@@ -1,18 +1,12 @@
 import type { Pool } from "pg";
-import {
-  CORE_TASK_NAMES,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
-  registerTask,
-  runWorker,
-  type TaskList,
-} from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, runWorker, type TaskList } from "@semprec/queue";
 import {
   assertTaskListMatchesAffinity,
   resolveTaskAffinitySets,
   LocalFsBlobStorageWriter,
   resolveBlobStorageDir,
   type BlobStorageWriter,
+  installQueueSchema,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import type { AiGatewayClientPort } from "@semprec/shared";
@@ -40,8 +34,7 @@ export async function createTranscribeQueueRuntime(
   blobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR")),
   clients: { audio?: AudioGatewayClient; summary?: AiGatewayClientPort; startWorker?: WorkerStarter } = {},
 ): Promise<TranscribeQueueRuntime> {
-  await ensureQueueSchema(pool);
-  await grantQueueSchemaPrivileges(pool);
+  await installQueueSchema(pool);
   const taskList: TaskList = {
     [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
       CORE_TASK_NAMES.TRANSCRIPTION_JOB,

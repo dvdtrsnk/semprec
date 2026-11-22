@@ -26,7 +26,8 @@ import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import {
@@ -4403,8 +4404,7 @@ describe("queued sync status forward repair", () => {
     await resetDatabase(pool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
-    await ensureQueueSchema(pool);
-    await grantQueueSchemaPrivileges(pool);
+    await installQueueSchema(pool);
     runtime = await createRuntimeRolePool(pool, "semprec_data");
   });
   afterEach(async () => {

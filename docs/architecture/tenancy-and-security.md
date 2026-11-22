@@ -203,7 +203,8 @@ tenant by earliest, first or `LIMIT 1`.
   `ensureQueueSchema` (`backend/packages/queue/src/index.ts`) pre-registers the three identifiers, so
   the flush never inserts task rows. These rules keep search enqueues from deadlocking against each
   other.
-- Two-key advisory lock classes in use: 2331 (seed), 2332/2333 (search flush), 2334 (session device).
+- Two-key advisory lock classes in use: 2331 (seed), 2332/2333 (search flush), 2334 (session device),
+  2335 (queue schema grants).
   A new two-key lock takes an unused class.
 
 ## Third-party secrets
