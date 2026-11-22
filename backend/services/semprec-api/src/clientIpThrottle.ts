@@ -2,8 +2,9 @@ import { isIPv4, isIPv6 } from "node:net";
 
 /**
  * `mailboxCredentialVerification` (the password mailbox connect login check), `mailContentFetch` (a message body or an
- * attachment fetched from the mail provider on demand) and `mailRemoteSearch` (a mail search that asks the providers)
- * are counted per user; the other four are public pre-authentication actions counted per client address.
+ * attachment fetched from the mail provider on demand), `mailRemoteSearch` (a mail search that asks the providers)
+ * and `mailHistoryUpload` (a native client's claim or upload of IMAP history) are counted per user; the other four
+ * are public pre-authentication actions counted per client address.
  */
 export type ThrottledAction =
   | "login"
@@ -12,7 +13,8 @@ export type ThrottledAction =
   | "invitationAccept"
   | "mailboxCredentialVerification"
   | "mailContentFetch"
-  | "mailRemoteSearch";
+  | "mailRemoteSearch"
+  | "mailHistoryUpload";
 
 export interface ClientIpThrottleLimit {
   maxEvents: number;
@@ -28,6 +30,8 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
   mailContentFetch: { maxEvents: 120, windowSeconds: 15 * 60 },
   mailRemoteSearch: { maxEvents: 30, windowSeconds: 15 * 60 },
+  // 500 messages a request: a 15-minute window takes up to 300 000 messages of history.
+  mailHistoryUpload: { maxEvents: 600, windowSeconds: 15 * 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];

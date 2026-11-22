@@ -46,7 +46,8 @@ provides these, so no route reimplements them:
 - authentication by the session cookie or `Authorization: Bearer`, before the handler runs, and the
   admin gate for `admin: true` routes;
 - a body cap on every read (`readRawBody`/`readJsonBody` with an explicit `maxBytes` per caller, `PayloadTooLargeError`
-  mapped to 413). There is no default cap;
+  mapped to 413). `readRawBody` has no default; a mounted route reads at most 1 MiB unless it declares its own
+  `maxBodyBytes` (a custom route in its manifest entry);
 - errors: a `ChokePointError` becomes `{ error: { code, details } }` at its status through
   `toErrorResponseBody`. `details` pass through `publicErrorDetails`, which drops anything that is not
   a flat record of primitives. A `pg.DatabaseError` (narrowed with `instanceof`) with a classified
@@ -67,7 +68,7 @@ same generic catalog.
 
 - A module manifest may declare `customRoutes`. Each entry has a method, a path under `/api`, a
   `handlerExport` and one of exactly two justifications: `transactional-semantics` or
-  `single-consumer-read`. CRUD over module data belongs on the generic endpoints instead. A custom
+  `single-consumer-read`, and may raise the route's body cap with `maxBodyBytes`. CRUD over module data belongs on the generic endpoints instead. A custom
   route still writes item and database state only through the choke point.
 - `ModuleRegistry` refuses, at startup, two modules that claim the same method and path text.
   `semprec-api` mounts the active set (`getCustomRouteDefinitions()`) through the shared adapter.

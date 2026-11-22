@@ -173,6 +173,8 @@ export interface ModuleCustomRouteDescriptor {
   path: string;
   handlerExport: string;
   justification: CustomRouteJustification;
+  /** The largest request body the route reads, in bytes; the adapter's 1 MiB without it. */
+  maxBodyBytes?: number;
 }
 
 /** One end of a link rule: a property of a database. */
@@ -573,6 +575,7 @@ const moduleCustomRouteDescriptorSchema = z.object({
   path: z.string().regex(/^\/api\/\S*$/, 'must be a path starting with "/api/"'),
   handlerExport: z.string().min(1),
   justification: z.enum(CUSTOM_ROUTE_JUSTIFICATIONS),
+  maxBodyBytes: z.number().int().positive().optional(),
 });
 
 const moduleLinkRuleEndpointSchema = z.strictObject({

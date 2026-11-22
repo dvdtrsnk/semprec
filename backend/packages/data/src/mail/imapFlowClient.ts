@@ -19,8 +19,7 @@ import type {
 } from "./imapReconcile.js";
 import { AttachmentCapExceededError, FlagFetchCapExceededError, MAX_ATTACHMENT_BYTES } from "./providerTypes.js";
 import type { ClassifiedAttachment, MailAttachmentPart } from "./attachments.js";
-import { decodeBodyPartPrefix, IMAP_SNIPPET_BYTES } from "./imapSnippet.js";
-import { htmlToPlainText } from "./mailPlainText.js";
+import { IMAP_SNIPPET_BYTES, imapSnippetText } from "./imapSnippet.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport } from "./dsn.js";
 import type { WritableImapFlag } from "./messageFlags.js";
@@ -131,6 +130,18 @@ function uidSet(uids: number[]): string {
   return ranges.join(",");
 }
 
+/** The header fields the light fetch reads (`BODY.PEEK[HEADER.FIELDS (...)]`): threading, delivery and bulk headers. */
+export const IMAP_LIGHT_FETCH_HEADERS = [
+  "references",
+  "delivered-to",
+  "x-original-to",
+  "envelope-to",
+  "list-unsubscribe",
+  "list-id",
+  "precedence",
+  "auto-submitted",
+] as const;
+
 export interface MimeTree {
   textPlainPart?: MessageStructureObject;
   textHtmlPart?: MessageStructureObject;
@@ -162,6 +173,69 @@ export function walkBodyStructure(root: MessageStructureObject): MimeTree {
   };
   visit(root);
   return tree;
+}
+
+/**
+ * The light half of a message: everything a FETCH of its UID, flags, envelope, BODYSTRUCTURE and the
+ * `IMAP_LIGHT_FETCH_HEADERS` fields gives, as the sync and a native client's history upload both read it.
+ */
+export function lightFetchedMessageOf(raw: FetchMessageObject): Omit<ImapFetchedMessage, "fetchContent"> {
+  const envelope = raw.envelope;
+  const tree = raw.bodyStructure
+    ? walkBodyStructure(raw.bodyStructure)
+    : { attachmentParts: [] as MessageStructureObject[] };
+  const headerList = parseHeaderBlock(raw.headers);
+  const snippetNode = tree.textPlainPart ?? tree.textHtmlPart;
+  return {
+    uid: raw.uid,
+    message: {
+      messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
+      inReplyTo: envelope?.inReplyTo ?? null,
+      references: parseReferences(headerList),
+      subject: envelope?.subject,
+      envelope: {
+        from: toEnvelopeAddress(envelope?.from?.[0]),
+        to: toEnvelopeAddressList(envelope?.to),
+        cc: toEnvelopeAddressList(envelope?.cc),
+        bcc: toEnvelopeAddressList(envelope?.bcc),
+        ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
+      },
+      date: envelope?.date,
+      providerMessageId: raw.emailId ?? null,
+      gmailLabels: raw.labels ? [...raw.labels] : undefined,
+      deliveredToHeaders: headerValues(headerList, "delivered-to"),
+      xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
+      envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
+      bulkHeaders: {
+        listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
+        listId: headerValues(headerList, "list-id")[0] ?? null,
+        precedence: headerValues(headerList, "precedence")[0] ?? null,
+        autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
+      },
+      isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
+      flags: raw.flags ? [...raw.flags] : undefined,
+    },
+    // Without the HTML no `cid:` reference can be checked, so with an HTML part every inline part that has a
+    // Content-ID counts as a rendering asset.
+    attachments: tree.attachmentParts
+      .filter((node) => !(tree.textHtmlPart && node.disposition === "inline" && node.id))
+      .map((node) => ({
+        ...attachmentPartOf(node),
+        providerPart: node.part ?? "1",
+        byteSize: decodedSizeOf(node),
+      })),
+    ...(snippetNode
+      ? {
+          snippetPart: {
+            // A single-part message's body is its TEXT section; imapflow's download does the same for part "1".
+            section: snippetNode.part ?? "TEXT",
+            ...(snippetNode.encoding ? { encoding: snippetNode.encoding.toLowerCase() } : {}),
+            ...(snippetNode.parameters?.charset ? { charset: snippetNode.parameters.charset } : {}),
+            html: snippetNode === tree.textHtmlPart,
+          },
+        }
+      : {}),
+  };
 }
 
 /** `ImapMailClient` over an already-opened, policy-checked `imapflow` connection. */
@@ -653,65 +727,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     return stream;
   }
 
-  /** The light half of a message: everything a FETCH of its envelope, flags, headers and BODYSTRUCTURE gives. */
   private parseFetchedMessage(path: string, raw: FetchMessageObject): ImapFetchedMessage {
-    const envelope = raw.envelope;
     const tree = raw.bodyStructure
       ? walkBodyStructure(raw.bodyStructure)
       : { attachmentParts: [] as MessageStructureObject[] };
-    const headerList = parseHeaderBlock(raw.headers);
-    const snippetNode = tree.textPlainPart ?? tree.textHtmlPart;
-    return {
-      uid: raw.uid,
-      message: {
-        messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
-        inReplyTo: envelope?.inReplyTo ?? null,
-        references: parseReferences(headerList),
-        subject: envelope?.subject,
-        envelope: {
-          from: toEnvelopeAddress(envelope?.from?.[0]),
-          to: toEnvelopeAddressList(envelope?.to),
-          cc: toEnvelopeAddressList(envelope?.cc),
-          bcc: toEnvelopeAddressList(envelope?.bcc),
-          ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
-        },
-        date: envelope?.date,
-        providerMessageId: raw.emailId ?? null,
-        gmailLabels: raw.labels ? [...raw.labels] : undefined,
-        deliveredToHeaders: headerValues(headerList, "delivered-to"),
-        xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,
-        envelopeTo: headerValues(headerList, "envelope-to")[0] ?? null,
-        bulkHeaders: {
-          listUnsubscribe: headerValues(headerList, "list-unsubscribe")[0] ?? null,
-          listId: headerValues(headerList, "list-id")[0] ?? null,
-          precedence: headerValues(headerList, "precedence")[0] ?? null,
-          autoSubmitted: headerValues(headerList, "auto-submitted")[0] ?? null,
-        },
-        isDsn: isDeliveryStatusReport(raw.bodyStructure?.type, raw.bodyStructure?.parameters),
-        flags: raw.flags ? [...raw.flags] : undefined,
-      },
-      // Without the HTML no `cid:` reference can be checked, so with an HTML part every inline part that has a
-      // Content-ID counts as a rendering asset.
-      attachments: tree.attachmentParts
-        .filter((node) => !(tree.textHtmlPart && node.disposition === "inline" && node.id))
-        .map((node) => ({
-          ...attachmentPartOf(node),
-          providerPart: node.part ?? "1",
-          byteSize: decodedSizeOf(node),
-        })),
-      ...(snippetNode
-        ? {
-            snippetPart: {
-              // A single-part message's body is its TEXT section; imapflow's download does the same for part "1".
-              section: snippetNode.part ?? "TEXT",
-              ...(snippetNode.encoding ? { encoding: snippetNode.encoding.toLowerCase() } : {}),
-              ...(snippetNode.parameters?.charset ? { charset: snippetNode.parameters.charset } : {}),
-              html: snippetNode === tree.textHtmlPart,
-            },
-          }
-        : {}),
-      fetchContent: () => this.fetchMessageContent(path, raw.uid, tree),
-    };
+    return { ...lightFetchedMessageOf(raw), fetchContent: () => this.fetchMessageContent(path, raw.uid, tree) };
   }
 
   private async fetchMessageContent(path: string, uid: number, tree: MimeTree): Promise<ImapMessageContent> {
@@ -737,16 +757,7 @@ export class ImapFlowMailClient implements ImapMailClient {
           envelope: true,
           bodyStructure: true,
           flags: true,
-          headers: [
-            "references",
-            "delivered-to",
-            "x-original-to",
-            "envelope-to",
-            "list-unsubscribe",
-            "list-id",
-            "precedence",
-            "auto-submitted",
-          ],
+          headers: [...IMAP_LIGHT_FETCH_HEADERS],
           labels: true,
         },
         { uid: true },
@@ -807,8 +818,7 @@ export class ImapFlowMailClient implements ImapMailClient {
         const part = parts.get(raw.uid);
         const bytes = raw.bodyParts?.get(key);
         if (!part || !bytes) continue;
-        const text = decodeBodyPartPrefix(bytes.subarray(0, IMAP_SNIPPET_BYTES), part.encoding, part.charset);
-        snippets.set(raw.uid, part.html ? htmlToPlainText(text) : text);
+        snippets.set(raw.uid, imapSnippetText(bytes, part));
       }
     }
     return snippets;

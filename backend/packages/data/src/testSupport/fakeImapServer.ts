@@ -223,11 +223,15 @@ function bodySection(item: string, raw: Buffer): string | undefined {
     text = partMatch[2] ? part.header : part.body;
   } else if (fieldList) {
     const names = (fieldList[1] ?? "").split(/\s+/).filter(Boolean);
+    // As a server answers: the message's own field names, whatever case the request used.
+    const original = new Map(
+      [...header.matchAll(/^([^:\s]+):/gm)].map((match) => [match[1]!.toLowerCase(), match[1]!] as const),
+    );
     text =
       names
         .flatMap((name) => {
           const value = fields.get(name.toLowerCase());
-          return value === undefined ? [] : [`${name}: ${value}\r\n`];
+          return value === undefined ? [] : [`${original.get(name.toLowerCase()) ?? name}: ${value}\r\n`];
         })
         .join("") + "\r\n";
   } else if (section.toUpperCase() === "HEADER") text = header;

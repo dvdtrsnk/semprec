@@ -718,6 +718,19 @@ export async function recordImapActivity(client: Queryable, input: RecordImapAct
 }
 
 /**
+ * A native client's history upload finished the last folder backfill of an IMAP account. The caller holds the mailbox
+ * sync guard, under which the row exists.
+ */
+export async function recordImapInitialSyncCompleted(client: Queryable, itemId: string): Promise<void> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state SET initial_sync_completed_at = COALESCE(initial_sync_completed_at, now())
+      WHERE item_id = $1`,
+    [itemId],
+  );
+  requireAffectedRows(result, `the initial sync completion of item ${itemId}`);
+}
+
+/**
  * Records a failure and the delay before the sweep makes the account due again, jittered and growing over a failure
  * streak (`decorrelatedJitterDelayMs`). The previous delay is the one the streak's last failure recorded: every failure
  * write sets `last_activity_at` to now and `next_expected_activity_at` to now plus the delay, and every success clears

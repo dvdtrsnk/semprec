@@ -1861,7 +1861,11 @@ CREATE TABLE public.mail_folder_sync_state (
     last_error text,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     live_from_uid bigint,
-    backfill_below_uid bigint
+    backfill_below_uid bigint,
+    backfill_index_only boolean DEFAULT false NOT NULL,
+    client_backfill_lease_token uuid,
+    client_backfill_lease_until timestamp with time zone,
+    CONSTRAINT mail_folder_sync_state_client_lease_check CHECK (((client_backfill_lease_token IS NULL) = (client_backfill_lease_until IS NULL)))
 );
 
 COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
@@ -1869,6 +1873,12 @@ COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
 COMMENT ON COLUMN public.mail_folder_sync_state.live_from_uid IS 'The folder''s UIDNEXT when its state was first established or reset after a UIDVALIDITY change; a message with a UID at or above it arrived live.';
 
 COMMENT ON COLUMN public.mail_folder_sync_state.backfill_below_uid IS 'Every UID from 1 up to, not including, this value still awaits the backfill, which runs from it downwards. Set to live_from_uid when the state is established; NULL with live_from_uid set means the backfill is done, NULL with live_from_uid NULL that the state is not established yet.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_index_only IS 'The descending backfill reached a message older than the full-content window: what is left below backfill_below_uid is history stored as an index, which a native client may upload. Cleared with the state on a UIDVALIDITY change.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_token IS 'The native client lease on the folder''s backfill (history upload); while client_backfill_lease_until is in the future the server''s backfill skips the folder. Set together with client_backfill_lease_until.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_until IS 'When the client backfill lease ends unless renewed; NULL when no client holds one.';
 
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_pkey PRIMARY KEY (item_id);

@@ -231,9 +231,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
   write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
   activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
-  batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
-  from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
-  cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+  batch locks its `mail_folder_sync_state` row and writes only while it still holds the cursors its fetch started
+  from: a live step compares the live cursors (UIDVALIDITY, `uidnext`, HIGHESTMODSEQ, message count, `live_from_uid`)
+  and keeps the stored backfill cursor, a backfill batch also compares `backfill_below_uid` and writes nothing while a
+  native client holds the folder's lease. If another pass (or a client's upload) moved the folder on meanwhile it
+  writes nothing and ends the pass incomplete, so a cursor never moves back. A failed batch deletes the attachment
+  bytes it wrote; committed batches keep theirs.
 - A Gmail pass (`reconcileGmailAccount` in `mail/gmailReconcile.ts`): the label list, then a prepare transaction
   (label Folders, the cursor read), then the live step, then the listing, then the flag write-back (pending writes
   read in one transaction, `messages.modify` outside it, confirmations in the final transaction) and the final
@@ -320,7 +323,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   the last ingested UID. Then every folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`,
   highest (newest) first, in write transactions of at most 50 messages, each moving `backfill_below_uid` down to the
   lowest UID it wrote; the batch that writes the folder's lowest UID sets it `NULL`. New mail is therefore ingested
-  before older history and never waits for a backfill.
+  before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
+  older history, stored as an index, which a native client may then upload (see
+  [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
+  under an unexpired lease is skipped by the backfill step (no SELECT); its live step runs as always.
 - Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
   `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
   as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
@@ -332,7 +339,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   whose meta row is gone by the batch's write (removed meanwhile) ends the batch there, unwritten, for a later pass.
   A pass that leaves new messages or any folder's backfill behind requests a rerun of itself in its final
   transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset; it is set by the first
-  pass that ends with every folder's backfill done.
+  pass that ends with every folder's backfill done, or by the upload that finishes the last one. A backfill left to a
+  client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
+  minutes, when an expired or released lease has given the folder back to the server.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
   before its backfill is simply not found by it. A UIDVALIDITY change removes every old-UID edge in the live step;
@@ -539,6 +548,73 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   reads them from `bindMailAgentRemoteSearch`, which `semprec-api`'s `createDispatcher` binds. A process that binds
   nothing (`semprec-agents` today, which composes no provider clients) answers local matches with
   `remoteSearch: "unavailable"`.
+
+### History upload from a native client
+
+An IMAP account's older history can be fetched by the user's native app from the user's own network and uploaded,
+so the server's address does not pull years of every account's history. The server still stores live mail and the
+history inside the full-content window itself; without a client it backfills the rest alone, as above. Gmail and
+Graph accounts import their history server-side only. Code: `mail/mailHistoryUpload.ts`; the raw responses are parsed
+by `mail/imapFetchResponseParser.ts` (imapflow 1.7.6's own `ImapStream`, parser and `tools.formatMessageResponse`,
+internals proven against the real library by its unit test; an upgrade must re-prove them).
+
+- The lease. `mail_folder_sync_state.client_backfill_lease_token` and `client_backfill_lease_until`
+  (`MAIL_HISTORY_LEASE_MS`, 10 minutes). While the lease is unexpired the server's backfill skips the folder; the
+  live step is unaffected. A lease ends at its expiry, by the release route, or with the folder's state on a
+  UIDVALIDITY change (`resetForUidvalidityChange` clears it and `backfill_index_only`). While a client holds the
+  lease, the upload is the second writer of the folder's `backfill_below_uid`, and the one that finishes an account's
+  last folder backfill sets `initial_sync_completed_at` (`recordImapInitialSyncCompleted`).
+- Every route answers a malformed, unknown, foreign or trashed mailbox id with the same 404 `not_found`, and a mailbox
+  whose sync mode is not `imap`, that has Mail off or no sync state, or whose last sync failure is `reauthorization`
+  with 409 `mail_history_unavailable`, `details.reason` `notImap`, `mailboxUnavailable` or `reauthorizationRequired`.
+  Each runs in READ COMMITTED transactions that take the mailbox sync guard first (≤ 15 s, else 409
+  `mailbox_sync_busy`), so a removal or the Mail switch waits for them as for a pass's, and re-read the Mailboxes item
+  and the sync state under it. The claim and the upload count against the per-user throttle, action
+  `mailHistoryUpload`, 600 per 15 minutes; a refusal is 429 `rate_limited` with `Retry-After`.
+- `POST /api/mail/mailboxes/:id/history-index/claim`, body `{ leaseToken? }` (a UUID; without it a new token). One
+  statement leases to the token every folder of the mailbox (live Folder items with a `providerId`) whose backfill is
+  index-only and unfinished and that no other token holds unexpired, and renews those the token holds. Answer:
+  `{ leaseToken, leaseExpiresAt: string | null, folders: [{ folderId, path, uidvalidity, backfillBelowUid }],
+  pendingFullBackfill: boolean }` (`leaseExpiresAt` `null` when nothing was leased). `pendingFullBackfill` is true
+  while the mailbox has no folder state yet, or some folder is not established or still in the server's in-window
+  backfill (unfinished, not index-only): claiming again later may lease more.
+- `POST /api/mail/mailboxes/:id/history-index/release`, body `{ leaseToken }`: ends the token's leases on the mailbox's
+  folders, expired ones included; answers `{ released }`. Not throttled.
+- `POST /api/mail/mailboxes/:id/history-index`, body (at most `MAIL_HISTORY_MAX_BODY_BYTES`, 8 MiB, declared as the
+  route's `maxBodyBytes` and enforced while the adapter reads it, 413 `payload_too_large` beyond):
+  `{ leaseToken, folderId, uidvalidity, rangeHigh, rangeLow, uids: number[], messages: [{ uid, fetch }] }`. One
+  contiguous slice of the folder's history, newest first: the client sends `UID SEARCH UID rangeLow:rangeHigh-1`, then
+  `UID FETCH <uids> MAIL_HISTORY_FETCH_ITEMS`, exactly
+
+  `(UID FLAGS ENVELOPE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES DELIVERED-TO X-ORIGINAL-TO ENVELOPE-TO LIST-UNSUBSCRIBE LIST-ID PRECEDENCE AUTO-SUBMITTED)] BODY.PEEK[TEXT]<0.2048>)`
+
+  (the light fetch's items and header fields, `IMAP_LIGHT_FETCH_HEADERS`, plus the first `IMAP_SNIPPET_BYTES` octets
+  of the TEXT section), and uploads each untagged FETCH response's bytes, as its server sent them (literals inline),
+  base64 in `fetch`. Other data items a server adds (MODSEQ under CONDSTORE) are ignored; an `EMAILID` a client asks
+  for on an OBJECTID server becomes the provider message id, as in the light fetch.
+  - Validated before anything is written, a malformed one 400 `validation_failed` naming the field by its path
+    (`messages.3.fetch`): integers in the IMAP number range, `rangeLow < rangeHigh`; `uids` unique, inside
+    `[rangeLow, rangeHigh)`, at most `MAIL_HISTORY_MAX_MESSAGES` (500); `messages` at most 500, exactly one per listed
+    UID; each `fetch` strict base64 of at most `MAIL_HISTORY_MAX_FETCH_BYTES` (64 KiB) holding exactly one untagged
+    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section.
+  - Each response is read as the light fetch reads its own (`lightFetchedMessageOf`: envelope, flags, threading,
+    delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and sizes). The snippet comes from
+    the part the light fetch reads it from (the text part, else the HTML part): a single-part message's TEXT section
+    itself, else that part found in the cut TEXT section by the boundaries BODYSTRUCTURE names, its header block
+    skipped (`bodyPartPrefixInText`); a part whose content starts beyond the cut, or one inside an attached message,
+    gives no snippet. Of a multipart message less than 2 KiB of the part is read, so its search text can be shorter
+    than the server's; the 200-character preview is the same.
+  - Written in READ COMMITTED transactions of at most `IMAP_MESSAGES_PER_BATCH` (50) messages, newest first: mailbox
+    sync guard → the mailbox and its sync state re-read → mail-thread guard → the folder's sync state row
+    `FOR UPDATE`, which must still hold the uploaded UIDVALIDITY (else 409 `mail_history_uidvalidity_changed`), an
+    unexpired lease of the token (else 409 `mail_history_lease_expired`) and the cursor the batch continues (the first
+    at `rangeHigh`; else 409 `mail_history_range_stale` with `details.backfillBelowUid`, the cursor the folder holds).
+    A folder that is not one of the mailbox's is 404 `not_found`. Each message is ingested as a server backfill
+    batch ingests it, `arrival` `backfill` and `content_state` `index` (a message inside the window too; its body is
+    read on demand), with the moves in flight protected; a known Message-ID converges as always. Then the cursor moves
+    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done), and
+    the lease is renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
+  - Answer: `{ accepted, backfillBelowUid: number | null, leaseExpiresAt }`.
 
 ### IMAP connection limits and kept sync sessions
 
@@ -959,6 +1035,7 @@ on-demand content and attachment reads and the provider search.
 ## Lock orders to keep
 
 - Sync pass / removal: mailbox sync guard → mail-thread guard → Gmail folder-state guard → state/folder/item rows.
+- History claim, release and upload: mailbox sync guard → (upload) mail-thread guard → folder sync state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
