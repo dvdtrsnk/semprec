@@ -2,14 +2,16 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The settings of a project: its status, its area, its deadline (which a long-term project does not have) and
-/// whether it is pinned to the overview.
+/// The settings of a project: its status, its area, its deadline (which a long-term project does not have), whether it
+/// is pinned to the overview, and the entry to its mail signals, which the project opens on its stack once the sheet is
+/// closed.
 struct ProjectSettingsSheet: View {
 
     // MARK: - Dependencies
     let state: ItemState
     let send: (ItemAction) -> Void
     let close: () -> Void
+    let openMailSignals: () -> Void
 
     // MARK: - Body
     var body: some View {
@@ -19,6 +21,7 @@ struct ProjectSettingsSheet: View {
                 areaSection
                 deadlineSection
                 pinnedSection
+                mailSignalsSection
             }
             .navigationTitle(Text("project.settings", bundle: .module))
             .inlineNavigationTitle()
@@ -103,6 +106,26 @@ private extension ProjectSettingsSheet {
             } footer: {
                 Text("project.pinned.footer", bundle: .module)
             }
+        }
+    }
+
+    var mailSignalsSection: some View {
+        Section {
+            Button(action: openMailSignals) {
+                HStack {
+                    Label { Text("project.settings.mailSignals", bundle: .module) } icon: {
+                        Image(systemName: "envelope.badge")
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .listRowButton()
+            .foregroundStyle(.primary)
+            .accessibilityIdentifier(CollectionsIdentifiers.projectMailSignals)
+        } footer: {
+            Text("project.settings.mailSignals.footer", bundle: .module)
         }
     }
 

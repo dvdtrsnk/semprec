@@ -42,7 +42,15 @@ struct ProjectContent: View {
             }
         }
         .sheet(isPresented: $isShowingSettings) {
-            ProjectSettingsSheet(state: state, send: send, close: { isShowingSettings = false })
+            ProjectSettingsSheet(
+                state: state,
+                send: send,
+                close: { isShowingSettings = false },
+                openMailSignals: {
+                    isShowingSettings = false
+                    show(.mailSignals)
+                }
+            )
         }
         .onAppear { titleDraft = header.title }
         .onChange(of: header.title) { _, title in titleDraft = title }

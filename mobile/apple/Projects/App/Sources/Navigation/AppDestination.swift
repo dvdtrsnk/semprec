@@ -46,6 +46,8 @@ enum AppDestination: Hashable {
     case mailFolders(tab: AppTab)
     /// The editor of a message, presented as a sheet.
     case mailCompose(MailComposeStart)
+    /// The mail signals of a project: which people, domains and keywords mark its threads.
+    case projectMailSignals(projectId: String)
     /// The agent of a project: its instructions, tools, automatic tasks and runs.
     case sempProjectAgent(projectId: String)
     /// The health of Semp. The profile reaches it from its problems count.
@@ -71,7 +73,7 @@ extension AppDestination {
         case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose,
              .itemSheet: true
         case .pending, .tasks, .collection, .collectionItem, .area, .notes, .inbox, .mailList,
-             .mailThread, .mailFolders, .sempProjectAgent, .sempStatus,
+             .mailThread, .mailFolders, .projectMailSignals, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false
         }
     }

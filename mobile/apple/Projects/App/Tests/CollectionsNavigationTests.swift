@@ -94,11 +94,12 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showEvent(itemId: "e1")
         router.showArea(areaId: "a1")
         router.showProjectMail(projectId: "p1")
+        router.showProjectMailSignals(projectId: "p1")
         router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
         router.showProjectTasks(projectId: "p1")
-        XCTAssertEqual(overview.dismissals, 8)
-        XCTAssertEqual(overview.pushed.count, 8)
+        XCTAssertEqual(overview.dismissals, 9)
+        XCTAssertEqual(overview.pushed.count, 9)
     }
 
     @MainActor
@@ -118,6 +119,17 @@ final class CollectionsNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         AppCollectionsRouter(context: context, tab: .overview).showProjectAgent(projectId: "p1")
         XCTAssertEqual(overview.pushed, [.sempProjectAgent(projectId: "p1")])
+    }
+
+    @MainActor
+    func testTheMailSignalsOfAProjectOpenOnTheStackOfTheCollection() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        AppCollectionsRouter(context: context, tab: .overview).showProjectMailSignals(projectId: "p1")
+        XCTAssertEqual(overview.pushed, [.projectMailSignals(projectId: "p1")])
+        XCTAssertTrue(overview.sheets.isEmpty)
+        XCTAssertFalse(AppDestination.projectMailSignals(projectId: "p1").presentsAsSheet)
     }
 
     @MainActor

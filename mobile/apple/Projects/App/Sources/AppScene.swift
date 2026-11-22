@@ -147,7 +147,7 @@ private extension AppScene {
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)
-        case .mailList, .mailThread, .mailFolders, .mailCompose:
+        case .mailList, .mailThread, .mailFolders, .mailCompose, .projectMailSignals:
             mailView(destination, composition: composition)
         }
     }
@@ -202,6 +202,10 @@ private extension AppScene {
             )
         case .mailCompose(let start):
             AnyView(MailScreenFactory.compose { composition.models.makeMailCompose(start: start) })
+        case .projectMailSignals(let projectId):
+            AnyView(
+                MailScreenFactory.projectSignals { composition.models.makeProjectMailSignals(projectId: projectId) }
+            )
         default:
             AnyView(EmptyView())
         }
