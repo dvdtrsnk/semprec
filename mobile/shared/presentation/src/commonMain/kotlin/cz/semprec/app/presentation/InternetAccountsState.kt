@@ -41,7 +41,8 @@ enum class InternetOAuthProvider { GOOGLE, MICROSOFT }
  * ([WRONG_CREDENTIALS]), an iCloud account that needs an app-specific password ([APP_PASSWORD_REQUIRED]), a mail
  * server that could not be reached ([SERVER_UNREACHABLE]) or whose secure connection failed ([TLS_FAILED]), a CalDAV
  * server that refused the login ([CALDAV_REFUSED]) or was not found ([CALDAV_UNREACHABLE]), an address another account
- * already holds ([ALREADY_CONNECTED]), or too many attempts ([RATE_LIMITED]).
+ * already holds ([ALREADY_CONNECTED]), or too many attempts ([RATE_LIMITED]). A browser sign-in again with another
+ * account than the mailbox's is [WRONG_ACCOUNT], and one that did not allow access to the mail [MAIL_CONSENT_MISSING].
  */
 enum class InternetConnectFailure {
     INVALID_INPUT,
@@ -57,6 +58,8 @@ enum class InternetConnectFailure {
     CALDAV_UNREACHABLE,
     ALREADY_CONNECTED,
     RATE_LIMITED,
+    WRONG_ACCOUNT,
+    MAIL_CONSENT_MISSING,
 }
 
 /**

@@ -66,7 +66,7 @@ internal class PasswordSignInFlow(
 /** The stored provider of an iCloud account. */
 private const val ICLOUD_PROVIDER = "icloud"
 
-/** What the screens say about a password login the server refused. */
+/** What the screens say about a login the server refused, by password or in the browser. */
 internal fun MailConnectRefusal.toFailure(): InternetConnectFailure = when (this) {
     MailConnectRefusal.WRONG_CREDENTIALS -> InternetConnectFailure.WRONG_CREDENTIALS
     MailConnectRefusal.APP_PASSWORD_REQUIRED -> InternetConnectFailure.APP_PASSWORD_REQUIRED
@@ -76,4 +76,6 @@ internal fun MailConnectRefusal.toFailure(): InternetConnectFailure = when (this
     MailConnectRefusal.CALDAV_UNREACHABLE -> InternetConnectFailure.CALDAV_UNREACHABLE
     MailConnectRefusal.ALREADY_CONNECTED -> InternetConnectFailure.ALREADY_CONNECTED
     MailConnectRefusal.RATE_LIMITED -> InternetConnectFailure.RATE_LIMITED
+    MailConnectRefusal.WRONG_ACCOUNT -> InternetConnectFailure.WRONG_ACCOUNT
+    MailConnectRefusal.MAIL_CONSENT_MISSING -> InternetConnectFailure.MAIL_CONSENT_MISSING
 }

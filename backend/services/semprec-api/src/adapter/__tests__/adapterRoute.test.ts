@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request, type Server } from "node:http";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -24,6 +24,7 @@ import {
 } from "@semprec/data";
 import { createAdapterRequestListener, type AdapterHandler } from "../adapterRoute.js";
 import { requireJsonObjectBody, requireStringField } from "../requestValidation.js";
+import { logger } from "../../logger.js";
 
 function asVoid(
   listener: ReturnType<typeof createAdapterRequestListener>,
@@ -462,6 +463,39 @@ describe("adapter route (issue #238)", () => {
       expect(await res.json()).toEqual({ error: { code: "internal_error" } });
     } finally {
       await new Promise<void>((resolve) => failing.close(() => resolve()));
+    }
+  });
+
+  it("logs a request its client hung up on mid-body as closed by the client, not as a server error", async () => {
+    const errors = vi.spyOn(logger, "error");
+    const infos = vi.spyOn(logger, "info");
+    const handled = new Promise<void>((resolve) => {
+      infos.mockImplementation((...args: unknown[]) => {
+        if (args.includes("The client closed the request before it was answered")) resolve();
+      });
+    });
+    const server = createServer(asVoid(createAdapterRequestListener(pool, fixtureHandler)));
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    try {
+      const token = await tokenFor("hangup@example.com");
+      const client = request({
+        host: "127.0.0.1",
+        port: address.port,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": "100", Authorization: `Bearer ${token}` },
+      });
+      client.on("error", () => undefined);
+      client.write('{"title":');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      client.destroy();
+      await handled;
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+      infos.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

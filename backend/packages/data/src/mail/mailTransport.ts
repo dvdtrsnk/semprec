@@ -34,6 +34,13 @@ export interface MailTransportMessage {
 export interface MailTransportResult {
   /** SMTP reports none. */
   providerMessageId?: string;
+  /** The provider's id of the conversation the message joined; only the Gmail API transport reports it. */
+  providerThreadId?: string;
+  /**
+   * The Message-ID the provider filed the message under, when it replaced the one submitted (the Gmail API does for
+   * every message). Absent when the submitted one was kept or the provider could not be asked.
+   */
+  messageId?: string;
   /**
    * `true` when the provider files no Sent copy itself (SMTP): the caller records the message with
    * `recordPendingSentCopy` in the transaction that records the send, and a queue job appends it.

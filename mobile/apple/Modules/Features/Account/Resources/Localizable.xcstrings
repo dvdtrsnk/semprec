@@ -1409,6 +1409,22 @@
         }
       }
     },
+    "internetAccounts.add.error.mailConsentMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec nedostal přístup k vaší poště. Přihlaste se znovu a na stránce Googlu nebo Microsoftu povolte všechny volby."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec did not get access to your mail. Sign in again and allow every option on Google's or Microsoft's page."
+          }
+        }
+      }
+    },
     "internetAccounts.add.error.rateLimited" : {
       "localizations" : {
         "cs" : {
@@ -1501,6 +1517,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The account could not be added."
+          }
+        }
+      }
+    },
+    "internetAccounts.add.error.wrongAccount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přihlásili jste se jiným účtem, než ke kterému patří tahle schránka. Přihlaste se znovu správným účtem."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You signed in with another account than the one this mailbox belongs to. Sign in again with the right account."
           }
         }
       }

@@ -340,6 +340,8 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
             MailConnectRefusal.CALDAV_UNREACHABLE to InternetConnectFailure.CALDAV_UNREACHABLE,
             MailConnectRefusal.ALREADY_CONNECTED to InternetConnectFailure.ALREADY_CONNECTED,
             MailConnectRefusal.RATE_LIMITED to InternetConnectFailure.RATE_LIMITED,
+            MailConnectRefusal.WRONG_ACCOUNT to InternetConnectFailure.WRONG_ACCOUNT,
+            MailConnectRefusal.MAIL_CONSENT_MISSING to InternetConnectFailure.MAIL_CONSENT_MISSING,
         )
         assertEquals(MailConnectRefusal.entries.toSet(), cases.keys)
         for ((refusal, failure) in cases) {

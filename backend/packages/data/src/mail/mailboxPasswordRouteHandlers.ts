@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { newMailboxName } from "./mailboxNaming.js";
 import { z } from "zod";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { areCalendarsEnabled, NEW_MAILBOX_SERVICE_SWITCHES } from "./mailboxServiceHooks.js";
@@ -187,7 +188,11 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
     client,
     {
       databaseId: mailboxesDatabaseId,
-      properties: { name: mailbox.name, provider: request.provider, ...NEW_MAILBOX_SERVICE_SWITCHES },
+      properties: {
+        name: await newMailboxName(client, { mailboxesDatabaseId, preferred: mailbox.name, address: request.address }),
+        provider: request.provider,
+        ...NEW_MAILBOX_SERVICE_SWITCHES,
+      },
     },
     { actingUserId: mailbox.userId, writer: { writerKind: "user" } },
   );

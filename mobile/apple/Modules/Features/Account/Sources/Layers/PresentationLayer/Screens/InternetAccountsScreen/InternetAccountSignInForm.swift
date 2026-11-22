@@ -30,7 +30,7 @@ struct InternetAccountSignInForm: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                     Text("internetAccounts.add.signIn.hint", bundle: .module)
                     if let failure = state.connectFailure {
-                        Text(failure.message, bundle: .module).foregroundStyle(Theme.Colors.destructive)
+                        Text(failure.message).foregroundStyle(Theme.Colors.destructive)
                     }
                 }
             }

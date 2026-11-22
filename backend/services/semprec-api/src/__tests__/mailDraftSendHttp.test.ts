@@ -37,6 +37,7 @@ import { createDispatcher } from "../app.js";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+const GOOGLE_MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/";
 const REFRESH_TOKEN = "1//stored-refresh-token-for-the-http-send";
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
@@ -58,7 +59,18 @@ const outboundHttp = vi.fn<typeof fetch>(async (input, init) => {
       .object({ raw: z.string(), threadId: z.string().optional() })
       .parse(JSON.parse(typeof init?.body === "string" ? init.body : "{}"));
     google.sends.push({ threadId: body.threadId, raw: Buffer.from(body.raw, "base64url").toString("utf8") });
-    return Response.json({ id: "gmail-sent-1", threadId: "gmail-thread-1" });
+    // Each message gets an id of its own, as Gmail gives it.
+    return Response.json({ id: `gmail-sent-${google.sends.length}-${randomUUID()}`, threadId: "gmail-thread-1" });
+  }
+  // The send reads back the Message-ID Gmail filed the message under.
+  if (target.startsWith(GOOGLE_MESSAGES_URL) && target.includes("format=metadata")) {
+    const id = decodeURIComponent(new URL(target).pathname.split("/").at(-1) ?? "");
+    return Response.json({
+      id,
+      threadId: "gmail-thread-1",
+      labelIds: ["SENT"],
+      payload: { mimeType: "text/plain", headers: [{ name: "Message-ID", value: `<${id}@mail.gmail.com>` }] },
+    });
   }
   throw new Error(`unexpected request to ${target}`);
 });

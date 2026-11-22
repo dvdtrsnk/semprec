@@ -11,7 +11,9 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
-import { transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { finishThreadValueMerge, planThreadValueMerge } from "./threadMergePrecedence.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
@@ -376,6 +378,81 @@ export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, ite
   requireAffectedRows(
     await client.query(`DELETE FROM mail_threads WHERE id = $1`, [threadId]),
     "delete of an emptied mail thread",
+  );
+}
+
+/**
+ * Gives a just-sent message the identity its provider filed it under (`messageId`, the provider message and thread
+ * ids), so the synced copy converges onto it instead of being ingested beside it, and replies naming the provider's
+ * Message-ID thread onto it. A copy of the same message already ingested in the mailbox (its sync won the race with
+ * the send's finalization) is removed as `deleteMailMessageMetaOfRemovedItem` removes a message: its Email is trashed
+ * as the system writer and its meta row deleted, after the sent message took over its folders (a message to oneself
+ * is in the Inbox too), except `sentFolderItemId`, which the send links itself. Runs under the tenant's mail-thread
+ * guard, which every ingest takes.
+ */
+export async function adoptProviderSentIdentity(
+  client: PoolClient,
+  input: {
+    itemId: string;
+    mailboxItemId: string;
+    messageId?: string;
+    providerMessageId?: string;
+    providerThreadId?: string;
+    folderRelationPropertyId: string;
+    sentFolderItemId: string;
+  },
+): Promise<void> {
+  await lockMailThreadMutation(client);
+  const { rows: copies } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE mailbox_item_id = $1 AND item_id <> $2 AND (message_id = $3 OR provider_message_id = $4)
+      ORDER BY item_id`,
+    [input.mailboxItemId, input.itemId, input.messageId ?? null, input.providerMessageId ?? null],
+  );
+  const folderDefinition =
+    copies.length === 0 ? null : await getRelationDefinitionByPropertyId(client, input.folderRelationPropertyId);
+  if (copies.length > 0 && !folderDefinition) throw new Error("The Emails folder relation has no definition");
+  for (const copy of copies) {
+    if (folderDefinition) {
+      const linked = new Set(
+        (await listRelationsForItem(client, folderDefinition.id, input.itemId)).map((edge) =>
+          otherSide(edge, input.itemId),
+        ),
+      );
+      for (const edge of await listRelationsForItem(client, folderDefinition.id, copy.item_id)) {
+        const folderItemId = otherSide(edge, copy.item_id);
+        if (folderItemId === input.sentFolderItemId || linked.has(folderItemId)) continue;
+        await createRelationWithClient(
+          client,
+          {
+            relationPropertyId: input.folderRelationPropertyId,
+            callerItemId: input.itemId,
+            targetItemId: folderItemId,
+          },
+          EMAILS_RELATION_CONTEXT,
+        );
+        linked.add(folderItemId);
+      }
+    }
+    const [item] = await getItemsByIdsIncludingDeleted(client, [copy.item_id]);
+    if (item && item.deletedAt === null) {
+      await itemDeleteWithClient(client, item.databaseId, item.id, {
+        queueAffinity: createActionQueueAffinity(),
+        writer: SYSTEM_WRITER,
+      });
+    }
+    await deleteMailMessageMetaOfRemovedItem(client, copy.item_id);
+  }
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_meta
+          SET message_id = COALESCE($2, message_id),
+              provider_message_id = COALESCE($3, provider_message_id),
+              provider_thread_id = COALESCE($4, provider_thread_id)
+        WHERE item_id = $1`,
+      [input.itemId, input.messageId ?? null, input.providerMessageId ?? null, input.providerThreadId ?? null],
+    ),
+    "update of a sent message's provider identity",
   );
 }
 

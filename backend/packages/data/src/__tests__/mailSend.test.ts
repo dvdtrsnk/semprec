@@ -596,6 +596,78 @@ describe("drafts and authorized SMTP sending", () => {
       return rows[0]!.n;
     }
 
+    /** The live Emails carrying `messageId`. */
+    async function liveCopies(messageId: string): Promise<string[]> {
+      const { rows } = await pool.query<{ item_id: string }>(
+        `SELECT m.item_id FROM mail_message_meta m JOIN items i ON i.id = m.item_id
+          WHERE m.message_id = $1 AND i.deleted_at IS NULL ORDER BY m.item_id`,
+        [messageId],
+      );
+      return rows.map((row) => row.item_id);
+    }
+
+    describe.each([
+      ["after the send is finalized", false],
+      ["before the send is finalized", true],
+    ])(
+      "a provider that files the sent message under a Message-ID of its own, its copy synced %s",
+      (_name, syncFirst) => {
+        tenantIt("keeps one Email under the provider's identity, in one thread", async () => {
+          const providerMessageId = "<provider-own-1@mail.gmail.com>";
+          const draftItemId = await newDraft();
+          // Mail to oneself: the synced copy is in the Inbox as well as in Sent.
+          const inboxFolderId = await withTransaction(pool, (client) =>
+            createFolderOf(client, mailboxId, "Inbox", "inbox"),
+          );
+          const syncCopy = async () => {
+            await ingestSynced(providerMessageId);
+            await ingestSynced(providerMessageId, mailboxId, inboxFolderId);
+          };
+          const provider = recordingTransport({
+            async send() {
+              if (syncFirst) await syncCopy();
+              return { providerMessageId: "gmail-1", providerThreadId: "gmail-thread-1", messageId: providerMessageId };
+            },
+          });
+
+          const result = await send(draftItemId, provider);
+          if (!syncFirst) await syncCopy();
+
+          expect(result.messageId).toBe(providerMessageId);
+          expect(await liveCopies(providerMessageId)).toEqual([draftItemId]);
+          const { rows } = await pool.query<{ provider_message_id: string; provider_thread_id: string }>(
+            `SELECT provider_message_id, provider_thread_id FROM mail_message_meta WHERE item_id = $1`,
+            [draftItemId],
+          );
+          expect(rows).toEqual([{ provider_message_id: "gmail-1", provider_thread_id: "gmail-thread-1" }]);
+          expect(await threadCount()).toBe(1);
+          const folders = await pool.query<{ purpose: string }>(
+            `SELECT f.properties ->> 'specialPurpose' AS purpose FROM item_relations r
+               JOIN items f ON f.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AND f.database_id = $2
+              WHERE (r.item_a = $1 OR r.item_b = $1) ORDER BY 1`,
+            [draftItemId, foldersId],
+          );
+          expect(folders.rows.map((row) => row.purpose)).toEqual(["inbox", "sent"]);
+        });
+      },
+    );
+
+    tenantIt("threads a later reply naming the provider's Message-ID onto the sent message", async () => {
+      const providerMessageId = "<provider-own-2@mail.gmail.com>";
+      const draftItemId = await newDraft();
+      const sent = await send(
+        draftItemId,
+        recordingTransport({ send: async () => ({ providerMessageId: "gmail-2", messageId: providerMessageId }) }),
+      );
+
+      await ingestSynced("<answer-2@example.com>", mailboxId, undefined, providerMessageId, [providerMessageId]);
+
+      const { rows } = await pool.query<{ thread_id: string }>(
+        `SELECT thread_id FROM mail_message_meta WHERE message_id = '<answer-2@example.com>'`,
+      );
+      expect(rows).toEqual([{ thread_id: sent.threadId }]);
+    });
+
     for (const competitor of ["send", "ingest", "bridge"] as const) {
       for (const order of ["competitor-first", "cleanup-first"] as const) {
         tenantIt(

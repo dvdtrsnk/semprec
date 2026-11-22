@@ -207,9 +207,9 @@ done
 test "$(grep -l 'master-key\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename | sort | tr '\n' ' ')" = 'semprec-agents.service semprec-api.service '
 test "$(grep -l 'postgres\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename)" = 'semprec-backup.service'
 
-# The twelve templates partition the 63 keys: every key is declared exactly once.
+# The twelve templates partition the 64 keys: every key is declared exactly once.
 all_template_keys="$(cat "$TEST_DEPLOY"/shared/env/*.env.example | grep -oE '^[A-Z_0-9]+=' | sort)"
-test "$(wc -l <<<"$all_template_keys")" -eq 63
+test "$(wc -l <<<"$all_template_keys")" -eq 64
 test -z "$(uniq -d <<<"$all_template_keys")"
 # The Gmail Pub/Sub keys (issue #1739) belong to the api group, once each, and to no other group.
 for key in GMAIL_PUBSUB_TOPIC= GMAIL_PUBSUB_SUBSCRIPTION= GMAIL_PUBSUB_SERVICE_ACCOUNT_KEY_PATH=; do

@@ -191,9 +191,7 @@ class HttpMailboxRepository internal constructor(
                     put("state", signIn.state)
                     put("code", code)
                 }
-                api.send(HttpMethod.Post, "$MAILBOXES_PATH/oauth/complete", body = body.toString())
-                    .decode<MailOauthCompleteDto>()
-                    .map { OAuthOutcome.Connected(it.mailboxId) }
+                api.send(HttpMethod.Post, "$MAILBOXES_PATH/oauth/complete", body = body.toString()).oauthOutcome()
             }
         }
     }
@@ -233,6 +231,25 @@ private fun ApiResponse.connectOutcome(): RepositoryResult<MailConnectOutcome> =
         } else {
             RepositoryResult.Content(MailConnectOutcome.Refused(refusal))
         }
+    }
+}
+
+/** The refusal codes of the browser sign-in's completion, as the server names them. */
+private val OAUTH_REFUSALS = mapOf(
+    "provider_account_already_connected" to MailConnectRefusal.ALREADY_CONNECTED,
+    "mail_reauth_wrong_account" to MailConnectRefusal.WRONG_ACCOUNT,
+    "mail_consent_missing" to MailConnectRefusal.MAIL_CONSENT_MISSING,
+)
+
+/**
+ * The answer of a browser sign-in's completion: a success connected the mailbox it names, a refusal with a known code
+ * is [OAuthOutcome.Refused], and any other failure stays its [FailureKind].
+ */
+private fun ApiResponse.oauthOutcome(): RepositoryResult<OAuthOutcome> = when (this) {
+    is ApiResponse.Success -> decode<MailOauthCompleteDto>().map { OAuthOutcome.Connected(it.mailboxId) }
+    is ApiResponse.Failure -> {
+        val refusal = OAUTH_REFUSALS[errorCode()]
+        if (refusal == null) RepositoryResult.Failure(kind) else RepositoryResult.Content(OAuthOutcome.Refused(refusal))
     }
 }
 

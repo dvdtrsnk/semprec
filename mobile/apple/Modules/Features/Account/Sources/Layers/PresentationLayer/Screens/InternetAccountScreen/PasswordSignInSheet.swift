@@ -76,7 +76,7 @@ private extension PasswordSignInSheet {
             Text("internetAccount.passwordSignIn.hint", bundle: .module)
             if signIn.icloud { Text("internetAccounts.add.icloudHint", bundle: .module) }
             if let failure = signIn.failure {
-                Text(failure.message, bundle: .module).foregroundStyle(Theme.Colors.destructive)
+                Text(failure.message).foregroundStyle(Theme.Colors.destructive)
             }
         }
     }

@@ -446,6 +446,11 @@ describe("the mailbox sign-in routes behind the REST adapter (issue gh-1686)", (
   it("connects a mailbox over HTTP and serves it through the mailbox detail route", async () => {
     const address = `${randomUUID()}@gmail.com`;
     providerRoutes = googleAccount(address);
+    // The tenant is shared by the file's tests: a mailbox already named "Gmail" makes this one take its address.
+    const listed = z
+      .object({ mailboxes: z.array(z.object({ name: z.string() })) })
+      .parse((await request("GET", "/api/mail/mailboxes", undefined, bearer)).body);
+    const expectedName = listed.mailboxes.some((mailbox) => mailbox.name === "Gmail") ? address : "Gmail";
 
     const answer = await complete(stateOf(await start("gmail")));
 
@@ -455,7 +460,7 @@ describe("the mailbox sign-in routes behind the REST adapter (issue gh-1686)", (
     expect(detail.status).toBe(200);
     expect(detail.body).toMatchObject({
       id: mailboxId,
-      name: "Gmail",
+      name: expectedName,
       provider: "gmail",
       primaryAddress: address,
       addresses: [address],

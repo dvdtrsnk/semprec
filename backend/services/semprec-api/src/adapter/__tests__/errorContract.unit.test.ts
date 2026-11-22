@@ -166,6 +166,7 @@ describe("error contract (issue #238)", () => {
     "mail_tls_failed",
     "mail_admin_consent_required",
     "mail_reauth_wrong_account",
+    "mail_consent_missing",
   ] as const)("maps %s to HTTP 400", (code) => {
     expect(ITEM_ERROR_CODES).toContain(code);
     expect(ITEM_ERROR_STATUS_BY_CODE[code]).toBe(400);

@@ -62,6 +62,7 @@ internal class BrowserSignInFlow(
                     report(BrowserSignInReport.Connected(outcome.accountId))
                 }
                 OAuthOutcome.Declined -> stop(InternetConnectFailure.DECLINED)
+                is OAuthOutcome.Refused -> stop(outcome.reason.toFailure())
                 null -> stop((result as? RepositoryResult.Failure).toProblem())
             }
         }

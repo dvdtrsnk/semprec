@@ -325,6 +325,68 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
+  it("trashes a message Gmail reports deleted and drops its meta row, leaving the others", async () => {
+    const params = await setup();
+    await sync(params, { m1: ["INBOX"], m2: ["INBOX"] });
+    const deletedGmail: GmailMailClient = {
+      ...gmailClient({ m2: ["INBOX"] }),
+      listHistorySince: async () => gmailHistory("102", [], ["m1"]),
+      fetchMessage: async () => null,
+    };
+    await runInTenant(tenantId, () =>
+      reconcileGmailAccount(pool, deletedGmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+    );
+    const { rows } = await admin.query<{ subject: string; trashed: boolean; meta: boolean }>(
+      `SELECT i.properties ->> 'name' AS subject, i.deleted_at IS NOT NULL AS trashed,
+              EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.item_id = i.id) AS meta
+         FROM items i WHERE i.database_id = $1 ORDER BY 1`,
+      [params.emailsDatabaseId],
+    );
+    expect(rows).toEqual([
+      { subject: "m1", trashed: true, meta: false },
+      { subject: "m2", trashed: false, meta: true },
+    ]);
+    expect(await foldersOf(params, "m2")).toEqual(["INBOX"]);
+  });
+
+  it("renames the Folder of a renamed label and retires the Folder of a deleted label once it is empty", async () => {
+    const params = await setup();
+    const withLabels = (labels: GmailLabelRef[], messages: Record<string, string[]>): GmailMailClient => ({
+      ...gmailClient(messages),
+      listLabels: async () => labels,
+    });
+    const work = (name: string): GmailLabelRef => ({ id: "Label_1", name, type: "user" });
+    const systemLabels = LABELS.filter((label) => label.type === "system");
+    const pass = (gmail: GmailMailClient) =>
+      runInTenant(tenantId, () => reconcileGmailAccount(pool, gmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }));
+    const folderNames = async (): Promise<Array<{ pid: string; name: string }>> => {
+      const { rows } = await admin.query<{ pid: string; name: string }>(
+        `SELECT properties ->> 'providerId' AS pid, properties ->> 'name' AS name FROM items
+          WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> 'providerId' = 'Label_1'`,
+        [params.foldersDatabaseId],
+      );
+      return rows;
+    };
+
+    await pass(withLabels([...systemLabels, work("Work")], { m1: ["INBOX", "Label_1"] }));
+    await pass(withLabels([...systemLabels, work("Práce")], { m1: ["INBOX", "Label_1"] }));
+    expect(await folderNames()).toEqual([{ pid: "Label_1", name: "Práce" }]);
+
+    // Gone from the label list while a message is still linked to it: kept until the message leaves it.
+    const stillLinked = withLabels(systemLabels, {});
+    stillLinked.listHistorySince = async () => gmailHistory("103");
+    await pass(stillLinked);
+    expect(await folderNames()).toEqual([{ pid: "Label_1", name: "Práce" }]);
+
+    const relabelled = withLabels(systemLabels, { m1: ["INBOX"] });
+    relabelled.listHistorySince = async () => gmailHistory("104", ["m1"]);
+    await pass(relabelled);
+    expect(await foldersOf(params, "m1")).toEqual(["INBOX"]);
+    await pass(stillLinked);
+    expect(await folderNames()).toEqual([]);
+    expect(await folderProviderIds(params)).toEqual(["DRAFT", "INBOX", "SENT", GMAIL_ARCHIVE_PROVIDER_ID].sort());
+  });
+
   it("rejects missing and system tenant scope before Gmail reconciliation queries or provider calls", async () => {
     const params = await setup();
     const connect = vi.spyOn(pool, "connect");

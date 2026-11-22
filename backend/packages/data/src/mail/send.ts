@@ -15,6 +15,7 @@ import { requestMailSendApproval } from "./mailSendApproval.js";
 import { getMailDraft, markMailDraftSent } from "./mailDraftsStore.js";
 import { announceMailThreadChanged } from "./mailThreadActions.js";
 import {
+  adoptProviderSentIdentity,
   deleteMailMessageMetaByItemId,
   getMailMessageMetaByItemId,
   upsertMailMessageMeta,
@@ -36,7 +37,7 @@ import {
   type OutgoingAttachmentInput,
   type OutgoingMimeDeps,
 } from "./outgoingMime.js";
-import type { MailTransportFactory } from "./mailTransport.js";
+import type { MailTransportFactory, MailTransportResult } from "./mailTransport.js";
 import { recordPendingSentCopy, recordPendingSentCopyAfterSend } from "./mailSentCopies.js";
 
 /**
@@ -307,6 +308,7 @@ export async function sendDraftEmail(
 
   // Any failure here, including building the transport, undoes the claim.
   let sentCopy: Buffer | null = null;
+  let providerIdentity: MailTransportResult = {};
   try {
     const transport = await transports.forMailbox(input.mailboxItemId, syncMode);
     const mime = await buildOutgoingMime(
@@ -331,6 +333,7 @@ export async function sendDraftEmail(
       ...(input.providerThreadId === undefined ? {} : { providerThreadId: input.providerThreadId }),
     });
     if (sent.needsSentCopy) sentCopy = mime.raw;
+    providerIdentity = sent;
   } catch (err) {
     // Best-effort: the send failure in `err` must surface even if the compensating delete fails, which
     // leaves the claim in place (a retry then sees a conflict until it is cleared directly).
@@ -338,8 +341,25 @@ export async function sendDraftEmail(
     throw err;
   }
 
+  // The Message-ID the message travels under: the provider's when it replaced the submitted one.
+  const sentMessageId = providerIdentity.messageId ?? messageId;
   const finalized = withTransaction(pool, async (client) => {
     const sentAt = new Date();
+    if (providerIdentity.providerMessageId !== undefined || providerIdentity.messageId !== undefined) {
+      await adoptProviderSentIdentity(client, {
+        itemId: input.draftItemId,
+        mailboxItemId: input.mailboxItemId,
+        ...(providerIdentity.messageId === undefined ? {} : { messageId: providerIdentity.messageId }),
+        ...(providerIdentity.providerMessageId === undefined
+          ? {}
+          : { providerMessageId: providerIdentity.providerMessageId }),
+        ...(providerIdentity.providerThreadId === undefined
+          ? {}
+          : { providerThreadId: providerIdentity.providerThreadId }),
+        folderRelationPropertyId: moduleIds.folderRelationPropertyId,
+        sentFolderItemId,
+      });
+    }
     await updateItemWithClient(
       client,
       {
@@ -400,7 +420,7 @@ export async function sendDraftEmail(
       excludeDraftItemId: input.draftItemId,
     });
 
-    return { itemId: input.draftItemId, messageId, threadId, sentAt };
+    return { itemId: input.draftItemId, messageId: sentMessageId, threadId, sentAt };
   });
   try {
     return await finalized;

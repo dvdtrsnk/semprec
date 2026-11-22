@@ -43,6 +43,16 @@ function grantsAll(provider: MailOauthProvider, granted: readonly string[], requ
   return required.every((scope) => normalized.has(normalizedScope(provider, scope)));
 }
 
+/**
+ * Whether a grant lets Semprec read and send the account's mail. Google shows each scope as its own unchecked box,
+ * so a person may continue without them. Graph's sign-in scopes (`offline_access`, `User.Read`) give no mail access and
+ * are not checked.
+ */
+export function hasMailConsent(provider: MailOauthProvider, granted: readonly string[]): boolean {
+  const required = SERVICE_SCOPES[provider].mail.filter((scope) => scope !== "offline_access" && scope !== "User.Read");
+  return grantsAll(provider, granted, required);
+}
+
 /** The OAuth provider whose token a sync mode uses; `imap` signs in with a password. */
 function oauthProviderOfSyncMode(syncMode: SyncMode): MailOauthProvider | null {
   if (syncMode === "gmail_api") return "gmail";

@@ -26,12 +26,22 @@ enum class OAuthProvider { GOOGLE, MICROSOFT }
  */
 data class OAuthSignIn(val authorizeUrl: String, val state: String)
 
-/** How a browser sign-in ended: the account [Connected] (new or signed in again), or the provider [Declined] it. */
+/**
+ * How a browser sign-in ended: the account [Connected] (new or signed in again), the provider [Declined] it, or the
+ * server [Refused] the account that signed in, naming why.
+ */
 sealed interface OAuthOutcome {
     data class Connected(val accountId: String) : OAuthOutcome
 
     /** The provider sent back an error instead of a code, for example because the person did not allow access. */
     data object Declined : OAuthOutcome
+
+    /**
+     * The server refused the signed-in account: another mailbox already holds it ([MailConnectRefusal.ALREADY_CONNECTED])
+     * it is not the account being signed in again ([MailConnectRefusal.WRONG_ACCOUNT]), or the sign-in did not allow
+     * access to its mail ([MailConnectRefusal.MAIL_CONSENT_MISSING]).
+     */
+    data class Refused(val reason: MailConnectRefusal) : OAuthOutcome
 }
 
 /**

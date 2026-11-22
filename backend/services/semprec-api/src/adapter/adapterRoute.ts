@@ -84,6 +84,16 @@ export interface AdapterRequestListenerOptions {
 }
 
 /**
+ * Node's own error for a request whose client hung up before the request was read (`ECONNRESET`, "aborted"), once the
+ * request is destroyed: nothing is wrong on the server and no answer can reach the client.
+ */
+function isClientAbort(req: IncomingMessage, err: unknown): boolean {
+  return (
+    req.destroyed && err instanceof Error && err.message === "aborted" && "code" in err && err.code === "ECONNRESET"
+  );
+}
+
+/**
  * The handler runs inside `retryingTransientConflicts`: a READ COMMITTED transaction it opens that fails
  * with a serialization failure or deadlock is re-run up to three times. A Postgres error that still
  * reaches here with a classified SQLSTATE gets its status (`databaseErrorResponse`). Anything else
@@ -144,6 +154,10 @@ export function createAdapterRequestListener(
           sendJson(res, mapped.status, mapped.body, mapped.headers);
           return;
         }
+      }
+      if (isClientAbort(req, err)) {
+        logger.info({ method: req.method, path: pathname }, "The client closed the request before it was answered");
+        return;
       }
       logger.error({ err, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });

@@ -61,6 +61,10 @@ jobs:
           # pull_request merge ref. The bot gets changed files from the PR API and
           # anchors its Check Run to that head, so agents must read the same tree.
           ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
+          # The bot reads the approved issue specification from the PR base commit
+          # (`git ls-tree <base> -- issues/...`); a depth-1 checkout of the head
+          # does not contain the base, and the review then fails before it starts.
+          fetch-depth: 0
 
       - name: Read owner review policy
         id: policy

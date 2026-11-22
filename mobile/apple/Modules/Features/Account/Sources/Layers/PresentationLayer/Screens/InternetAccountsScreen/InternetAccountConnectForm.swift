@@ -97,7 +97,7 @@ private extension InternetAccountConnectForm {
                 Text("internetAccounts.add.caldavHint", bundle: .module)
             }
             if let failure = state.connectFailure {
-                Text(failure.message, bundle: .module).foregroundStyle(Theme.Colors.destructive)
+                Text(failure.message).foregroundStyle(Theme.Colors.destructive)
             }
         }
     }

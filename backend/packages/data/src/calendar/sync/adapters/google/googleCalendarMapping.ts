@@ -46,6 +46,7 @@ export const googleEventSchema = z.object({
   organizer: personSchema.optional(),
   attendees: z.array(attendeeSchema).optional(),
   source: z.object({ url: z.string().optional() }).optional(),
+  extendedProperties: z.object({ private: z.record(z.string(), z.string()).optional() }).optional(),
 });
 export type GoogleEvent = z.infer<typeof googleEventSchema>;
 type GoogleReminder = z.infer<typeof googleReminderSchema>;

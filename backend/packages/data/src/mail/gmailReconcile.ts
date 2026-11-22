@@ -7,15 +7,24 @@ import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";
-import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
+import {
+  ensureFolderItem,
+  renameFolderItem,
+  retireUnlistedFolderItems,
+  type ProviderFolder,
+} from "./folderDiscovery.js";
 import { ingestEmailMessage, type IngestedMailContent } from "./ingest.js";
 import { createGmailMailFlagWritebackAdapter, writeBackProviderFlags } from "./mailFlagWriteback.js";
 import { recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import {
+  deleteMailMessageMetaOfRemovedItem,
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
   listKnownProviderMessageIds,
 } from "./mailMessageMetaStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import {
   anchorMailAccountConnection,
   ensureMailAccountSyncState,
@@ -341,7 +350,12 @@ async function ingestGmailBatch(
   return batch.length;
 }
 
-/** Drops every folder edge of the messages `history.list` reports deleted. */
+/**
+ * Removes each message `history.list` reports deleted: a Gmail message keeps one id across all its labels, so a
+ * deleted one is gone from the whole account. Its folder edges are dropped, then the Email is trashed as the system
+ * writer and loses its meta row (and a thread no other message names), as an IMAP pass does for a message whose last
+ * folder copy vanished. A message with a move in flight is left for a later pass.
+ */
 async function removeGmailMessages(
   client: PoolClient,
   ctx: GmailPassContext,
@@ -365,6 +379,11 @@ async function removeGmailMessages(
         EMAILS_RELATION_CONTEXT,
       );
     }
+    await itemDeleteWithClient(client, ctx.params.emailsDatabaseId, meta.itemId, {
+      queueAffinity: createActionQueueAffinity(),
+      writer: SYSTEM_WRITER,
+    });
+    await deleteMailMessageMetaOfRemovedItem(client, meta.itemId);
   }
 }
 
@@ -564,6 +583,9 @@ export async function reconcileGmailAccount(
         specialPurpose: specialPurposeForLabel(label),
       });
       folderItemIdByLabel.set(label.id, folderItemId);
+      // A label keeps its id when renamed in Gmail; a system label's name is shown translated, never Gmail's.
+      if (label.type === "user")
+        await renameFolderItem(client, { foldersDatabaseId: params.foldersDatabaseId, folderItemId, name: label.name });
     }
     const archiveFolderItemId = await ensureFolderItem(client, {
       foldersDatabaseId: params.foldersDatabaseId,
@@ -573,6 +595,14 @@ export async function reconcileGmailAccount(
       name: "Archive",
       behavior: "label",
       specialPurpose: "archive",
+    });
+    // A label deleted in Gmail leaves its messages first (as labelsRemoved history), then its now empty Folder goes.
+    await retireUnlistedFolderItems(client, {
+      foldersDatabaseId: params.foldersDatabaseId,
+      mailboxItemId: params.mailboxItemId,
+      mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+      folderRelationPropertyId: params.folderRelationPropertyId,
+      listedProviderIds: new Set([...folderItemIdByLabel.keys(), GMAIL_ARCHIVE_PROVIDER_ID]),
     });
     const cursor: GmailSyncCursor = {
       historyId: state.gmailHistoryId,

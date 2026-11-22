@@ -135,14 +135,23 @@ private extension MailComposeScreen {
     var sender: some View {
         HStack {
             Text("mail.compose.from", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
-            Picker(selection: senderSelection) {
-                ForEach(viewModel.state.senders) { sender in
-                    Text(verbatim: sender.address).tag(Optional(sender.mailboxId))
+            // A menu with its own one-line label: a menu picker wraps a long address over the subject row.
+            Menu {
+                Picker(selection: senderSelection) {
+                    ForEach(viewModel.state.senders) { sender in
+                        Text(verbatim: sender.address).tag(Optional(sender.mailboxId))
+                    }
+                } label: {
+                    Text("mail.compose.from", bundle: .module)
                 }
             } label: {
-                Text("mail.compose.from", bundle: .module)
+                HStack(spacing: 4) {
+                    Text(verbatim: selectedSenderAddress)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "chevron.up.chevron.down").font(.footnote)
+                }
             }
-            .labelsHidden()
             .accessibilityIdentifier(MailIdentifiers.composeSender)
             Spacer(minLength: 0)
         }
@@ -216,6 +225,10 @@ private extension MailComposeScreen {
         let state = viewModel.state
         let idle = state.sendPhase != .sending && state.sendPhase != .sent
         return state.phase == .editing && !state.toRecipients.isEmpty && idle
+    }
+
+    var selectedSenderAddress: String {
+        viewModel.state.senders.first { $0.mailboxId == viewModel.state.senderId }?.address ?? ""
     }
 
     var senderSelection: Binding<String?> {
