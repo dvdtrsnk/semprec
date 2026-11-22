@@ -565,6 +565,15 @@ internals proven against the real library by its unit test; an upgrade must re-p
     to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done), and
     the lease is renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
   - Answer: `{ accepted, backfillBelowUid: number | null, leaseExpiresAt }`.
+- The client. The mobile apps upload the history of an IMAP account right after the person connected it with a
+  password, while that password is in memory; it is never stored on the device. One IMAP connection per device, implicit
+  TLS on 993 with the certificate checked against the host name (a STARTTLS-only server is left to the server's
+  backfill), read-only (`EXAMINE`). Per leased folder whose UIDVALIDITY matches, from the cursor down: a `UID SEARCH`
+  per 2000 UIDs, a `UID FETCH` per 200, uploads well under the body limit; a stale cursor is taken over, a response
+  over 64 KiB ends the client's work on that folder just above it, and the lease is renewed by claiming again with the
+  same token every 4 minutes. It stops on `mail_history_lease_expired`, `mail_history_unavailable`, a 429 or any other
+  failure, and releases the lease whenever it ends, also when the screen closes. Code and the client-side rules:
+  `mobile/docs/architecture.md`, "Mail history from the device".
 
 ### IMAP connection limits and kept sync sessions
 
