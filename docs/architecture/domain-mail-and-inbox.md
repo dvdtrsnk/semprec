@@ -262,10 +262,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which also records
     the invalidation as `last_error`. Every later pass applies the history since the stored id first, then
     continues the listing, so new mail is never held back by a running listing.
-  - Live step: `history.list` from the stored id (all its pages, ids only), the changed messages in write
-    transactions of `GMAIL_MESSAGES_PER_BATCH` (50); the last one drops the edges of deleted messages and stores the
-    new history id. It is not bounded by the pass budget; an interrupted step lists the same history again, and the
-    messages its committed batches wrote are then known.
+  - Live step: `history.list` from the stored id (all its pages, its records in history order, parsed at the edge),
+    the changed messages in history order (a message several records name once, at its first), in write transactions
+    of `GMAIL_MESSAGES_PER_BATCH` (50). Each transaction drops the edges of the messages the records it completes
+    deleted and stores the id of the last record it completed; the last one stores the new history id. The step
+    charges the pass budget, and once it is spent it stops before the next record (a record is never split between
+    passes), so the stored id never passes a record left unapplied; the next pass lists the history from there. An
+    interrupted step lists the same history again from the last stored record, and the messages its committed
+    batches wrote are then known.
   - Listing: `messages.list` newest first, `maxResults` 50 (`GMAIL_LISTING_PAGE_SIZE`), one page per write
     transaction, which stores the page token of the next page; the last page of `full` moves the cursor to `index`,
     the last page of `index` ends the listing. Phase `full` searches `after:<window start>`, phase `index`
@@ -273,11 +277,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     phases may overlap by a second; a message both list is ingested once). An interrupted listing resumes at its
     stored page, and its history id is kept.
   - Fetches: a message the mailbox already holds by its Gmail id is fetched with `format=metadata` (labels and
-    flags are what can change) and converges; otherwise a live-step or `full`-phase message with `format=full`, an
-    `index`-phase message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and
-    Content-Type headers) and its `snippet`.
+    flags are what can change) and converges; otherwise a `full`-phase message with `format=full`, an `index`-phase
+    message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and Content-Type
+    headers) and its `snippet`, and a live-step message with `format=metadata` first: its arrival and Date decide its
+    content state (`mailContentStateOf`), and only a `full` one is fetched again with `format=full`, so old mail
+    another client labels or moves is stored as an index.
   - Budget: `GMAIL_FULL_MESSAGES_PER_PASS` (50) full and `GMAIL_INDEX_MESSAGES_PER_PASS` (500) index or known
-    messages per pass, spent page by page; a pass whose listing is left unfinished is incomplete, requests a rerun
+    messages per pass, shared by the live step and the listing, spent page by page; a pass whose history or listing
+    is left unfinished is incomplete, requests a rerun
     in its final transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset, which the
     pass that ends the listing sets.
 - A Graph pass (`reconcileGraphAccount` in `mail/graphReconcile.ts`): the folder list, then a prepare transaction
@@ -440,9 +447,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `mailContentStateOf`); a message ingested again keeps it, a send claim is `full`. A message is `full` when it is
   `live`, or when its Date is at most `MAIL_FULL_CONTENT_WINDOW_DAYS` (90) before the account's `connected_at`;
   older history, and history without a Date, is `index`.
-  - Gmail decides by where the pass reaches the message: the live step (`history.list`) stores it `full`, the
-    listing by its phase, which Gmail's search decides by the internal date (`full` inside the window, `index`
-    beyond it).
+  - Gmail decides by where the pass reaches the message: the live step (`history.list`) by `mailContentStateOf` from
+    its metadata (new mail `full`, old mail another client labels or moves `index`), the listing by its phase, which
+    Gmail's search decides by the internal date (`full` inside the window, `index` beyond it).
   - Graph decides by `mailContentStateOf` with `receivedDateTime` as the Date.
 - `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
   blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment

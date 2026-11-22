@@ -57,9 +57,62 @@ describe("Gmail sync provider privacy", () => {
     await expect(client.listHistorySince("old")).resolves.toEqual({
       invalidated: true,
       newHistoryId: "old",
-      changedMessageIds: [],
-      removedMessageIds: [],
+      records: [],
     });
+  });
+});
+
+describe("Gmail listing and history pages", () => {
+  const answering = (body: unknown) =>
+    new GmailRestClient(
+      async () => "token",
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+
+  it("lists the ids of a page, passing over a malformed entry, with its next page token", async () => {
+    const page = await answering({
+      messages: [{ id: "a" }, { id: 7 }, null, { id: "b" }],
+      nextPageToken: "next",
+    }).listMessageIds("after:1", null);
+    expect(page).toEqual({ ids: ["a", "b"], nextPageToken: "next" });
+  });
+
+  it.each([
+    ["a number", 7],
+    ["an empty string", ""],
+    ["an object", { token: "next" }],
+  ])("refuses a listing page whose next page token is %s instead of ending the listing", async (_name, token) => {
+    await expect(
+      answering({ messages: [{ id: "a" }], nextPageToken: token }).listMessageIds("after:1", null),
+    ).rejects.toThrow("Gmail sync provider response could not be read");
+  });
+
+  it("answers the history as its records in order, each message once per record", async () => {
+    const history = await answering({
+      history: [
+        { id: "11", messagesAdded: [{ message: { id: "a" } }], labelsAdded: [{ message: { id: "a" } }] },
+        { id: "12", messagesDeleted: [{ message: { id: "b" } }], labelsRemoved: [{ message: { id: "c" } }] },
+      ],
+      historyId: "13",
+    }).listHistorySince("10");
+    expect(history).toEqual({
+      invalidated: false,
+      newHistoryId: "13",
+      records: [
+        { id: "11", changedMessageIds: ["a"], removedMessageIds: [] },
+        { id: "12", changedMessageIds: ["c"], removedMessageIds: ["b"] },
+      ],
+    });
+  });
+
+  it.each([
+    ["a record without an id", { history: [{ messagesAdded: [{ message: { id: "a" } }] }] }],
+    ["a message without an id", { history: [{ id: "11", messagesAdded: [{ message: {} }] }] }],
+    ["a next page token of another type", { history: [], nextPageToken: 3 }],
+  ])("refuses a history page with %s", async (_name, body) => {
+    await expect(answering(body).listHistorySince("10")).rejects.toThrow(
+      "Gmail sync provider response could not be read",
+    );
   });
 });
 

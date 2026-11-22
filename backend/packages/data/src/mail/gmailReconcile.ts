@@ -28,7 +28,7 @@ import {
   type GmailSyncCursor,
 } from "./mailAccountSyncStateStore.js";
 import { mailArrivalOf, type MailArrival } from "./mailArrival.js";
-import { MAIL_FULL_CONTENT_WINDOW_DAYS } from "./mailContentState.js";
+import { MAIL_FULL_CONTENT_WINDOW_DAYS, mailContentStateOf } from "./mailContentState.js";
 import { createAttachmentSpool, type AttachmentSpool } from "./mailAttachmentSpool.js";
 import { inPassTransaction, withBatchStorage, type MailSyncPass, type MailSyncPassResult } from "./mailSyncPass.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
@@ -60,13 +60,21 @@ export interface GmailMessageIdPage {
   nextPageToken: string | null;
 }
 
+/** One `history.list` record: the messages it added or relabelled, and the ones it deleted, each id once. */
+export interface GmailHistoryRecord {
+  /** The record's history id; a pass that applied every record up to it resumes after it. */
+  id: string;
+  changedMessageIds: string[];
+  removedMessageIds: string[];
+}
+
 export interface GmailHistoryResult {
   /** true = the stored `historyId` is older than what the API retains (`history.list` 404) — caller must run a full resync. */
   invalidated: boolean;
+  /** The mailbox's history id as of the listing, at or after the last record's. */
   newHistoryId: string;
-  /** Deduplicated by message id; only the latest state matters. */
-  changedMessageIds: string[];
-  removedMessageIds: string[];
+  /** In history order. */
+  records: GmailHistoryRecord[];
 }
 
 export interface GmailMailClient {
@@ -120,9 +128,9 @@ function isFolderLabel(label: GmailLabelRef): boolean {
 
 /** Messages of the history one write transaction ingests; a listing page is written in one transaction. */
 export const GMAIL_MESSAGES_PER_BATCH = 50;
-/** Messages the listing ingests in full in one pass: each costs its body and its attachments' bytes. */
+/** Messages the live step and the listing ingest in full in one pass: each costs its body and attachments' bytes. */
 export const GMAIL_FULL_MESSAGES_PER_PASS = 50;
-/** Index messages, and messages the mailbox already holds, the listing ingests in one pass. */
+/** Index messages, and messages the mailbox already holds, the live step and the listing ingest in one pass. */
 export const GMAIL_INDEX_MESSAGES_PER_PASS = 500;
 
 const FULL_CONTENT_WINDOW_SECONDS = MAIL_FULL_CONTENT_WINDOW_DAYS * 24 * 60 * 60;
@@ -185,15 +193,25 @@ type GmailStep =
       stopped: boolean;
     };
 
+/** What is left of a pass's budget: full messages, and index or known ones. */
+interface GmailPassBudget {
+  full: number;
+  index: number;
+}
+
 /**
- * Fetches `ids` with no transaction open: a message the mailbox already holds by its Gmail id only as metadata (its
- * labels and flags are what can change), an index-phase message as metadata with its snippet, any other one in full
- * with its attachments spooled. A message deleted since it was listed is left out.
+ * Fetches `ids` with no transaction open, each charged to `budget` by what it costs: a message the mailbox already
+ * holds by its Gmail id only as metadata (its labels and flags are what can change; index), a listed message by its
+ * listing phase (`full` in full with its attachments spooled, `index` as metadata with its snippet), and one the
+ * history reports first as metadata, then in full only when its arrival and Date make it `full`
+ * (`mailContentStateOf`): old mail another client labels or moves is stored as an index. A message deleted since it
+ * was listed is left out.
  */
 async function prepareGmailBatch(
   ctx: GmailPassContext,
   ids: readonly string[],
   source: "history" | GmailListingPhase,
+  budget: GmailPassBudget,
 ): Promise<PreparedGmailMessage[]> {
   const known = await withTransaction(ctx.pool, (client) =>
     listKnownProviderMessageIds(client, ctx.params.mailboxItemId, ids),
@@ -201,19 +219,29 @@ async function prepareGmailBatch(
   const prepared: PreparedGmailMessage[] = [];
   for (const id of ids) {
     const isKnown = known.has(id);
-    const format: GmailMessageFormat = isKnown || source === "index" ? "metadata" : "full";
-    const fetched = await ctx.gmail.fetchMessage(id, format);
+    const listedFull = !isKnown && source === "full";
+    let fetched = await ctx.gmail.fetchMessage(id, listedFull ? "full" : "metadata");
     if (!fetched) continue;
     const arrival = mailArrivalOf({
       reportedNew: source === "history",
       date: fetched.message.date,
       connectedAt: ctx.connectedAt,
     });
+    const state = isKnown
+      ? null
+      : source === "history"
+        ? mailContentStateOf({ arrival, date: fetched.message.date, connectedAt: ctx.connectedAt })
+        : source;
+    if (state === "full" && !listedFull) {
+      fetched = await ctx.gmail.fetchMessage(id, "full");
+      if (!fetched) continue;
+    }
+    budget[state === "full" ? "full" : "index"]--;
     let content: IngestedMailContent | null = null;
-    if (!isKnown && format === "full") {
+    if (state === "full") {
       const { bodyText, bodyHtml, attachments } = fetched.message;
       content = { contentState: "full", bodyText, bodyHtml, attachments: await ctx.spool.spool(attachments) };
-    } else if (!isKnown) {
+    } else if (state === "index") {
       content = {
         contentState: "index",
         ...(fetched.snippet !== undefined ? { snippet: fetched.snippet } : {}),
@@ -381,16 +409,60 @@ async function writeGmailStep(
   return { kind: "written", ...written.value };
 }
 
+/** A run of the history written in one transaction: its changed messages, deleted ones and the cursor after it. */
+interface GmailHistoryChunk {
+  changed: string[];
+  removed: string[];
+  /** The id of the last record the chunk completes; `null` when it completes none. */
+  throughRecordId: string | null;
+  /** The chunk ends where a record ends, so the next one starts a record. */
+  endsAtRecordEnd: boolean;
+}
+
 /**
- * The live step: the messages `history.list` reports since the stored history id, new mail in full, in write
- * transactions of at most `GMAIL_MESSAGES_PER_BATCH` messages; the last one also drops the edges of deleted messages
- * and stores the new history id. It is bounded by the history alone, not by the pass budget: an interrupted step
- * lists the same history again, and the messages its committed batches wrote are then known and fetched as metadata.
- * A history id too old for `history.list` (404) restarts the full listing from a history id captured before it.
+ * Splits the history, in its order, into chunks of at most `GMAIL_MESSAGES_PER_BATCH` changed messages (a message
+ * reported by several records once, at its first: its fetch gives its state after all of them); a record larger than a
+ * chunk spans several. A record's deleted messages go with the chunk that completes it. The last chunk, possibly
+ * empty, completes the history.
+ */
+function historyChunks(records: readonly GmailHistoryRecord[]): GmailHistoryChunk[] {
+  const chunks: GmailHistoryChunk[] = [];
+  const seen = new Set<string>();
+  let chunk: GmailHistoryChunk = { changed: [], removed: [], throughRecordId: null, endsAtRecordEnd: true };
+  // Whether the record being split has put a message into `chunk` yet.
+  let recordInChunk = false;
+  for (const record of records) {
+    for (const id of record.changedMessageIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (chunk.changed.length === GMAIL_MESSAGES_PER_BATCH) {
+        chunks.push({ ...chunk, endsAtRecordEnd: !recordInChunk });
+        chunk = { changed: [], removed: [], throughRecordId: null, endsAtRecordEnd: true };
+      }
+      chunk.changed.push(id);
+      recordInChunk = true;
+    }
+    chunk.removed.push(...record.removedMessageIds);
+    chunk.throughRecordId = record.id;
+    recordInChunk = false;
+  }
+  chunks.push(chunk);
+  return chunks;
+}
+
+/**
+ * The live step: the messages `history.list` reports since the stored history id, in history order, written in
+ * transactions of at most `GMAIL_MESSAGES_PER_BATCH` messages, each storing the id of the last record it completed (the
+ * last one the new history id) and dropping the edges of the messages the records it covers deleted. Each message is
+ * charged to the pass budget (`prepareGmailBatch`); once the budget is spent the step stops at the next record's
+ * start, so a record is never split between passes and the stored id never passes an unapplied record. The next pass
+ * lists the history from there. A history id too old for `history.list` (404) restarts the full listing from a history
+ * id captured before it.
  */
 async function syncGmailHistory(
   ctx: GmailPassContext,
   cursor: GmailSyncCursor & { historyId: string },
+  budget: GmailPassBudget,
 ): Promise<GmailStep> {
   const history = await ctx.gmail.listHistorySince(cursor.historyId);
   if (history.invalidated) {
@@ -405,36 +477,38 @@ async function syncGmailHistory(
       return { cursor: { historyId, listingPhase: "full", listingPageToken: null }, stopped: false };
     });
   }
-  const changed = history.changedMessageIds;
-  if (changed.length === 0 && history.removedMessageIds.length === 0 && history.newHistoryId === cursor.historyId)
+  if (history.records.length === 0 && history.newHistoryId === cursor.historyId)
     return { kind: "written", cursor, stopped: false };
+  const chunks = historyChunks(history.records);
   let current: GmailSyncCursor = cursor;
-  for (let offset = 0; ; offset += GMAIL_MESSAGES_PER_BATCH) {
-    const last = offset + GMAIL_MESSAGES_PER_BATCH >= changed.length;
-    const batch = await prepareGmailBatch(ctx, changed.slice(offset, offset + GMAIL_MESSAGES_PER_BATCH), "history");
+  for (const [index, chunk] of chunks.entries()) {
+    const last = index === chunks.length - 1;
+    const batch = await prepareGmailBatch(ctx, chunk.changed, "history", budget);
     const expected = current;
     const step = await writeGmailStep(ctx, expected, async (client, protectedMoveMessageIds, storage) => {
       const ingested = await ingestGmailBatch(client, ctx, protectedMoveMessageIds, storage, batch);
       if (ingested < batch.length) return { cursor: expected, stopped: true };
-      if (!last) return { cursor: expected, stopped: false };
-      await removeGmailMessages(client, ctx, protectedMoveMessageIds, history.removedMessageIds);
-      return { cursor: { ...expected, historyId: history.newHistoryId }, stopped: false };
+      await removeGmailMessages(client, ctx, protectedMoveMessageIds, chunk.removed);
+      const historyId = last ? history.newHistoryId : (chunk.throughRecordId ?? expected.historyId);
+      return { cursor: { ...expected, historyId }, stopped: false };
     });
     if (step.kind !== "written" || step.stopped || last) return step;
     current = step.cursor;
+    // The next chunk starts a record: the budget decides whether this pass takes it.
+    if (chunk.endsAtRecordEnd && (budget.full <= 0 || budget.index <= 0)) return { ...step, stopped: true };
   }
+  return { kind: "written", cursor: current, stopped: false };
 }
 
 /** One listing page of the current phase, newest first, in one write transaction that moves the listing on. */
 async function listGmailPage(
   ctx: GmailPassContext,
   cursor: GmailSyncCursor & { listingPhase: GmailListingPhase },
-  budget: { full: number; index: number },
+  budget: GmailPassBudget,
 ): Promise<GmailStep> {
   const phase = cursor.listingPhase;
   const page = await ctx.gmail.listMessageIds(gmailListingQuery(phase, ctx.connectedAt), cursor.listingPageToken);
-  const batch = await prepareGmailBatch(ctx, page.ids, phase);
-  for (const item of batch) budget[item.content?.contentState === "full" ? "full" : "index"]--;
+  const batch = await prepareGmailBatch(ctx, page.ids, phase, budget);
   return writeGmailStep(ctx, cursor, async (client, protectedMoveMessageIds, storage) => {
     const ingested = await ingestGmailBatch(client, ctx, protectedMoveMessageIds, storage, batch);
     if (ingested < batch.length) return { cursor, stopped: true };
@@ -533,10 +607,12 @@ export async function reconcileGmailAccount(
       archiveFolderItemId: prepared.value.archiveFolderItemId,
       spool,
     };
+    // Shared by the live step and the listing, so history the pass applies leaves less of the listing to it.
+    const budget: GmailPassBudget = { full: GMAIL_FULL_MESSAGES_PER_PASS, index: GMAIL_INDEX_MESSAGES_PER_PASS };
     let step: GmailStep;
     const { historyId } = cursor;
     if (historyId !== null) {
-      step = await syncGmailHistory(ctx, { ...cursor, historyId });
+      step = await syncGmailHistory(ctx, { ...cursor, historyId }, budget);
     } else {
       // A first pass: the history id is captured before the listing begins, so the live step of later passes applies
       // everything that arrives meanwhile.
@@ -546,7 +622,6 @@ export async function reconcileGmailAccount(
         stopped: false,
       }));
     }
-    const budget = { full: GMAIL_FULL_MESSAGES_PER_PASS, index: GMAIL_INDEX_MESSAGES_PER_PASS };
     for (;;) {
       if (step.kind === "ended") return ended;
       // Another pass moved the cursor on since it was read: this pass stops and leaves the rest to a later one.

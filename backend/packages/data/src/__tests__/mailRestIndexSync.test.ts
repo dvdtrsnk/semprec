@@ -20,6 +20,7 @@ import {
 } from "../mail/mailAccountSyncStateStore.js";
 import {
   GMAIL_FULL_MESSAGES_PER_PASS,
+  GMAIL_INDEX_MESSAGES_PER_PASS,
   reconcileGmailAccount,
   type GmailHistoryResult,
   type GmailMailClient,
@@ -34,6 +35,7 @@ import {
 } from "../mail/graphReconcile.js";
 import { MAIL_FULL_CONTENT_WINDOW_DAYS } from "../mail/mailContentState.js";
 import type { MailSyncPass } from "../mail/mailSyncPass.js";
+import { gmailHistory } from "../testSupport/gmailListing.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -225,14 +227,7 @@ function gmailAccount(options: {
       listHistorySince: async (startHistoryId) => {
         await probe.check();
         fake.historyStarts.push(startHistoryId);
-        return (
-          options.history?.(startHistoryId) ?? {
-            invalidated: false,
-            newHistoryId: startHistoryId,
-            changedMessageIds: [],
-            removedMessageIds: [],
-          }
-        );
+        return options.history?.(startHistoryId) ?? gmailHistory(startHistoryId);
       },
       listMessageIds: async (query, pageToken) => {
         await probe.check();
@@ -375,19 +370,18 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
     const account = gmailAccount({
       recent: [],
       old: [],
-      history: () => ({
-        invalidated: false,
-        newHistoryId: "1001",
-        changedMessageIds: ["delivered"],
-        removedMessageIds: [],
-      }),
+      history: () => gmailHistory("1001", ["delivered"]),
     });
 
     await expect(reconcile(params, account.client)).resolves.toEqual({ ran: true, complete: true });
 
     expect(account.historyStarts).toEqual(["1000"]);
     expect(account.listings).toEqual([]);
-    expect(account.fetches).toEqual([{ id: "delivered", format: "full" }]);
+    // Its Date decides its content state first, from the metadata.
+    expect(account.fetches).toEqual([
+      { id: "delivered", format: "metadata" },
+      { id: "delivered", format: "full" },
+    ]);
     expect(await storedMessages(params.mailboxItemId)).toEqual([
       expect.objectContaining({
         providerMessageId: "delivered",
@@ -398,6 +392,50 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
       }),
     ]);
     expect((await syncState(params.mailboxItemId)).gmailHistoryId).toBe("1001");
+  });
+
+  it("charges history.list's old messages to the pass budget as an index and resumes after the last record it applied", async () => {
+    const params = await setup("gmail_api");
+    await reconcile(params, gmailAccount({ recent: [], old: [] }).client);
+    // Another client relabels old mail in bulk: one record per message, ids above the stored 1000.
+    const old = ids("relabelled", GMAIL_INDEX_MESSAGES_PER_PASS + 100);
+    const records = [...old, "delivered"].map((id, index) => ({
+      id: String(1001 + index),
+      changedMessageIds: [id],
+      removedMessageIds: [],
+    }));
+    const history = (startHistoryId: string): GmailHistoryResult => ({
+      invalidated: false,
+      newHistoryId: "5000",
+      records: records.filter((record) => Number(record.id) > Number(startHistoryId)),
+    });
+    const first = gmailAccount({ recent: [], old, history });
+
+    await expect(reconcile(params, first.client)).resolves.toEqual({ ran: true, complete: false });
+
+    expect(first.fetches.every((fetch) => fetch.format === "metadata")).toBe(true);
+    const applied = await storedMessages(params.mailboxItemId);
+    expect(applied).toHaveLength(GMAIL_INDEX_MESSAGES_PER_PASS);
+    expect(applied.every((m) => m.contentState === "index" && m.arrival === "backfill" && m.body === "")).toBe(true);
+    // The id of the last record applied, not the history's end.
+    expect((await syncState(params.mailboxItemId)).gmailHistoryId).toBe(String(1000 + GMAIL_INDEX_MESSAGES_PER_PASS));
+
+    const second = gmailAccount({ recent: [], old, history });
+    await expect(reconcile(params, second.client)).resolves.toEqual({ ran: true, complete: true });
+
+    expect(second.historyStarts).toEqual([String(1000 + GMAIL_INDEX_MESSAGES_PER_PASS)]);
+    // New mail the history reports is read as metadata first, then in full.
+    expect(second.fetches.filter((fetch) => fetch.id === "delivered")).toEqual([
+      { id: "delivered", format: "metadata" },
+      { id: "delivered", format: "full" },
+    ]);
+    const all = await storedMessages(params.mailboxItemId);
+    expect(all).toHaveLength(old.length + 1);
+    expect(all.find((m) => m.providerMessageId === "delivered")).toMatchObject({
+      arrival: "live",
+      contentState: "full",
+    });
+    expect((await syncState(params.mailboxItemId)).gmailHistoryId).toBe("5000");
   });
 
   it("resumes an interrupted listing at its stored page instead of listing again, without duplicates", async () => {
@@ -462,12 +500,7 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
     const account = gmailAccount({
       recent: ["before", "resynced"],
       old: ["old-resynced"],
-      history: (startHistoryId) => ({
-        invalidated: true,
-        newHistoryId: startHistoryId,
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+      history: (startHistoryId) => ({ invalidated: true, newHistoryId: startHistoryId, records: [] }),
     });
 
     await expect(reconcile(params, account.client)).resolves.toEqual({ ran: true, complete: true });
@@ -499,7 +532,7 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
     const account = gmailAccount({
       recent: [],
       old: [],
-      history: () => ({ invalidated: false, newHistoryId: "1001", changedMessageIds: ["late"], removedMessageIds: [] }),
+      history: () => gmailHistory("1001", ["late"]),
     });
     const moved = { ...account.client };
     // Another pass stores a newer history id while this one fetches.

@@ -12,6 +12,7 @@ import {
   ensureMailAccountSyncState,
   getTestPool,
   reconcileGmailAccount,
+  gmailHistory,
   recentGmailListing,
   resetDatabase,
   UNGUARDED_MAIL_SYNC_PASS,
@@ -75,12 +76,7 @@ async function seedMail(tenantId: string) {
     };
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "2",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("2"),
       listMessageIds: recentGmailListing(["message"]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({

@@ -50,7 +50,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { recentGmailListing } from "../testSupport/gmailListing.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 
 interface MailIds {
   mailboxes: string;
@@ -340,7 +340,7 @@ function gmailAccount(messageIds: string[]): { client: GmailMailClient; calls: s
     getCurrentHistoryId: async () => "9000",
     listHistorySince: async () => {
       calls.push("listHistorySince");
-      return { invalidated: false, newHistoryId: "9000", changedMessageIds: [], removedMessageIds: [] };
+      return gmailHistory("9000");
     },
     listMessageIds: async (query) => {
       calls.push(`listMessageIds ${query.split(":")[0]}`);

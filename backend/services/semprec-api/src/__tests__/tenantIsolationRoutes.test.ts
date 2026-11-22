@@ -28,6 +28,7 @@ import {
   getTenantZeroId,
   getTestPool,
   reconcileGmailAccount,
+  gmailHistory,
   recentGmailListing,
   recordBackfill,
   recordReconcile,
@@ -1435,12 +1436,7 @@ function seedMailThread(
     };
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "2",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("2"),
       listMessageIds: recentGmailListing([providerId]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({

@@ -14,6 +14,7 @@ import {
   getTestPool,
   insertItemsWithIds,
   reconcileGmailAccount,
+  gmailHistory,
   recentGmailListing,
   resetDatabase,
   UNGUARDED_MAIL_SYNC_PASS,
@@ -263,12 +264,7 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
       const uploadedFirst = await uploadIn(tenantA, "first.txt", uploadedFirstContent);
       const gmail: GmailMailClient = {
         getCurrentHistoryId: async () => "100",
-        listHistorySince: async () => ({
-          invalidated: false,
-          newHistoryId: "101",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
+        listHistorySince: async () => gmailHistory("101"),
         listMessageIds: recentGmailListing(["sent-message", "uploaded-first"]),
         listLabels: async () => [{ id: "SENT", name: "Sent", type: "system" }],
         fetchMessage: async (id) => ({

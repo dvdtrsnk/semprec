@@ -108,7 +108,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
-import { recentGmailListing } from "../testSupport/gmailListing.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 import {
   backfillOfFetchedSince,
   fakeFetchedMessage,
@@ -1802,12 +1802,7 @@ describe("Gmail reconcile core", () => {
   function fakeGmailClient(overrides: Partial<GmailMailClient> = {}): GmailMailClient {
     return {
       getCurrentHistoryId: async () => "100",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "101",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("101"),
       listMessageIds: recentGmailListing(["m1"]),
       fetchMessage: async (id) => ({
         id,
@@ -1832,12 +1827,7 @@ describe("Gmail reconcile core", () => {
     let fullResyncCallCount = 0;
     await reconcile(
       fakeGmailClient({
-        listHistorySince: async () => ({
-          invalidated: true,
-          newHistoryId: "100",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
+        listHistorySince: async () => ({ invalidated: true, newHistoryId: "100", records: [] }),
         listMessageIds: async (query, pageToken) => {
           fullResyncCallCount++;
           return recentGmailListing(["m2"])(query, pageToken);
@@ -1884,12 +1874,7 @@ describe("Gmail reconcile core", () => {
 
     await patch({ read: true });
     const observed = fakeGmailClient({
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "102",
-        changedMessageIds: ["m1"],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("102", ["m1"]),
       fetchMessage: async () => ({
         id: "m1",
         threadId: "t1",
@@ -2193,7 +2178,8 @@ describe("message arrival: live and backfill", () => {
         ...sync,
       });
       const history = (changedMessageIds: string[], invalidated = false) => ({
-        listHistorySince: async () => ({ invalidated, newHistoryId: "101", changedMessageIds, removedMessageIds: [] }),
+        listHistorySince: async () =>
+          invalidated ? { invalidated, newHistoryId: "101", records: [] } : gmailHistory("101", changedMessageIds),
       });
       const reconcile = (client: GmailMailClient) =>
         reconcileGmailAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
@@ -2356,12 +2342,7 @@ describe("mail sync job error handling", () => {
               calls.push("reconcile");
               return "1";
             },
-            listHistorySince: async () => ({
-              invalidated: false,
-              newHistoryId: "1",
-              changedMessageIds: [],
-              removedMessageIds: [],
-            }),
+            listHistorySince: async () => gmailHistory("1"),
             listMessageIds: recentGmailListing(["fake-provider-id"]),
             fetchMessage: async () => ({
               id: "fake-provider-id",

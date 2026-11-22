@@ -16,7 +16,7 @@ import {
   type GmailMailClient,
 } from "../mail/gmailReconcile.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { recentGmailListing } from "../testSupport/gmailListing.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 
 let admin: Pool;
@@ -187,12 +187,7 @@ const LABELS: GmailLabelRef[] = [
 function gmailClient(messages: Record<string, string[]>): GmailMailClient {
   return {
     getCurrentHistoryId: async () => "100",
-    listHistorySince: async () => ({
-      invalidated: false,
-      newHistoryId: "101",
-      changedMessageIds: Object.keys(messages),
-      removedMessageIds: [],
-    }),
+    listHistorySince: async () => gmailHistory("101", Object.keys(messages)),
     listMessageIds: recentGmailListing(Object.keys(messages)),
     fetchMessage: async (id) => ({
       id,
