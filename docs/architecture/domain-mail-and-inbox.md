@@ -316,6 +316,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   captured revision, durable phase, bounded validated evidence) and committed before dispatch. Only the
   claiming token records the outcome. The provider call runs outside every transaction, with the shared IMAP
   connection limiter, under a 30 s elapsed deadline per preparation/step.
+- An IMAP move phase (`drainImapMoves`) runs all its moves over one connection it owns and closes; a later round of a
+  pass hands it the pass's open connection. A move whose provider outcome is unknown (a failed or unanswered command,
+  a preparation without a result) closes that connection, and the next move opens a new one.
 - OAuth tokens are acquired before the claim into a private one-use command; a lost claim discards it.
 - Unknown acknowledgement or owner death leaves the operation in-flight/uncertain; nothing (lease, timer, new
   desire) clears it automatically and no command is blindly repeated. IMAP identity includes UIDVALIDITY and
