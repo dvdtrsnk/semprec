@@ -490,6 +490,45 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   saying its content is not downloaded, and the answer-expected gate shows it as a preview marked so; a `cached`
   message is read like a stored one.
 
+### Search
+
+- Two layers: the local index (`item_search_index`, the thread list's `matchesSearch`) knows an `index` message only by
+  subject, addresses, snippet and attachment names, so a word only an older body holds is found at the provider.
+  `GET /api/mail/threads?q=` and global search stay local; `GET /api/mail/search` asks both
+  (`mail/mailRemoteSearch.ts`).
+- `GET /api/mail/search?q=&mailboxId=&limit=` answers
+  `{ threads, localCount, remote: { searched, failed: [{ mailboxId, reason }], unindexed } }`. `q` (trimmed, 1–1000
+  characters, required) and `limit` (1–200, default 50) are read as the thread list reads them, a `before:`/`after:`
+  that is no ISO date is 400. `threads` are thread list rows: the local matches over every box (a thread with a copy
+  outside Junk and Trash, `box: "all"`) together with the threads of the Emails the providers found, which must meet the
+  query's operators too (`searchMessageItemIds`), deduplicated, newest first, at most `limit`; `localCount` is how many
+  of them the local search matched. A `mailboxId` narrows both; an unknown, foreign or trashed one is the 404 of a
+  random id, before any provider call.
+- Provider search runs only for a query with free text (`parseMailSearchTerms`: words and quoted phrases, `-` excludes,
+  `or` is dropped, at most 8 terms of 100 characters): every operator is a condition on the stored index. Each live
+  account with a sync state is searched outside any transaction, at most 3 at a time (`MAIL_REMOTE_SEARCH_CONCURRENCY`),
+  with an overall deadline of 15 s (`MAIL_REMOTE_SEARCH_DEADLINE_MS`) and at most 100 hits per account
+  (`MAIL_REMOTE_SEARCH_MAX_HITS`); hits are mapped to Emails in a short transaction afterwards. An account with Mail off
+  (`mailOff`) or whose last sync failure is `reauthorization` (`reauthorizationRequired`) is reported in `failed`
+  without a provider call. A refused sign-in is `reauthorizationRequired`, any other provider failure is logged by error
+  name with local ids and is `providerUnreachable`, an account that has not answered by the deadline is `timeout` (its
+  Gmail or Graph request is aborted, its IMAP search stops at the next folder, what it finds later is dropped). A
+  database failure keeps its identity. A hit no local Emails item records is counted in `unindexed`.
+  - IMAP: the stored password (access logged as the user, purpose `imap_search`), the client from the content reads'
+    factory (kept session or a new connection under the limiter). Folders: Inbox, Archive and Sent, in that order; an
+    account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk, Drafts and the user's own
+    folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for an excluded one), 30 s
+    each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that refuses it is asked again
+    with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the folder's UIDVALIDITY equals
+    the stored one; otherwise, or without an edge, it is unindexed.
+  - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
+    Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
+    `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
+    the local box filter leaves out a thread only in Junk or Trash. Both map by `provider_message_id` of the account; 30
+    s per request, ended earlier by the deadline.
+- Only a search that asks a provider is counted by the throttle: action `mailRemoteSearch`, 30 per 15 minutes **per user
+  id** (the `throttle` member), refusal 429 `rate_limited` with `Retry-After`, before any provider call.
+
 ### IMAP connection limits and kept sync sessions
 
 - `mail/imapConnectionLimiter.ts` is the one per-process limiter of IMAP connections, shared by sync passes, moves,
@@ -502,11 +541,12 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   it would cap how many accounts of one provider can listen at all. Everything else (`kind: "work"`: a sync session,
   the IDLE folder lookup, a Sent APPEND) counts against both.
 - `mail/imapSessionPool.ts` keeps one IMAP sync connection per account open between uses in the process
-  (`sharedImapSessionPool`, used by the composition root's sync adapter and its on-demand content reads). The move
-  drain and the pass of a job, consecutive passes and content reads take the same connection in turn, exclusively; a
-  second concurrent caller gets a connection of its own. A kept connection is reused only when it was opened with the same server settings, user name and
-  credential, answers a NOOP, and nothing it ran failed (`ImapMailClient.isReusable`); a rejected operation, a
-  failed or timed-out fetch, an ambiguous move or a changed sign-in closes it instead.
+  (`sharedImapSessionPool`, used by the composition root's sync adapter, its on-demand content reads and the provider
+  search). The move drain and the pass of a job, consecutive passes and content reads take the same connection in turn,
+  exclusively; a second concurrent caller gets a connection of its own. A kept connection is reused only when it was
+  opened with the same server settings, user name and credential, answers a NOOP, and nothing it ran failed
+  (`ImapMailClient.isReusable`); a rejected operation, a failed or timed-out fetch, an ambiguous move or a changed
+  sign-in closes it instead.
 - A kept connection holds its account and host slots while it is unused, because the provider counts it, and gives
   them up as soon as another caller has to wait for one of them (the limiter asks it to close). It is closed after
   4 minutes unused (`IMAP_SESSION_IDLE_TIMEOUT_MS`, below common server idle cutoffs), on `closeAccount` (the
@@ -760,8 +800,8 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
 ## Provider failure privacy
 
 Applies to SMTP send, IMAP connect and later IMAP calls/streams, Gmail/Graph sync reads and attachment
-streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification, removal cleanup and the
-on-demand content and attachment reads.
+streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification, removal cleanup, the
+on-demand content and attachment reads and the provider search.
 
 - Inside the operation owner, keep the original primary and secondary failure values (including `undefined`)
   until settlement and cleanup finish; cleanup never replaces the primary.

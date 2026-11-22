@@ -57,6 +57,7 @@ export { createMailSummaryRouteHandler } from "./mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mailFolderList.js";
 export { createMailMessageContentRouteHandler } from "./mailMessageContent.js";
 export { createMailAttachmentSaveRouteHandler } from "./mailAttachmentSave.js";
+export { createMailSearchRouteHandler } from "./mailRemoteSearch.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
@@ -250,6 +251,15 @@ export const manifest: ModuleManifest = {
       method: "GET",
       path: "/api/mail/threads",
       handlerExport: "createMailThreadListRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailSearch",
+      method: "GET",
+      path: "/api/mail/search",
+      handlerExport: "createMailSearchRouteHandler",
+      // The thread list's local search together with a search at each account's provider, read outside any
+      // transaction; nothing is written.
       justification: "single-consumer-read",
     },
     {

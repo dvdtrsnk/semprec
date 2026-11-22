@@ -21,6 +21,14 @@ export const MAIL_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "mail search",
+    method: "GET",
+    path: "/api/mail/search?q=offer",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   // prettier-ignore
   { name: "mail thread detail", method: "GET", path: `/api/mail/threads/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
   {

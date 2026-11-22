@@ -23,6 +23,7 @@ const SMALL_LIMITS = {
   invitationAccept: { maxEvents: 2, windowSeconds: 100 },
   mailboxCredentialVerification: { maxEvents: 2, windowSeconds: 100 },
   mailContentFetch: { maxEvents: 2, windowSeconds: 100 },
+  mailRemoteSearch: { maxEvents: 2, windowSeconds: 100 },
 };
 
 describe("CLIENT_IP_THROTTLE_LIMITS", () => {
@@ -34,6 +35,7 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       invitationAccept: { maxEvents: 10, windowSeconds: 3600 },
       mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 900 },
       mailContentFetch: { maxEvents: 120, windowSeconds: 900 },
+      mailRemoteSearch: { maxEvents: 30, windowSeconds: 900 },
     });
   });
 });
@@ -106,6 +108,7 @@ describe("createClientIpThrottle", () => {
       "invitationAccept",
       "mailboxCredentialVerification",
       "mailContentFetch",
+      "mailRemoteSearch",
     ];
     for (const action of actions) {
       throttle.record(action, "192.0.2.1");
@@ -274,28 +277,31 @@ describe("tryAcquire", () => {
   });
 });
 
-describe("mailContentFetch", () => {
+describe.each([
+  { action: "mailContentFetch" as const, maxEvents: 120 },
+  { action: "mailRemoteSearch" as const, maxEvents: 30 },
+])("$action", ({ action, maxEvents }) => {
   const USER = "0b0e0c4e-6f0e-4d53-9d0b-6f3c5a2f1a11";
   const OTHER_USER = "7c1d2a90-3b54-4e0f-8a55-1f2e3d4c5b66";
 
-  it("grants a user 120 fetches in 15 minutes, refuses the next and counts each user apart", () => {
+  it(`grants a user ${maxEvents} in 15 minutes, refuses the next and counts each user apart`, () => {
     const clock = makeClock();
     const throttle = createClientIpThrottle({ now: clock.now });
-    for (let attempt = 0; attempt < 120; attempt++) {
-      expect(throttle.tryAcquire("mailContentFetch", USER).granted).toBe(true);
+    for (let attempt = 0; attempt < maxEvents; attempt++) {
+      expect(throttle.tryAcquire(action, USER).granted).toBe(true);
     }
-    expect(throttle.tryAcquire("mailContentFetch", USER)).toEqual({ granted: false, retryAfterSeconds: 900 });
-    expect(throttle.tryAcquire("mailContentFetch", OTHER_USER).granted).toBe(true);
+    expect(throttle.tryAcquire(action, USER)).toEqual({ granted: false, retryAfterSeconds: 900 });
+    expect(throttle.tryAcquire(action, OTHER_USER).granted).toBe(true);
     clock.advanceSeconds(900);
-    expect(throttle.tryAcquire("mailContentFetch", USER).granted).toBe(true);
+    expect(throttle.tryAcquire(action, USER).granted).toBe(true);
   });
 
   it("takes the user id as the key, without the address grouping", () => {
     const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
-    throttle.record("mailContentFetch", "2001:db8:1:2::1");
-    throttle.record("mailContentFetch", "2001:db8:1:2::1");
-    expect(throttle.retryAfterSeconds("mailContentFetch", "2001:db8:1:2::1")).toBe(100);
-    expect(throttle.retryAfterSeconds("mailContentFetch", "2001:db8:1:2::2")).toBeNull();
+    throttle.record(action, "2001:db8:1:2::1");
+    throttle.record(action, "2001:db8:1:2::1");
+    expect(throttle.retryAfterSeconds(action, "2001:db8:1:2::1")).toBe(100);
+    expect(throttle.retryAfterSeconds(action, "2001:db8:1:2::2")).toBeNull();
   });
 });
 

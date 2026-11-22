@@ -218,6 +218,8 @@ export async function listMailThreads(
     personId?: string | null;
     /** Detail-only mode: one thread in any box or folder, drafts included. The list never sets it. */
     threadId?: string | null;
+    /** With `search`: the message satisfying it must be one of these Emails items. */
+    searchMessageItemIds?: readonly string[];
   } = {
     box: "inbox",
     folderId: null,
@@ -250,7 +252,7 @@ export async function listMailThreads(
   predicates.push(
     `($8::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $8))`,
   );
-  const search = filters.search ? matchesSearch(filters.search, 10) : null;
+  const search = filters.search ? matchesSearch(filters.search, 10, filters.searchMessageItemIds) : null;
   if (search) predicates.push(search.sql);
   const result = await client.query<{ thread: unknown; thread_item_id: string | null }>(
     `

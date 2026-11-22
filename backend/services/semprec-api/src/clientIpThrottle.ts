@@ -1,9 +1,9 @@
 import { isIPv4, isIPv6 } from "node:net";
 
 /**
- * `mailboxCredentialVerification` (the password mailbox connect login check) and `mailContentFetch` (a message body
- * or an attachment fetched from the mail provider on demand) are counted per user; the other four are public
- * pre-authentication actions counted per client address.
+ * `mailboxCredentialVerification` (the password mailbox connect login check), `mailContentFetch` (a message body or an
+ * attachment fetched from the mail provider on demand) and `mailRemoteSearch` (a mail search that asks the providers)
+ * are counted per user; the other four are public pre-authentication actions counted per client address.
  */
 export type ThrottledAction =
   | "login"
@@ -11,7 +11,8 @@ export type ThrottledAction =
   | "passwordResetConsume"
   | "invitationAccept"
   | "mailboxCredentialVerification"
-  | "mailContentFetch";
+  | "mailContentFetch"
+  | "mailRemoteSearch";
 
 export interface ClientIpThrottleLimit {
   maxEvents: number;
@@ -26,6 +27,7 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   invitationAccept: { maxEvents: 10, windowSeconds: 60 * 60 },
   mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
   mailContentFetch: { maxEvents: 120, windowSeconds: 15 * 60 },
+  mailRemoteSearch: { maxEvents: 30, windowSeconds: 15 * 60 },
 };
 
 const THROTTLE_ACTIONS = Object.keys(CLIENT_IP_THROTTLE_LIMITS) as ThrottledAction[];
@@ -84,7 +86,11 @@ export function throttleKeyForIp(ip: string): string {
 }
 
 /** The actions keyed by the user id as is; every other action by client address via `throttleKeyForIp`. */
-const PER_USER_ACTIONS: ReadonlySet<ThrottledAction> = new Set(["mailboxCredentialVerification", "mailContentFetch"]);
+const PER_USER_ACTIONS: ReadonlySet<ThrottledAction> = new Set([
+  "mailboxCredentialVerification",
+  "mailContentFetch",
+  "mailRemoteSearch",
+]);
 
 function throttleKey(action: ThrottledAction, subject: string): string {
   return PER_USER_ACTIONS.has(action) ? subject : throttleKeyForIp(subject);

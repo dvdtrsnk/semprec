@@ -2579,6 +2579,36 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectForeign404(b.member, [foreign.emailId], ([id]) => content(id));
     expectText(await sendOk(a.member, content(foreign.emailId)), [foreign.emailId], [own.emailId]);
   },
+  "mail search": async () => {
+    const seed = async (fixture: TenantFixture) => {
+      const threadId = await seedMailThread(
+        fixture,
+        `<${randomUUID()}@example.test>`,
+        `search-${randomUUID()}`,
+        `thread-${randomUUID()}`,
+      );
+      const mailboxId = await inTenantTransaction(fixture.tenantId, async (client) => {
+        const { rows } = await client.query<{ mailbox_item_id: string }>(
+          "SELECT mailbox_item_id FROM mail_message_meta WHERE thread_id = $1",
+          [threadId],
+        );
+        const [row] = rows;
+        if (!row) throw new Error("Missing ingested message");
+        return row.mailbox_item_id;
+      });
+      return { threadId, mailboxId };
+    };
+    const foreign = await seed(a);
+    const own = await seed(b);
+    // Operators only: the stored index answers and no provider is asked.
+    const search = (mailboxId?: string): Request =>
+      GET(
+        `/api/mail/search?q=${encodeURIComponent("from:sender@example.test")}${mailboxId ? `&mailboxId=${mailboxId}` : ""}`,
+      );
+    await expectExcludesA(b.member, search(), [own.threadId], [foreign.threadId]);
+    await expectForeign404(b.member, [foreign.mailboxId], ([id]) => search(id));
+    expectText(await sendOk(a.member, search(foreign.mailboxId)), [foreign.threadId], [own.threadId]);
+  },
   "mail attachment save": async () => {
     const seed = async (fixture: TenantFixture) =>
       mailMessageOf(
