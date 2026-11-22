@@ -8,13 +8,14 @@ import { NotFoundError, RateLimitedError, ValidationError } from "../errors.js";
 import type { CustomRouteResult, RouteUrl, RouteUser } from "../customRoute.js";
 import { requestUrl } from "../customRoute.js";
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
+import type { ImapFolderSelection } from "./imapReconcile.js";
 import type { ImapMailClient } from "./imapMailClient.js";
 import { SYNC_MODES, type SyncMode } from "./mailAccountSyncStateStore.js";
 import type { MailContentProviders } from "./mailMessageContent.js";
 import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
 import { hasMailSearchTerms, parseMailSearchTerms, type MailSearchTerms } from "./mailSearchTerms.js";
 import { hasInvalidMailSearchDate, listMailThreads } from "./mailThreadListQuery.js";
-import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { ImapFolderUnavailableError, MailReauthorizationRequiredError } from "./providerTypes.js";
 import { parseMailSearchQuery, type ParsedMailSearchQuery } from "./search.js";
 import { logger } from "./logger.js";
 
@@ -293,10 +294,19 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
     let remaining = MAIL_REMOTE_SEARCH_MAX_HITS;
     for (const folder of mailbox.imapFolders) {
       if (remaining === 0 || context.signal.aborted) break;
-      const { uidvalidity, uids } = await providerPhase(context, async () => {
-        const selection = await imap.selectFolder(folder.path);
+      const searched = await providerPhase(context, async () => {
+        let selection: ImapFolderSelection;
+        try {
+          selection = await imap.selectFolder(folder.path);
+        } catch (error) {
+          // A folder the server no longer holds has nothing to find; the others are still searched.
+          if (error instanceof ImapFolderUnavailableError) return null;
+          throw error;
+        }
         return { uidvalidity: selection.uidvalidity, uids: await searchText(folder.path, context.search.terms) };
       });
+      if (searched === null) continue;
+      const { uidvalidity, uids } = searched;
       const newest = [...new Set(uids)].sort((a, b) => b - a).slice(0, remaining);
       remaining -= newest.length;
       hits.push({

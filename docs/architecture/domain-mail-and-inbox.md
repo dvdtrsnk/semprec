@@ -486,7 +486,10 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     sync's factory (the kept session of `sharedImapSessionPool`, else a new connection under the connection limiter).
     Folder edge by folder, those with a UID first: the edge's UID while the folder's UIDVALIDITY equals the stored
     `mail_folder_sync_state.uidvalidity`, else (UID gone, UIDVALIDITY changed, edge without UID) the first five UIDs
-    `UID SEARCH HEADER Message-ID` finds in that folder. The body parts are chosen as the full ingest chooses them
+    `UID SEARCH HEADER Message-ID` finds in that folder. A folder whose SELECT the server refuses as one it does not
+    hold or does not let the login open (`NO` with `NONEXISTENT`, `NOPERM` or no response code,
+    `ImapFolderUnavailableError`) is passed over and the next edge tried; any other failure, a dropped connection
+    included, ends the read. The body parts are chosen as the full ingest chooses them
     (`walkBodyStructure`), each read up to 16 MiB (`IMAP_CONTENT_MAX_PART_BYTES`) under a 60 s deadline; a SEARCH has
     30 s. Gmail and Graph read the body with the sync's own full read, so it is chosen and annotated as the full ingest
     stores it: Gmail `fetchMessage(id, "full")` (`messages.get format=full` by `provider_message_id`), Graph
@@ -551,7 +554,8 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   - IMAP: the stored password (access logged as the user, or `ai_agent` with the run id, purpose `imap_search`), the
     client from the content reads' factory (kept session or a new connection under the limiter). Folders: Inbox, Archive
     and Sent, in that order; an account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk,
-    Drafts and the user's own folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
+    Drafts and the user's own folders are not searched. A folder the server no longer holds
+    (`ImapFolderUnavailableError`) is passed over. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
     an excluded one), 30 s each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that
     refuses it is asked again with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the
     folder's stored UIDVALIDITY equals the one the search selected, as the search began and again in the mapping's

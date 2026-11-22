@@ -16,13 +16,18 @@ import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import type { GmailMailClient } from "./gmailReconcile.js";
 import type { GraphMailClient } from "./graphReconcile.js";
 import type { ImapMailClient, ImapMessageBody } from "./imapMailClient.js";
+import type { ImapFolderSelection } from "./imapReconcile.js";
 import { getMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
 import { readFreshMailContentCache, writeMailContentCache, type MailContentCacheRow } from "./mailContentCacheStore.js";
 import { readMailMessageAttachments, type MailMessageAttachment } from "./mailMessageAttachments.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import type { MailSearchTerms } from "./mailSearchTerms.js";
-import { AttachmentCapExceededError, MailReauthorizationRequiredError } from "./providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  ImapFolderUnavailableError,
+  MailReauthorizationRequiredError,
+} from "./providerTypes.js";
 import { logger } from "./logger.js";
 
 /** Why a message's content or an attachment's bytes could not be fetched from the provider. */
@@ -292,7 +297,8 @@ const MAX_SEARCH_CANDIDATES = 5;
 /**
  * Finds the message on the IMAP server and reads it with `read`. Folder by folder (the edges with a UID first): the
  * edge's UID while the folder's UIDVALIDITY still equals the stored one, else (UID gone, UIDVALIDITY changed, edge
- * without UID) the UIDs `UID SEARCH HEADER Message-ID` finds in that folder. `null` when no folder holds it.
+ * without UID) the UIDs `UID SEARCH HEADER Message-ID` finds in that folder. A folder the server no longer holds is
+ * passed over; any other provider failure ends the search. `null` when no folder holds it.
  */
 export async function locateImapMessage<T>(
   imap: ImapMailClient,
@@ -301,7 +307,13 @@ export async function locateImapMessage<T>(
   read: (path: string, uid: number) => Promise<T | null>,
 ): Promise<T | null> {
   for (const edge of locator.imapEdges) {
-    const selection = await imap.selectFolder(edge.path);
+    let selection: ImapFolderSelection;
+    try {
+      selection = await imap.selectFolder(edge.path);
+    } catch (error) {
+      if (error instanceof ImapFolderUnavailableError) continue;
+      throw error;
+    }
     if (edge.uid !== null && edge.uidValidity === String(selection.uidvalidity)) {
       const found = await read(edge.path, edge.uid);
       if (found !== null) return found;

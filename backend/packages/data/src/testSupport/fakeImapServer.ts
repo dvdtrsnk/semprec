@@ -286,6 +286,8 @@ export class FakeImapServer {
   readonly bodyFetches: Array<{ path: string; uid: number; section: string; length?: number }> = [];
   /** Command verbs answered with `NO` instead of their result. */
   readonly refusedVerbs = new Set<string>();
+  /** Command verbs answered by closing the connection, as a server or network that drops it does. */
+  readonly droppedVerbs = new Set<string>();
   /**
    * Called with each command's verb (`UID FETCH` as `FETCH`) before it is answered, so a test can change the account
    * between two commands of one client call, as another client would.
@@ -371,6 +373,12 @@ export class FakeImapServer {
     });
     folder.uidNext = firstUid + folder.messages.length;
     folder.expunged = [];
+  }
+
+  /** Another client deletes the folder: a SELECT of it is answered `NO [NONEXISTENT]` and LIST no longer names it. */
+  deleteFolder(path: string): void {
+    this.folder(path);
+    this.folders.delete(path);
   }
 
   /** Replaces a message's flags, as another client's STORE would; raises the folder's mod-sequence. */
@@ -495,8 +503,9 @@ export class FakeImapServer {
     this.commands.push(verb);
     this.beforeCommand?.(verb);
     const ok = (text = "done") => `${String(tag)} OK ${text}\r\n`;
-    const selected = session.selected !== undefined ? this.folder(session.selected) : undefined;
+    const selected = session.selected !== undefined ? this.folders.get(session.selected) : undefined;
     if (this.refusedVerbs.has(verb)) return { text: `${String(tag)} NO ${verb} refused\r\n` };
+    if (this.droppedVerbs.has(verb)) return { text: "", end: true };
 
     switch (verb) {
       case "CAPABILITY":
@@ -544,7 +553,12 @@ export class FakeImapServer {
       case "SELECT":
       case "EXAMINE": {
         const path = String(args[0]);
-        const folder = this.folder(path);
+        const folder = this.folders.get(path);
+        if (!folder) {
+          // A failed SELECT leaves no folder selected.
+          session.selected = undefined;
+          return { text: `${String(tag)} NO [NONEXISTENT] Unknown mailbox\r\n` };
+        }
         session.selected = path;
         const modseq = this.options.capabilities.includes("CONDSTORE")
           ? `* OK [HIGHESTMODSEQ ${folder.highestModSeq}] modseq\r\n`

@@ -6,6 +6,7 @@ import {
   type ImapConnectionLimiter,
 } from "./imapConnectionLimiter.js";
 import { logger } from "./logger.js";
+import { ImapFolderUnavailableError } from "./providerTypes.js";
 
 /**
  * How long a sync session stays open unused. Below the idle cutoff of common servers (RFC 9051 asks for at least 30
@@ -115,7 +116,8 @@ export function createImapSessionPool(
     const use = <T>(operation: (client: ImapMailClient) => Promise<T>): Promise<T> => {
       if (handedBack) return Promise.reject(new Error("The IMAP session was handed back"));
       return operation(session.client).catch((error: unknown) => {
-        session.discard = true;
+        // A folder the server holds no longer leaves the connection as it was.
+        if (!(error instanceof ImapFolderUnavailableError)) session.discard = true;
         throw error;
       });
     };

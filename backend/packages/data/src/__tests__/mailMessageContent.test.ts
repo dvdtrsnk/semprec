@@ -486,6 +486,49 @@ describe("message content and attachments on demand", () => {
       },
     );
 
+    /** An indexed message filed in both folders, and the folder of the edge the content read tries first. */
+    async function messageInBothFolders() {
+      const account = await imapAccount();
+      const messageId = `<${randomUUID()}@sender.example.test>`;
+      for (const path of ["INBOX", "Archive"]) account.server.deliver(path, [], oldMessage(messageId));
+      await account.pass();
+      const { item_id: emailId } = await messageByMessageId(messageId);
+      // Both edges carry a UID, so the read takes them in folder id order.
+      const { rows } = await runtime.query<{ path: string }>(
+        `SELECT properties->>'providerId' AS path FROM items
+          WHERE tenant_id = app_tenant_default() AND properties->>'providerId' IN ('INBOX', 'Archive') ORDER BY id`,
+      );
+      const [first, second] = rows.map((row) => row.path);
+      if (first === undefined || second === undefined) throw new Error("Both folders are synced");
+      return { account, emailId, first, second };
+    }
+
+    tenantIt("passes over a folder the server no longer holds and reads the message from its next folder", async () => {
+      const { account, emailId, first, second } = await messageInBothFolders();
+      account.server.deleteFolder(first);
+      const before = account.server.bodyFetches.length;
+
+      const answer = await readContent(
+        { mailContent: account.providers, throttle: countingThrottle().throttle },
+        emailId,
+      );
+
+      expect(answer.body).toMatchObject({ contentState: "cached", bodyText: "Dobrý den, old offer" });
+      expect(account.server.bodyFetches.slice(before).map((read) => read.path)).toEqual([second]);
+    });
+
+    tenantIt("answers providerUnreachable when the connection drops at a folder's selection", async () => {
+      const { account, emailId } = await messageInBothFolders();
+      account.server.droppedVerbs.add("SELECT");
+
+      const answer = await refusal(
+        readContent({ mailContent: account.providers, throttle: countingThrottle().throttle }, emailId),
+      );
+
+      expect(answer).toMatchObject({ status: 409, details: { reason: "providerUnreachable" } });
+      expect(await cacheRows(emailId)).toEqual([]);
+    });
+
     it.each([
       {
         name: "the server fails the fetch",

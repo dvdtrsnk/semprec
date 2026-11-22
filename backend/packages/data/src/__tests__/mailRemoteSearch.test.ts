@@ -358,6 +358,24 @@ describe("two-layer mail search", () => {
       expect(asked).toHaveLength(1);
     });
 
+    tenantIt("searches the other folders when the server no longer holds one of them", async () => {
+      const account = await imapAccount();
+      const messageId = account.deliver("INBOX", "Old offer", "the zanzibar clause");
+      account.deliver("Archive", "Archived offer", "the zanzibar clause");
+      await account.pass();
+      account.server.deleteFolder("Archive");
+
+      const answer = await search(
+        { mailContent: account.providers, throttle: countingThrottle().throttle },
+        "q=zanzibar",
+      );
+
+      expect(answer.threads.map((thread) => thread.threadId)).toEqual([
+        (await messageByMessageId(messageId)).thread_id,
+      ]);
+      expect(answer.remote).toEqual({ searched: [account.mailboxId], failed: [], unindexed: 0 });
+    });
+
     tenantIt(
       "maps no hit over edges a pass renumbered under a new UIDVALIDITY after the provider searched",
       async () => {

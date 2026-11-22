@@ -1,5 +1,12 @@
 import { executeImapMoveStep, type SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
-import type { ImapFlow, FetchMessageObject, MessageStructureObject, SearchObject, StatusObject } from "imapflow";
+import type {
+  ImapFlow,
+  FetchMessageObject,
+  MailboxObject,
+  MessageStructureObject,
+  SearchObject,
+  StatusObject,
+} from "imapflow";
 import { Readable } from "node:stream";
 import type {
   ImapFetchedMessage,
@@ -11,7 +18,12 @@ import type {
   ImapMessageContent,
   ImapSnippetPart,
 } from "./imapReconcile.js";
-import { AttachmentCapExceededError, FlagFetchCapExceededError, MAX_ATTACHMENT_BYTES } from "./providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  FlagFetchCapExceededError,
+  ImapFolderUnavailableError,
+  MAX_ATTACHMENT_BYTES,
+} from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import { IMAP_SNIPPET_BYTES, imapSnippetText } from "./imapSnippet.js";
 import {
@@ -57,6 +69,14 @@ const IMAP_SEARCH_TIMEOUT_MS = 30_000;
 
 // iCloud Mail Drop needs no special case: the server already stores a small download-link body,
 // with no placeholder MIME part to fetch.
+
+/** The `NO` a server answers a SELECT of a folder it does not hold, or does not let this login open. */
+function isFolderUnavailableRefusal(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const status: unknown = Reflect.get(error, "responseStatus");
+  const code: unknown = Reflect.get(error, "serverResponseCode");
+  return status === "NO" && (code === undefined || code === "NONEXISTENT" || code === "NOPERM");
+}
 
 /** UIDs as an IMAP sequence set (`1:3,7`). */
 function uidSet(uids: number[]): string {
@@ -288,7 +308,7 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   async selectFolder(path: string): Promise<ImapFolderSelection> {
-    const mailbox = await this.providerCall(() => this.client.mailboxOpen(path));
+    const mailbox = await this.openMailbox(path);
     return {
       uidvalidity: Number(mailbox.uidValidity),
       uidnext: mailbox.uidNext,
@@ -301,7 +321,27 @@ export class ImapFlowMailClient implements ImapMailClient {
   private async ensureSelected(path: string): Promise<void> {
     const current = this.client.mailbox;
     if (current && current.path === path) return;
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    await this.openMailbox(path);
+  }
+
+  /**
+   * SELECT. A `NO` naming no such folder or no permission for it (`NONEXISTENT`, `NOPERM`, or no response code, as
+   * older servers answer) is `ImapFolderUnavailableError`, which leaves the connection usable: imapflow then holds no
+   * folder selected, as the server does. Any other failure is a provider failure.
+   */
+  private async openMailbox(path: string): Promise<MailboxObject> {
+    let unavailable = false;
+    const mailbox = await this.providerCall(async () => {
+      try {
+        return await this.client.mailboxOpen(path);
+      } catch (error) {
+        if (!isFolderUnavailableRefusal(error)) throw error;
+        unavailable = true;
+        return null;
+      }
+    });
+    if (unavailable || mailbox === null) throw new ImapFolderUnavailableError();
+    return mailbox;
   }
 
   private async downloadText(uid: number, part: string): Promise<string> {
