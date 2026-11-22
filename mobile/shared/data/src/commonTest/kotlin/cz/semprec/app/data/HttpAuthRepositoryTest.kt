@@ -6,6 +6,8 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.InMemoryPushSubscriptionStorage
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
+import cz.semprec.app.domain.MailThreadList
+import cz.semprec.app.domain.MailThreadQuery
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SessionStatus
@@ -40,6 +42,7 @@ class HttpAuthRepositoryTest {
 
     private fun repository(
         storage: InMemorySessionStorage = InMemorySessionStorage(),
+        sessionEnded: suspend () -> Unit = {},
         endingSession: suspend (AuthenticatedApi) -> Unit = {},
         handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData,
     ): HttpAuthRepository {
@@ -48,7 +51,7 @@ class HttpAuthRepositoryTest {
             bodies += request.body.toByteArray().decodeToString()
             handler(request)
         }
-        return HttpAuthRepository(ApiClient(engine), storage, DEVICE, endingSession)
+        return HttpAuthRepository(ApiClient(engine), storage, DEVICE, sessionEnded, endingSession)
     }
 
     private fun MockRequestHandleScope.json(body: String, status: HttpStatusCode = HttpStatusCode.OK) =
@@ -225,6 +228,61 @@ class HttpAuthRepositoryTest {
         assertEquals(FailureKind.UNAUTHORIZED, assertIs<ApiResponse.Failure>(response).kind)
         assertNull(storage.load())
         assertEquals(SessionStatus.SignedOut, repo.status.value)
+    }
+
+    /** A way through the repository, how the server answers it, and whether it drops the session. */
+    private class SessionPath(
+        val name: String,
+        val answer: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData,
+        val drops: Boolean,
+        val run: suspend (HttpAuthRepository) -> Unit,
+    )
+
+    @Test
+    fun everyPathThatDropsTheSessionEndsItOnTheDeviceOnceAndNoOtherPathDoes() = runTest {
+        val refused: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData =
+            { json("{}", HttpStatusCode.Unauthorized) }
+        val known: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData =
+            { json("""{"user":$USER_JSON}""") }
+        val offline: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData =
+            { throw IllegalStateException("offline") }
+        val paths = listOf(
+            SessionPath("sign out", known, drops = true) { it.signOut() },
+            SessionPath("a call refused with 401", refused, drops = true) { it.api.send(HttpMethod.Get, "/api/x") },
+            SessionPath("a restore the server refuses", refused, drops = true) { it.restore() },
+            SessionPath("a restore the server confirms", known, drops = false) { it.restore() },
+            SessionPath("a restore offline", offline, drops = false) { it.restore() },
+            SessionPath("a call that succeeds", known, drops = false) { it.api.send(HttpMethod.Get, "/api/x") },
+        )
+        for (path in paths) {
+            val storage = InMemorySessionStorage().apply { save(StoredSession("https://s.example", "tok")) }
+            val storedWhenEnded = mutableListOf<StoredSession?>()
+            val repo = repository(storage, sessionEnded = { storedWhenEnded += storage.load() }, handler = path.answer)
+
+            path.run(repo)
+
+            assertEquals(if (path.drops) listOf(null) else emptyList(), storedWhenEnded, path.name)
+            if (path.drops) assertEquals(SessionStatus.SignedOut, repo.status.value, path.name)
+        }
+    }
+
+    @Test
+    fun aSessionTheServerRefusesTakesTheThreadListsKeptForItWithIt() = runTest {
+        val directory = newTestDirectory()
+        val storage = InMemorySessionStorage().apply { save(StoredSession("https://s.example", "tok")) }
+        var cache: FileMailThreadListCache? = null
+        val repo = repository(storage, sessionEnded = { cache?.clear() }) { json("{}", HttpStatusCode.Unauthorized) }
+        val lists = FileMailThreadListCache(directory, repo.api).also { cache = it }
+        val kept = MailThreadList(emptyList(), nextCursor = null, changesCursor = "c1", windowEnd = null)
+        lists.write(MailThreadQuery(), kept)
+        assertEquals(kept, lists.read(MailThreadQuery()))
+
+        repo.api.send(HttpMethod.Get, "/api/overview")
+
+        assertTrue(listCacheDirectory(directory).isEmpty(), "nothing of the session is left in the cache directory")
+        storage.save(StoredSession("https://s.example", "tok"))
+        assertNull(lists.read(MailThreadQuery()))
+        deleteCachePath(directory)
     }
 
     @Test
