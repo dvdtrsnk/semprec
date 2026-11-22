@@ -2,8 +2,11 @@ package cz.semprec.app.sdk
 
 import cz.semprec.app.data.AuthenticatedApi
 import cz.semprec.app.data.HttpMailDraftRepository
+import cz.semprec.app.data.HttpMailHistoryRepository
 import cz.semprec.app.data.HttpMailRepository
 import cz.semprec.app.data.HttpMailboxRepository
+import cz.semprec.app.data.ImapMailHistorySource
+import cz.semprec.app.domain.IndexMailHistory
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.InternetAccountViewModel
 import cz.semprec.app.presentation.InternetAccountViewModelFactory
@@ -31,7 +34,12 @@ class MailSDK internal constructor(
             api.changes.events,
             sync,
         ),
-        InternetAccountViewModelFactory(mailboxes, mailboxes, sync),
+        InternetAccountViewModelFactory(
+            mailboxes,
+            mailboxes,
+            IndexMailHistory(HttpMailHistoryRepository(api), ImapMailHistorySource()),
+            sync,
+        ),
     )
 
     /** The thread list that [start] selects. */

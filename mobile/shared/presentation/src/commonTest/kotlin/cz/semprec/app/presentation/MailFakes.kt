@@ -139,9 +139,9 @@ internal class ScriptedMailboxRepository(
     val impact: MailCall<String, MailRemovalImpact> = MailCall(mailContent(MailRemovalImpact(120, 2, 50, 7))),
     val remove: MailCall<String, Unit> = MailCall(mailContent(Unit)),
     val connect: MailCall<MailPasswordAccount, MailConnectOutcome> =
-        MailCall(mailContent(MailConnectOutcome.Connected)),
+        MailCall(mailContent(MailConnectOutcome.Connected("new"))),
     val passwords: MailCall<Triple<String, String, String?>, MailConnectOutcome> =
-        MailCall(mailContent(MailConnectOutcome.Connected)),
+        MailCall(mailContent(MailConnectOutcome.Connected("m1"))),
     val rename: MailCall<Pair<String, String>, Unit> = MailCall(mailContent(Unit)),
     val limit: MailCall<Pair<String, Int>, Unit> = MailCall(mailContent(Unit)),
 ) : MailboxRepository {

@@ -70,6 +70,19 @@ extension InternetPasswordSignIn {
     }
 }
 
+// MARK: - History indexing
+extension InternetHistoryIndexing {
+
+    init(_ indexing: SharedSDK.InternetHistoryIndexing) {
+        self.init(
+            accountId: indexing.accountId,
+            foldersDone: Int(indexing.foldersDone),
+            foldersTotal: Int(indexing.foldersTotal),
+            messagesUploaded: Int(indexing.messagesUploaded)
+        )
+    }
+}
+
 // MARK: - Password sign-in step
 extension InternetPasswordSignInStep {
 

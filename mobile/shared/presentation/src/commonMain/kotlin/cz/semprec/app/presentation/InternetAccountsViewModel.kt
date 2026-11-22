@@ -3,11 +3,13 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarSyncStatus
+import cz.semprec.app.domain.IndexMailHistory
 import cz.semprec.app.domain.InternetAccount
 import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailConnectOutcome
 import cz.semprec.app.domain.MailConnectRefusal
+import cz.semprec.app.domain.MailHistoryLogin
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailboxRepository
@@ -33,13 +35,25 @@ private val ADDRESS = Regex("^[^\\s@,]+@[^\\s@,]+$")
  * iCloud or another account with its password, which the server checks before it keeps it. Either reloads the list
  * once the server accepted it. A change of the account data the server reports ([serverChanges]) reads the list again
  * unless a read is under way, so the statuses follow the server's.
+ *
+ * An account connected with a password then has its older mail history indexed from the device while the password
+ * is still in memory ([IndexMailHistory], [InternetAccountsState.historyIndexing]), one account at a time; the
+ * password is never stored and is dropped when its indexing ends or the screen is gone.
  */
 class InternetAccountsViewModel internal constructor(
     private val accounts: InternetAccountRepository,
     private val mailboxes: MailboxRepository,
+    indexHistory: IndexMailHistory,
     serverChanges: Flow<Unit>,
 ) : ScreenViewModel<InternetAccountsState, InternetAccountsAction, InternetAccountsEffect>(InternetAccountsState()) {
     private var loadJob: Job? = null
+
+    private val history = MailHistoryIndexing(viewModelScope, indexHistory) { indexing ->
+        update { it.copy(historyIndexing = indexing) }
+    }
+
+    /** Whether a password typed into the connect form is still held for history indexing. */
+    internal val holdsHistoryLogins: Boolean get() = history.holdsLogins
 
     /** Whether the running browser sign-in signs a listed account in again rather than connecting a new one. */
     private var reauthorizing = false
@@ -127,7 +141,13 @@ class InternetAccountsViewModel internal constructor(
 
     private fun load(showWait: Boolean) {
         loadJob?.cancel()
-        update { if (showWait) InternetAccountsState(connecting = it.connecting) else it.copy(refreshing = true) }
+        update {
+            if (showWait) {
+                InternetAccountsState(connecting = it.connecting, historyIndexing = it.historyIndexing)
+            } else {
+                it.copy(refreshing = true)
+            }
+        }
         loadJob = viewModelScope.launch {
             val result = mailAttempt { accounts.accounts() }
             ensureActive()
@@ -184,10 +204,11 @@ class InternetAccountsViewModel internal constructor(
             val result = mailAttempt { mailboxes.connect(account) }
             ensureActive()
             when (val outcome = (result as? RepositoryResult.Content)?.value) {
-                MailConnectOutcome.Connected -> {
+                is MailConnectOutcome.Connected -> {
                     update { it.copy(connecting = false) }
                     emit(InternetAccountsEffect.Connected)
                     load(showWait = false)
+                    MailHistoryLogin.of(account)?.let { history.start(outcome.mailboxId, it) }
                 }
                 is MailConnectOutcome.Refused -> update {
                     val existing = it.accounts.firstOrNull { listed ->

@@ -82,11 +82,24 @@ sealed interface InternetPasswordSignInStep {
 }
 
 /**
+ * The older mail history the device indexes for the account [accountId] it connected, while the password typed is in
+ * memory: [foldersTotal] folders the server leased to the device so far, [foldersDone] of them finished, and
+ * [messagesUploaded] messages the server took. [foldersTotal] is 0 while the server has not leased a folder yet.
+ */
+data class InternetHistoryIndexing(
+    val accountId: String,
+    val foldersDone: Int,
+    val foldersTotal: Int,
+    val messagesUploaded: Int,
+)
+
+/**
  * [connecting] is `true` while an account is being connected, a browser sign-in included, from its start until the
  * browser came back and the server answered. [existingAccountId] is the listed account that already holds the address
  * of a connect refused as [InternetConnectFailure.ALREADY_CONNECTED]. [signingIn] is `true` while a listed account
  * signs in again in a browser, and [signInFailure] says why the last one did not succeed; [passwordSignIn] is the
- * password sign-in of a listed account, while it is open.
+ * password sign-in of a listed account, while it is open. [historyIndexing] is the history indexing of an account
+ * connected with a password, while it runs.
  */
 data class InternetAccountsState(
     val phase: InternetAccountsPhase = InternetAccountsPhase.LOADING,
@@ -99,6 +112,7 @@ data class InternetAccountsState(
     val signingIn: Boolean = false,
     val signInFailure: InternetConnectFailure? = null,
     val passwordSignIn: InternetPasswordSignIn? = null,
+    val historyIndexing: InternetHistoryIndexing? = null,
 )
 
 sealed interface InternetAccountsAction {

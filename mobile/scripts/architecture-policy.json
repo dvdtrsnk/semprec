@@ -841,6 +841,8 @@
         "internetAccounts.status.error",
         "internetAccounts.status.reauth",
         "internetAccounts.status.consent",
+        "internetAccounts.history.waiting",
+        "internetAccounts.history.progress",
         "internetAccounts.add.title",
         "internetAccounts.add.cancel",
         "internetAccounts.add.provider.icloud",

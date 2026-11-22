@@ -32,7 +32,7 @@ class InternetAccountViewModelTest : MainDispatcherTest() {
     private fun viewModel(
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
         accounts: ScriptedInternetAccountRepository = ScriptedInternetAccountRepository(),
-    ) = InternetAccountViewModelFactory(accounts, mailboxes, sync).accountViewModel("m1")
+    ) = InternetAccountViewModelFactory(accounts, mailboxes, indexHistory(), sync).accountViewModel("m1")
 
     private fun viewModel(accounts: ScriptedInternetAccountRepository) =
         viewModel(ScriptedMailboxRepository(), accounts)

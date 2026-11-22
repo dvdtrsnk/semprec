@@ -49,6 +49,7 @@ enum AccountIdentifiers {
     static let addSubmit = "internetAccounts.addSheet.submit"
     static let addOpenExisting = "internetAccounts.addSheet.openExisting"
     static let internetAccountSignInAgainPrefix = "internetAccounts.signInAgain."
+    static let internetAccountHistoryPrefix = "internetAccounts.history."
 
     static let internetAccountScreen = "internetAccount.screen"
     static let internetAccountName = "internetAccount.name"

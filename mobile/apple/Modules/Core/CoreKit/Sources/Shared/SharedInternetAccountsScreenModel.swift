@@ -66,7 +66,8 @@ extension SharedInternetAccountsScreenModel {
             existingAccountId: state.existingAccountId,
             signingIn: state.signingIn,
             signInFailure: state.signInFailure.map(InternetConnectFailure.init),
-            passwordSignIn: state.passwordSignIn.map(InternetPasswordSignIn.init)
+            passwordSignIn: state.passwordSignIn.map(InternetPasswordSignIn.init),
+            historyIndexing: state.historyIndexing.map(InternetHistoryIndexing.init)
         )
     }
 
