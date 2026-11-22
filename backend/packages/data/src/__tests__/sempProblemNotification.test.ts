@@ -24,6 +24,7 @@ import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { transitionTenantObservabilityCheck } from "../observability/observabilityChecksStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 
 class RollbackSentinel extends Error {}
 
@@ -273,6 +274,8 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       },
     };
     for (let attempt = 1; attempt <= 4; attempt += 1) {
+      // Each pass runs once the backoff of the one before it ran out, as the sweep queues it.
+      await inZero((client) => elapseMailSyncBackoff(client, mailbox.id));
       await expect(
         runInTenant(tenantZero, () =>
           handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, unexpectedlyFailing, moduleIds, storage, {
