@@ -156,7 +156,9 @@ class MailThreadsViewModel internal constructor(
         loadJob = viewModelScope.launch {
             val result = mailAttempt { mail.threads(query) }
             ensureActive()
-            val next = (result as? RepositoryResult.Content)?.let { lists.appended(query, shown, it.value) }
+            // The rows as they are now: a read mark set while the page loaded stays.
+            val rows = list ?: shown
+            val next = (result as? RepositoryResult.Content)?.let { lists.appended(query, rows, it.value) }
             ensureActive()
             if (next != null) list = next
             update { it.afterMore(next) }
@@ -198,17 +200,26 @@ class MailThreadsViewModel internal constructor(
     private fun toggleRead(threadId: String) {
         val thread = state.value.threads.firstOrNull { it.threadId == threadId } ?: return
         val markRead = thread.unread
-        update { it.withUnread(threadId, unread = !markRead) }
+        showUnread(threadId, unread = !markRead)
         viewModelScope.launch {
             val result = mailWrite { mail.setRead(threadId, read = markRead) }
             ensureActive()
             when (result) {
-                is MailWrite.Done -> update { it.withUnread(threadId, result.value) }
-                is MailWrite.Failed -> update {
-                    it.withUnread(threadId, unread = markRead).copy(actionFailed = true, actionRefusal = result.refusal)
+                is MailWrite.Done -> showUnread(threadId, result.value)
+                is MailWrite.Failed -> {
+                    showUnread(threadId, unread = markRead)
+                    update { it.copy(actionFailed = true, actionRefusal = result.refusal) }
                 }
             }
         }
+    }
+
+    /** Marks the thread in the rows shown and in [list], which the next page and a refresh start from. */
+    private fun showUnread(threadId: String, unread: Boolean) {
+        list = list?.let { kept ->
+            kept.copy(threads = kept.threads.map { if (it.threadId == threadId) it.copy(unread = unread) else it })
+        }
+        update { it.withUnread(threadId, unread) }
     }
 }
 
