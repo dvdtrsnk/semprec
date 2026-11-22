@@ -37,7 +37,7 @@ const IMAP_LOGOUT_TIMEOUT_MS = 10_000;
 // Per step of the long-lived flag-fetch stream, for the same reason as above.
 const IMAP_FLAG_FETCH_STEP_TIMEOUT_MS = 30_000;
 
-// APPEND sends a whole message in one command; bounds a Sent copy the server never acknowledges.
+// APPEND sends a whole message in one command; bounds a Sent copy the server never acknowledges, and the search for it.
 const IMAP_APPEND_TIMEOUT_MS = 60_000;
 
 // iCloud Mail Drop needs no special case: the server already stores a small download-link body,
@@ -671,20 +671,38 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   /**
+   * `SELECT` then `SEARCH HEADER Message-ID`, raced against one timer like the APPEND; on timeout the commands may
+   * still be in flight until the caller's `close()`. A search that did not run fails rather than answering "absent".
+   */
+  async hasMessageWithId(path: string, messageId: string): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          await this.providerCall(() => this.client.mailboxOpen(path));
+          const uids = await this.providerCall(async () => {
+            const found = await this.client.search({ header: { "message-id": messageId } }, { uid: true });
+            if (found === false) throw new Error("IMAP search did not run");
+            return found;
+          });
+          return uids.length > 0;
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`IMAP search timed out after ${IMAP_APPEND_TIMEOUT_MS}ms`)),
+            IMAP_APPEND_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Keeps a sent message's copy in Sent. Raced against a timer; on timeout the command may still be
    * in flight until the caller's `close()`. Unknown refusals become a fixed safe error.
    */
-  /** `SEARCH HEADER Message-ID`; a search that did not run fails rather than answering "absent". */
-  async hasMessageWithId(path: string, messageId: string): Promise<boolean> {
-    await this.providerCall(() => this.client.mailboxOpen(path));
-    const found = await this.providerCall(async () => {
-      const uids = await this.client.search({ header: { "message-id": messageId } }, { uid: true });
-      if (uids === false) throw new Error("IMAP search did not run");
-      return uids;
-    });
-    return found.length > 0;
-  }
-
   async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     try {

@@ -390,8 +390,8 @@ describe("one mail sync pass per mailbox", () => {
       "fetchMessagesSince INBOX",
       "fetchFlagsChangedSince INBOX",
     ]);
-    // Eight client calls of 80 ms (three to finish the running round, five of the next) plus database work; no
-    // connect, which a follow-up pass on a new connection would add.
+    // Eight client calls of 80 ms (three to finish the running round, five of the next) plus database work. The bound
+    // only keeps the latency in view; the single connection above is what shows the next round did not reconnect.
     expect(visibleAfterMs).toBeLessThan(2_000);
   }, 30_000);
   /** What a failed pass records on the account: its error, the failure kind and the Mailboxes item's status. */
