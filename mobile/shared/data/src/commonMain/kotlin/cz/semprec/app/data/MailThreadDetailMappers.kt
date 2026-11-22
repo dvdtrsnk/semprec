@@ -1,6 +1,7 @@
 package cz.semprec.app.data
 
 import cz.semprec.app.domain.MailAttachment
+import cz.semprec.app.domain.MailContentState
 import cz.semprec.app.domain.MailMessage
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadTask
@@ -8,9 +9,13 @@ import cz.semprec.app.domain.MailThreadTask
 private const val TRASHED = "trashed"
 
 private fun MailAttachmentDto.toDomain() = MailAttachment(
+    attachmentId = attachmentId,
     filename = filename,
     contentType = contentType,
     byteSize = byteSize,
+    stored = stored,
+    blobId = blobId,
+    fileItemId = fileItemId,
     project = project?.toDomain(),
     projectLink = links.project.toMailLink(),
 )
@@ -25,6 +30,12 @@ private fun MailMessageDto.toDomain() = MailMessage(
     cc = cc.map { it.toDomain() },
     date = date,
     bodyText = bodyText,
+    contentState = when (contentState) {
+        MailContentStateDto.FULL -> MailContentState.FULL
+        MailContentStateDto.CACHED -> MailContentState.CACHED
+        MailContentStateDto.REMOTE -> MailContentState.REMOTE
+    },
+    preview = preview,
     read = read,
     attachments = attachments.map { it.toDomain() },
 )

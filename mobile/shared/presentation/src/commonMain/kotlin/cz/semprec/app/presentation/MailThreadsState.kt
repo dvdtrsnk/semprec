@@ -42,6 +42,13 @@ data class MailFilterOption(
     val areaId: String?,
 )
 
+/**
+ * What the provider search added to a search: [unindexed] hits the mail providers hold that the local index does not
+ * have yet, and the mailboxes whose provider search failed, named as the chips name them ([MailMailboxChip.name] is
+ * empty for a mailbox the list does not know).
+ */
+data class MailRemoteSearchSummary(val unindexed: Int, val failedAccounts: List<MailMailboxChip>)
+
 enum class MailFacetsPhase { IDLE, LOADING, READY, ERROR }
 
 /** The filter sheet: the areas and projects with their thread counts, loaded when the list starts and on every change. */
@@ -58,6 +65,10 @@ data class MailFacetsState(
  * A failed first load is [MailThreadsPhase.ERROR]; a failed refresh or "more" keeps the list and raises
  * [actionFailed]. [hasMore] says another page follows; [loadingMore] is `true` while it is fetched. [actionRefusal]
  * names the reason the server gave for refusing a read mark.
+ *
+ * While [search] is not empty the list is the answer of the mail search, one page over every box, folder, area and
+ * project, narrowed only to the chosen mailbox, and [remoteSearch] says what the provider search added; it is `null`
+ * for a list that is not a search.
  */
 data class MailThreadsState(
     val phase: MailThreadsPhase = MailThreadsPhase.LOADING,
@@ -78,6 +89,7 @@ data class MailThreadsState(
     val mailboxes: List<MailMailboxChip> = emptyList(),
     val reauthorization: List<MailAccountNotice> = emptyList(),
     val facets: MailFacetsState = MailFacetsState(),
+    val remoteSearch: MailRemoteSearchSummary? = null,
     val actionFailed: Boolean = false,
     val actionRefusal: MailRefusal? = null,
 )

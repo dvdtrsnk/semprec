@@ -1,6 +1,7 @@
 package cz.semprec.app.sdk
 
 import cz.semprec.app.data.AuthenticatedApi
+import cz.semprec.app.data.HttpMailContentRepository
 import cz.semprec.app.data.HttpMailDraftRepository
 import cz.semprec.app.data.HttpMailRepository
 import cz.semprec.app.data.HttpMailboxRepository
@@ -28,6 +29,7 @@ class MailSDK internal constructor(
             HttpMailRepository(api),
             HttpMailDraftRepository(api),
             mailboxes,
+            HttpMailContentRepository(api),
             api.changes.events,
             sync,
         ),

@@ -31,6 +31,28 @@ interface MailRepository {
 }
 
 /**
+ * The mail calls the server may answer by asking the mail provider, which can be slow: the body of a message the
+ * server holds only as an index entry, an attachment saved into Files, and the search. A body or an attachment the
+ * server could not fetch from the provider is [MailContentOutcome.Unavailable].
+ */
+interface MailContentRepository {
+    /**
+     * The body of the message [emailId]; the server fetches it from the provider when it holds none, which can be
+     * slow and can be [MailContentOutcome.Unavailable].
+     */
+    suspend fun messageContent(emailId: String): RepositoryResult<MailContentOutcome<MailMessageContent>>
+
+    /**
+     * Saves the attachment [attachmentId] of the message [emailId] into Files and answers the id of its Files item;
+     * one saved before answers the same item.
+     */
+    suspend fun saveAttachment(emailId: String, attachmentId: String): RepositoryResult<MailContentOutcome<String>>
+
+    /** The threads that match [query], in every mailbox or in [mailboxId], with what the provider search added. */
+    suspend fun search(query: String, mailboxId: String?): RepositoryResult<MailSearchResult>
+}
+
+/**
  * The drafts of the signed-in person. Sending goes through the server as the person; agents only propose. A draft
  * write or a send the server refused for a known reason is [MailOutcome.Refused].
  */

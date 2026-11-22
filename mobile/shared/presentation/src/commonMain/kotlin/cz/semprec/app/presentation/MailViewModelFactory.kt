@@ -1,5 +1,6 @@
 package cz.semprec.app.presentation
 
+import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailDraftRepository
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailboxRepository
@@ -21,15 +22,16 @@ class MailViewModelFactory(
     private val mail: MailRepository,
     private val drafts: MailDraftRepository,
     private val mailboxes: MailboxRepository,
+    private val content: MailContentRepository,
     private val changes: Flow<Unit> = emptyFlow(),
     private val sync: SyncChanges = SyncChanges(),
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun threadsViewModel(
         start: MailListStart
-    ): MailThreadsViewModel = MailThreadsViewModel(mail, mailboxes, start, changes)
+    ): MailThreadsViewModel = MailThreadsViewModel(mail, mailboxes, content, start, changes)
 
-    fun threadViewModel(threadId: String): MailThreadViewModel = MailThreadViewModel(threadId, mail, drafts)
+    fun threadViewModel(threadId: String): MailThreadViewModel = MailThreadViewModel(threadId, mail, drafts, content)
 
     fun composeViewModel(start: MailComposeStart): MailComposeViewModel =
         MailComposeViewModel(start, drafts, mailboxes)

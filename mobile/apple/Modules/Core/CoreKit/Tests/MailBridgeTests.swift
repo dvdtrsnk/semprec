@@ -96,6 +96,43 @@ final class MailBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testTheThreadScreenOpensTheFilesItemOfASavedAttachment() async {
+        let model = isolatedFactory().makeMailThread(threadId: "t1")
+        model.send(.open(.file(fileItemId: "f1")))
+        let raised = await effects(of: model, count: 1)
+        XCTAssertEqual(raised, [.openFile(fileItemId: "f1")])
+    }
+
+    // Without a loaded thread there is no message to fetch or save from, so the Kotlin ViewModel leaves its state.
+    @MainActor
+    func testFetchingABodyOrSavingAnAttachmentOfAThreadThatDidNotLoadChangesNothing() async throws {
+        let model = try XCTUnwrap(
+            isolatedFactory().makeMailThread(threadId: "t1") as? SharedMailThreadScreenModel
+        )
+        _ = await firstState(of: model) { $0.phase != .loading }
+        let failed = model.viewModel.state.value
+        model.send(.loadBody(emailId: "e1"))
+        model.send(.saveAttachment(emailId: "e1", attachmentId: "a1"))
+        XCTAssertTrue(model.viewModel.state.value === failed)
+        XCTAssertEqual(model.state.phase, .failure(.unauthorized))
+    }
+
+    @MainActor
+    func testASearchReachesTheKotlinThreadListAndLoadsItAgain() async throws {
+        let model = try XCTUnwrap(
+            isolatedFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
+        )
+        _ = await firstState(of: model) { $0.phase != .loading }
+        let listed = model.viewModel.state.value
+        model.send(.search("faktura"))
+        XCTAssertFalse(model.viewModel.state.value === listed, "A search must start a new load of the Kotlin ViewModel")
+        XCTAssertEqual(model.state.search, "faktura")
+        let searched = await firstState(of: model) { $0.phase != .loading }
+        XCTAssertEqual(searched?.phase, .failure(.unauthorized))
+        XCTAssertNil(searched?.remoteSearch)
+    }
+
+    @MainActor
     func testLeavingAComposeScreenWithoutADraftClosesAtOnce() async {
         let model = isolatedFactory().makeMailCompose(start: .new)
         _ = await firstState(of: model) { $0.phase != .loading }

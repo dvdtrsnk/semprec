@@ -25,7 +25,7 @@ class MailThreadViewModelTest : MainDispatcherTest() {
     private fun viewModel(
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         drafts: ScriptedMailDraftRepository = ScriptedMailDraftRepository(),
-    ) = MailViewModelFactory(mail, drafts, ScriptedMailboxRepository()).threadViewModel("t1")
+    ) = MailViewModelFactory(mail, drafts, ScriptedMailboxRepository(), mail).threadViewModel("t1")
 
     private val withDraft = mailDetail(
         messages = listOf(

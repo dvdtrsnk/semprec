@@ -43,7 +43,7 @@ final class MailNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheEditorAndTheTaskOfAThreadArePresentedAsSheetsOverTheStack() {
+    func testTheEditorTheTaskAndAFileOfAThreadArePresentedAsSheetsOverTheStack() {
         let context = NavigationContext()
         let overview = MailStackSpy()
         context.register(overview, for: .overview)
@@ -52,9 +52,15 @@ final class MailNavigationTests: XCTestCase {
         router.showCompose(.new)
         router.showCompose(reply)
         router.showTask(taskId: "k1")
+        router.showFile(fileItemId: "f1")
         XCTAssertEqual(
             overview.sheets,
-            [.mailCompose(.new), .mailCompose(reply), .details(ItemDetailsTarget(kind: .task, id: "k1"))]
+            [
+                .mailCompose(.new),
+                .mailCompose(reply),
+                .details(ItemDetailsTarget(kind: .task, id: "k1")),
+                .itemSheet(itemId: "f1", databaseKey: "files", tab: .overview)
+            ]
         )
         XCTAssertTrue(overview.pushed.isEmpty)
     }

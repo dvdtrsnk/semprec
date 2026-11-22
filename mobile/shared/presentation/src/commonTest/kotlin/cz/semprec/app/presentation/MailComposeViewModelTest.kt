@@ -37,7 +37,7 @@ class MailComposeViewModelTest : MainDispatcherTest() {
         start: MailComposeStart = MailComposeStart.New,
         drafts: ScriptedMailDraftRepository = ScriptedMailDraftRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
-    ) = MailViewModelFactory(ScriptedMailRepository(), drafts, mailboxes).composeViewModel(start)
+    ) = ScriptedMailRepository().let { MailViewModelFactory(it, drafts, mailboxes, it) }.composeViewModel(start)
 
     private val reply = MailComposeStart.Reply("e3", "m1", MailReplyMode.REPLY_ALL)
 
