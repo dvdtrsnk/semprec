@@ -123,9 +123,10 @@ final class MailBridgeTests: XCTestCase {
             isolatedFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
         )
         _ = await firstState(of: model) { $0.phase != .loading }
+        let listed = model.viewModel.state.value
         model.send(.search("faktura"))
+        XCTAssertFalse(model.viewModel.state.value === listed, "A search must start a new load of the Kotlin ViewModel")
         XCTAssertEqual(model.state.search, "faktura")
-        XCTAssertEqual(model.state.phase, .loading)
         let searched = await firstState(of: model) { $0.phase != .loading }
         XCTAssertEqual(searched?.phase, .failure(.unauthorized))
         XCTAssertNil(searched?.remoteSearch)
