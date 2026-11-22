@@ -17,6 +17,7 @@ extension XCTestCase {
         facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(
             phase: .idle, areaTotal: 0, projectTotal: 0, areas: [], projects: []
         ),
+        remoteSearch: SharedSDK.MailRemoteSearchSummary? = nil,
         actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadsState {
         SharedSDK.MailThreadsState(
@@ -38,8 +39,38 @@ extension XCTestCase {
             mailboxes: [SharedSDK.MailMailboxChip(id: "m1", name: "Gmail")],
             reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],
             facets: facets,
+            remoteSearch: remoteSearch,
+            fromCache: false,
             actionFailed: true,
             actionRefusal: actionRefusal
+        )
+    }
+
+    func messageItem(
+        bodyText: String = "Ahoj",
+        bodyPhase: SharedSDK.MailBodyPhase = .ready,
+        bodyFailure: SharedSDK.FailureKind? = nil,
+        bodyUnavailable: SharedSDK.MailContentUnavailable? = nil,
+        attachments: [SharedSDK.MailAttachmentItem] = []
+    ) -> SharedSDK.MailMessageItem {
+        SharedSDK.MailMessageItem(
+            emailId: "e1", fromName: "Petr", fromAddress: "p@x.cz", own: true, toNames: ["David"],
+            date: "2026-10-20T12:41:00Z", bodyText: bodyText, preview: "Náhled", bodyPhase: bodyPhase,
+            bodyFailure: bodyFailure, bodyUnavailable: bodyUnavailable, attachments: attachments, expanded: true
+        )
+    }
+
+    func attachmentItem(
+        link: SharedSDK.MailLinkInfo? = nil,
+        fileItemId: String? = nil,
+        savePhase: SharedSDK.MailAttachmentSavePhase = .idle,
+        saveFailure: SharedSDK.FailureKind? = nil,
+        saveUnavailable: SharedSDK.MailContentUnavailable? = nil
+    ) -> SharedSDK.MailAttachmentItem {
+        SharedSDK.MailAttachmentItem(
+            attachmentId: "a1", filename: "a.pdf", contentType: "application/pdf", byteSize: 840,
+            project: SharedSDK.MailLinkedValue(text: "Web", link: link), fileItemId: fileItemId,
+            savePhase: savePhase, saveFailure: saveFailure, saveUnavailable: saveUnavailable
         )
     }
 

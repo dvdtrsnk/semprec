@@ -164,6 +164,8 @@ async function seedTenant(tenantId: string): Promise<SeededTenant> {
         { allowedSystemKeys: ["name"] },
       );
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId,
         filesDatabaseId,
         folderRelationPropertyId: relationId("folder"),

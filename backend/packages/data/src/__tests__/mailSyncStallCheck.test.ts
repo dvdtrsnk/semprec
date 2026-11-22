@@ -8,7 +8,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { withTransaction } from "../db/pool.js";
 import { mailSyncProcessName, upsertProcessHeartbeat } from "../health/processHeartbeats.js";
-import { IMAP_NEW_MESSAGES_PER_PASS } from "../mail/imapReconcile.js";
+import { IMAP_FULL_MESSAGES_PER_PASS } from "../mail/imapReconcile.js";
 import { claimMailSyncPass } from "../mail/mailAccountSyncStateStore.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
@@ -36,8 +36,8 @@ const syncStateSchema = z.object({
 });
 const problemRowSchema = z.object({ occurrence_count: z.number(), resolved_at: z.date().nullable() });
 
-/** More new messages than one pass ingests, so the first passes leave backfill behind. */
-const BACKFILL_MESSAGES = 2 * IMAP_NEW_MESSAGES_PER_PASS + 5;
+/** More recent messages than one pass ingests in full, so the first passes leave backfill behind. */
+const BACKFILL_MESSAGES = 2 * IMAP_FULL_MESSAGES_PER_PASS + 5;
 
 async function markFixedProcessesFresh(): Promise<void> {
   for (const process of ["api", "agents", "transcribe", "ai-gateway"]) {

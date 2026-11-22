@@ -55,12 +55,29 @@ class AuthenticatedApiChangesTest {
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/items/count", body = "{}") })
         assertEquals(0, announcements { api.send(HttpMethod.Get, "/api/search", listOf("q" to "x")) })
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/search/recent", body = "{}") })
+        val preview = "/api/mail/projects/p1/signals/preview"
+        assertEquals(0, announcements { api.send(HttpMethod.Post, preview, body = "{}") })
+    }
+
+    @Test fun `saving and applying mail signals are announced`() = runTest {
+        val api = api()
+        assertEquals(1, announcements { api.send(HttpMethod.Put, "/api/mail/projects/p1/signals", body = "{}") })
+        assertEquals(1, announcements { api.send(HttpMethod.Post, "/api/mail/projects/p1/signals/apply", body = "{}") })
     }
 
     @Test fun `saving the text of a page is not announced`() = runTest {
         val api = api()
         assertEquals(0, announcements { api.send(HttpMethod.Put, "/api/journal/periods/day/2026-11-16/doc") })
         assertEquals(0, announcements { api.send(HttpMethod.Put, "/api/items/i1/page.md", body = "# x") })
+    }
+
+    @Test fun `the history upload of a mailbox is not announced`() = runTest {
+        val api = api()
+        val history = "/api/mail/mailboxes/m1/history-index"
+        assertEquals(0, announcements { api.send(HttpMethod.Post, "$history/claim", body = "{}") })
+        assertEquals(0, announcements { api.send(HttpMethod.Post, history, body = "{}") })
+        assertEquals(0, announcements { api.send(HttpMethod.Post, "$history/release", body = "{}") })
+        assertEquals(1, announcements { api.send(HttpMethod.Post, "/api/mail/mailboxes", body = "{}") })
     }
 
     @Test fun `a failed write is not announced`() = runTest {

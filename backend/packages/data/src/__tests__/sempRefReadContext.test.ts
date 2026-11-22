@@ -434,6 +434,8 @@ describe("Semp reference turn reads", () => {
           });
           const firstMessageId = `<${randomUUID()}@example.test>`;
           const email = await ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
             folderRelationPropertyId: folder.id,
@@ -457,6 +459,8 @@ describe("Semp reference turn reads", () => {
             storageKeyPrefix: "ref-reader-test",
           });
           const newer = await ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
             folderRelationPropertyId: folder.id,
@@ -573,6 +577,8 @@ describe("Semp reference turn reads", () => {
           const itemIds: string[] = [];
           for (let index = 0; index < 101; index += 1) {
             const email = await ingestEmailMessage(client, {
+              arrival: "live",
+              contentState: "full",
               emailsDatabaseId: ids.emailsDatabaseId,
               filesDatabaseId: ids.filesDatabaseId,
               folderRelationPropertyId: folder.id,

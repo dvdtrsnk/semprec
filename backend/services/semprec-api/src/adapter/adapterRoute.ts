@@ -29,7 +29,8 @@ export { PayloadTooLargeError };
  * bypass the auth gate or error mapping.
  */
 
-const MAX_BODY_BYTES = 1 * 1024 * 1024;
+/** The body cap of a route that states none. */
+const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
 
 /** Session cookie or `Authorization: Bearer`, before the handler runs. */
 async function requireAuthenticatedIdentity(pool: Pool, req: IncomingMessage): Promise<AuthenticatedIdentity> {
@@ -78,6 +79,8 @@ export interface AdapterRequestListenerOptions {
    * read, and the handler runs in system scope instead of the caller's tenant.
    */
   admin?: boolean;
+  /** The largest body read before the handler runs; a larger one is 413 `payload_too_large`. */
+  maxBodyBytes?: number;
 }
 
 /**
@@ -99,7 +102,7 @@ export function createAdapterRequestListener(
         throw new ForbiddenError("Admin role required", undefined, "admin_required");
       }
       const run = async (): Promise<{ status: number; body: unknown }> => {
-        const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
+        const body = await readJsonBody(req, { maxBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES });
         const params = options.extractParams?.(req) ?? {};
         const handled = await retryingTransientConflicts(() => handler({ req, identity, params, body }));
         // The full item envelope, never an empty 204; built here because the blob lookup needs the

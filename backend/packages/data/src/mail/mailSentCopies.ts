@@ -153,8 +153,8 @@ export interface MailSentCopyTaskOptions {
 /**
  * Appends one recorded copy to the mailbox's Sent folder with `\Seen` and deletes the row. Before the APPEND it
  * searches the folder for the copy's Message-ID and skips the APPEND when the message is there, so a run repeated
- * after an APPEND whose deletion did not commit appends nothing twice. The connection holds the account's IMAP
- * connection slot, as a sync pass does.
+ * after an APPEND whose deletion did not commit appends nothing twice. The connection holds an IMAP connection slot of
+ * the account and of the server host, as a sync session does, and its login waits for the host's login rate.
  *
  * The copy ends without an APPEND only when the mailbox is gone, in the trash or has Mail switched off: then every
  * copy of the mailbox is dropped and its problem resolved (`dropSentCopiesOfMailbox`), which is logged. Every other failure (no IMAP settings or credential, no Sent folder yet, a refused or failed command)
@@ -218,7 +218,13 @@ async function appendSentCopy(pool: Pool, copy: StoredSentCopy, options: MailSen
   const settings: MailServerConnectionSettings = { endpoint: stored.imap, username: stored.username };
   const openImap = options.openImap ?? openImapConnection;
 
-  await (options.limiter ?? sharedImapConnectionLimiter).run(copy.mailboxItemId, connectionLimit, async () => {
+  const slot = {
+    accountId: copy.mailboxItemId,
+    accountLimit: connectionLimit,
+    host: stored.imap.host,
+    kind: "work" as const,
+  };
+  await (options.limiter ?? sharedImapConnectionLimiter).run(slot, async () => {
     const imap = await openImap(settings, { password });
     try {
       if (!(await imap.hasMessageWithId(sentPath, copy.messageId))) {

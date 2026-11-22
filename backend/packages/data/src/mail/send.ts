@@ -294,6 +294,8 @@ export async function sendDraftEmail(
         references: input.references,
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
         ingestedAt: new Date(),
+        arrival: "live",
+        contentState: "full",
       });
     });
   } catch (err) {

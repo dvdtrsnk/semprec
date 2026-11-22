@@ -8,6 +8,7 @@ enum MailIdentifiers {
     static let threadsFolders = "mail.threads.folders"
     static let threadsCompose = "mail.threads.compose"
     static let threadsReauth = "mail.threads.reauth"
+    static let threadsRemoteSearch = "mail.threads.remoteSearch"
     static let filterSheet = "mail.filter.sheet"
     static let filterClear = "mail.filter.clear"
     static let filterDone = "mail.filter.done"
@@ -18,6 +19,12 @@ enum MailIdentifiers {
     static let threadTrash = "mail.thread.trash"
     static let threadRestore = "mail.thread.restore"
     static let messagePrefix = "mail.thread.message."
+    static let messageLoadingPrefix = "mail.thread.body.loading."
+    static let messageRetryPrefix = "mail.thread.body.retry."
+    static let attachmentSavePrefix = "mail.thread.attachment.save."
+    static let attachmentSavingPrefix = "mail.thread.attachment.saving."
+    static let attachmentOpenPrefix = "mail.thread.attachment.open."
+    static let attachmentFailurePrefix = "mail.thread.attachment.failure."
     static let taskPrefix = "mail.thread.task."
     static let addTask = "mail.thread.addTask"
     static let draftEditor = "mail.thread.draft.editor"
@@ -40,4 +47,23 @@ enum MailIdentifiers {
     static let smartPrefix = "mail.folders.smart."
     static let folderPrefix = "mail.folders.folder."
     static let accountTogglePrefix = "mail.folders.account."
+
+    static let signalsScreen = "mail.signals.screen"
+    static let signalsSave = "mail.signals.save"
+    /// Followed by the person's address.
+    static let signalsPersonPrefix = "mail.signals.person."
+    /// Followed by the list (`domains`, `addresses`, `keywords`).
+    static let signalsInputPrefix = "mail.signals.input."
+    /// Followed by the list.
+    static let signalsAddPrefix = "mail.signals.add."
+    /// Followed by the list, a dot and the value.
+    static let signalsRemovePrefix = "mail.signals.remove."
+    /// Followed by the list.
+    static let signalsInvalidPrefix = "mail.signals.invalid."
+    static let signalsPreviewCount = "mail.signals.preview.count"
+    static let signalsPreviewRetry = "mail.signals.preview.retry"
+    /// Followed by the thread id.
+    static let signalsThreadPrefix = "mail.signals.thread."
+    static let signalsAssign = "mail.signals.assign"
+    static let signalsAssignment = "mail.signals.assignment"
 }

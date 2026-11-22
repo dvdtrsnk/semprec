@@ -48,6 +48,11 @@ extension AppCollectionsRouter: CollectionsRouting {
         context.showMail(MailListStart(projectId: projectId), in: tab)
     }
 
+    func showProjectMailSignals(projectId: String) {
+        leaveSheet()
+        context.push(.projectMailSignals(projectId: projectId), in: tab)
+    }
+
     func showProjectTasks(projectId: String) {
         leaveSheet()
         context.showTasks(TasksStart(tab: .all, projectId: projectId), in: tab)

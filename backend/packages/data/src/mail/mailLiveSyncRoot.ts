@@ -72,7 +72,8 @@ export interface MailLiveSyncRoot {
   restartAccount(mailboxItemId: string): Promise<void>;
   /**
    * Waits for passes and restarts in flight, then stops the mailbox's lifecycle once if hosted for `tenantId`. Discovery
-   * skips trashed Mailboxes items and accounts with Mail switched off, so a later pass does not host it again.
+   * skips trashed Mailboxes items, accounts with Mail switched off and accounts whose last sync failure is
+   * `reauthorization`, so a later pass does not host it again.
    */
   stopMailbox(tenantId: string, mailboxItemId: string): Promise<void>;
 }
@@ -150,13 +151,16 @@ export function createMailLiveSyncRoot(
                 // Seeds state only for a first-seen account and never overwrites `syncMode`, so a user's
                 // `setSyncMode` is read back from the row. The seed takes a non-waiting share lock on the live item:
                 // `null` means trashed, gone or locked by a removal in flight, and leaves the account out of this pass,
-                // as does Mail switched off.
+                // as do Mail switched off and a refused sign-in, whose lifecycle would only log in to be refused again
+                // until the user signs in, which clears the failure kind.
                 const state = await ensureMailAccountSyncStateOfLiveMailbox(client, {
                   itemId: item.id,
                   mailboxesDatabaseId,
                   syncMode: defaultSyncModeForProvider(provider),
                 });
-                if (state && state.syncPausedAt === null) found.set(item.id, { tenantId, syncMode: state.syncMode });
+                if (state && state.syncPausedAt === null && state.lastFailureKind !== "reauthorization") {
+                  found.set(item.id, { tenantId, syncMode: state.syncMode });
+                }
                 await client.query("RELEASE SAVEPOINT discover_account");
               } catch (err) {
                 // Reported before the rollback, so the original error surfaces even if the rollback throws.

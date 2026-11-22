@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import type {
   CalDavVerification,
   HeartbeatRuleKindRegistry,
+  MailContentProviders,
   MailSendAdapterFactory,
   VerifiedMailServerSettings,
   VerifyCalDavServerInput,
@@ -63,12 +64,18 @@ export interface CustomRouteDependencies {
   oauth?: CustomRouteOAuthConfig;
   mailServerClients?: MailServerClients;
   mailLiveSync?: MailLiveSyncControl;
+  /**
+   * The provider clients and attachment storage of the on-demand message content and attachment save routes.
+   * `createDispatcher` builds them from `oauth`, `outboundHttp` and its mail attachment storage when the container
+   * carries none.
+   */
+  mailContent?: MailContentProviders;
   outboundHttp?: typeof fetch;
   /** A mount without it fails each request of a route that needs it with a configuration error. */
   aiGateway?: AiGatewayClientPort;
   /**
-   * Counts each user's login verifications in the password connect route. `createDispatcher`
-   * creates one when the container carries none.
+   * Counts each user's login verifications in the password routes and provider fetches of the
+   * on-demand mail content routes. `createDispatcher` creates one when the container carries none.
    */
   throttle?: ClientIpThrottle;
   /**
@@ -131,6 +138,7 @@ export function mountCustomRoutes(
     method: definition.method,
     path: definition.path,
     handler: (definition.handler as CustomRouteHandlerFactory)(pool, dependencies),
+    ...(definition.maxBodyBytes !== undefined ? { maxBodyBytes: definition.maxBodyBytes } : {}),
   }));
   return mountRoutes(pool, routes);
 }

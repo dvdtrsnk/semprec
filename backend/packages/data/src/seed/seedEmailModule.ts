@@ -338,8 +338,9 @@ export async function seedEmailModuleInTransaction(
       recipientsPeopleKey: "recipientsPeople",
     },
   });
-  // A new Inbox message nudges the project's agent via core.agentRun, gated by itemRelationFilter (no
-  // junk/trash), `runProject` and `answerExpectedFilter`.
+  // A new live Inbox message nudges the project's agent via core.agentRun, gated by itemRelationFilter (no
+  // junk/trash), `liveMailFilter` (no backfilled history), `senderKnownFilter`, `answerExpectedFilter` and moved by
+  // `runProject`.
   await createHeartbeat(client, {
     projectItemId: emailProject.id,
     name: "newEmail",
@@ -347,6 +348,7 @@ export async function seedEmailModuleInTransaction(
     actionId: CORE_AGENT_RUN_ACTION_ID,
     actionConfig: {
       task: "A new message arrived in the Inbox.",
+      liveMailFilter: {},
       senderKnownFilter: {},
       answerExpectedFilter: {},
       runProject: { resolver: "mailThreadProject" },

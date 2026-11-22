@@ -45,12 +45,22 @@ export const MAIL_OWN_ADDRESSES_SQL = `
  * shows. Drafts are left out unless the bind parameter numbered `threadIdParameter` names one thread.
  * `unreadCandidatesOnly` keeps only the threads with a live copy that is not read: every thread whose `copy_stats`
  * says `unread` is among them, and each kept thread still has all of its copies, so an unread count is unchanged.
+ * `threadIdsParameter` numbers a `uuid[]` bind parameter that, when not null, keeps only the copies of those threads,
+ * each thread with all of its copies.
  */
 export function mailThreadCopyCtes(
   threadIdParameter: number,
-  options: { unreadCandidatesOnly?: boolean } = {},
+  options: { unreadCandidatesOnly?: boolean; threadIdsParameter?: number } = {},
 ): string {
   const threadId = `$${threadIdParameter}`;
+  const threadIds = options.threadIdsParameter === undefined ? null : `$${options.threadIdsParameter}::uuid[]`;
+  const threadIdsFilter =
+    threadIds === null ? "" : `\n    AND (${threadIds} IS NULL OR m.thread_id = ANY(${threadIds}))`;
+  const threadIdsEdgeFilter =
+    threadIds === null
+      ? ""
+      : `\n      AND (${threadIds} IS NULL OR (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) IN (
+        SELECT t.item_id FROM mail_message_meta t WHERE t.tenant_id = app_tenant_default() AND t.thread_id = ANY(${threadIds})))`;
   const unreadCandidates = options.unreadCandidatesOnly
     ? `unread_candidates AS (
   SELECT DISTINCT m.thread_id FROM mail_message_meta m
@@ -113,11 +123,11 @@ export function mailThreadCopyCtes(
     JOIN items folder ON folder.tenant_id = r.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
     WHERE (${threadId}::uuid IS NULL OR (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) IN (
-      SELECT t.item_id FROM mail_message_meta t WHERE t.tenant_id = app_tenant_default() AND t.thread_id = ${threadId}::uuid))${candidateEdgeFilter}
+      SELECT t.item_id FROM mail_message_meta t WHERE t.tenant_id = app_tenant_default() AND t.thread_id = ${threadId}::uuid))${candidateEdgeFilter}${threadIdsEdgeFilter}
     GROUP BY 1
   ) f ON f.email_id = i.id
   WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
-    AND (${threadId}::uuid IS NULL OR m.thread_id = ${threadId}::uuid)${candidateFilter}
+    AND (${threadId}::uuid IS NULL OR m.thread_id = ${threadId}::uuid)${candidateFilter}${threadIdsFilter}
     -- The list leaves drafts out; the detail-only mode (${threadId}) aggregates every live copy, drafts included.
     AND (${threadId}::uuid IS NOT NULL OR (NOT (f.n > 0 AND COALESCE(f.only_drafts, false))
       AND NOT EXISTS (SELECT 1 FROM mail_drafts d WHERE d.tenant_id = m.tenant_id AND d.email_item_id = i.id AND d.sent_at IS NULL)))
@@ -218,6 +228,12 @@ export async function listMailThreads(
     personId?: string | null;
     /** Detail-only mode: one thread in any box or folder, drafts included. The list never sets it. */
     threadId?: string | null;
+    /** Only these threads, in any box or folder. */
+    threadIds?: readonly string[] | null;
+    /** Only these threads, each still in the box, folder and other filters above. */
+    changedThreadIds?: readonly string[] | null;
+    /** With `search`: the message satisfying it must be one of these Emails items. */
+    searchMessageItemIds?: readonly string[];
   } = {
     box: "inbox",
     folderId: null,
@@ -235,8 +251,10 @@ export async function listMailThreads(
     if (!folder.rows.length) throw new NotFoundError("Folder not found");
   }
   const predicates: string[] = [
-    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
+    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR $10::uuid[] IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
     `($9::uuid IS NULL OR l.thread_id = $9::uuid)`,
+    `($10::uuid[] IS NULL OR l.thread_id = ANY($10::uuid[]))`,
+    `($11::uuid[] IS NULL OR l.thread_id = ANY($11::uuid[]))`,
     `($4::uuid IS NULL OR ${mailThreadPredicates.inFolder(4)})`,
     `($5::uuid IS NULL OR ${mailThreadPredicates.inMailbox(5)})`,
   ];
@@ -250,11 +268,11 @@ export async function listMailThreads(
   predicates.push(
     `($8::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $8))`,
   );
-  const search = filters.search ? matchesSearch(filters.search, 10) : null;
+  const search = filters.search ? matchesSearch(filters.search, 12, filters.searchMessageItemIds) : null;
   if (search) predicates.push(search.sql);
   const result = await client.query<{ thread: unknown; thread_item_id: string | null }>(
     `
-WITH ${mailThreadCopyCtes(9)}, thread_project AS (
+WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
   SELECT t.id AS thread_id, project.id AS project_id
   FROM mail_threads t
   JOIN properties p ON p.tenant_id = t.tenant_id AND p.database_id = (SELECT threads FROM schema_ids) AND p.key = 'project'
@@ -349,6 +367,8 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
       filters.areaId ?? null,
       filters.personId ?? null,
       filters.threadId ?? null,
+      filters.threadIds ?? null,
+      filters.changedThreadIds ?? null,
       ...(search?.params ?? []),
     ],
   );

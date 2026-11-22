@@ -131,6 +131,8 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const draftsFolderId = await folder(mailboxId, "drafts");
       const inboxId = await folder(mailboxId, "inbox");
       const received = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property(emailProperties, "folder"),

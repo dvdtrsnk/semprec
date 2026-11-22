@@ -68,6 +68,7 @@
   "mail.draft.forward.to": "To",
   "mail.draft.forward.cc": "Cc",
   "agentTool.mail.thread.get.label": "Read mail thread",
+  "agentTool.mail.search.label": "Search mail",
   "agentTool.mail.draft.create.label": "Create mail draft",
   "agentTool.mail.draft.update.label": "Update mail draft",
   "agentTool.mail.draft.send.label": "Send mail draft",

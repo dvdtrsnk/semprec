@@ -1,3 +1,4 @@
+import { GRAPH_IMMUTABLE_ID_PREFERENCE } from "./graphImmutableIds.js";
 import { assertJsonObject } from "./providerTypes.js";
 import {
   GraphSubscriptionNotFoundError,
@@ -77,6 +78,8 @@ export function createGraphSubscriptionRestClient(
       const accessToken = await getAccessToken(mailboxItemId, credential);
       const json = await request(SUBSCRIPTIONS_URL, accessToken, {
         method: "POST",
+        // Notifications then name messages by the immutable ids the sync stores.
+        headers: { Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE },
         body: JSON.stringify({
           changeType: "created,updated",
           notificationUrl: params.notificationUrl,

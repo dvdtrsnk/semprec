@@ -949,9 +949,10 @@ describe("the Sent copy of an accepted SMTP send", () => {
       freeSlots = resolve;
     });
     // The account's IDLE connection and a running sync pass take both slots of a provider without its own limit.
+    const slot = { accountId: mailboxItemId, accountLimit: 2, host: "mail.test", kind: "work" } as const;
     const holders = [
-      sharedImapConnectionLimiter.run(mailboxItemId, 2, () => slotsTaken),
-      sharedImapConnectionLimiter.run(mailboxItemId, 2, () => slotsTaken),
+      sharedImapConnectionLimiter.run({ ...slot, kind: "idle" }, () => slotsTaken),
+      sharedImapConnectionLimiter.run(slot, () => slotsTaken),
     ];
     try {
       const transport = createSmtpMailTransport(mailboxItemId, settingsFor("mail.test", 465), credential, () => ({

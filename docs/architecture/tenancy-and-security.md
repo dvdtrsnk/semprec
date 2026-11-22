@@ -277,8 +277,11 @@ tenant by earliest, first or `LIMIT 1`.
   acceptance, the mail OAuth callback, the Google and Graph calendar webhooks, the Graph mail
   webhook) are throttled per
   client address in process memory (`createClientIpThrottle` in
-  `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`);
-  mailbox credential verification is throttled the same way per user id.
+  `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`). The
+  same throttle counts five signed-in actions per user id: mailbox credential verification, a mail
+  provider fetch on demand (`mailContentFetch`), a mail search that asks the providers
+  (`mailRemoteSearch`), a native client's IMAP history claim or upload (`mailHistoryUpload`) and a
+  project mail signals preview, which scans the tenant's whole mail index (`mailSignalPreview`).
 - The mail OAuth callback (`mailOauthCallback`), both calendar webhooks (`calendarWebhook`, one
   budget shared by the two) and the Graph mail webhook (`mailWebhook`, its own budget) count every
   request before any database read; a refused one gets `429` with `Retry-After` (an empty body on

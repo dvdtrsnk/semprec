@@ -25,6 +25,8 @@ interface TransactionOwner {
   tenantId: string | null;
   /** Search-lane enqueues registered while the body ran, in registration order. */
   searchJobs: PreparedJob[];
+  /** `runBeforeCommitOnce` flushes, one per key, in registration order. */
+  preCommitFlushes: Map<symbol, (client: PoolClient) => Promise<void>>;
 }
 
 /** Two-key advisory lock classes of the search flush. Others: 2331 (`seedSystem.ts`), 2334 (`auth/sessionDeviceLock.ts`). */
@@ -324,6 +326,23 @@ export function registerSearchJob(client: PoolClient, job: PreparedJob): void {
   owner.searchJobs.push(job);
 }
 
+/**
+ * Runs `flush` once in the active managed transaction of `client`, after the search-lane flush and right before
+ * `COMMIT`; a later registration under the same `key` is ignored. Registration closes when the body returns, so a
+ * flush cannot register another, and a savepoint rollback does not withdraw one. A flush that throws rolls the whole
+ * transaction back. Each flush takes its locks last in the transaction, after every lock the body took.
+ */
+export function runBeforeCommitOnce(
+  client: PoolClient,
+  key: symbol,
+  flush: (client: PoolClient) => Promise<void>,
+): void {
+  const owner = transactionOwner.getStore();
+  if (!owner?.active || owner.client !== client)
+    throw new Error("A pre-commit flush requires the active managed transaction of its client");
+  if (!owner.preCommitFlushes.has(key)) owner.preCommitFlushes.set(key, flush);
+}
+
 function compareCodeUnits(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -429,6 +448,7 @@ async function runTransaction<T>(
         keyedCallbacks: new Map(),
         tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
         searchJobs: [],
+        preCommitFlushes: new Map(),
       };
       let result: T;
       try {
@@ -439,6 +459,7 @@ async function runTransaction<T>(
         owner.active = false;
       }
       await flushSearchJobs(client, owner);
+      for (const flush of owner.preCommitFlushes.values()) await flush(client);
       await client.query("COMMIT");
       const callbacks = afterCommitCallbacks.get(client);
       afterCommitCallbacks.delete(client);
@@ -465,6 +486,7 @@ async function runTransaction<T>(
     } finally {
       owner?.keyedCallbacks.clear();
       owner?.searchJobs.splice(0);
+      owner?.preCommitFlushes.clear();
     }
   } catch (error) {
     primaryFailure = { error };

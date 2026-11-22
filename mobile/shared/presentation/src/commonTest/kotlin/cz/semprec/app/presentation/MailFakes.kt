@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailContentUnavailable
 import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.domain.CalendarSyncStatus
 import cz.semprec.app.domain.InternetAccount
@@ -8,8 +9,12 @@ import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InternetService
 import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailAddress
+import cz.semprec.app.domain.MailAttachment
 import cz.semprec.app.domain.MailConnectOutcome
 import cz.semprec.app.domain.MailContact
+import cz.semprec.app.domain.MailContentOutcome
+import cz.semprec.app.domain.MailContentRepository
+import cz.semprec.app.domain.MailContentState
 import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftFields
 import cz.semprec.app.domain.MailDraftMode
@@ -18,15 +23,20 @@ import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailFolder
 import cz.semprec.app.domain.MailMessage
+import cz.semprec.app.domain.MailMessageContent
 import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPrefill
+import cz.semprec.app.domain.MailRemoteSearch
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailRepository
+import cz.semprec.app.domain.MailSearchResult
 import cz.semprec.app.domain.MailSentDraft
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.MailThreadChanges
+import cz.semprec.app.domain.MailThreadChangesRepository
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
@@ -52,6 +62,14 @@ internal fun <T> mailDone(value: T): ScriptedStep<MailOutcome<T>> =
 internal fun <T> mailRefused(refusal: MailRefusal): ScriptedStep<MailOutcome<T>> =
     { RepositoryResult.Content(MailOutcome.Refused(refusal)) }
 
+/** The answer of a scripted read or save that reached the provider's copy. */
+internal fun <T> mailFetched(value: T): ScriptedStep<MailContentOutcome<T>> =
+    { RepositoryResult.Content(MailContentOutcome.Done(value)) }
+
+/** The answer of a scripted read or save whose provider copy the server could not reach. */
+internal fun <T> mailUnavailable(reason: MailContentUnavailable): ScriptedStep<MailContentOutcome<T>> =
+    { RepositoryResult.Content(MailContentOutcome.Unavailable(reason)) }
+
 /** A scripted call: [script] answers, [calls] records what it was asked with. */
 internal class MailCall<A, T>(vararg steps: ScriptedStep<T>) {
     private val script = CallScript(steps.toList())
@@ -65,8 +83,11 @@ internal class MailCall<A, T>(vararg steps: ScriptedStep<T>) {
     }
 }
 
+/** The mail reads and writes, and the calls that may ask the mail provider, each answered by its own script. */
 internal class ScriptedMailRepository(
     val threads: MailCall<MailThreadQuery, MailThreadPage> = MailCall(mailContent(mailPage())),
+    val changes: MailCall<Pair<MailThreadQuery, String>, MailThreadChanges> =
+        MailCall(mailContent(MailThreadChanges("c-next", emptyList(), emptyList(), reset = false))),
     val facets: MailCall<Pair<String?, String?>, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
@@ -74,10 +95,16 @@ internal class ScriptedMailRepository(
     val flag: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(true)),
     val moves: MailCall<String, MailOutcome<Unit>> = MailCall(mailDone(Unit)),
     val tasks: MailCall<String, MailNamedRef> = MailCall(mailContent(MailNamedRef("t9", "Zavolat"))),
-) : MailRepository {
+    val contents: MailCall<String, MailContentOutcome<MailMessageContent>> =
+        MailCall(mailFetched(MailMessageContent("e3", "Celý text"))),
+    val saves: MailCall<Pair<String, String>, MailContentOutcome<String>> = MailCall(mailFetched("f9")),
+    val searches: MailCall<Pair<String, String?>, MailSearchResult> = MailCall(mailContent(mailSearch())),
+) : MailRepository, MailThreadChangesRepository, MailContentRepository {
     val moved = mutableListOf<String>()
 
     override suspend fun threads(query: MailThreadQuery) = threads.answer(query)
+
+    override suspend fun threadChanges(query: MailThreadQuery, since: String) = changes.answer(query to since)
 
     override suspend fun facets(areaId: String?, projectId: String?) = facets.answer(areaId to projectId)
 
@@ -96,6 +123,12 @@ internal class ScriptedMailRepository(
     override suspend fun restore(threadId: String) = move("restore", threadId)
 
     override suspend fun createTask(threadId: String) = tasks.answer(threadId)
+
+    override suspend fun messageContent(emailId: String) = contents.answer(emailId)
+
+    override suspend fun saveAttachment(emailId: String, attachmentId: String) = saves.answer(emailId to attachmentId)
+
+    override suspend fun search(query: String, mailboxId: String?) = searches.answer(query to mailboxId)
 
     private suspend fun move(action: String, threadId: String): RepositoryResult<MailOutcome<Unit>> {
         moved += "$action:$threadId"
@@ -139,9 +172,9 @@ internal class ScriptedMailboxRepository(
     val impact: MailCall<String, MailRemovalImpact> = MailCall(mailContent(MailRemovalImpact(120, 2, 50, 7))),
     val remove: MailCall<String, Unit> = MailCall(mailContent(Unit)),
     val connect: MailCall<MailPasswordAccount, MailConnectOutcome> =
-        MailCall(mailContent(MailConnectOutcome.Connected)),
+        MailCall(mailContent(MailConnectOutcome.Connected("new"))),
     val passwords: MailCall<Triple<String, String, String?>, MailConnectOutcome> =
-        MailCall(mailContent(MailConnectOutcome.Connected)),
+        MailCall(mailContent(MailConnectOutcome.Connected("m1"))),
     val rename: MailCall<Pair<String, String>, Unit> = MailCall(mailContent(Unit)),
     val limit: MailCall<Pair<String, Int>, Unit> = MailCall(mailContent(Unit)),
 ) : MailboxRepository {
@@ -238,8 +271,17 @@ internal fun mailThread(
     hasSempDraft = true,
 )
 
-internal fun mailPage(vararg threads: MailThreadSummary, next: String? = null) =
-    MailThreadPage(threads.toList().ifEmpty { listOf(mailThread()) }, next)
+internal fun mailPage(vararg threads: MailThreadSummary, next: String? = null, changesCursor: String? = null) =
+    MailThreadPage(threads.toList().ifEmpty { listOf(mailThread()) }, next, changesCursor)
+
+internal fun mailSearch(
+    vararg threads: MailThreadSummary,
+    failed: List<String> = emptyList(),
+    unindexed: Int = 0,
+) = MailSearchResult(
+    threads = threads.toList().ifEmpty { listOf(mailThread()) },
+    remote = MailRemoteSearch(listOf("m1"), failed, unindexed),
+)
 
 internal fun mailFacets() = MailFacets(
     total = 9,
@@ -284,6 +326,8 @@ internal fun mailMessage(
     own: Boolean = false,
     purpose: String? = "inbox",
     mailboxId: String? = "m1",
+    state: MailContentState = MailContentState.FULL,
+    attachments: List<MailAttachment> = emptyList(),
 ) = MailMessage(
     emailId = id,
     mailboxId = mailboxId,
@@ -293,9 +337,23 @@ internal fun mailMessage(
     to = listOf(MailAddress("", "me@x.cz")),
     cc = emptyList(),
     date = "2026-10-20T12:41:00.000000Z",
-    bodyText = "Ahoj $id",
+    bodyText = if (state == MailContentState.REMOTE) "" else "Ahoj $id",
+    contentState = state,
+    preview = "Ahoj",
     read = false,
-    attachments = emptyList(),
+    attachments = attachments,
+)
+
+internal fun mailAttachment(id: String = "a1", fileItemId: String? = null) = MailAttachment(
+    attachmentId = id,
+    filename = "nabidka.pdf",
+    contentType = "application/pdf",
+    byteSize = 840,
+    stored = fileItemId != null,
+    blobId = fileItemId?.let { "b-$it" },
+    fileItemId = fileItemId,
+    project = null,
+    projectLink = null,
 )
 
 internal fun mailDetail(

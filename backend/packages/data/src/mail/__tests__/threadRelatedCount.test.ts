@@ -101,6 +101,8 @@ async function fixture(): Promise<Fixture> {
     message: async (input) => {
       const { itemId } = await withTransaction(runtime, async (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emails,
           filesDatabaseId: await database("files"),
           folderRelationPropertyId: property("folder"),

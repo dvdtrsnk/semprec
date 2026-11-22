@@ -1,4 +1,5 @@
 import type { ImapFlow } from "imapflow";
+import { GRAPH_IMMUTABLE_ID_PREFERENCE } from "./graphImmutableIds.js";
 import { logger } from "./logger.js";
 
 type GmailMoveCommand = "trash" | "untrash" | "add_inbox" | "remove_inbox";
@@ -183,7 +184,12 @@ export async function graphMoveRequest(
   try {
     response = await fetchImpl(destination ? `${url}/move` : `${url}?$select=id,parentFolderId`, {
       method: destination ? "POST" : "GET",
-      headers: { Authorization: `Bearer ${token}`, ...(destination ? { "Content-Type": "application/json" } : {}) },
+      // Immutable ids, as the sync stores them: a found message answers with the id it was asked for.
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Prefer: GRAPH_IMMUTABLE_ID_PREFERENCE,
+        ...(destination ? { "Content-Type": "application/json" } : {}),
+      },
       ...(destination ? { body: JSON.stringify({ destinationId: destination }) } : {}),
       signal: AbortSignal.timeout(30_000),
     });

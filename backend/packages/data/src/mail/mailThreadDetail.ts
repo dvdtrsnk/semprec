@@ -6,7 +6,13 @@ import { sanitizeMailHtml } from "./htmlSanitize.js";
 import { resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { readMailAttachmentProjects, type MailAttachmentProjects } from "./mailThreadAttachmentProjects.js";
 import { htmlToPlainText } from "./mailPlainText.js";
+import {
+  MAIL_MESSAGE_ATTACHMENTS_CTES,
+  MAIL_MESSAGE_ATTACHMENTS_LATERAL,
+  mailMessageAttachmentSchema,
+} from "./mailMessageAttachments.js";
 import { listMailThreads, MAIL_OWN_ADDRESSES_SQL } from "./mailThreadListQuery.js";
+import { MAIL_MESSAGE_CONTENT_STATES } from "./mailContentState.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
 const messageRow = z.object({
@@ -21,17 +27,11 @@ const messageRow = z.object({
   replyTo: z.array(address),
   date: z.string().nullable(),
   body: z.string().nullable(),
+  contentState: z.enum(MAIL_MESSAGE_CONTENT_STATES),
+  preview: z.string().nullable(),
   read: z.boolean(),
   flagged: z.boolean(),
-  attachments: z.array(
-    z.object({
-      fileItemId: z.uuid().nullable(),
-      blobId: z.uuid(),
-      filename: z.string(),
-      contentType: z.string(),
-      byteSize: z.number().int(),
-    }),
-  ),
+  attachments: z.array(mailMessageAttachmentSchema),
 });
 
 /** What an attachment that has no Files item shows as its project and links. */
@@ -48,20 +48,20 @@ function addressList(field: "to" | "cc" | "replyTo"): string {
 /**
  * Every live Emails copy of the thread (Drafts included), one per `message_id`, keeping the copy the
  * thread list counts (latest activity, then highest item id). `folderPurpose` picks one purpose in the
- * order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels).
+ * order drafts, sent, inbox, archive, junk, trash, all, none (a Gmail message has several labels). The
+ * body of an `index` message is its unexpired on-demand copy (HTML part, else text part), if any.
  */
 const MESSAGES_SQL = `
 WITH schema_ids AS (
   SELECT (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'emails') AS emails,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'folders') AS folders,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'mailboxes') AS mailboxes,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'files') AS files
-), email_relation AS (
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'mailboxes') AS mailboxes
+), ${MAIL_MESSAGE_ATTACHMENTS_CTES}, email_relation AS (
   SELECT p.key, rd.id, rd.property_id_a = p.id AS email_is_a
   FROM properties p JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
-  WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT emails FROM schema_ids) AND p.key IN ('folder', 'attachments')
+  WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
 ), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), copies AS (
-  SELECT m.item_id, m.message_id, m.mailbox_item_id, m.envelope, i.properties,
+  SELECT m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.content_state, m.preview_text, i.properties,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at) AS message_date,
     COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
     EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
@@ -87,29 +87,18 @@ SELECT jsonb_build_object(
     THEN jsonb_build_object('name', COALESCE(d.envelope->'from'->>'name', ''), 'address', d.envelope->'from'->>'address') END,
   'to', ${addressList("to")}, 'cc', ${addressList("cc")}, 'replyTo', ${addressList("replyTo")},
   'date', to_char(d.message_date AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-  'body', CASE WHEN jsonb_typeof(d.properties->'body') = 'string' THEN d.properties->>'body' END,
+  'body', CASE WHEN d.content_state = 'index' THEN COALESCE(cache.body_html, cache.body_text)
+    WHEN jsonb_typeof(d.properties->'body') = 'string' THEN d.properties->>'body' END,
+  'contentState', CASE WHEN d.content_state = 'full' THEN 'full' WHEN cache.item_id IS NOT NULL THEN 'cached' ELSE 'remote' END,
+  'preview', d.preview_text,
   'read', COALESCE(d.properties->'read' = 'true'::jsonb, false),
   'flagged', COALESCE(d.properties->'flagged' = 'true'::jsonb, false),
   'attachments', COALESCE(attachments.value, '[]'::jsonb)
 ) AS message
 FROM dedup d
-LEFT JOIN LATERAL (
-  SELECT jsonb_agg(jsonb_build_object('fileItemId', f.id, 'blobId', a.blob_id, 'filename', a.filename,
-    'contentType', a.content_type, 'byteSize', a.byte_size) ORDER BY a.filename, a.blob_id, a.n) AS value
-  FROM (
-    SELECT a.*, row_number() OVER (PARTITION BY a.blob_id, a.filename ORDER BY a.id) AS n
-    FROM mail_attachments a WHERE a.tenant_id = app_tenant_default() AND a.message_item_id = d.item_id
-  ) a
-  LEFT JOIN (
-    SELECT file.id, file.properties->'file'->>'blobId' AS blob_id, file.properties->>'name' AS name,
-      row_number() OVER (PARTITION BY file.properties->'file'->>'blobId', file.properties->>'name' ORDER BY file.id) AS n
-    FROM email_relation er JOIN item_relations r ON r.tenant_id = app_tenant_default() AND r.relation_definition_id = er.id
-      AND (CASE WHEN er.email_is_a THEN r.item_a ELSE r.item_b END) = d.item_id
-    JOIN items file ON file.tenant_id = app_tenant_default() AND file.database_id = (SELECT files FROM schema_ids)
-      AND file.id = CASE WHEN er.email_is_a THEN r.item_b ELSE r.item_a END AND file.deleted_at IS NULL
-    WHERE er.key = 'attachments'
-  ) f ON f.blob_id = a.blob_id::text AND f.name = a.filename AND f.n = a.n
-) attachments ON true
+LEFT JOIN mail_message_content_cache cache ON cache.tenant_id = app_tenant_default() AND cache.item_id = d.item_id
+  AND d.content_state = 'index' AND cache.expires_at > now()
+${MAIL_MESSAGE_ATTACHMENTS_LATERAL}
 ORDER BY d.message_date ASC NULLS LAST, d.item_id ASC
 `;
 
@@ -221,7 +210,9 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
  *
  * Emails stores one `body` (HTML part, else text part). `bodyHtml` is that body sanitized, with remote
  * images only when `allowRemoteImages` is set; `bodyText` is `htmlToPlainText` of the same body.
- * Nothing sanitized is stored.
+ * Nothing sanitized is stored. An `index` message stores no body: with an unexpired copy fetched on demand
+ * (`mail_message_content_cache`) it is `contentState: "cached"` and served from that copy the same way, otherwise
+ * `"remote"` with both bodies empty. `preview` is always the stored snippet.
  */
 export async function getMailThreadDetail(client: PoolClient, threadId: string, allowRemoteImages: boolean) {
   const targetId = await resolveMergedThreadId(client, threadId);

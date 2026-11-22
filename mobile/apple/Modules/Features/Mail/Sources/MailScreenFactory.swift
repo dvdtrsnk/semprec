@@ -30,6 +30,14 @@ public enum MailScreenFactory {
         MailComposeScreen(viewModel: MailComposeViewModel(model: makeModel()))
     }
 
+    /// The mail signals of a project: which people, domains and keywords mark its threads, with the open threads they
+    /// match and the assignment of those threads to the project.
+    public static func projectSignals(
+        makeModel: @escaping @MainActor () -> any ProjectMailSignalsScreenModel
+    ) -> some View {
+        ProjectMailSignalsScreen(viewModel: ProjectMailSignalsViewModel(model: makeModel()))
+    }
+
     /// The mailboxes with their folders.
     public static func folders(
         makeModel: @escaping @MainActor () -> any MailFoldersScreenModel,

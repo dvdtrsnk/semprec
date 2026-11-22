@@ -4,14 +4,16 @@ import {
   GmailRestClient,
   GraphRestClient,
   MICROSOFT_TOKEN_URL,
-  MailConnectionLimitError,
-  MailReauthorizationRequiredError,
-  MailServerUnreachableError,
+  classifyImapConnectFailure,
   getMailServerSettings,
-  isImapConnectionLimitError,
   openImapConnection,
   refreshAndPersistAccessToken,
+  sharedImapSessionPool,
+  type BlobStorageWriter,
   type ImapMailClient,
+  type ImapSessionPool,
+  type MailContentProviders,
+  type MailProviderAccess,
   type MailSyncAdapterFactory,
 } from "@semprec/data";
 import { logger } from "./logger.js";
@@ -22,6 +24,14 @@ const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 60_000;
 /** Must match mailSyncJob.ts's `syncPurpose` map. */
 const GMAIL_SYNC_PURPOSE = "gmail_api_sync";
 const GRAPH_SYNC_PURPOSE = "graph_api_sync";
+/**
+ * `credential_access_log.purpose` of a token refresh for a read on demand or a provider search. An explicit map, so the
+ * column only ever carries values written here.
+ */
+const ON_DEMAND_PURPOSES: Record<"gmail" | "graph", Record<MailProviderAccess["use"], string>> = {
+  gmail: { content: "gmail_api_content", search: "gmail_api_search" },
+  graph: { content: "graph_api_content", search: "graph_api_search" },
+};
 
 export interface CreateMailSyncAdaptersOptions {
   pool: Pool;
@@ -29,6 +39,8 @@ export interface CreateMailSyncAdaptersOptions {
   env: Readonly<Record<string, string | undefined>>;
   /** Tests inject fake providers here. */
   fetchImpl?: typeof fetch;
+  /** Where IMAP sync connections are kept between passes; defaults to the process-wide pool. */
+  imapSessions?: ImapSessionPool;
 }
 
 export interface OAuthClient {
@@ -46,9 +58,11 @@ export interface OAuthClient {
  */
 export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): MailSyncAdapterFactory {
   const { pool, env, fetchImpl } = options;
+  const imapSessions = options.imapSessions ?? sharedImapSessionPool;
   const adapters: MailSyncAdapterFactory = {};
 
-  adapters.createImapClient = (mailboxItemId, credential) => openMailboxImapClient(pool, mailboxItemId, credential);
+  adapters.createImapClient = (mailboxItemId, credential, accountLimit) =>
+    checkoutMailboxImapClient(pool, imapSessions, mailboxItemId, credential, accountLimit);
 
   // Both OAuth transports deliberately ignore the credential the sync job passes: the refresh reads
   // the stored token under its row lock, so a value read before another refresh rotated it would
@@ -102,62 +116,98 @@ export function createMailSyncAdapters(options: CreateMailSyncAdaptersOptions): 
   return adapters;
 }
 
+export interface CreateMailContentProvidersOptions {
+  pool: Pool;
+  /** The composition root's OAuth clients; a provider whose client is absent has no content reads. */
+  oauth: { gmail?: OAuthClient; msGraph?: OAuthClient };
+  fetchImpl?: typeof fetch;
+  /** The sync's kept IMAP sessions; defaults to the process-wide pool. */
+  imapSessions?: ImapSessionPool;
+  /** The mail attachment root. */
+  attachmentStorage: BlobStorageWriter;
+}
+
 /**
- * The password goes to the connection only, never into errors or logs. A mailbox with no IMAP
- * settings is a configuration error raised with the mailbox id. `openImapConnection` vets the
- * host's address and maps a refused or unreachable server to `MailServerUnreachableError`, which
- * passes through unchanged.
+ * The provider clients of the on-demand content and attachment reads, from the same factories as the sync's: an IMAP
+ * read checks out the account's kept sync session (or a new connection under the shared connection limiter), a Gmail
+ * or Graph read refreshes the stored token as a sync pass does.
  */
-async function openMailboxImapClient(pool: Pool, mailboxItemId: string, password: string): Promise<ImapMailClient> {
+export function createMailContentProviders(options: CreateMailContentProvidersOptions): MailContentProviders {
+  const { pool, oauth, fetchImpl } = options;
+  const imapSessions = options.imapSessions ?? sharedImapSessionPool;
+  const providers: MailContentProviders = {
+    attachmentStorage: options.attachmentStorage,
+    createImapClient: (mailboxItemId, credential, accountLimit, signal) =>
+      checkoutMailboxImapClient(pool, imapSessions, mailboxItemId, credential, accountLimit, signal),
+  };
+  const { gmail, msGraph } = oauth;
+  if (gmail) {
+    providers.createGmailClient = (mailboxItemId, access) =>
+      new GmailRestClient(
+        createOAuthAccessTokenSource({
+          pool,
+          mailboxItemId,
+          tokenUrl: GOOGLE_TOKEN_URL,
+          ...gmail,
+          purpose: ON_DEMAND_PURPOSES.gmail[access.use],
+          actor: access.actor,
+          fetchImpl,
+        }),
+        fetchImpl,
+      );
+  }
+  if (msGraph) {
+    providers.createGraphClient = (mailboxItemId, access) =>
+      new GraphRestClient(
+        createOAuthAccessTokenSource({
+          pool,
+          mailboxItemId,
+          tokenUrl: MICROSOFT_TOKEN_URL,
+          ...msGraph,
+          purpose: ON_DEMAND_PURPOSES.graph[access.use],
+          actor: access.actor,
+          fetchImpl,
+        }),
+        fetchImpl,
+      );
+  }
+  return providers;
+}
+
+/**
+ * The account's kept sync session, or a new connection with the mailbox's stored server settings. The password goes to
+ * the connection only, never into errors or logs. A mailbox with no IMAP settings is a configuration error raised with
+ * the mailbox id. `openImapConnection` vets the host's address; its failure is classified
+ * (`classifyImapConnectFailure`).
+ */
+async function checkoutMailboxImapClient(
+  pool: Pool,
+  imapSessions: ImapSessionPool,
+  mailboxItemId: string,
+  password: string,
+  accountLimit: number,
+  signal?: AbortSignal,
+): Promise<ImapMailClient> {
   const settings = await getMailServerSettings(pool, mailboxItemId);
   const endpoint = settings?.imap ?? null;
   if (settings === null || endpoint === null) {
     throw new Error(`Mailbox ${mailboxItemId} has no IMAP server settings; set the IMAP host before syncing it`);
   }
-  try {
-    return await openImapConnection({ endpoint, username: settings.username }, { password });
-  } catch (error) {
-    let safe: Error;
-    try {
-      safe = classifyImapConnectError(error);
-    } catch {
-      safe = new Error("IMAP connection failed unexpectedly");
-    }
-    // The original remains owned through the completed connection cleanup.
-    throw safe;
-  }
-}
-
-/**
- * Too many open sessions becomes `MailConnectionLimitError`, so the job backs off instead of
- * retrying at once. A rejected login becomes `MailReauthorizationRequiredError`. Every other error
- * becomes a fixed generic error without claiming a known failure kind.
- */
-function classifyImapConnectError(error: unknown): Error {
-  if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
-  if (error instanceof MailConnectionLimitError) {
-    return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
-  }
-  if (error instanceof MailReauthorizationRequiredError) {
-    return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
-  }
-  if (isImapConnectionLimitError(error)) {
-    return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
-  }
-  if (isLoginRejection(error)) {
-    return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
-  }
-  return new Error("IMAP connection failed unexpectedly");
-}
-
-/** imapflow sets `authenticationFailed` on a login the server rejected. */
-function isLoginRejection(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "authenticationFailed" in error &&
-    error.authenticationFailed === true
-  );
+  return imapSessions.checkout({
+    mailboxItemId,
+    accountLimit,
+    host: endpoint.host,
+    signIn: JSON.stringify([endpoint.host, endpoint.port, endpoint.security, settings.username, password]),
+    ...(signal ? { signal } : {}),
+    async connect() {
+      try {
+        return await openImapConnection({ endpoint, username: settings.username }, { password }, { signal });
+      } catch (error) {
+        // The original remains owned through the completed connection cleanup.
+        throw classifyImapConnectFailure(error);
+      }
+    },
+  });
 }
 
 /** An unset or empty key counts as missing; a missing result names the keys, never their values. */
@@ -178,8 +228,10 @@ interface OAuthAccessTokenSourceInput {
   tokenUrl: string;
   clientId: string;
   clientSecret: string;
-  /** Names the sync mode in `credential_access_log`. */
+  /** Names the use in `credential_access_log`. */
   purpose: string;
+  /** Who reads the stored refresh token; the sync worker when absent. */
+  actor?: MailProviderAccess["actor"];
   fetchImpl: typeof fetch | undefined;
 }
 
@@ -200,6 +252,7 @@ function createOAuthAccessTokenSource(input: OAuthAccessTokenSourceInput): () =>
       clientId: input.clientId,
       clientSecret: input.clientSecret,
       purpose: input.purpose,
+      ...(input.actor ? { actor: input.actor } : {}),
       ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     });
     kept = refreshed;

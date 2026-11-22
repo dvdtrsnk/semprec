@@ -33,7 +33,7 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
     private fun viewModel(
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
         accounts: ScriptedInternetAccountRepository = ScriptedInternetAccountRepository(),
-    ) = InternetAccountViewModelFactory(accounts, mailboxes, sync).accountsViewModel()
+    ) = InternetAccountViewModelFactory(accounts, mailboxes, indexHistory(), sync).accountsViewModel()
 
     private fun viewModel(accounts: ScriptedInternetAccountRepository) =
         viewModel(ScriptedMailboxRepository(), accounts)
@@ -468,7 +468,7 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
             val accounts = listing(listed)
             val refused: MailConnectOutcome = MailConnectOutcome.Refused(MailConnectRefusal.APP_PASSWORD_REQUIRED)
             val boxes = ScriptedMailboxRepository(
-                passwords = MailCall(mailContent(refused), mailContent(MailConnectOutcome.Connected)),
+                passwords = MailCall(mailContent(refused), mailContent(MailConnectOutcome.Connected("m1"))),
             )
             val vm = viewModel(boxes, accounts)
             val effects = collectEffects(vm)

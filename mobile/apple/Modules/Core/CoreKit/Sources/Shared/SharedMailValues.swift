@@ -130,6 +130,23 @@ extension SharedSDK.MailRefusal {
     }
 }
 
+// MARK: - Provider fetches
+extension SharedSDK.MailContentUnavailable {
+
+    /// The Swift value of why the provider's copy could not be fetched, case by case, so that a new Kotlin case fails
+    /// the build here.
+    var unavailable: CoreKit.MailContentUnavailable {
+        switch self {
+        case .reauthorizationRequired: .reauthorizationRequired
+        case .providerUnreachable: .providerUnreachable
+        case .messageNotFound: .messageNotFound
+        case .mailboxUnavailable: .mailboxUnavailable
+        case .attachmentTooLarge: .attachmentTooLarge
+        case .rateLimited: .rateLimited
+        }
+    }
+}
+
 // MARK: - Account status
 extension MailAccountStatus {
 

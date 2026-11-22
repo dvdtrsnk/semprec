@@ -13,6 +13,8 @@ import type { ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
 import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
+  recordGmailSyncCursor,
+  recordGraphSyncCursor,
   listAccountsDueForSync,
   renewMailSyncPass,
 } from "../mail/mailAccountSyncStateStore.js";
@@ -39,6 +41,7 @@ import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { backfillOfFetchedSince, fakeFetchedMessage, fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 const OWN_ADDRESS = "me@example.test";
 const USER_ID = randomUUID();
@@ -68,30 +71,34 @@ const unusedStorage: BlobStorageWriter = {
 /** An IMAP account whose folders hold `count` messages with UIDs 1..n. */
 function providerAccount(): ImapMailClient {
   const countOf = (path: string) => PROVIDER_FOLDERS.find((folder) => folder.path === path)?.count ?? 0;
-  return {
+  const account: ImapMailClient = {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => PROVIDER_FOLDERS.map(({ path, specialUse }) => ({ path, specialUse })),
     selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (path, sinceUid, limit) =>
-      Array.from({ length: countOf(path) }, (_, index) => index + 1)
-        .filter((uid) => uid >= sinceUid)
-        .slice(0, limit)
-        .map((uid) => ({
-          uid,
-          message: {
-            messageId: `<${path}-${uid}@example.test>`,
-            subject: `${path} ${uid}`,
-            envelope: { from: { address: "bob@example.test" }, to: [{ address: OWN_ADDRESS }] },
-            attachments: [],
-          },
-        })),
+      fakeImapRange(
+        Array.from({ length: countOf(path) }, (_, index) => index + 1)
+          .filter((uid) => uid >= sinceUid)
+          .map((uid) =>
+            fakeFetchedMessage(uid, {
+              messageId: `<${path}-${uid}@example.test>`,
+              subject: `${path} ${uid}`,
+              envelope: { from: { address: "bob@example.test" }, to: [{ address: OWN_ADDRESS }] },
+              attachments: [],
+            }),
+          ),
+        limit,
+      ),
+    fetchMessagesBefore: async (path, beforeUid, limit) => backfillOfFetchedSince(account)(path, beforeUid, limit),
+    fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},
     close: async () => {},
   };
+  return account;
 }
 
 function inTenant<T>(fn: (client: PoolClient) => Promise<T>, tenantId = tenant): Promise<T> {
@@ -317,6 +324,19 @@ describe("internet account service switches", () => {
     const mailboxId = await connectAccount();
     const inbox = await inboxFolderId();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).not.toBeNull();
+    expect((await inTenant((client) => getMailAccountSyncState(client, mailboxId)))?.connectedAt).not.toBeNull();
+    // Cursors of an unfinished Gmail listing and Graph delta round, as a pass of either mode leaves them.
+    await inTenant(async (client) => {
+      await recordGmailSyncCursor(client, mailboxId, {
+        historyId: "7",
+        listingPhase: "index",
+        listingPageToken: "page-9",
+      });
+      await recordGraphSyncCursor(client, mailboxId, {
+        deltaLink: "https://graph.test/delta",
+        nextLink: "https://graph.test/next",
+      });
+    });
     await clearJobs();
     const stops: Array<{ tenantId: string; mailboxItemId: string; committed: boolean }> = [];
     bindMailboxServiceLiveSyncStop(async (tenantId, mailboxItemId) => {
@@ -335,7 +355,17 @@ describe("internet account service switches", () => {
     }
 
     const state = await inTenant((client) => getMailAccountSyncState(client, mailboxId));
-    expect(state).toMatchObject({ syncMode: "imap", initialSyncCompletedAt: null, nextExpectedActivityAt: null });
+    expect(state).toMatchObject({
+      syncMode: "imap",
+      initialSyncCompletedAt: null,
+      nextExpectedActivityAt: null,
+      connectedAt: null,
+      gmailHistoryId: null,
+      gmailListingPhase: null,
+      gmailListingPageToken: null,
+      graphDeltaLink: null,
+      graphDeltaNextLink: null,
+    });
     expect(state?.syncPausedAt).not.toBeNull();
     expect(await inTenant((client) => getMailFolderSyncState(client, inbox))).toBeNull();
     expect(await jobKeys()).toEqual([mailboxMailOffJobKey(mailboxId)]);

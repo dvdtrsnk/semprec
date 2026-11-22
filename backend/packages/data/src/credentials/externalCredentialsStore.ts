@@ -90,8 +90,9 @@ export interface DecryptCredentialInput {
 /**
  * The only function that decrypts a credential. Every attempt is logged to `credential_access_log` before
  * decrypting, so a failed decrypt is still on record; returns `null` without a log entry only when nothing is
- * stored. Callers: mail sync, the MCP connection manager, and mailbox removal (OAuth cleanup at the provider),
- * never an agent tool.
+ * stored. Callers: mail sync, the on-demand mail reads, the mail provider search (also on behalf of the `mail.search`
+ * agent tool, which never sees the value), the MCP connection manager, and mailbox removal (OAuth cleanup at the
+ * provider).
  */
 export async function getDecryptedCredential(client: Queryable, input: DecryptCredentialInput): Promise<string | null> {
   const { rows } = await client.query<{

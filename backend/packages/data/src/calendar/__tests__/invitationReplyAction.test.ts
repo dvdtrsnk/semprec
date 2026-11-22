@@ -107,6 +107,8 @@ async function receive(
   const result = await runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: world.databases.emails!,
         filesDatabaseId: world.databases.files!,
         folderRelationPropertyId: world.properties.emailFolder,

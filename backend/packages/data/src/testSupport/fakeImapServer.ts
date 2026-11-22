@@ -38,6 +38,8 @@ export interface FakeImapServerOptions {
   latencyMs: number;
   /** When set, a LOGIN with another password is refused with `AUTHENTICATIONFAILED`; otherwise every LOGIN succeeds. */
   password?: string;
+  /** A SEARCH naming a CHARSET is refused with `NO [BADCHARSET (US-ASCII)]`, as a server without UTF-8 search does. */
+  refuseSearchCharset?: boolean;
 }
 
 type Token = string | Token[];
@@ -141,11 +143,70 @@ function envelopeOf(raw: Buffer): string {
   ].join(" ")})`;
 }
 
-/** Every message the server holds is one text/plain part. */
+/** A Content-Type or Content-Disposition value: its lowercased value and its parameters by lowercased name. */
+function headerValue(value: string | undefined): { value: string; params: Map<string, string> } {
+  const [head = "", ...rest] = (value ?? "").split(";");
+  const params = new Map<string, string>();
+  for (const param of rest) {
+    const eq = param.indexOf("=");
+    if (eq > 0)
+      params.set(
+        param.slice(0, eq).trim().toLowerCase(),
+        param
+          .slice(eq + 1)
+          .trim()
+          .replace(/^"|"$/g, ""),
+      );
+  }
+  return { value: head.trim().toLowerCase(), params };
+}
+
+/** The parts of a one-level `multipart/*` message, each with its header block and body; none for a single part. */
+function mimePartsOf(raw: Buffer): Array<{ header: string; body: string; fields: Map<string, string> }> {
+  const { body, fields } = partsOf(raw);
+  const contentType = headerValue(fields.get("content-type"));
+  const boundary = contentType.params.get("boundary");
+  if (!contentType.value.startsWith("multipart/") || boundary === undefined) return [];
+  return body
+    .split(`--${boundary}`)
+    .slice(1)
+    .filter((chunk) => !chunk.startsWith("--"))
+    .map((chunk) => partsOf(Buffer.from(chunk.replace(/^\r\n/, "").replace(/\r\n$/, ""), "latin1")));
+}
+
+/** One leaf's BODYSTRUCTURE from its header fields and body. */
+function leafStructureOf(fields: Map<string, string>, body: string): string {
+  const contentType = headerValue(fields.get("content-type") ?? "text/plain; charset=utf-8");
+  const [type = "text", subtype = "plain"] = contentType.value.split("/");
+  const params = [...contentType.params].map(([name, value]) => `${quoted(name.toUpperCase())} ${quoted(value)}`);
+  const encoding = quoted((fields.get("content-transfer-encoding") ?? "7bit").toUpperCase());
+  const size = Buffer.byteLength(body, "latin1");
+  const disposition = fields.get("content-disposition");
+  const dsp = disposition
+    ? (() => {
+        const parsed = headerValue(disposition);
+        const dspParams = [...parsed.params].map(([name, value]) => `${quoted(name.toUpperCase())} ${quoted(value)}`);
+        return `(${quoted(parsed.value.toUpperCase())} ${dspParams.length > 0 ? `(${dspParams.join(" ")})` : "NIL"})`;
+      })()
+    : "NIL";
+  const head = `${quoted(type.toUpperCase())} ${quoted(subtype.toUpperCase())} ${params.length > 0 ? `(${params.join(" ")})` : "NIL"} NIL NIL ${encoding} ${size}`;
+  return type === "text" ? `(${head} ${body.split("\r\n").length} NIL ${dsp} NIL NIL)` : `(${head} NIL ${dsp} NIL NIL)`;
+}
+
+/** A single part, or a one-level `multipart/*` message of leaf parts. */
 function bodyStructureOf(raw: Buffer): string {
-  const { body } = partsOf(raw);
-  const lines = body.split("\r\n").length;
-  return `("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" ${Buffer.byteLength(body, "latin1")} ${lines} NIL NIL NIL NIL)`;
+  const { body, fields } = partsOf(raw);
+  const parts = mimePartsOf(raw);
+  if (parts.length === 0) return leafStructureOf(fields, body);
+  const contentType = headerValue(fields.get("content-type"));
+  const subtype = contentType.value.split("/")[1] ?? "mixed";
+  return `(${parts.map((part) => leafStructureOf(part.fields, part.body)).join("")} ${quoted(subtype.toUpperCase())} (${quoted("BOUNDARY")} ${quoted(contentType.params.get("boundary"))}) NIL NIL NIL)`;
+}
+
+/** The section a `BODY.PEEK[...]` item names, when it names a body part's bytes rather than header fields. */
+function bodyPartSection(item: string): string | undefined {
+  const section = /^BODY(?:\.PEEK)?\[([^\]]*)\]/i.exec(item)?.[1];
+  return section === undefined || /^HEADER/i.test(section) || /\.MIME$/i.test(section) ? undefined : section;
 }
 
 /** The answer to one `BODY.PEEK[...]` item, named as the server returns it (`BODY[...]`, no origin octet). */
@@ -154,15 +215,25 @@ function bodySection(item: string, raw: Buffer): string | undefined {
   if (!match) return undefined;
   const section = match[1] ?? "";
   const { header, body, fields } = partsOf(raw);
+  const parts = mimePartsOf(raw);
+  const partMatch = /^(\d+)(\.MIME)?$/i.exec(section);
   let text: string;
   const fieldList = /^HEADER\.FIELDS \(([^)]*)\)$/i.exec(section);
-  if (fieldList) {
+  if (partMatch && parts.length > 0) {
+    const part = parts[Number(partMatch[1]) - 1];
+    if (!part) return undefined;
+    text = partMatch[2] ? part.header : part.body;
+  } else if (fieldList) {
     const names = (fieldList[1] ?? "").split(/\s+/).filter(Boolean);
+    // As a server answers: the message's own field names, whatever case the request used.
+    const original = new Map(
+      [...header.matchAll(/^([^:\s]+):/gm)].map((match) => [match[1]!.toLowerCase(), match[1]!] as const),
+    );
     text =
       names
         .flatMap((name) => {
           const value = fields.get(name.toLowerCase());
-          return value === undefined ? [] : [`${name}: ${value}\r\n`];
+          return value === undefined ? [] : [`${original.get(name.toLowerCase()) ?? name}: ${value}\r\n`];
         })
         .join("") + "\r\n";
   } else if (section.toUpperCase() === "HEADER") text = header;
@@ -199,19 +270,35 @@ function inRange(uid: number, set: string, maxUid: number): boolean {
 }
 
 /**
- * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and one
- * text/plain part per message, configurable capabilities, a fixed delay before every response and a log of every
- * command verb it received. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
- * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH, UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
- * (with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
+ * A loopback IMAP server for sync-pass measurements: folders with UIDs, flags, CONDSTORE mod-sequences and messages of
+ * one part or of one level of `multipart/*` parts, configurable capabilities, a fixed delay before every response, a
+ * log of every command verb it received and of every body part a FETCH read. It answers what imapflow sends for a sync pass and an IDLE connection: LIST (with
+ * LIST-STATUS), LSUB, STATUS, SELECT, UID SEARCH (by UID set, HEADER and [NOT] TEXT, literals included), UID FETCH of UIDs, flags, ENVELOPE, BODYSTRUCTURE and body sections
+ * (whole or partial, `N` and `N.MIME` of a multipart message; with CHANGEDSINCE, and VANISHED once QRESYNC is enabled), UID STORE, ENABLE (CONDSTORE, QRESYNC), IDLE, NOOP and
  * LOGOUT. Another client's expunge or move is pushed to an idling connection as VANISHED (QRESYNC enabled) or EXPUNGE,
  * a delivery as EXISTS.
  */
 export class FakeImapServer {
   /** Every command verb received, in order (`UID FETCH` is logged as `FETCH`). */
   readonly commands: string[] = [];
+  /**
+   * Every body part section a FETCH read (header fields and MIME headers aside), in order, with the octet count a
+   * partial fetch asked for.
+   */
+  readonly bodyFetches: Array<{ path: string; uid: number; section: string; length?: number }> = [];
   /** Command verbs answered with `NO` instead of their result. */
   readonly refusedVerbs = new Set<string>();
+  /** Command verbs answered by closing the connection, as a server or network that drops it does. */
+  readonly droppedVerbs = new Set<string>();
+  /**
+   * Called with each command's verb (`UID FETCH` as `FETCH`) before it is answered, so a test can change the account
+   * between two commands of one client call, as another client would.
+   */
+  beforeCommand: ((verb: string) => void) | undefined;
+  /** Rewrites each response before it is sent, as a broken or hostile server would answer. */
+  rewriteResponse: ((text: string) => string) | undefined;
+  /** The criteria atoms of every SEARCH, in order (a quoted or literal string as its octets). */
+  readonly searches: string[][] = [];
   private readonly folders = new Map<string, ServerFolder>();
   private readonly sockets = new Set<Socket>();
   private readonly sessions = new Set<Session>();
@@ -276,6 +363,26 @@ export class FakeImapServer {
     const targetUid = this.deliver(target, [...message.flags], message.raw);
     this.expunge(path, uid);
     return targetUid;
+  }
+
+  /**
+   * The folder rebuilt by the server: a new UIDVALIDITY, and its messages renumbered from `firstUid` in their order.
+   * An idling connection hears nothing.
+   */
+  resetUidValidity(path: string, firstUid: number): void {
+    const folder = this.folder(path);
+    folder.uidValidity++;
+    folder.messages.forEach((message, index) => {
+      message.uid = firstUid + index;
+    });
+    folder.uidNext = firstUid + folder.messages.length;
+    folder.expunged = [];
+  }
+
+  /** Another client deletes the folder: a SELECT of it is answered `NO [NONEXISTENT]` and LIST no longer names it. */
+  deleteFolder(path: string): void {
+    this.folder(path);
+    this.folders.delete(path);
   }
 
   /** Replaces a message's flags, as another client's STORE would; raises the folder's mod-sequence. */
@@ -358,17 +465,32 @@ export class FakeImapServer {
     this.sessions.add(session);
     socket.on("close", () => this.sessions.delete(session));
     let buffered = "";
+    let pendingLiteralAcknowledged = false;
     socket.on("data", (chunk) => {
       buffered += chunk.toString("latin1");
       let end: number;
       while ((end = buffered.indexOf("\r\n")) !== -1) {
         const line = buffered.slice(0, end);
+        // A literal (`{N}` or `{N+}`) is read as a quoted string of its N octets; a synchronizing one is acknowledged.
+        const literal = /\{(\d+)(\+?)\}$/.exec(line);
+        if (literal) {
+          const size = Number(literal[1]);
+          if (literal[2] === "" && !pendingLiteralAcknowledged) {
+            pendingLiteralAcknowledged = true;
+            socket.write("+ go ahead\r\n");
+          }
+          if (buffered.length < end + 2 + size) break;
+          const octets = buffered.slice(end + 2, end + 2 + size);
+          buffered = `${line.slice(0, literal.index)}${quoted(octets)}${buffered.slice(end + 2 + size)}`;
+          pendingLiteralAcknowledged = false;
+          continue;
+        }
         buffered = buffered.slice(end + 2);
         queue = queue.then(async () => {
           const response = this.respond(line, session);
           await this.delay();
           if (socket.destroyed) return;
-          socket.write(response.text);
+          socket.write(this.rewriteResponse?.(response.text) ?? response.text);
           if (response.end) socket.end();
         });
       }
@@ -396,9 +518,11 @@ export class FakeImapServer {
     }
     args = args.slice(1);
     this.commands.push(verb);
+    this.beforeCommand?.(verb);
     const ok = (text = "done") => `${String(tag)} OK ${text}\r\n`;
-    const selected = session.selected !== undefined ? this.folder(session.selected) : undefined;
+    const selected = session.selected !== undefined ? this.folders.get(session.selected) : undefined;
     if (this.refusedVerbs.has(verb)) return { text: `${String(tag)} NO ${verb} refused\r\n` };
+    if (this.droppedVerbs.has(verb)) return { text: "", end: true };
 
     switch (verb) {
       case "CAPABILITY":
@@ -446,7 +570,12 @@ export class FakeImapServer {
       case "SELECT":
       case "EXAMINE": {
         const path = String(args[0]);
-        const folder = this.folder(path);
+        const folder = this.folders.get(path);
+        if (!folder) {
+          // A failed SELECT leaves no folder selected.
+          session.selected = undefined;
+          return { text: `${String(tag)} NO [NONEXISTENT] Unknown mailbox\r\n` };
+        }
         session.selected = path;
         const modseq = this.options.capabilities.includes("CONDSTORE")
           ? `* OK [HIGHESTMODSEQ ${folder.highestModSeq}] modseq\r\n`
@@ -464,10 +593,37 @@ export class FakeImapServer {
       case "SEARCH": {
         if (!selected) return { text: `${String(tag)} BAD no mailbox selected\r\n` };
         const criteria = atoms(args);
+        this.searches.push(criteria);
+        if (this.options.refuseSearchCharset && criteria.some((token) => token.toUpperCase() === "CHARSET"))
+          return { text: `${String(tag)} NO [BADCHARSET (US-ASCII)] charset not supported\r\n` };
+        // `TEXT <string>` (after `NOT`: must not hold it): the raw message, read as UTF-8, holds the string,
+        // case-insensitively. A quoted or literal argument arrives as its octets.
+        const texts = criteria.flatMap((token, index) =>
+          token.toUpperCase() === "TEXT" && criteria[index + 1] !== undefined
+            ? [
+                {
+                  negated: criteria[index - 1]?.toUpperCase() === "NOT",
+                  value: Buffer.from(criteria[index + 1]!, "latin1")
+                    .toString("utf8")
+                    .toLowerCase(),
+                },
+              ]
+            : [],
+        );
         const maxUid = selected.messages.at(-1)?.uid ?? 0;
         const uidIndex = criteria.findIndex((token) => token.toUpperCase() === "UID");
         const set = uidIndex === -1 ? undefined : criteria[uidIndex + 1];
-        const found = selected.messages.filter((message) => set === undefined || inRange(message.uid, set, maxUid));
+        // `HEADER <field> <string>`: the field's value contains the string, case-insensitively.
+        const headerIndex = criteria.findIndex((token) => token.toUpperCase() === "HEADER");
+        const field = headerIndex === -1 ? undefined : criteria[headerIndex + 1]?.toLowerCase();
+        const contained = headerIndex === -1 ? undefined : (criteria[headerIndex + 2] ?? "").toLowerCase();
+        const found = selected.messages.filter(
+          (message) =>
+            (set === undefined || inRange(message.uid, set, maxUid)) &&
+            (field === undefined ||
+              (partsOf(message.raw).fields.get(field) ?? "").toLowerCase().includes(contained ?? "")) &&
+            texts.every((text) => message.raw.toString("utf8").toLowerCase().includes(text.value) !== text.negated),
+        );
         return { text: `* SEARCH${found.map((message) => ` ${message.uid}`).join("")}\r\n${ok()}` };
       }
       case "FETCH": {
@@ -504,6 +660,15 @@ export class FakeImapServer {
             else {
               const section = bodySection(item, message.raw);
               if (section) parts.push(section);
+              const fetchedSection = section ? bodyPartSection(item) : undefined;
+              const length = /<\d+\.(\d+)>$/.exec(item)?.[1];
+              if (fetchedSection !== undefined && session.selected !== undefined)
+                this.bodyFetches.push({
+                  path: session.selected,
+                  uid: message.uid,
+                  section: fetchedSection.toUpperCase(),
+                  ...(length !== undefined ? { length: Number(length) } : {}),
+                });
             }
           }
           if (session.condstore) parts.push(`MODSEQ (${message.modseq})`);

@@ -9,11 +9,16 @@ import {
   isOutboundAddressNotAllowed,
   type OutboundAddressPolicy,
 } from "../net/outboundAddressPolicy.js";
-import { ImapFlowMailClient } from "./imapFlowClient.js";
+import { sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
+import { ImapFlowMailClient, isImapConnectionLimitError } from "./imapFlowClient.js";
 import type { ImapFolderRef } from "./imapReconcile.js";
 import { logger } from "./logger.js";
 import type { MailServerEndpoint } from "./mailServerSettingsStore.js";
-import { MailServerUnreachableError } from "./providerTypes.js";
+import {
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+  MailServerUnreachableError,
+} from "./providerTypes.js";
 
 /**
  * Connections to tenant-chosen IMAP and SMTP hosts. The host name is resolved once through the outbound address
@@ -40,6 +45,10 @@ export interface MailServerConnectionOptions {
   socketTimeout?: number;
   /** IMAP only, imapflow's `autoIdleDelay`: how long a selected connection stays inactive before it starts IDLE. */
   autoIdleDelay?: number;
+  /** IMAP only: admits the login under the server host's login rate. Defaults to `sharedImapConnectionLimiter`. */
+  loginAdmission?: Pick<ImapConnectionLimiter, "admitLogin">;
+  /** IMAP only: abandons the wait for a login admission. */
+  signal?: AbortSignal;
 }
 
 /** In each library and for the TCP connect of SMTP. */
@@ -486,6 +495,7 @@ export async function openImapFlow(
   const policy = policyOf(options);
   const refusal = literalRefusal(endpoint.host, policy);
   if (refusal !== undefined) throw mapConnectionFailure(refusal);
+  await (options.loginAdmission ?? sharedImapConnectionLimiter).admitLogin(endpoint.host, options.signal);
   const client = buildImapFlow(settings, credential, options, policy, CONNECT_TIMEOUT_MS);
   // imapflow throws from its event emitter when an error has no listener, and it can emit after connect() settles.
   client.on("error", (error: unknown) => {
@@ -499,6 +509,44 @@ export async function openImapFlow(
     throw mapConnectionFailure(error);
   }
   return client;
+}
+
+/**
+ * RFC 5530 codes of a refused LOGIN that say nothing against the credential: the server is unavailable or busy for a
+ * while, and a later login with the same password can succeed.
+ */
+const TRANSIENT_LOGIN_RESPONSE_CODES: ReadonlySet<string> = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG"]);
+
+/** imapflow sets `authenticationFailed` on every refused LOGIN or AUTHENTICATE, with the response code it got. */
+function isImapLoginRejection(error: unknown): boolean {
+  return errorChain(error).some((link) => {
+    if (propertyOf(link, "authenticationFailed") !== true) return false;
+    const code = propertyOf(link, "serverResponseCode");
+    return typeof code !== "string" || !TRANSIENT_LOGIN_RESPONSE_CODES.has(code.toUpperCase());
+  });
+}
+
+/**
+ * What a caller of `openImapFlow` may report about its failure: too many open sessions becomes
+ * `MailConnectionLimitError`, so the caller backs off instead of retrying at once; a login the server rejected (other
+ * than for a transient reason) becomes `MailReauthorizationRequiredError`, which stops every retry until the user signs
+ * in again. Every other error
+ * becomes a fixed generic error without claiming a known failure kind. None keeps the original as its cause, which can
+ * carry the authentication exchange.
+ */
+export function classifyImapConnectFailure(error: unknown): Error {
+  try {
+    if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
+    if (error instanceof MailConnectionLimitError || isImapConnectionLimitError(error)) {
+      return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
+    }
+    if (error instanceof MailReauthorizationRequiredError || isImapLoginRejection(error)) {
+      return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
+    }
+  } catch {
+    // A hostile error object (a throwing getter) is classified as unknown.
+  }
+  return new Error("IMAP connection failed unexpectedly");
 }
 
 /** Wraps the raw client in the narrow `ImapFlowMailClient`, which keeps it private. */

@@ -96,6 +96,8 @@ export const CORE_TASK_NAMES = {
   // not retried.
   MCP_SERVER_SYNC: "mcpServerSync",
   MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
+  // Deletes the bodies of older messages fetched on demand once their seven days are over.
+  MAIL_CONTENT_CACHE_SWEEP: "mailContentCacheSweep",
   // Deletes pre-checkpoint agent_run_events rows past retention.
   AGENT_RUN_EVENTS_RETENTION: "agentRunEventsRetention",
   SEMP_PROBLEMS_PRUNE: "sempProblemsPrune",
@@ -190,6 +192,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_CONTENT_CACHE_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
   [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "api",
@@ -269,6 +272,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_CONTENT_CACHE_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
   [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: "tenant",

@@ -158,15 +158,25 @@ describe("the Sent copy of an SMTP send", () => {
     return rows.map((row) => jobRowSchema.parse(row));
   }
 
-  /** The mailbox's follow-up `mailAccountSync` jobs after a send, by slot, with their due time and enqueue count. */
+  /**
+   * The mailbox's follow-up `mailAccountSync` jobs after a send, by slot, with their due time and enqueue count. Each is
+   * a normal pass with its single attempt, so a failing server is not logged in to again by a retry.
+   */
   async function postSendSyncJobs(mailboxId: string) {
-    const { rows } = await admin.query<{ key: string; run_at: Date; revision: number; payload: unknown }>(
-      `SELECT j.key, j.run_at, p.revision, p.payload FROM graphile_worker.jobs j
+    const { rows } = await admin.query<{
+      key: string;
+      run_at: Date;
+      revision: number;
+      max_attempts: number;
+      payload: unknown;
+    }>(
+      `SELECT j.key, j.run_at, p.revision, j.max_attempts, p.payload FROM graphile_worker.jobs j
          JOIN graphile_worker._private_jobs p ON p.id = j.id
         WHERE j.task_identifier = 'mailAccountSync' AND j.key LIKE 'mail-account-sync-after-send:%' ORDER BY j.run_at`,
     );
     for (const row of rows) {
       expect(row.payload).toEqual(expect.objectContaining({ tenantId: tenant, payload: { mailboxItemId: mailboxId } }));
+      expect(row.max_attempts).toBe(1);
     }
     return rows.map(({ key, run_at, revision }) => ({ key, runAt: run_at, revision }));
   }

@@ -9,6 +9,7 @@ import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { listMailThreads } from "../mail/mailThreadListQuery.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 import type { FakeImapServer } from "../testSupport/fakeImapServer.js";
 import {
@@ -22,6 +23,8 @@ import {
   type SyncedLoopbackMailbox,
 } from "../testSupport/imapMailboxFixture.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+
+const neverAborted = new AbortController().signal;
 
 const LATENCY_MS = 40;
 
@@ -235,6 +238,8 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
         expect(await emailsNamed("Changed")).toEqual([{ ...before!, folders: [] }]);
 
         account.gate = undefined;
+        // The next pass runs once the failure's backoff ran out, as the sweep queues it.
+        await withTransaction(runtime, (client) => elapseMailSyncBackoff(client, mailbox.mailboxId));
         await mailbox.sync(async () => account.client());
 
         expect(await emailsNamed("Changed")).toEqual([{ ...before!, ...after }]);
@@ -272,6 +277,7 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
       "app-password",
       "INBOX",
       () => passes.push(runInTenant(tenant, () => mailbox.mailbox.sync(mailbox.overWire))),
+      neverAborted,
     );
     cleanups.push(async () => {
       await Promise.allSettled(passes);

@@ -151,6 +151,8 @@ async function seedTenant(tenantId: string, duplicateAttachment = false): Promis
         { allowedSystemKeys: ["name"] },
       );
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId,
         filesDatabaseId,
         folderRelationPropertyId: relationId("folder"),

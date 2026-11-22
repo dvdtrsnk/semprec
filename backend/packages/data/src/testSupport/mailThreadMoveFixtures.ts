@@ -137,6 +137,8 @@ export function createMoveFixtureIngest(runtime: Pool, storage: BlobStorageWrite
         const attachmentsProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "attachments");
         if (!folderProperty || !attachmentsProperty) throw new Error("The Emails database lacks a relation property");
         return ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: ids.emailsDatabaseId,
           filesDatabaseId: ids.filesDatabaseId,
           folderRelationPropertyId: folderProperty.id,

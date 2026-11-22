@@ -302,7 +302,7 @@ const REFERENCES: Reference[] = [
     parentId: (p) => p.threadId,
     insert: (client, id, own) =>
       client.query(
-        "INSERT INTO mail_message_meta (item_id, message_id, mailbox_item_id, thread_id) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO mail_message_meta (item_id, message_id, mailbox_item_id, thread_id, arrival, content_state) VALUES ($1, $2, $3, $4, 'live', 'full')",
         [own.itemId, `<${randomUUID()}@example.com>`, randomUUID(), id],
       ),
   },

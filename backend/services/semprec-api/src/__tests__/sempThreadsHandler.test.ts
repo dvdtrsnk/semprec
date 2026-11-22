@@ -16,7 +16,10 @@ import {
   getTestPool,
   ingestEmailMessage,
   reconcileGmailAccount,
+  gmailHistory,
+  recentGmailListing,
   resetDatabase,
+  UNGUARDED_MAIL_SYNC_PASS,
   type GmailMailClient,
   startTaskSeries,
 } from "@semprec/data/testSupport";
@@ -758,60 +761,59 @@ describe("durable Semp thread history", () => {
       const tenant = await createTestTenant(admin);
       const { token } = await signIn(tenant);
       await runInTenant(tenant, () => seedSystem(pool));
-      const attachmentId = await runInTenant(tenant, () =>
-        withTransaction(pool, async (client) => {
+      const attachmentId = await runInTenant(tenant, async () => {
+        const { ids, mailbox } = await withTransaction(pool, async (client) => {
           const ids = await mailFixtureIds(client);
           const mailbox = await createItemWithClient(client, {
             databaseId: ids.mailboxesDatabaseId,
             properties: { name: "Mailbox", provider: "gmail" },
           });
           await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
-          const gmail: GmailMailClient = {
-            getCurrentHistoryId: async () => "1",
-            listHistorySince: async () => ({
-              invalidated: false,
-              newHistoryId: "2",
-              changedMessageIds: [],
-              removedMessageIds: [],
-            }),
-            listAllMessageIds: async () => ["message"],
-            listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
-            fetchMessage: async () => ({
-              id: "message",
-              threadId: "thread",
-              labelIds: ["INBOX"],
-              message: {
-                messageId: `<${tenant}@example.test>`,
-                envelope: { from: { address: "sender@example.test" } },
-                attachments: [
-                  {
-                    filename: "note.txt",
-                    contentType: "text/plain",
-                    contentId: null,
-                    disposition: "attachment",
-                    openStream: () => Readable.from(["note"]),
-                  },
-                ],
-              },
-            }),
-            modifyMessageLabels: async () => undefined,
-          };
-          await reconcileGmailAccount(client, gmail, {
-            mailboxItemId: mailbox.id,
-            emailsDatabaseId: ids.emailsDatabaseId,
-            filesDatabaseId: ids.filesDatabaseId,
-            foldersDatabaseId: ids.foldersDatabaseId,
-            folderRelationPropertyId: ids.folderRelationPropertyId,
-            attachmentsRelationPropertyId: ids.attachmentsRelationPropertyId,
-            mailboxFolderRelationPropertyId: ids.mailboxFolderRelationPropertyId,
-            storage: new LocalFsBlobStorageWriter(directory),
-            storageKeyPrefix: "ref-test",
-          });
-          const rows = await client.query<{ id: string }>("SELECT id FROM mail_attachments");
-          if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Missing ingested attachment");
-          return rows.rows[0].id;
-        }),
-      );
+          return { ids, mailbox };
+        });
+        const gmail: GmailMailClient = {
+          getCurrentHistoryId: async () => "1",
+          listHistorySince: async () => gmailHistory("2"),
+          listMessageIds: recentGmailListing(["message"]),
+          listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
+          fetchMessage: async () => ({
+            id: "message",
+            threadId: "thread",
+            labelIds: ["INBOX"],
+            message: {
+              messageId: `<${tenant}@example.test>`,
+              envelope: { from: { address: "sender@example.test" } },
+              attachments: [
+                {
+                  filename: "note.txt",
+                  contentType: "text/plain",
+                  contentId: null,
+                  disposition: "attachment",
+                  openStream: () => Readable.from(["note"]),
+                },
+              ],
+            },
+          }),
+          modifyMessageLabels: async () => undefined,
+        };
+        await reconcileGmailAccount(pool, gmail, {
+          mailboxItemId: mailbox.id,
+          emailsDatabaseId: ids.emailsDatabaseId,
+          filesDatabaseId: ids.filesDatabaseId,
+          foldersDatabaseId: ids.foldersDatabaseId,
+          folderRelationPropertyId: ids.folderRelationPropertyId,
+          attachmentsRelationPropertyId: ids.attachmentsRelationPropertyId,
+          mailboxFolderRelationPropertyId: ids.mailboxFolderRelationPropertyId,
+          storage: new LocalFsBlobStorageWriter(directory),
+          storageKeyPrefix: "ref-test",
+          pass: UNGUARDED_MAIL_SYNC_PASS,
+        });
+        const rows = await withTransaction(pool, (client) =>
+          client.query<{ id: string }>("SELECT id FROM mail_attachments"),
+        );
+        if (rows.rows.length !== 1 || !rows.rows[0]) throw new Error("Missing ingested attachment");
+        return rows.rows[0].id;
+      });
       const threadId = await chatThread(tenant);
       const post = (id: string) => ask(token, threadId, [{ kind: "mailAttachment", attachmentId: id }]);
       expect((await post(attachmentId)).status).toBe(202);
@@ -849,6 +851,8 @@ describe("durable Semp thread history", () => {
             });
             const ingest = async (name: string, references: string[]) => {
               const { itemId } = await ingestEmailMessage(client, {
+                arrival: "live",
+                contentState: "full",
                 emailsDatabaseId: ids.emailsDatabaseId,
                 filesDatabaseId: ids.filesDatabaseId,
                 folderRelationPropertyId: ids.folderRelationPropertyId,

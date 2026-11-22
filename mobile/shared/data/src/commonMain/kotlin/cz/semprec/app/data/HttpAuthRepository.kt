@@ -10,20 +10,30 @@ import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.Session
 import cz.semprec.app.domain.SessionStatus
 import io.ktor.http.HttpMethod
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 
 /**
- * The session of this device, kept in [storage] and checked against the server. [endingSession] runs on signing out,
- * after the device has forgotten the session and before the server ends it, with calls that still carry it: what
- * belongs to the session on the server (the push subscription of this device) is ended there first.
+ * The session of this device, kept in [storage] and checked against the server.
+ *
+ * [sessionEnded] runs whenever the device drops its session: on signing out, when the server refuses the session of
+ * a call (`401`), and when a restore finds that the server no longer knows the stored one. It runs once the session is
+ * forgotten, so nothing it clears is written again for that session, and it runs to its end even when the call that
+ * dropped the session is cancelled: what is kept on the device for the session (the thread lists) goes with it.
+ *
+ * [endingSession] runs on signing out only, after [sessionEnded] and before the server ends the session, with calls
+ * that still carry it: what belongs to the session on the server (the push subscription of this device) is ended
+ * there first.
  */
 class HttpAuthRepository(
     private val client: ApiClient,
     private val storage: SessionStorage,
     private val device: DeviceInfo,
+    private val sessionEnded: suspend () -> Unit = {},
     private val endingSession: suspend (AuthenticatedApi) -> Unit = {},
 ) : AuthRepository {
     private val mutableStatus = MutableStateFlow<SessionStatus>(SessionStatus.Restoring)
@@ -39,14 +49,11 @@ class HttpAuthRepository(
             return
         }
         val response = client.send(stored.serverUrl, HttpMethod.Get, AuthenticatedApi.SESSION_PATH, stored.token)
-        mutableStatus.value = when (response) {
-            is ApiResponse.Success -> response.readSession(stored.serverUrl)
+        when (response) {
+            is ApiResponse.Success -> mutableStatus.value = response.readSession(stored.serverUrl)
             is ApiResponse.Failure -> when (response.kind) {
-                FailureKind.UNAVAILABLE -> SessionStatus.Unreachable(stored.serverUrl)
-                else -> {
-                    storage.save(null)
-                    SessionStatus.SignedOut
-                }
+                FailureKind.UNAVAILABLE -> mutableStatus.value = SessionStatus.Unreachable(stored.serverUrl)
+                else -> forget()
             }
         }
     }
@@ -91,9 +98,10 @@ class HttpAuthRepository(
         client.send(stored.serverUrl, HttpMethod.Post, LOGOUT_PATH, stored.token)
     }
 
-    private fun forget() {
+    private suspend fun forget() {
         storage.save(null)
         mutableStatus.value = SessionStatus.SignedOut
+        withContext(NonCancellable) { sessionEnded() }
     }
 
     private fun ApiResponse.Success.readSession(serverUrl: String): SessionStatus =

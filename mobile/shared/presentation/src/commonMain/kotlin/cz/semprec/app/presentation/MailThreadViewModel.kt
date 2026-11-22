@@ -2,6 +2,7 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftRepository
 import cz.semprec.app.domain.MailRepository
@@ -17,16 +18,29 @@ import kotlinx.coroutines.launch
  * or a task is a request to the server; its failure is state, and a thread that was archived or trashed closes the
  * screen. Sending the draft saves the text first when the person changed it; an agent only proposes a send, so this
  * is always the person's own send.
+ *
+ * A message the server holds only as an index entry has no body until it is fetched from the mail provider. The screen
+ * fetches it when the message is open: the newest message, which the thread opens with, as soon as the thread is shown,
+ * any other when the person opens it. A failed fetch is state of that message and is asked for again with
+ * [MailThreadAction.LoadBody], by opening the message again or by a reload of the thread. Each message and each
+ * attachment save keeps its own state, so one slow provider fetch holds up nothing else.
  */
 class MailThreadViewModel internal constructor(
     private val threadId: String,
     private val mail: MailRepository,
     private val drafts: MailDraftRepository,
+    content: MailContentRepository,
 ) : ScreenViewModel<MailThreadState, MailThreadAction, MailThreadEffect>(MailThreadState()) {
     private var loadJob: Job? = null
     private var expanded: Set<String>? = null
     private var detail: MailThreadDetail? = null
     private var draft: MailDraft? = null
+    private val fetching = MailThreadFetchFlow(
+        FlowHost(viewModelScope, { state.value }, { update(it) }, { emit(it) }),
+        content,
+        { detail },
+        { expanded.orEmpty() },
+    )
 
     init {
         load(showWait = true)
@@ -38,6 +52,8 @@ class MailThreadViewModel internal constructor(
             MailThreadAction.Retry -> load(showWait = true)
             MailThreadAction.Refresh -> load(showWait = state.value.phase != MailThreadPhase.CONTENT)
             is MailThreadAction.ToggleMessage -> toggleMessage(action.emailId)
+            is MailThreadAction.LoadBody -> fetching.fetchBody(action.emailId)
+            is MailThreadAction.SaveAttachment -> fetching.saveAttachment(action.emailId, action.attachmentId)
             MailThreadAction.ToggleFlag -> toggleFlag()
             is MailThreadAction.Move -> move(action.to)
             is MailThreadAction.SendDraft -> sendDraft(action.body)
@@ -71,7 +87,8 @@ class MailThreadViewModel internal constructor(
         draft = sempDraft
         val open = expanded ?: loaded.defaultExpanded()
         expanded = open
-        update { loaded.toState(open, sempDraft?.toSempDraft(), it) }
+        update { loaded.toState(open, fetching.fetches, sempDraft?.toSempDraft(), it) }
+        open.forEach(fetching::fetchBody)
         // Opening a thread reads it; when the server refuses, the thread stays unread, which the list shows.
         if (loaded.unread) viewModelScope.launch { mailWrite { mail.setRead(threadId, read = true) } }
     }
@@ -85,6 +102,7 @@ class MailThreadViewModel internal constructor(
             MailThreadTarget.Draft -> draft?.let { MailThreadEffect.Compose(MailComposeStart.Draft(it.id)) }
             is MailThreadTarget.Reply -> detail?.replyEffect(target.mode)
             is MailThreadTarget.Task -> MailThreadEffect.OpenTask(target.taskId)
+            is MailThreadTarget.File -> MailThreadEffect.OpenFile(target.fileItemId)
         }
         if (effect != null) emit(effect)
     }
@@ -93,6 +111,7 @@ class MailThreadViewModel internal constructor(
         val open = expanded.orEmpty().let { if (emailId in it) it - emailId else it + emailId }
         expanded = open
         update { it.copy(messages = it.messages.map { m -> m.copy(expanded = m.emailId in open) }) }
+        if (emailId in open) fetching.fetchBody(emailId)
     }
 
     private fun toggleFlag() {

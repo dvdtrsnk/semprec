@@ -194,6 +194,8 @@ async function ingest(
 ): Promise<Ingested> {
   const result = await tx((client) =>
     ingestEmailMessage(client, {
+      arrival: "live",
+      contentState: "full",
       emailsDatabaseId: world.ids.emails,
       filesDatabaseId: world.ids.files,
       folderRelationPropertyId: world.props.emailFolder,

@@ -273,17 +273,20 @@ export async function readSempRefContext(
     };
   }
   if (ref.kind === "mailAttachment") {
-    const { rows } = await client.query<{ filename: string; content_type: string; byte_size: string; blob_id: string }>(
-      "SELECT filename, content_type, byte_size, blob_id FROM mail_attachments WHERE id = $1",
-      [ref.attachmentId],
-    );
+    const { rows } = await client.query<{
+      filename: string;
+      content_type: string;
+      byte_size: string;
+      blob_id: string | null;
+    }>("SELECT filename, content_type, byte_size, blob_id FROM mail_attachments WHERE id = $1", [ref.attachmentId]);
     const row = rows[0];
     if (!row) return null;
     return {
       label: row.filename,
       state: "active",
       details: { filename: row.filename, contentType: row.content_type, byteSize: row.byte_size },
-      blob: blobProjection(await getBlob(client, row.blob_id)),
+      // An index message's attachment has no stored bytes.
+      blob: row.blob_id === null ? null : blobProjection(await getBlob(client, row.blob_id)),
     };
   }
   if (ref.kind === "mailThread") {

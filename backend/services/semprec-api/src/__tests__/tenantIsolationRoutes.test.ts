@@ -24,10 +24,16 @@ import {
   createTestTenant,
   ensureFolderItem,
   ensureMailAccountSyncState,
+  ensureMailFolderSyncState,
   getTenantZeroId,
   getTestPool,
   reconcileGmailAccount,
+  gmailHistory,
+  recentGmailListing,
+  recordBackfill,
+  recordReconcile,
   resetDatabase,
+  UNGUARDED_MAIL_SYNC_PASS,
   setTenantAiBudget,
   storeCredential,
   stubDnsLookup,
@@ -1244,6 +1250,41 @@ async function ensureMailboxFolder(
   });
 }
 
+/** The UID below which `mailboxWithIndexOnlyHistory`'s INBOX history still awaits its backfill. */
+const HISTORY_BACKFILL_BELOW_UID = 50;
+
+/**
+ * An IMAP mailbox whose INBOX history below `HISTORY_BACKFILL_BELOW_UID` is index-only and unleased, its states written
+ * the way the sync's reconcile and backfill write them.
+ */
+function mailboxWithIndexOnlyHistory(tenant: TenantFixture): Promise<{ mailboxId: string; folderId: string }> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+    const mailbox = await createItemWithClient(client, {
+      databaseId: mailboxesDatabaseId,
+      properties: { name: "With history", provider: "generic" },
+    });
+    await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
+    const folderId = await ensureMailboxFolder(client, mailbox.id, {
+      providerId: "INBOX",
+      name: "INBOX",
+      behavior: "folder",
+      specialPurpose: "inbox",
+    });
+    await ensureMailFolderSyncState(client, folderId);
+    await recordReconcile(client, {
+      itemId: folderId,
+      uidvalidity: "1",
+      uidnext: "100",
+      messageCount: "99",
+      liveFromUid: "100",
+      backfillBelowUid: "100",
+    });
+    await recordBackfill(client, folderId, String(HISTORY_BACKFILL_BELOW_UID), { indexOnly: true });
+    return { mailboxId: mailbox.id, folderId };
+  });
+}
+
 function mailboxWithInboxFolder(tenant: TenantFixture): Promise<{ mailboxId: string; folderId: string }> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const mailboxId = await createMailbox(client, "With a folder");
@@ -1375,8 +1416,16 @@ function seedMailThread(
   providerThreadId = "thread",
   attachmentNames: string[] = [],
 ): Promise<string> {
-  return inTenantTransaction(fixture.tenantId, async (client) => {
-    const ids = await resolveMailModuleIds(client);
+  return runInTenant(fixture.tenantId, async () => {
+    const { ids, mailbox } = await withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const mailbox = await createItemWithClient(client, {
+        databaseId: ids.mailboxesDatabaseId,
+        properties: { name: "Mailbox", provider: "gmail" },
+      });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
+      return { ids, mailbox };
+    });
     const cp = createChokePoint(pool);
     const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
     const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
@@ -1385,20 +1434,10 @@ function seedMailThread(
       if (!property) throw new Error(`Missing ${key}`);
       return property.id;
     };
-    const mailbox = await createItemWithClient(client, {
-      databaseId: ids.mailboxesDatabaseId,
-      properties: { name: "Mailbox", provider: "gmail" },
-    });
-    await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "2",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
-      listAllMessageIds: async () => [providerId],
+      listHistorySince: async () => gmailHistory("2"),
+      listMessageIds: recentGmailListing([providerId]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({
         id: providerId,
@@ -1419,7 +1458,7 @@ function seedMailThread(
       }),
       modifyMessageLabels: async () => undefined,
     };
-    await reconcileGmailAccount(client, gmail, {
+    await reconcileGmailAccount(pool, gmail, {
       mailboxItemId: mailbox.id,
       emailsDatabaseId: ids.emailsDatabaseId,
       filesDatabaseId: ids.filesDatabaseId,
@@ -1429,13 +1468,38 @@ function seedMailThread(
       mailboxFolderRelationPropertyId: find(folderProperties, "mailbox"),
       storage: filesStorage,
       storageKeyPrefix: "thread-isolation",
+      pass: UNGUARDED_MAIL_SYNC_PASS,
     });
-    const result = await client.query<{ thread_id: string }>(
-      "SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1",
-      [mailbox.id],
+    const result = await withTransaction(pool, (client) =>
+      client.query<{ thread_id: string }>("SELECT thread_id FROM mail_message_meta WHERE mailbox_item_id = $1", [
+        mailbox.id,
+      ]),
     );
     if (result.rows.length !== 1 || !result.rows[0]?.thread_id) throw new Error("Missing ingested thread");
     return result.rows[0].thread_id;
+  });
+}
+
+/**
+ * The one message of a thread `seedMailThread` wrote: its Emails item and its attachment with its Files item (empty
+ * strings for a message without one).
+ */
+function mailMessageOf(
+  fixture: TenantFixture,
+  threadId: string,
+): Promise<{ emailId: string; attachmentId: string; fileItemId: string }> {
+  return inTenantTransaction(fixture.tenantId, async (client) => {
+    const { rows } = await client.query<{ email_id: string; attachment_id: string | null; file_id: string | null }>(
+      `SELECT m.item_id AS email_id, a.id AS attachment_id,
+         (SELECT f.id FROM items f WHERE f.properties->'file'->>'blobId' = a.blob_id::text AND f.deleted_at IS NULL
+           ORDER BY f.id LIMIT 1) AS file_id
+       FROM mail_message_meta m LEFT JOIN mail_attachments a ON a.message_item_id = m.item_id
+       WHERE m.thread_id = $1`,
+      [threadId],
+    );
+    const [row] = rows;
+    if (!row) throw new Error("Missing ingested message");
+    return { emailId: row.email_id, attachmentId: row.attachment_id ?? "", fileItemId: row.file_id ?? "" };
   });
 }
 
@@ -1614,6 +1678,22 @@ function removableMailboxRows(fixture: TenantFixture, mailboxItemId: string): Pr
     return rows;
   });
 }
+
+const mailHistoryClaimBody = z.object({
+  leaseToken: z.string(),
+  folders: z.array(
+    z.object({ folderId: z.string(), path: z.string(), uidvalidity: z.number(), backfillBelowUid: z.number() }),
+  ),
+});
+
+const mailThreadListCursorBody = z.object({ changesCursor: z.string() });
+
+const mailThreadChangesBody = z.object({
+  cursor: z.string(),
+  threads: z.array(z.object({ threadId: z.string() })),
+  removed: z.array(z.string()),
+  reset: z.boolean(),
+});
 
 const mailThreadFacetsBody = z.object({
   areas: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
@@ -2531,6 +2611,186 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [ownTask, ownFile, ownFileProject],
     );
   },
+  "mail message content": async () => {
+    const seed = async (fixture: TenantFixture) =>
+      mailMessageOf(
+        fixture,
+        await seedMailThread(
+          fixture,
+          `<${randomUUID()}@example.test>`,
+          `content-${randomUUID()}`,
+          `thread-${randomUUID()}`,
+        ),
+      );
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const content = (id: string | undefined): Request => GET(`/api/mail/messages/${id}/content`);
+    expectText(await sendOk(b.member, content(own.emailId)), [own.emailId, '"contentState":"full"'], []);
+    await expectForeign404(b.member, [foreign.emailId], ([id]) => content(id));
+    expectText(await sendOk(a.member, content(foreign.emailId)), [foreign.emailId], [own.emailId]);
+  },
+  "mail search": async () => {
+    const seed = async (fixture: TenantFixture) => {
+      const threadId = await seedMailThread(
+        fixture,
+        `<${randomUUID()}@example.test>`,
+        `search-${randomUUID()}`,
+        `thread-${randomUUID()}`,
+      );
+      const mailboxId = await inTenantTransaction(fixture.tenantId, async (client) => {
+        const { rows } = await client.query<{ mailbox_item_id: string }>(
+          "SELECT mailbox_item_id FROM mail_message_meta WHERE thread_id = $1",
+          [threadId],
+        );
+        const [row] = rows;
+        if (!row) throw new Error("Missing ingested message");
+        return row.mailbox_item_id;
+      });
+      return { threadId, mailboxId };
+    };
+    const foreign = await seed(a);
+    const own = await seed(b);
+    // Operators only: the stored index answers and no provider is asked.
+    const search = (mailboxId?: string): Request =>
+      GET(
+        `/api/mail/search?q=${encodeURIComponent("from:sender@example.test")}${mailboxId ? `&mailboxId=${mailboxId}` : ""}`,
+      );
+    await expectExcludesA(b.member, search(), [own.threadId], [foreign.threadId]);
+    await expectForeign404(b.member, [foreign.mailboxId], ([id]) => search(id));
+    expectText(await sendOk(a.member, search(foreign.mailboxId)), [foreign.threadId], [own.threadId]);
+  },
+  "mail attachment save": async () => {
+    const seed = async (fixture: TenantFixture) =>
+      mailMessageOf(
+        fixture,
+        await seedMailThread(
+          fixture,
+          `<${randomUUID()}@example.test>`,
+          `save-${randomUUID()}`,
+          `thread-${randomUUID()}`,
+          [`saved-${randomUUID()}.pdf`],
+        ),
+      );
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const save = (emailId: string | undefined, attachmentId: string | undefined): Request =>
+      POST(`/api/mail/messages/${emailId}/attachments/${attachmentId}/save`);
+    expectText(await sendOk(b.member, save(own.emailId, own.attachmentId)), [own.fileItemId], []);
+    await expectForeign404(b.member, [foreign.emailId, foreign.attachmentId], ([emailId, attachmentId]) =>
+      save(emailId, attachmentId),
+    );
+    await expectForeign404(b.member, [foreign.attachmentId], ([attachmentId]) => save(own.emailId, attachmentId));
+    expectText(await sendOk(a.member, save(foreign.emailId, foreign.attachmentId)), [foreign.fileItemId], []);
+  },
+  "project mail signals read": async () => {
+    const signals = (projectId: string | undefined): Request => GET(`/api/mail/projects/${projectId}/signals`);
+    const keyword = `isolation${randomUUID().slice(0, 8)}`;
+    await sendOk(a.member, PUT(`/api/mail/projects/${a.projectItemId}/signals`, { keywords: [keyword] }));
+    expectText(await sendOk(b.member, signals(b.projectItemId)), [b.projectItemId], [a.projectItemId, keyword]);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => signals(id));
+    expectText(await sendOk(a.member, signals(a.projectItemId)), [a.projectItemId, keyword], [b.projectItemId]);
+  },
+  "project mail signals replace": async () => {
+    const replace = (projectId: string | undefined, keyword: string): Request =>
+      PUT(`/api/mail/projects/${projectId}/signals`, { keywords: [keyword] });
+    const ownKeyword = `own${randomUUID().slice(0, 8)}`;
+    const leaked = `leak${randomUUID().slice(0, 8)}`;
+    expectText(await sendOk(b.member, replace(b.projectItemId, ownKeyword)), [b.projectItemId, ownKeyword], []);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => replace(id, leaked));
+    expectText(await sendOk(a.member, GET(`/api/mail/projects/${a.projectItemId}/signals`)), [], [leaked, ownKeyword]);
+  },
+  "project mail signals preview": async () => {
+    const threadOfA = await seedMailThread(a, `<${randomUUID()}@example.test>`, `signals-${randomUUID()}`);
+    const threadOfB = await seedMailThread(b, `<${randomUUID()}@example.test>`, `signals-${randomUUID()}`);
+    const draft = { draft: { addresses: ["sender@example.test"] } };
+    const preview = (projectId: string | undefined, body?: unknown): Request =>
+      POST(`/api/mail/projects/${projectId}/signals/preview`, body);
+    expectText(await sendOk(b.member, preview(b.projectItemId, draft)), [threadOfB], [threadOfA]);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => preview(id, draft));
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => preview(id));
+    expectText(await sendOk(a.member, preview(a.projectItemId, draft)), [threadOfA], [threadOfB]);
+  },
+  "project mail signals apply": async () => {
+    const threadOfA = await seedMailThread(a, `<${randomUUID()}@example.test>`, `apply-${randomUUID()}`);
+    const threadOfB = await seedMailThread(b, `<${randomUUID()}@example.test>`, `apply-${randomUUID()}`);
+    for (const fixture of [a, b])
+      await sendOk(
+        fixture.member,
+        PUT(`/api/mail/projects/${fixture.projectItemId}/signals`, { addresses: ["sender@example.test"] }),
+      );
+    const apply = (projectId: string | undefined, threadId: string | undefined): Request =>
+      POST(`/api/mail/projects/${projectId}/signals/apply`, { threadIds: [threadId] });
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => apply(id, threadOfB));
+    expect(JSON.parse(await sendOk(b.member, apply(b.projectItemId, threadOfA)))).toEqual({ assigned: 0, skipped: 1 });
+    const openOfA = await sendOk(a.member, POST(`/api/mail/projects/${a.projectItemId}/signals/preview`));
+    expectText(openOfA, [threadOfA], [threadOfB, b.projectItemId]);
+    expect(JSON.parse(await sendOk(b.member, apply(b.projectItemId, threadOfB)))).toEqual({ assigned: 1, skipped: 0 });
+    expectText(await sendOk(a.member, GET(`/api/mail/threads/${threadOfA}`)), [], [b.projectItemId]);
+  },
+  // B's claim of A's mailbox leases nothing of it: A's own claim still gets its folder.
+  "mail history claim": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const claim = (mailboxId: string | undefined): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {});
+    const own = mailHistoryClaimBody.parse(JSON.parse(await sendOk(b.member, claim(ofB.mailboxId))));
+    expect(own.folders).toEqual([
+      { folderId: ofB.folderId, path: "INBOX", uidvalidity: 1, backfillBelowUid: HISTORY_BACKFILL_BELOW_UID },
+    ]);
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => claim(id));
+    const ofAClaim = mailHistoryClaimBody.parse(JSON.parse(await sendOk(a.member, claim(ofA.mailboxId))));
+    expect(ofAClaim.folders.map((folder) => folder.folderId)).toEqual([ofA.folderId]);
+  },
+  // B, even holding A's lease token, ends no lease of A's: A's release still ends its own.
+  "mail history release": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const claimed = async (member: Caller, mailboxId: string) =>
+      mailHistoryClaimBody.parse(
+        JSON.parse(await sendOk(member, POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {}))),
+      ).leaseToken;
+    const tokenOfA = await claimed(a.member, ofA.mailboxId);
+    const tokenOfB = await claimed(b.member, ofB.mailboxId);
+    const release = (mailboxId: string | undefined, leaseToken: string): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index/release`, { leaseToken });
+    expect(JSON.parse(await sendOk(b.member, release(ofB.mailboxId, tokenOfB)))).toEqual({ released: 1 });
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => release(id, tokenOfA));
+    expect(JSON.parse(await sendOk(a.member, release(ofA.mailboxId, tokenOfA)))).toEqual({ released: 1 });
+  },
+  // An empty slice moves a folder's backfill cursor: B's upload to A's mailbox, or naming A's folder, moves none of A's.
+  "mail history upload": async () => {
+    const ofA = await mailboxWithIndexOnlyHistory(a);
+    const ofB = await mailboxWithIndexOnlyHistory(b);
+    const leaseTokenOf = async (member: Caller, mailboxId: string) =>
+      mailHistoryClaimBody.parse(
+        JSON.parse(await sendOk(member, POST(`/api/mail/mailboxes/${mailboxId}/history-index/claim`, {}))),
+      ).leaseToken;
+    const slice = (leaseToken: string, folderId: string | undefined) => ({
+      leaseToken,
+      folderId,
+      uidvalidity: 1,
+      rangeHigh: HISTORY_BACKFILL_BELOW_UID,
+      rangeLow: 40,
+      uids: [],
+      messages: [],
+    });
+    const upload = (mailboxId: string | undefined, body: unknown): Request =>
+      POST(`/api/mail/mailboxes/${mailboxId}/history-index`, body);
+    const tokenOfA = await leaseTokenOf(a.member, ofA.mailboxId);
+    const tokenOfB = await leaseTokenOf(b.member, ofB.mailboxId);
+    await expectForeign404(b.member, [ofA.mailboxId], ([id]) => upload(id, slice(tokenOfA, ofA.folderId)));
+    await expectForeign404(b.member, [ofA.folderId], ([id]) => upload(ofB.mailboxId, slice(tokenOfB, id)));
+    for (const [member, ofTenant, token] of [
+      [b.member, ofB, tokenOfB],
+      [a.member, ofA, tokenOfA],
+    ] as const) {
+      expect(JSON.parse(await sendOk(member, upload(ofTenant.mailboxId, slice(token, ofTenant.folderId))))).toEqual({
+        accepted: 0,
+        backfillBelowUid: 40,
+        leaseExpiresAt: expect.any(String),
+      });
+    }
+  },
   "mail draft create": async () => {
     const ofA = await mailboxForDrafts(a);
     const ofB = await mailboxForDrafts(b);
@@ -2919,6 +3179,34 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       projects: { total: 0, items: [] },
     });
     expect(await sendOk(a.member, facets)).toContain(ofA.projectId);
+  },
+  // Each tenant counts its own changes: B's delta lists only B's thread, and a cursor of A's counter is a reset for B
+  // that names nothing of A.
+  "mail thread changes": async () => {
+    const changesCursorOf = async (caller: Caller): Promise<string> =>
+      mailThreadListCursorBody.parse(JSON.parse(await sendOk(caller, GET("/api/mail/threads")))).changesCursor;
+    const sinceB = await changesCursorOf(b.member);
+    const seed = (fixture: TenantFixture) =>
+      seedMailThread(fixture, `<${randomUUID()}@example.test>`, `changes-${randomUUID()}`, `thread-${randomUUID()}`);
+    const ofA = await seed(a);
+    const ofB = await seed(b);
+    const changes = (since: string): Request => GET(`/api/mail/threads/changes?since=${since}`);
+    const own = await expectExcludesA(b.member, changes(sinceB), [ofB]);
+    expectNoneOf(own.text, [ofA], "B's changes");
+    const delta = mailThreadChangesBody.parse(JSON.parse(own.text));
+    expect({ reset: delta.reset, threads: delta.threads.map((row) => row.threadId), removed: delta.removed }).toEqual({
+      reset: false,
+      threads: [ofB],
+      removed: [],
+    });
+    const sinceA = await changesCursorOf(a.member);
+    const crossed = mailThreadChangesBody.parse(JSON.parse(await sendOk(b.member, changes(sinceA))));
+    expect({ reset: crossed.reset, threads: crossed.threads, removed: crossed.removed }).toEqual({
+      reset: true,
+      threads: [],
+      removed: [],
+    });
+    expect(crossed.cursor).toBe(delta.cursor);
   },
   "mail oauth start": async () => {
     await startMailOauth(a.member);

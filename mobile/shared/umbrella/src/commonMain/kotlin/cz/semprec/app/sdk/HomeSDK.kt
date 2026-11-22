@@ -12,6 +12,7 @@ import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.UnavailableAudioPlayer
 import cz.semprec.app.core.UnavailableAudioRecorder
 import cz.semprec.app.data.ApiClient
+import cz.semprec.app.data.FileMailThreadListCache
 import cz.semprec.app.data.HttpAuthRepository
 import cz.semprec.app.data.HttpCollectionReads
 import cz.semprec.app.data.HttpCollectionWrites
@@ -26,6 +27,8 @@ import cz.semprec.app.domain.InMemoryRecentSearches
 import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
+import cz.semprec.app.domain.MailThreadListCache
+import cz.semprec.app.domain.NoMailThreadListCache
 import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SearchEverything
 import cz.semprec.app.domain.SyncChanges
@@ -60,7 +63,10 @@ import kotlinx.coroutines.SupervisorJob
  * through `close()` when the screen is gone.
  *
  * [sessionStorage] is where the signed-in session survives a restart (the Keychain on Apple); the default forgets
- * it with the process. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
+ * it with the process. [cacheDirectory] is a directory the system may empty (the app's cache directory), where the
+ * mail thread lists of the signed-in account are kept so they open at once and without a connection; `null` keeps
+ * none. Every end of the session empties it: signing out, the server refusing the session, and a restore of a session
+ * the server no longer knows. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
  *
@@ -74,11 +80,18 @@ class HomeSDK(
     recorder: AudioRecorder = UnavailableAudioRecorder(),
     player: AudioPlayer = UnavailableAudioPlayer(),
     pushSubscriptions: PushSubscriptionStorage = InMemoryPushSubscriptionStorage(),
+    cacheDirectory: String? = null,
 ) {
     private val repository = InMemoryPlaceholderRepository()
-    private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device) { ending ->
-        RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)()
-    }
+    private val auth = HttpAuthRepository(
+        ApiClient(),
+        sessionStorage,
+        device,
+        sessionEnded = { threadLists.clear() },
+        endingSession = { ending -> RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)() },
+    )
+    private val threadLists: MailThreadListCache =
+        cacheDirectory?.let { FileMailThreadListCache(it, auth.api) } ?: NoMailThreadListCache()
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
@@ -136,7 +149,10 @@ class HomeSDK(
         workViewModels.itemDetailsViewModel(kind, itemId)
 
     /** The mail screens: the thread list, a thread, writing a message, the mailboxes and the accounts. */
-    val mail: MailSDK = MailSDK(auth.api, syncChanges)
+    val mail: MailSDK = MailSDK(auth.api, syncChanges, threadLists)
+
+    /** The mail signals of a project: which people, domains and keywords mark its threads. */
+    val mailSignals: MailSignalsSDK = MailSignalsSDK(auth.api)
 
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
 

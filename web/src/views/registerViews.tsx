@@ -1,11 +1,13 @@
 import { MAILBOX_CLIENT_COMPONENT, MAILBOX_CLIENT_VIEW_TYPE, MailboxClient } from "./mailbox/MailboxClient.js";
 import { JOURNAL_INBOX_LIST_COMPONENT, JOURNAL_INBOX_VIEW_TYPE, JournalInboxList } from "./journal/JournalInboxList.js";
 import type { MailDraftOperations } from "../api/mailDraftOperations.js";
+import type { MailMessageOperations } from "../api/mailMessageOperations.js";
 import { createViewRegistry, registerViewRenderer, type ViewRegistry, type ViewRendererProps } from "./viewRegistry.js";
 
 /** The route-family adapters a renderer needs beyond the generic operations every renderer receives. */
 export interface ViewRendererDependencies {
   mailDrafts: MailDraftOperations;
+  mailMessages: MailMessageOperations;
 }
 
 /**
@@ -16,7 +18,9 @@ export interface ViewRendererDependencies {
  */
 export function createDefaultViewRegistry(dependencies: ViewRendererDependencies): ViewRegistry {
   const registry = createViewRegistry();
-  const Mailbox = (props: ViewRendererProps) => <MailboxClient {...props} mailDrafts={dependencies.mailDrafts} />;
+  const Mailbox = (props: ViewRendererProps) => (
+    <MailboxClient {...props} mailDrafts={dependencies.mailDrafts} mailMessages={dependencies.mailMessages} />
+  );
   registerViewRenderer(registry, MAILBOX_CLIENT_COMPONENT, Mailbox);
   registerViewRenderer(registry, MAILBOX_CLIENT_VIEW_TYPE, Mailbox);
   registerViewRenderer(registry, JOURNAL_INBOX_LIST_COMPONENT, JournalInboxList);

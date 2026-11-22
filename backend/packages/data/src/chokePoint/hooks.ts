@@ -187,6 +187,8 @@ export type RelationEdgeDeleteHook = (context: RelationEdgeDeleteHookContext) =>
 export interface RelationEdgeChangedHookContext {
   client: PoolClient;
   op: "create" | "update" | "delete";
+  /** A `create` of an edge that already existed, whose metadata the write replaced. */
+  repeated?: boolean;
   relationDefinitionId: string;
   propertyId: string;
   itemA: string;

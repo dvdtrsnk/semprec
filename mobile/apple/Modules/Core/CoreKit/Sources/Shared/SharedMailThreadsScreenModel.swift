@@ -64,6 +64,7 @@ extension SharedMailThreadsScreenModel {
             mailboxes: state.mailboxes.map { MailMailboxChip(id: $0.id, name: $0.name) },
             reauthorization: state.reauthorization.map { MailAccountNotice(id: $0.id, name: $0.name, since: $0.since) },
             facets: facets(state.facets),
+            remoteSearch: state.remoteSearch.map(remoteSearch),
             actionFailed: state.actionFailed,
             actionRefusal: state.actionRefusal.map(\.refusal)
         )
@@ -126,6 +127,13 @@ extension SharedMailThreadsScreenModel {
         case .unread: .unread
         case .flagged: .flagged
         }
+    }
+
+    private static func remoteSearch(_ summary: SharedSDK.MailRemoteSearchSummary) -> MailRemoteSearchSummary {
+        MailRemoteSearchSummary(
+            unindexed: Int(summary.unindexed),
+            failedAccounts: summary.failedAccounts.map { MailMailboxChip(id: $0.id, name: $0.name) }
+        )
     }
 
     private static func thread(_ item: SharedSDK.MailThreadItem) -> MailThreadItem {

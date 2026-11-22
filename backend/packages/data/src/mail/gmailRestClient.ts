@@ -4,12 +4,23 @@ import {
   gmailMoveRequest,
   type GmailMoveResult,
 } from "./mailMoveProviderAdapters.js";
+import { z } from "zod";
+import { searchHitIds } from "./mailSearchTerms.js";
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
-import type { GmailFetchedMessage, GmailHistoryResult, GmailLabelRef, GmailMailClient } from "./gmailReconcile.js";
+import type {
+  GmailFetchedMessage,
+  GmailHistoryRecord,
+  GmailHistoryResult,
+  GmailLabelRef,
+  GmailMailClient,
+  GmailMessageFormat,
+  GmailMessageIdPage,
+} from "./gmailReconcile.js";
 import {
   assertJsonObject,
+  AttachmentCapExceededError,
   MAX_ATTACHMENT_BYTES,
   MailReauthorizationRequiredError,
   MailRecipientRejectedError,
@@ -20,6 +31,8 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { isDeliveryStatusReport, parseContentTypeHeader } from "./dsn.js";
 
 const BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** Ids one listing page holds, and so one write transaction of a sync pass ingests. */
+const GMAIL_LISTING_PAGE_SIZE = 50;
 
 function decodeBase64Url(value: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
@@ -32,7 +45,8 @@ interface GmailPayloadHeader {
 
 interface GmailPayloadPart {
   partId?: string;
-  mimeType: string;
+  /** Absent on the payload of a `format=metadata` response. */
+  mimeType?: string;
   filename?: string;
   headers?: GmailPayloadHeader[];
   body?: { size?: number; data?: string; attachmentId?: string };
@@ -71,7 +85,7 @@ function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
       for (const child of node.parts) visit(child);
       return;
     }
-    const type = node.mimeType.toLowerCase();
+    const type = (node.mimeType ?? "").toLowerCase();
     if (!tree.textPlainPart && type === "text/plain" && !node.filename) {
       tree.textPlainPart = node;
       return;
@@ -88,6 +102,61 @@ function walkGmailPayload(root: GmailPayloadPart): GmailMimeTree {
 
 function decodePartText(part: GmailPayloadPart | undefined): string | undefined {
   return part?.body?.data ? decodeBase64Url(part.body.data).toString("utf8") : undefined;
+}
+
+/** Every JSON read's cap: a `format=full` message carries only small parts inline, larger ones by attachment id. */
+const RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
+/** How deep a `format=full` payload's MIME tree may nest. */
+const MAX_PAYLOAD_DEPTH = 50;
+
+function optionalString(value: unknown, context: string): string | undefined {
+  if (value !== undefined && typeof value !== "string") throw new Error(`${context} is not a string`);
+  return value;
+}
+
+function parseGmailPayloadHeader(value: unknown): GmailPayloadHeader {
+  const header = assertJsonObject(value, "Gmail message payload header");
+  if (typeof header.name !== "string" || typeof header.value !== "string")
+    throw new Error("Gmail message payload header has no name or value");
+  return { name: header.name, value: header.value };
+}
+
+/**
+ * A payload's MIME tree, checked; a malformed or too deep tree fails. A `format=metadata` payload has headers only,
+ * no MIME type and no parts.
+ */
+function parseGmailPayload(value: unknown, depth = 0): GmailPayloadPart {
+  if (depth > MAX_PAYLOAD_DEPTH) throw new Error("Gmail message payload nests too deep");
+  const part = assertJsonObject(value, "Gmail message payload");
+  const partId = optionalString(part.partId, "Gmail message payload part id");
+  const mimeType = optionalString(part.mimeType, "Gmail message payload MIME type");
+  const filename = optionalString(part.filename, "Gmail message payload filename");
+  if (part.headers !== undefined && !Array.isArray(part.headers))
+    throw new Error("Gmail message payload headers is no list");
+  if (part.parts !== undefined && !Array.isArray(part.parts)) throw new Error("Gmail message payload parts is no list");
+  const rawBody = part.body === undefined ? undefined : assertJsonObject(part.body, "Gmail message payload body");
+  if (rawBody?.size !== undefined && typeof rawBody.size !== "number")
+    throw new Error("Gmail message payload body size is not a number");
+  const data = optionalString(rawBody?.data, "Gmail message payload body data");
+  const attachmentId = optionalString(rawBody?.attachmentId, "Gmail message payload attachment id");
+  return {
+    ...(partId !== undefined ? { partId } : {}),
+    ...(mimeType !== undefined ? { mimeType } : {}),
+    ...(filename !== undefined ? { filename } : {}),
+    ...(Array.isArray(part.headers) ? { headers: part.headers.map(parseGmailPayloadHeader) } : {}),
+    ...(rawBody !== undefined
+      ? {
+          body: {
+            ...(typeof rawBody.size === "number" ? { size: rawBody.size } : {}),
+            ...(data !== undefined ? { data } : {}),
+            ...(attachmentId !== undefined ? { attachmentId } : {}),
+          },
+        }
+      : {}),
+    ...(Array.isArray(part.parts)
+      ? { parts: part.parts.map((child: unknown) => parseGmailPayload(child, depth + 1)) }
+      : {}),
+  };
 }
 
 /**
@@ -164,13 +233,14 @@ function classifyGmailAttachmentParts(
     return [
       {
         filename: part.filename || "attachment",
-        contentType: part.mimeType,
+        contentType: part.mimeType || "application/octet-stream",
         contentId,
         disposition,
+        ...(part.partId !== undefined ? { providerPart: part.partId } : {}),
         openStream: async () => {
           if (part.body?.data) {
             if ((part.body.size ?? 0) > MAX_ATTACHMENT_BYTES) {
-              throw new Error(
+              throw new AttachmentCapExceededError(
                 `Gmail inline attachment part is ${part.body.size} bytes, over the ${MAX_ATTACHMENT_BYTES}-byte cap`,
               );
             }
@@ -189,13 +259,55 @@ function classifyGmailAttachmentParts(
   );
 }
 
+/**
+ * The headers a `format=metadata` fetch asks for: every header the envelope, threading, delivery resolution, bulk
+ * detection and DSN detection read.
+ */
+const GMAIL_METADATA_HEADERS = [
+  "From",
+  "To",
+  "Cc",
+  "Bcc",
+  "Reply-To",
+  "Subject",
+  "Date",
+  "Message-ID",
+  "In-Reply-To",
+  "References",
+  "Delivered-To",
+  "X-Original-To",
+  "Envelope-To",
+  "List-Unsubscribe",
+  "List-Id",
+  "Precedence",
+  "Auto-Submitted",
+  "Content-Type",
+];
+
+const SNIPPET_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** Gmail's `snippet` is plain text with HTML entities escaped. */
+function decodeGmailSnippet(snippet: string): string {
+  return snippet.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (entity: string, name: string) => {
+    const code =
+      name.startsWith("#x") || name.startsWith("#X")
+        ? Number.parseInt(name.slice(2), 16)
+        : name.startsWith("#")
+          ? Number.parseInt(name.slice(1), 10)
+          : undefined;
+    if (code === undefined) return SNIPPET_ENTITIES[name.toLowerCase()] ?? entity;
+    return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
+
+/** `attachments` empty and no body parts: a `format=metadata` payload lists no parts. */
 async function toFetchedMessage(
   gmailMessageId: string,
   payload: GmailPayloadPart,
-  fetchAttachmentBytes: (attachmentId: string) => Promise<Buffer>,
+  fetchAttachmentBytes: ((attachmentId: string) => Promise<Buffer>) | null,
 ): Promise<FetchedMessage> {
   const parsedHeaders = await parseGmailHeaders(payload.headers ?? []);
-  const tree = walkGmailPayload(payload);
+  const tree: GmailMimeTree = fetchAttachmentBytes ? walkGmailPayload(payload) : { attachmentParts: [] };
   const bodyText = decodePartText(tree.textPlainPart);
   const bodyHtml = decodePartText(tree.textHtmlPart);
   const contentType = parseContentTypeHeader(partHeader(payload, "Content-Type"));
@@ -233,7 +345,9 @@ async function toFetchedMessage(
     bodyText,
     bodyHtml,
     date: parsedHeaders.date,
-    attachments: classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml, bodyText),
+    attachments: fetchAttachmentBytes
+      ? classifyGmailAttachmentParts(fetchAttachmentBytes, tree.attachmentParts, bodyHtml, bodyText)
+      : [],
     deliveredToHeaders: partHeaderValues(payload, "Delivered-To"),
     xOriginalTo: partHeaderValues(payload, "X-Original-To")[0] ?? null,
     envelopeTo: partHeaderValues(payload, "Envelope-To")[0] ?? null,
@@ -274,6 +388,41 @@ async function sendFailure(response: Response): Promise<Error> {
 }
 
 /** `GmailMailClient` over the Gmail REST API. Tokens come from `getAccessToken`, so no refresh token is held here. */
+const providerId = z.string().min(1).max(1024);
+
+const historyMessages = z.array(z.object({ message: z.object({ id: providerId }) })).optional();
+type GmailHistoryMessages = z.infer<typeof historyMessages>;
+
+/** One page of `history.list`: its records in history order, the mailbox's current history id, the next page. */
+const historyPageSchema = z.object({
+  history: z
+    .array(
+      z.object({
+        id: providerId,
+        messagesAdded: historyMessages,
+        messagesDeleted: historyMessages,
+        labelsAdded: historyMessages,
+        labelsRemoved: historyMessages,
+      }),
+    )
+    .optional(),
+  historyId: providerId.optional(),
+  nextPageToken: z.string().min(1).optional(),
+});
+
+/** One page of `messages.list`; its entries are read like a search's hits (`searchHitIds`). */
+const listingPageSchema = z.object({
+  messages: z.array(z.unknown()).optional(),
+  nextPageToken: z.string().min(1).optional(),
+});
+
+/** A response body of the shape `schema` names, else the fixed failure of an unreadable response. */
+function parseProviderResponse<T>(schema: z.ZodType<T>, body: unknown): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new Error("Gmail sync provider response could not be read");
+  return parsed.data;
+}
+
 export class GmailRestClient implements GmailMailClient {
   constructor(
     private readonly getAccessToken: () => Promise<string>,
@@ -309,13 +458,15 @@ export class GmailRestClient implements GmailMailClient {
     };
   }
 
-  private async request<T>(path: string): Promise<{ status: number; json: T | null }> {
+  /** 30 s per request; a caller's `signal` ends it earlier. */
+  private async request<T>(path: string, signal?: AbortSignal): Promise<{ status: number; json: T | null }> {
     const token = await this.getAccessToken();
     let response: Response;
     try {
+      const timeout = AbortSignal.timeout(30_000);
       response = await this.fetchImpl(`${BASE_URL}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch (error) {
       // This boundary cannot expose a provider rejection that may contain bearer credentials.
@@ -327,7 +478,9 @@ export class GmailRestClient implements GmailMailClient {
     if (!response.ok) throw new Error(`Gmail API request failed with status ${response.status}`);
     let parsed: unknown;
     try {
-      parsed = await response.json();
+      const read = await readSendBody(response, RESPONSE_MAX_BYTES);
+      if (read.truncated) throw new Error("over the cap");
+      parsed = JSON.parse(read.text);
     } catch (error) {
       void error;
       // eslint-disable-next-line preserve-caught-error
@@ -345,83 +498,97 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async listHistorySince(startHistoryId: string): Promise<GmailHistoryResult> {
-    const changedIds = new Set<string>();
-    const removedIds = new Set<string>();
+    const records: GmailHistoryRecord[] = [];
     let newHistoryId = startHistoryId;
     let pageToken: string | undefined;
 
     do {
       const query = new URLSearchParams({ startHistoryId, ...(pageToken ? { pageToken } : {}) });
-      const { status, json } = await this.request<{
-        history?: Array<{
-          messagesAdded?: { message: { id: string } }[];
-          messagesDeleted?: { message: { id: string } }[];
-          labelsAdded?: { message: { id: string } }[];
-          labelsRemoved?: { message: { id: string } }[];
-        }>;
-        historyId?: string;
-        nextPageToken?: string;
-      }>(`/history?${query.toString()}`);
-
-      if (status === 404)
-        return { invalidated: true, newHistoryId: startHistoryId, changedMessageIds: [], removedMessageIds: [] };
-
-      for (const entry of json?.history ?? []) {
-        for (const m of entry.messagesAdded ?? []) changedIds.add(m.message.id);
-        for (const m of entry.labelsAdded ?? []) changedIds.add(m.message.id);
-        for (const m of entry.labelsRemoved ?? []) changedIds.add(m.message.id);
-        for (const m of entry.messagesDeleted ?? []) removedIds.add(m.message.id);
+      const { status, json } = await this.request<unknown>(`/history?${query.toString()}`);
+      if (status === 404) return { invalidated: true, newHistoryId: startHistoryId, records: [] };
+      const page = parseProviderResponse(historyPageSchema, json ?? {});
+      for (const entry of page.history ?? []) {
+        const ids = (list: GmailHistoryMessages) => (list ?? []).map((item) => item.message.id);
+        records.push({
+          id: entry.id,
+          changedMessageIds: [
+            ...new Set([...ids(entry.messagesAdded), ...ids(entry.labelsAdded), ...ids(entry.labelsRemoved)]),
+          ],
+          removedMessageIds: [...new Set(ids(entry.messagesDeleted))],
+        });
       }
-      if (json?.historyId) newHistoryId = json.historyId;
-      pageToken = json?.nextPageToken;
+      if (page.historyId) newHistoryId = page.historyId;
+      pageToken = page.nextPageToken;
     } while (pageToken);
 
-    return { invalidated: false, newHistoryId, changedMessageIds: [...changedIds], removedMessageIds: [...removedIds] };
+    return { invalidated: false, newHistoryId, records };
   }
 
-  async listAllMessageIds(): Promise<string[]> {
-    const ids: string[] = [];
-    let pageToken: string | undefined;
-    do {
-      const query = new URLSearchParams({ maxResults: "500", ...(pageToken ? { pageToken } : {}) });
-      const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(
-        `/messages?${query.toString()}`,
-      );
-      for (const m of json?.messages ?? []) ids.push(m.id);
-      pageToken = json?.nextPageToken;
-    } while (pageToken);
-    return ids;
+  async listMessageIds(query: string, pageToken: string | null): Promise<GmailMessageIdPage> {
+    const params = new URLSearchParams({
+      maxResults: String(GMAIL_LISTING_PAGE_SIZE),
+      q: query,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const { json } = await this.request<unknown>(`/messages?${params.toString()}`);
+    // A page token of another type would end the listing with pages left, so it fails the request instead.
+    const page = parseProviderResponse(listingPageSchema, json ?? {});
+    return { ids: searchHitIds(page.messages, GMAIL_LISTING_PAGE_SIZE), nextPageToken: page.nextPageToken ?? null };
   }
 
+  /**
+   * The ids of at most `limit` messages (newest first) Gmail's own search finds for `query`, one `messages.list` page;
+   * Trash and Spam are left out as Gmail leaves them out by default.
+   */
+  async searchMessageIds(query: string, limit: number, signal?: AbortSignal): Promise<string[]> {
+    const params = new URLSearchParams({ maxResults: String(limit), q: query });
+    const { json } = await this.request<{ messages?: unknown }>(`/messages?${params.toString()}`, signal);
+    return searchHitIds(json?.messages, limit);
+  }
+
+  /** One attachment's decoded bytes (`attachments.get`) by the attachment id of the `format=full` read just made. */
   private async fetchAttachmentBytes(gmailMessageId: string, attachmentId: string): Promise<Buffer> {
-    const { json } = await this.request<{ size: number; data: string }>(
-      `/messages/${gmailMessageId}/attachments/${attachmentId}`,
+    const { json } = await this.request<Record<string, unknown>>(
+      `/messages/${encodeURIComponent(gmailMessageId)}/attachments/${encodeURIComponent(attachmentId)}`,
     );
     if (!json) throw new Error("Gmail attachment not found");
+    if (typeof json.size !== "number" || typeof json.data !== "string")
+      throw new Error("Gmail attachment response has no size or data");
     // Checked before decoding so an oversized (malformed) response is never materialized.
-    if (json.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
-    }
+    if (json.size > MAX_ATTACHMENT_BYTES)
+      throw new AttachmentCapExceededError(`Gmail attachment exceeds the ${MAX_ATTACHMENT_BYTES}-byte cap`);
     return decodeBase64Url(json.data);
   }
 
-  async fetchMessage(id: string): Promise<GmailFetchedMessage | null> {
-    // `format=full` avoids pulling every attachment's bytes into one response.
+  async fetchMessage(id: string, format: GmailMessageFormat): Promise<GmailFetchedMessage | null> {
+    // `format=full` avoids pulling every attachment's bytes into one response; `format=metadata` returns the named
+    // headers, the labels and the snippet only.
+    const query =
+      format === "full"
+        ? new URLSearchParams({ format: "full" })
+        : new URLSearchParams([
+            ["format", "metadata"],
+            ...GMAIL_METADATA_HEADERS.map((name): [string, string] => ["metadataHeaders", name]),
+          ]);
     const { status, json } = await this.request<{
       id: string;
       threadId: string;
       labelIds?: string[];
-      payload: GmailPayloadPart;
-    }>(`/messages/${id}?format=full`);
+      snippet?: string;
+      payload: unknown;
+    }>(`/messages/${encodeURIComponent(id)}?${query.toString()}`);
     if (status === 404 || !json) return null;
-    const message = await toFetchedMessage(json.id, json.payload, (attachmentId) =>
-      this.fetchAttachmentBytes(json.id, attachmentId),
+    const message = await toFetchedMessage(
+      json.id,
+      parseGmailPayload(json.payload),
+      format === "full" ? (attachmentId) => this.fetchAttachmentBytes(json.id, attachmentId) : null,
     );
     const labelIds = json.labelIds ?? [];
     return {
       id: json.id,
       threadId: json.threadId,
       labelIds,
+      ...(json.snippet !== undefined ? { snippet: decodeGmailSnippet(json.snippet) } : {}),
       message: {
         ...message,
         flags: [
@@ -463,6 +630,19 @@ export class GmailRestClient implements GmailMailClient {
     });
     if (!response.ok) throw new Error(`Gmail label modification failed with status ${response.status}`);
     await response.body?.cancel();
+  }
+
+  /**
+   * One attachment's bytes by its payload part id and name. Gmail's attachment ids change between fetches, so the
+   * message is read again (`format=full`) and the part's current attachment id (or inline data) used; `null` when
+   * Gmail no longer has the message or the message has no attachment of that part id and name.
+   */
+  async openAttachmentContent(messageId: string, partId: string, filename: string): Promise<Readable | null> {
+    const fetched = await this.fetchMessage(messageId, "full");
+    const attachment = fetched?.message.attachments.find(
+      (candidate) => candidate.providerPart === partId && candidate.filename === filename,
+    );
+    return attachment ? await attachment.openStream() : null;
   }
 
   /** Gmail does not thread by In-Reply-To alone, so a reply must pass `threadId`. */

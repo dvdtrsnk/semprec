@@ -14,6 +14,7 @@ import { createAdminOperations } from "./api/adminOperations.js";
 import { createAccountOperations } from "./api/accountOperations.js";
 import { createInvitationOperations } from "./api/invitationOperations.js";
 import { createMailDraftOperations } from "./api/mailDraftOperations.js";
+import { createMailMessageOperations } from "./api/mailMessageOperations.js";
 import { createDefaultViewRegistry } from "./views/registerViews.js";
 
 /**
@@ -53,6 +54,7 @@ const auth = createAuthOperations({ baseUrl: apiBaseUrl });
 const operations = createHttpGenericOperations({ baseUrl: apiBaseUrl, fetchImpl });
 const registry = createDefaultViewRegistry({
   mailDrafts: createMailDraftOperations({ baseUrl: apiBaseUrl, fetchImpl }),
+  mailMessages: createMailMessageOperations({ baseUrl: apiBaseUrl, fetchImpl }),
 });
 const aiUsageOperations = page === "ai-usage" ? createAiUsageOperations({ baseUrl: apiBaseUrl, fetchImpl }) : undefined;
 // Rendered beside the AI usage block on the same System page (issue #170), not behind its own `?page=`.

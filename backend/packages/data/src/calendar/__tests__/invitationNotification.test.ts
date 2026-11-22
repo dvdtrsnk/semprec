@@ -9,6 +9,7 @@ import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { ingestEmailMessage } from "../../mail/ingest.js";
+import type { MailArrival } from "../../mail/mailArrival.js";
 import { computeBadgeForUser } from "../../notifications/badgeCount.js";
 import { createBadgeCountsRouteHandler } from "../../notifications/badgeCountsRoute.js";
 import { handleNotificationFanoutTask } from "../../notifications/notificationFanoutJob.js";
@@ -106,10 +107,12 @@ function ics(options: IcsOptions = {}): string {
 
 let storage: BlobStorageWriter;
 
-async function receive(world: World, messageId: string, text: string): Promise<string> {
+async function receive(world: World, messageId: string, text: string, arrival: MailArrival = "live"): Promise<string> {
   const result = await runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival,
+        contentState: "full",
         emailsDatabaseId: world.databases.emails!,
         filesDatabaseId: world.databases.files!,
         folderRelationPropertyId: world.properties.emailFolder,
@@ -146,8 +149,13 @@ function ingest(world: World, emailItemId: string): Promise<void> {
   );
 }
 
-async function deliver(world: World, messageId: string, text: string = ics()): Promise<string> {
-  const emailItemId = await receive(world, messageId, text);
+async function deliver(
+  world: World,
+  messageId: string,
+  text: string = ics(),
+  arrival: MailArrival = "live",
+): Promise<string> {
+  const emailItemId = await receive(world, messageId, text, arrival);
   await ingest(world, emailItemId);
   return emailItemId;
 }
@@ -272,6 +280,16 @@ describe("calendar invitation notification (issue gh-1954)", () => {
         read_at: null,
         resolved_at: null,
       });
+    });
+
+    it.each([
+      ["live", 1],
+      ["backfill", 0],
+    ] as const)("creates the invitation of a %s message with %i notification(s)", async (arrival, notifications) => {
+      await deliver(world, `<${arrival}@example.test>`, ics(), arrival);
+
+      expect(await invitationIds(world)).toHaveLength(1);
+      expect(await notificationsOf(world.tenantId)).toHaveLength(notifications);
     });
 
     it("renders the title in the language of the tenant's user", async () => {

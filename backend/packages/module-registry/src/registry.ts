@@ -108,6 +108,7 @@ export interface ModuleCustomRouteDefinition {
   method: CustomRouteMethod;
   path: string;
   handler: unknown;
+  maxBodyBytes?: number;
 }
 
 export interface ModuleMigrationProjection {
@@ -730,6 +731,7 @@ export class ModuleRegistry {
         method: route.method,
         path: route.path,
         handler: loaded.exports[route.handlerExport],
+        ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
       })),
     );
   }

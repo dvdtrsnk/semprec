@@ -16,6 +16,8 @@ export interface RouteDefinition {
    * `/api/admin/` path.
    */
   admin?: true;
+  /** The largest request body read, in bytes; `createAdapterRequestListener`'s default without it. */
+  maxBodyBytes?: number;
 }
 
 interface CompiledRoute {
@@ -64,6 +66,7 @@ export function mountRoutes(
     const { matcher, paramNames } = compilePath(route.path);
     const listener = createAdapterRequestListener(pool, route.handler, {
       admin: route.admin === true,
+      ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
       extractParams: (req) => {
         // dispatchRoute already tested this pattern.
         const match = pathnameOf(req).match(matcher)!;

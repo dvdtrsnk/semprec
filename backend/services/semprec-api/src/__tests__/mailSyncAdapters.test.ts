@@ -34,6 +34,7 @@ import {
   MailReauthorizationRequiredError,
   MailServerUnreachableError,
   seedSystem,
+  sharedImapSessionPool,
   upsertMailServerSettings,
   withTransaction,
 } from "@semprec/data";
@@ -42,8 +43,9 @@ import { createMailLiveSyncRoot, type MailLiveSyncRoot } from "@semprec/data";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
-import { createMailSyncAdapters } from "../mailSyncAdapters.js";
+import { createMailContentProviders, createMailSyncAdapters } from "../mailSyncAdapters.js";
 import {
+  createIdleImapFlowClient,
   createImapIdleLifecycleFactory,
   createMailLiveSyncLifecycleFactory,
   resolveGmailWatchHosting,
@@ -155,7 +157,12 @@ function createFakeGoogle(options: FakeGoogleOptions = {}): FakeGoogle {
       calls.authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
       if (route === "/profile") return Response.json({ historyId: "5000" });
       if (route === "/labels") return Response.json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }] });
-      if (route === "/messages?maxResults=500") return Response.json({ messages: messages.map(({ id }) => ({ id })) });
+      // Every message lies inside the full-content window: the `after:` listing phase lists them, `before:` none.
+      if (route.startsWith("/messages?")) {
+        const query = new URLSearchParams(route.slice("/messages?".length));
+        const listed = query.get("q")?.startsWith("after:") ? messages : [];
+        return Response.json({ messages: listed.map(({ id }) => ({ id })) });
+      }
       const fetched = messages.find((message) => route === `/messages/${message.id}?format=full`);
       if (fetched) return Response.json(gmailMessage(fetched));
       return new Response("not found", { status: 404 });
@@ -178,6 +185,8 @@ interface FakeMicrosoftCalls {
   presentedRefreshTokens: string[];
   scopeParameters: boolean[];
   authorizations: string[];
+  /** The `Prefer` header of each Graph request. */
+  preferences: Array<string | null>;
   /** Path and query without the API prefix. */
   routes: string[];
 }
@@ -200,8 +209,8 @@ function graphMessage(message: FakeMessage): unknown {
     subject: message.subject,
     from: { emailAddress: { name: "Ada", address: message.from ?? "ada@example.test" } },
     toRecipients: [{ emailAddress: { name: "Owner", address: "owner@example.test" } }],
-    receivedDateTime: "2026-10-05T10:00:00Z",
-    body: { contentType: "text", content: `Body of ${message.id}` },
+    // Received now, so a delta from scratch stores the message in full.
+    receivedDateTime: new Date().toISOString(),
     bodyPreview: `Body of ${message.id}`,
     internetMessageHeaders: message.headers ?? [],
     ...(message.replyTo ? { replyTo: message.replyTo.map((emailAddress) => ({ emailAddress })) } : {}),
@@ -220,6 +229,7 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
     presentedRefreshTokens: [],
     scopeParameters: [],
     authorizations: [],
+    preferences: [],
     routes: [],
   };
   let validRefreshToken = STORED_MICROSOFT_REFRESH_TOKEN;
@@ -252,7 +262,17 @@ function createFakeMicrosoft(options: FakeMicrosoftOptions = {}): FakeMicrosoft 
       const route = href.slice(GRAPH_API_PREFIX.length);
       calls.routes.push(route);
       calls.authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
+      calls.preferences.push(new Headers(init?.headers).get("Prefer"));
       if (route === "/messages/missing?$select=id,parentFolderId") return new Response("not found", { status: 404 });
+      const content = [...(options.messages ?? GRAPH_MESSAGES), ...(options.deltaMessages ?? [])].find(
+        (message) => route === `/messages/${message.id}?$select=body,bodyPreview,hasAttachments`,
+      );
+      if (content)
+        return Response.json({
+          body: { contentType: "text", content: `Body of ${content.id}` },
+          bodyPreview: `Body of ${content.id}`,
+          hasAttachments: false,
+        });
       if (route === "/mailFolders/inbox") return Response.json({ id: GRAPH_INBOX_ID, displayName: "Inbox" });
       if (route === "/mailFolders?$top=999&$select=id,displayName,childFolderCount")
         return Response.json({ value: [{ id: GRAPH_INBOX_ID, displayName: "Inbox", childFolderCount: 0 }] });
@@ -477,6 +497,61 @@ describe("createMailSyncAdapters", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+
+  it.each([
+    { provider: "Gmail", use: "content", actorType: "user", purpose: "gmail_api_content" },
+    { provider: "Gmail", use: "search", actorType: "ai_agent", purpose: "gmail_api_search" },
+    { provider: "Graph", use: "content", actorType: "user", purpose: "graph_api_content" },
+    { provider: "Graph", use: "search", actorType: "user", purpose: "graph_api_search" },
+  ] as const)(
+    "logs a $provider $use read on demand as the $actorType asking, with purpose $purpose",
+    async ({ provider, use, actorType, purpose }) => {
+      const mailboxId =
+        provider === "Gmail" ? await createGmailMailbox("On demand") : await createGraphMailbox("On demand");
+      const google = createFakeGoogle({});
+      const microsoft = createFakeMicrosoft({});
+      const providers = createMailContentProviders({
+        pool,
+        oauth: {
+          gmail: { clientId: GMAIL_CLIENT_ID, clientSecret: GMAIL_CLIENT_SECRET },
+          msGraph: { clientId: GRAPH_CLIENT_ID, clientSecret: GRAPH_CLIENT_SECRET },
+        },
+        fetchImpl: provider === "Gmail" ? google.fetchImpl : microsoft.fetchImpl,
+        attachmentStorage: {
+          writeStream: async () => {
+            throw new Error("not written");
+          },
+          delete: async () => {},
+          readStream: () => {
+            throw new Error("not read");
+          },
+        },
+      });
+      const actorId = randomUUID();
+      const access = { actor: { actorType, actorId }, use };
+
+      await inTenantZero(async () => {
+        if (provider === "Gmail") {
+          const client = providers.createGmailClient?.(mailboxId, access);
+          if (!client) throw new Error("expected a Gmail content client");
+          if (use === "content") await client.fetchMessage("m-1", "full");
+          else await client.searchMessageIds("offer", 10);
+        } else {
+          const client = providers.createGraphClient?.(mailboxId, access);
+          if (!client) throw new Error("expected a Graph content client");
+          // The fake answers no search; the token is refreshed, and its access logged, before the request.
+          if (use === "content") await client.fetchMessageContent("g-1");
+          else await client.searchMessageIds({ include: ["offer"], exclude: [] }, 10).catch(() => []);
+        }
+      });
+
+      const { rows } = await pool.query<{ actor_type: string; actor_id: string | null; purpose: string }>(
+        "SELECT actor_type, actor_id, purpose FROM credential_access_log WHERE item_id = $1",
+        [mailboxId],
+      );
+      expect(rows).toEqual([{ actor_type: actorType, actor_id: actorId, purpose }]);
+    },
+  );
 
   it("loads Gmail labels through the mailbox OAuth adapter", async () => {
     const mailboxId = await createGmailMailbox("Cleanup");
@@ -913,7 +988,7 @@ describe("mail sync passes through the api composition root", () => {
         messages: bulkMessages({ headers: [{ name: "Reply-To", value: "Support <support@example.test>" }] }),
       });
       await syncThroughRuntime(mailboxId, PROVIDERS.Gmail, google.fetchImpl);
-      await waitFor(async () => (await syncStateOf(mailboxId)).gmail_history_id === "5000");
+      await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
       await expectBulkIndicatorsStored();
     });
 
@@ -922,7 +997,7 @@ describe("mail sync passes through the api composition root", () => {
       const google = createFakeGoogle();
       await syncThroughRuntime(mailboxId, PROVIDERS.Gmail, google.fetchImpl);
 
-      await waitFor(async () => (await syncStateOf(mailboxId)).gmail_history_id === "5000");
+      await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
       const { rows } = await pool.query<{ provider_message_id: string }>(
         `SELECT provider_message_id FROM mail_message_meta ORDER BY provider_message_id`,
       );
@@ -952,11 +1027,14 @@ describe("mail sync passes through the api composition root", () => {
                 parentFolderId: GRAPH_INBOX_ID,
                 internetMessageId: "<private@graph.test>",
                 subject: "Attachment",
+                receivedDateTime: new Date().toISOString(),
                 hasAttachments: true,
               },
             ],
             "@odata.deltaLink": DELTA_LINK_1,
           });
+        if (href === `${GRAPH_API_PREFIX}/messages/m-private?$select=body,bodyPreview,hasAttachments`)
+          return Response.json({ body: { contentType: "text", content: "Body" }, hasAttachments: true });
         if (href.startsWith(`${GRAPH_API_PREFIX}/messages/m-private/attachments?$select=`))
           return Response.json({
             value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a-private", name: "document.pdf" }],
@@ -997,7 +1075,7 @@ describe("mail sync passes through the api composition root", () => {
         messages: bulkMessages({ replyTo: [{ name: "Support", address: "support@example.test" }] }),
       });
       await syncThroughRuntime(mailboxId, PROVIDERS.Graph, microsoft.fetchImpl);
-      await waitFor(async () => (await syncStateOf(mailboxId)).graph_delta_link === DELTA_LINK_1);
+      await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
       await expectBulkIndicatorsStored();
       // A later delta without bulk headers keeps the message classified as bulk.
       await enqueueAccountSync(mailboxId);
@@ -1014,7 +1092,7 @@ describe("mail sync passes through the api composition root", () => {
       const microsoft = createFakeMicrosoft();
       await syncThroughRuntime(mailboxId, PROVIDERS.Graph, microsoft.fetchImpl);
 
-      await waitFor(async () => (await syncStateOf(mailboxId)).graph_delta_link === DELTA_LINK_1);
+      await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
       const { rows } = await pool.query<{ provider_message_id: string }>(
         `SELECT provider_message_id FROM mail_message_meta ORDER BY provider_message_id`,
       );
@@ -1025,6 +1103,18 @@ describe("mail sync passes through the api composition root", () => {
       // No scope, so Microsoft keeps the scopes the account already granted.
       expect(microsoft.calls.scopeParameters).toEqual([false]);
       expect(new Set(microsoft.calls.authorizations)).toEqual(new Set(["Bearer eyJ-access-1"]));
+      // Every Graph request of the pass asks for immutable ids, and the delta for pages of 50 messages without the
+      // body, which is fetched per message.
+      expect(microsoft.calls.preferences.every((prefer) => prefer?.startsWith('IdType="ImmutableId"'))).toBe(true);
+      const deltaIndex = microsoft.calls.routes.findIndex((route) => route.startsWith("/messages/delta?$select="));
+      expect(microsoft.calls.preferences[deltaIndex]).toBe('IdType="ImmutableId", odata.maxpagesize=50');
+      expect(microsoft.calls.routes[deltaIndex]?.split(",")).not.toContain("body");
+      expect(microsoft.calls.routes).toEqual(
+        expect.arrayContaining([
+          "/messages/g-1?$select=body,bodyPreview,hasAttachments",
+          "/messages/g-2?$select=body,bodyPreview,hasAttachments",
+        ]),
+      );
     });
 
     it("stores a rotated refresh token, and the next pass presents it instead of the retired one", async () => {
@@ -1216,7 +1306,7 @@ describe("mail sync passes through the api composition root", () => {
         ],
       });
 
-      await waitFor(async () => (await syncStateOf(mailboxId)).graph_delta_link === DELTA_LINK_1);
+      await waitFor(async () => (await syncStatusOf(mailboxId)) === "ok");
       expect((await sweepStateOf(mailboxId)).due).toBe(false);
 
       await elapseUntilDue(mailboxId);
@@ -1527,6 +1617,8 @@ describe("IMAP-mode accounts", () => {
   let stub: DnsLookupStub | undefined;
   let restorePolicy: (() => void) | undefined;
   let savedGatewayToken: string | undefined;
+  // Mailboxes whose sync session the process-wide pool may keep, closed before their server.
+  const keptSessions: string[] = [];
 
   beforeAll(() => {
     imapCertificate = makeTlsCertificate(IMAP_HOST);
@@ -1546,6 +1638,7 @@ describe("IMAP-mode accounts", () => {
   afterEach(async () => {
     await runtime?.stop();
     runtime = undefined;
+    for (const mailboxId of keptSessions.splice(0)) await sharedImapSessionPool.closeAccount(mailboxId);
     stub?.restore();
     stub = undefined;
     restorePolicy?.();
@@ -1589,23 +1682,31 @@ describe("IMAP-mode accounts", () => {
     },
     password = IMAP_PASSWORD,
   ): Promise<string> {
-    return createMailbox({
-      name,
-      provider: "imap",
-      syncMode: "imap",
-      credentialType: "app_password",
-      secret: password,
-      configure: async (client, itemId) => {
-        if (endpoints !== null)
-          await upsertMailServerSettings(client, itemId, { ...endpoints, username: IMAP_USERNAME });
-      },
-    });
+    return trackedForSessions(
+      createMailbox({
+        name,
+        provider: "imap",
+        syncMode: "imap",
+        credentialType: "app_password",
+        secret: password,
+        configure: async (client, itemId) => {
+          if (endpoints !== null)
+            await upsertMailServerSettings(client, itemId, { ...endpoints, username: IMAP_USERNAME });
+        },
+      }),
+    );
+  }
+
+  async function trackedForSessions(created: Promise<string>): Promise<string> {
+    const mailboxId = await created;
+    keptSessions.push(mailboxId);
+    return mailboxId;
   }
 
   function openImapClient(mailboxId: string, password = IMAP_PASSWORD): Promise<Error> {
     const create = createMailSyncAdapters({ pool, env: {} }).createImapClient;
     if (!create) throw new Error("Missing IMAP factory");
-    return inTenantZero(() => rejectionOf(create(mailboxId, password)));
+    return inTenantZero(() => rejectionOf(create(mailboxId, password, 2)));
   }
 
   /** Across every mailbox; a refused or failed pass must leave this at zero. */
@@ -1646,7 +1747,7 @@ describe("IMAP-mode accounts", () => {
     expect(JSON.stringify(result)).not.toContain("IMAP-PRIVATE-SENTINEL");
   });
 
-  it("a pass downloads the messages of an IMAP mailbox from its stored settings, then closes the socket", async () => {
+  it("a pass downloads the messages of an IMAP mailbox from its stored settings, and keeps its connection until the account's session is closed", async () => {
     const server = await reachableFakeImap();
     const mailboxId = await createImapMailbox("IMAP sync");
     await syncThroughRuntime(mailboxId);
@@ -1658,7 +1759,27 @@ describe("IMAP-mode accounts", () => {
     expect(rows.map((row) => row.message_id)).toEqual(IMAP_MESSAGES.map((message) => message.messageId));
     expect(await syncErrorOf(mailboxId)).toBeNull();
     expect(server.unsupported).toEqual([]);
-    await waitFor(async () => server.accepted() > 0 && server.closed() === server.accepted());
+    expect([server.accepted(), server.closed()]).toEqual([1, 0]);
+
+    // What a restart, Mail switched off or a removal does through the live-sync control.
+    await sharedImapSessionPool.closeAccount(mailboxId);
+    await waitFor(async () => server.closed() === 1);
+  });
+
+  it("classifies the IDLE connection's rejected login as a pass does, so the IDLE lifecycle stops retrying", async () => {
+    const server = await reachableFakeImap();
+    const mailboxId = await createImapMailbox("Revoked IDLE", undefined, IMAP_WRONG_PASSWORD);
+    const createClient = createIdleImapFlowClient(pool);
+    const idleOptions = { maxIdleTime: 25 * 60_000, socketTimeout: 35 * 60_000, autoIdleDelay: 0 };
+
+    const error = await inTenantZero(() =>
+      rejectionOf(createClient(mailboxId, IMAP_WRONG_PASSWORD, idleOptions, new AbortController().signal)),
+    );
+
+    expect(error).toBeInstanceOf(MailReauthorizationRequiredError);
+    expect(error.message).toBe("The IMAP server rejected the stored login; reauthorize the mailbox");
+    expectNoneContained([error.message, JSON.stringify(error)], [IMAP_WRONG_PASSWORD]);
+    expect(server.accepted()).toBe(1);
   });
 
   it("a mailbox connected through the password route downloads its mail without further action", async () => {

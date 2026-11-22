@@ -289,8 +289,10 @@ async function graphTarget(
 
 /**
  * Runs the mailbox's pending IMAP moves over one exclusively owned connection, opened for the first move and closed
- * after the last. A move that leaves the connection in an unknown state (a command that failed or got no usable
- * answer, a preparation without a result) closes it, and the next move opens a new one.
+ * after the last. A move that leaves the connection in an unknown state closes it, and the next move opens a new one:
+ * a command that failed or got no usable answer, a preparation without a result, or a client that does not report
+ * itself reusable (`isReusable` is not `true`: an operation timed out or answered unexpectedly, or the client cannot
+ * tell).
  */
 export async function drainImapMoves(
   pool: Pool,
@@ -533,7 +535,7 @@ export async function drainImapMoves(
     } catch (error) {
       operationFailure = { value: error };
     }
-    if (operationFailure || providerFailure || unanswered) {
+    if (operationFailure || providerFailure || unanswered || imap.isReusable?.() !== true) {
       try {
         await closeConnection();
       } catch (error) {

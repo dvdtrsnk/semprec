@@ -5680,6 +5680,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     async function newMessage(messageId: string): Promise<{ threadId: string; itemId: string; emailItemId: string }> {
       return scoped(async (client) => {
         const ingested = await ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: await databaseIdFor("emails"),
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId: await propertyId("emails", "folder"),

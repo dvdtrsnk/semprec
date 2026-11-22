@@ -1,7 +1,8 @@
 // Turns the iMIP `REQUEST`/`CANCEL` of a new email into invitation writes. Mail ingest writes nothing to the
 // Invitations database: the calendar module reacts to the new Emails item instead, as `mail.linkPeopleByEmail` does.
 // An e-mail received by an account with Calendars on writes nothing: that account's calendar sync takes the same
-// invitation from the provider's calendar (`sync/syncedInvitations.ts`).
+// invitation from the provider's calendar (`sync/syncedInvitations.ts`). A backfilled e-mail (imported history, not
+// new mail) still writes its invitation but notifies nobody, as a calendar's initial sync does.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -115,6 +116,8 @@ interface MessageContext {
   /** `envelope.from`, normalized. */
   senderAddress: string | null;
   timeZone: string;
+  /** The message arrived live; a backfilled one creates its invitation without a notification. */
+  notify: boolean;
 }
 
 async function linkInvitation(
@@ -156,14 +159,16 @@ async function createInvitation(client: PoolClient, context: MessageContext, eve
   } else {
     await linkInvitation(client, context, invitation.id, "suggestedCalendar", calendarId);
   }
-  await notifyInvitation(client, {
-    invitationItemId: invitation.id,
-    organizerName: event.organizer?.name ?? null,
-    organizerEmail: event.organizer?.address ?? null,
-    title: event.summary,
-    transitionInstance: "created",
-    logIds: { emailItemId: context.emailItemId },
-  });
+  if (context.notify) {
+    await notifyInvitation(client, {
+      invitationItemId: invitation.id,
+      organizerName: event.organizer?.name ?? null,
+      organizerEmail: event.organizer?.address ?? null,
+      title: event.summary,
+      transitionInstance: "created",
+      logIds: { emailItemId: context.emailItemId },
+    });
+  }
   logger.info({ emailItemId: context.emailItemId, invitationItemId: invitation.id }, "calendar invitation created");
 }
 
@@ -384,6 +389,7 @@ export function createInvitationIngestAction(
       return {
         mailboxItemId: meta.mailboxItemId,
         senderAddress: sender === "" ? null : sender,
+        notify: meta.arrival === "live",
         texts,
         fallbackTimeZone,
       };
@@ -421,6 +427,7 @@ export function createInvitationIngestAction(
         mailboxItemId: prepared.mailboxItemId,
         senderAddress: prepared.senderAddress,
         timeZone: prepared.fallbackTimeZone,
+        notify: prepared.notify,
       };
       for (const { method, event } of instructions) {
         if (method === "REQUEST") await applyRequest(client, messageContext, event);

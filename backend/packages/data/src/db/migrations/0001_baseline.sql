@@ -1732,11 +1732,24 @@ CREATE TABLE public.mail_account_sync_state (
     pass_lease_token uuid,
     pass_lease_expires_at timestamp with time zone,
     pass_rerun_requested boolean DEFAULT false NOT NULL,
+    connected_at timestamp with time zone,
+    gmail_listing_phase text,
+    gmail_listing_page_token text,
+    graph_delta_next_link text,
+    CONSTRAINT mail_account_sync_state_gmail_listing_phase_check CHECK ((gmail_listing_phase = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
 
 COMMENT ON TABLE public.mail_account_sync_state IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_account_sync_state.connected_at IS 'Anchor of the account''s mail: set by the first sync pass that finds it NULL, cleared when Mail is switched off.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_phase IS 'Gmail full listing in progress: ''full'' lists the messages inside the full-content window, ''index'' the older ones; NULL when no listing runs.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_page_token IS 'The messages.list page token the Gmail listing resumes at; NULL at the start of its phase.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.graph_delta_next_link IS 'The nextLink of the Graph delta round in progress; promoted to graph_delta_link only when the round''s deltaLink arrives.';
 
 ALTER TABLE ONLY public.mail_account_sync_state
     ADD CONSTRAINT mail_account_sync_state_pkey PRIMARY KEY (item_id);
@@ -1766,17 +1779,25 @@ GRANT SELECT(gmail_watch_email_address) ON TABLE public.mail_account_sync_state 
 CREATE TABLE public.mail_attachments (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     message_item_id uuid NOT NULL,
-    blob_id uuid NOT NULL,
+    blob_id uuid,
     filename text NOT NULL,
     content_type text NOT NULL,
     content_id text,
     disposition text NOT NULL,
     byte_size bigint NOT NULL,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text])))
+    provider_part text,
+    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text]))),
+    CONSTRAINT mail_attachments_stored_or_located_check CHECK (((blob_id IS NOT NULL) OR (provider_part IS NOT NULL)))
 );
 
 COMMENT ON TABLE public.mail_attachments IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_attachments.blob_id IS 'The stored bytes; NULL for an attachment of an index message, recorded by its metadata alone.';
+
+COMMENT ON COLUMN public.mail_attachments.provider_part IS 'Where the provider holds the bytes (the IMAP body part id); NULL where the adapter records none.';
+
+COMMENT ON COLUMN public.mail_attachments.byte_size IS 'Bytes stored; for an attachment without stored bytes, the size the provider''s body structure gives.';
 
 ALTER TABLE ONLY public.mail_attachments
     ADD CONSTRAINT mail_attachments_pkey PRIMARY KEY (id);
@@ -1842,15 +1863,59 @@ CREATE TABLE public.mail_folder_sync_state (
     message_count bigint,
     last_full_reconcile_at timestamp with time zone,
     last_error text,
-    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    live_from_uid bigint,
+    backfill_below_uid bigint,
+    backfill_index_only boolean DEFAULT false NOT NULL,
+    client_backfill_lease_token uuid,
+    client_backfill_lease_until timestamp with time zone,
+    CONSTRAINT mail_folder_sync_state_client_lease_check CHECK (((client_backfill_lease_token IS NULL) = (client_backfill_lease_until IS NULL)))
 );
 
 COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.live_from_uid IS 'The folder''s UIDNEXT when its state was first established or reset after a UIDVALIDITY change; a message with a UID at or above it arrived live.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_below_uid IS 'Every UID from 1 up to, not including, this value still awaits the backfill, which runs from it downwards. Set to live_from_uid when the state is established; NULL with live_from_uid set means the backfill is done, NULL with live_from_uid NULL that the state is not established yet.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_index_only IS 'The descending backfill reached a message older than the full-content window: what is left below backfill_below_uid is history stored as an index, which a native client may upload. Cleared with the state on a UIDVALIDITY change.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_token IS 'The native client lease on the folder''s backfill (history upload); while client_backfill_lease_until is in the future the server''s backfill skips the folder. Set together with client_backfill_lease_until.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_until IS 'When the client backfill lease ends unless renewed; NULL when no client holds one.';
 
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_pkey PRIMARY KEY (item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_folder_sync_state TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_message_content_cache
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_message_content_cache (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    item_id uuid NOT NULL,
+    body_html text,
+    body_text text,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE public.mail_message_content_cache IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_html IS 'The HTML part of an index message as its provider returned it on demand, unsanitized like Emails.body; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_text IS 'The text part of an index message as its provider returned it on demand; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.expires_at IS 'fetched_at plus seven days; readers ignore the row from then on and the daily sweep deletes it.';
+
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_pkey PRIMARY KEY (tenant_id, item_id);
+
+CREATE INDEX mail_message_content_cache_tenant_expires_idx ON public.mail_message_content_cache USING btree (tenant_id, expires_at);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_content_cache TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_message_flag_sync_state
@@ -1896,7 +1961,11 @@ CREATE TABLE public.mail_message_meta (
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
+    arrival text NOT NULL,
+    content_state text NOT NULL,
     folder_copy_removed_at timestamp with time zone,
+    CONSTRAINT mail_message_meta_arrival_check CHECK ((arrival = ANY (ARRAY['live'::text, 'backfill'::text]))),
+    CONSTRAINT mail_message_meta_content_state_check CHECK ((content_state = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
@@ -1905,6 +1974,10 @@ COMMENT ON TABLE public.mail_message_meta IS 'semprec:tenancy=tenant';
 COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview of the message body, whitespace collapsed, at most 200 characters.';
 
 COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim).';
+
+COMMENT ON COLUMN public.mail_message_meta.arrival IS 'live = new mail after the account connected, backfill = imported history; decided once at ingest.';
+
+COMMENT ON COLUMN public.mail_message_meta.content_state IS 'full = body and attachment bytes stored, index = envelope, preview and attachment metadata only; decided once at ingest.';
 
 COMMENT ON COLUMN public.mail_message_meta.folder_copy_removed_at IS 'When an IMAP pass last removed one of the message''s folder edges; set until a pass''s final transaction decides whether the Email keeps a folder copy.';
 
@@ -2077,6 +2150,54 @@ ALTER TABLE ONLY public.mail_thread_aliases
 CREATE INDEX mail_thread_aliases_to_thread_idx ON public.mail_thread_aliases USING btree (tenant_id, to_thread_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_aliases TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_thread_change_counters
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_change_counters (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    epoch uuid DEFAULT gen_random_uuid() NOT NULL,
+    seq bigint DEFAULT 0 NOT NULL,
+    reset_seq bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT mail_thread_change_counters_reset_seq_check CHECK ((reset_seq <= seq))
+);
+
+COMMENT ON TABLE public.mail_thread_change_counters IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.seq IS 'The tenant''s mail list change sequence: one step per committed transaction that changed a thread list row, taken under this row''s lock right before COMMIT, so its order is the commit order.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.reset_seq IS 'The step of the last change too wide to list per thread (a mailbox''s name or addresses, a folder''s purpose); a delta cursor before it is answered with reset.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.epoch IS 'Names this counter in a delta cursor, so a cursor of a recreated database is not read against it.';
+
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_pkey PRIMARY KEY (tenant_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_change_counters TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_thread_changes
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_changes (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    thread_id uuid NOT NULL,
+    seq bigint NOT NULL
+);
+
+COMMENT ON TABLE public.mail_thread_changes IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_changes.thread_id IS 'A mail thread id, live, merged away or deleted: no foreign key, so the row outlives its thread and a delta reports it removed.';
+
+COMMENT ON COLUMN public.mail_thread_changes.seq IS 'mail_thread_change_counters.seq of the last committed transaction that changed the thread''s list row.';
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_pkey PRIMARY KEY (tenant_id, thread_id);
+
+CREATE INDEX mail_thread_changes_tenant_seq_idx ON public.mail_thread_changes USING btree (tenant_id, seq);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_changes TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_threads
@@ -2424,6 +2545,35 @@ ALTER TABLE ONLY public.project_kept_dates
     ADD CONSTRAINT project_kept_dates_pkey PRIMARY KEY (tenant_id, item_id);
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_kept_dates TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- project_mail_signals
+-- ----------------------------------------------------------------------------------------------------
+
+-- What marks a mail thread as a project's, besides the project's people: written only by the mail module
+-- (`mail/projectMailSignalsStore.ts`), read by the signal match of the preview, the assignment and live triage.
+CREATE TABLE public.project_mail_signals (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    project_item_id uuid NOT NULL,
+    domains text[] DEFAULT '{}'::text[] NOT NULL,
+    addresses text[] DEFAULT '{}'::text[] NOT NULL,
+    keywords text[] DEFAULT '{}'::text[] NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_mail_signals_counts_check CHECK (((cardinality(domains) <= 50) AND (cardinality(addresses) <= 100) AND (cardinality(keywords) <= 50)))
+);
+
+COMMENT ON TABLE public.project_mail_signals IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.project_mail_signals.domains IS 'Lower-case hosts without www.; a sender or recipient at the host or a subdomain of it matches. A freemail host is kept but never matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.addresses IS 'Lower-case, trimmed e-mail addresses; a sender or recipient with one of them matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.keywords IS 'Trimmed words or phrases matched against the message search text with the Czech ending rule of mail/mailSignalKeywords.ts.';
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_pkey PRIMARY KEY (tenant_id, project_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_mail_signals TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_mcp_grants
@@ -3441,6 +3591,9 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3473,6 +3626,12 @@ ALTER TABLE ONLY public.mail_thread_aliases
 
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_to_thread_fkey FOREIGN KEY (tenant_id, to_thread_id) REFERENCES public.mail_threads(tenant_id, id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.mail_threads
     ADD CONSTRAINT mail_threads_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3533,6 +3692,9 @@ ALTER TABLE ONLY public.project_mcp_grants
 
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_mcp_tool_registration_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_tool_registration_id) REFERENCES public.mcp_tool_registrations(tenant_id, id);
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3789,6 +3951,9 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_message_item_id_tenant_fkey FOREIGN KEY (tenant_id, message_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -3806,6 +3971,9 @@ ALTER TABLE ONLY public.person_email_index
 
 ALTER TABLE ONLY public.project_kept_dates
     ADD CONSTRAINT project_kept_dates_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.recording_requests
     ADD CONSTRAINT recording_requests_file_item_id_tenant_fkey FOREIGN KEY (tenant_id, file_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -4100,6 +4268,12 @@ CREATE POLICY tenant_isolation ON public.mail_folder_sync_state AS RESTRICTIVE U
 
 CREATE POLICY tenant_rows ON public.mail_folder_sync_state USING (true) WITH CHECK (true);
 
+ALTER TABLE public.mail_message_content_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_message_content_cache AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_message_content_cache USING (true) WITH CHECK (true);
+
 ALTER TABLE public.mail_message_flag_sync_state ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON public.mail_message_flag_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
@@ -4135,6 +4309,18 @@ ALTER TABLE public.mail_thread_aliases ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.mail_thread_aliases AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mail_thread_aliases USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_change_counters ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_change_counters AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_change_counters USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_changes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_changes AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_changes USING (true) WITH CHECK (true);
 
 ALTER TABLE public.mail_threads ENABLE ROW LEVEL SECURITY;
 
@@ -4201,6 +4387,12 @@ ALTER TABLE public.project_kept_dates ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.project_kept_dates AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.project_kept_dates USING (true) WITH CHECK (true);
+
+ALTER TABLE public.project_mail_signals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.project_mail_signals AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.project_mail_signals USING (true) WITH CHECK (true);
 
 ALTER TABLE public.project_mcp_grants ENABLE ROW LEVEL SECURITY;
 

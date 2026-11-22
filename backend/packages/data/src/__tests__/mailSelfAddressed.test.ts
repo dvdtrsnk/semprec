@@ -24,7 +24,6 @@ import {
 import type { MailTransport } from "../mail/mailTransport.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
-import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 import { sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
@@ -105,7 +104,6 @@ describe("self-addressed mail of an IMAP account (Purelymail end-to-end findings
       await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "app-password" });
       return mailbox.id;
     });
-    const limiter = createImapConnectionLimiter();
     const sync = async () => {
       const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
       await handleSyncMailAccountTask(
@@ -114,8 +112,6 @@ describe("self-addressed mail of an IMAP account (Purelymail end-to-end findings
         { createImapClient: async () => imap.client() },
         moduleIds,
         noStorage,
-        undefined,
-        limiter,
       );
     };
     // The server delivers the self-addressed message to INBOX; the saver keeps the Sent copy, as `\Seen`.

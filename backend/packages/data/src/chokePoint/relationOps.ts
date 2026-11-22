@@ -414,6 +414,7 @@ export async function createRelationWithClient(
     await runRelationEdgeChangedHooks({
       client,
       op: "create",
+      repeated: !inserted,
       relationDefinitionId: edge.relationDefinitionId,
       propertyId: edgeContext.property.id,
       itemA: edge.itemA,

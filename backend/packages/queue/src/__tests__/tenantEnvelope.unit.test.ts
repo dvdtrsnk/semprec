@@ -33,6 +33,7 @@ const SYSTEM_TASKS = [
   "observabilityCheckSystem",
   "mcpRunCredentialExpirySweep",
   "mailOauthStatesSweep",
+  "mailContentCacheSweep",
   "agentRunEventsRetention",
   "sempProblemsPrune",
   "queueFailedJobsPrune",

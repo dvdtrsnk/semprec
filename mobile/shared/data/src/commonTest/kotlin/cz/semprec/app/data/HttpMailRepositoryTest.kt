@@ -10,6 +10,7 @@ import cz.semprec.app.domain.MailLinkKind
 import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailSummary
+import cz.semprec.app.domain.MailThreadChanges
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
@@ -63,10 +64,13 @@ private const val DETAIL = """{"threadId":"$THREAD","subject":"Re: Nabídka","la
       {"emailId":"e1","messageId":"m-1","mailboxId":"m1","folderPurpose":"inbox","isOwn":false,
        "from":{"name":"Petr Novák","address":"petr@novak.cz"},"to":[{"name":"","address":"me@x.cz"}],"cc":[],"replyTo":[],
        "date":"2026-10-20T12:41:00.000000Z","read":false,"flagged":false,"bodyHtml":"<p>Ahoj</p>","bodyText":"Ahoj",
-       "attachments":[{"fileItemId":"f1","blobId":"b1","filename":"nabidka.pdf","contentType":"application/pdf",
-         "byteSize":840,"project":{"id":"pr1","name":"Web"},"links":{"project":{"valueKind":"derived","sources":[]}}}]},
+       "contentState":"full","preview":"Ahoj",
+       "attachments":[{"attachmentId":"a1","stored":true,"fileItemId":"f1","blobId":"b1","filename":"nabidka.pdf",
+         "contentType":"application/pdf","byteSize":840,"project":{"id":"pr1","name":"Web"},
+         "links":{"project":{"valueKind":"derived","sources":[]}}}]},
       {"emailId":"e2","messageId":"m-2","mailboxId":"m1","folderPurpose":"drafts","isOwn":true,"from":null,
-       "to":[],"cc":[],"replyTo":[],"date":null,"read":true,"flagged":false,"bodyHtml":"","bodyText":"","attachments":[]}],
+       "to":[],"cc":[],"replyTo":[],"date":null,"read":true,"flagged":false,"bodyHtml":"","bodyText":"",
+       "contentState":"full","preview":null,"attachments":[]}],
     "tasks":[{"id":"t1","name":"Poslat nabídku","date":"2026-10-23","status":"notDone",
        "project":{"id":"pr1","state":"trashed"},
        "people":[{"id":"pp1","state":"active","name":"Petr"},{"id":"pp2","state":"trashed"}],
@@ -129,6 +133,68 @@ class HttpMailRepositoryTest {
         assertEquals(MailNamedRef("pr1", "Web"), thread.project)
         assertEquals("Novák Web", thread.company?.name)
         assertTrue(thread.unread && thread.hasAttachment && thread.hasSempDraft && !thread.flagged)
+    }
+
+    @Test
+    fun theListReadsTheChangesCursorOfItsPage() = runTest {
+        val server =
+            server { ok(THREADS.replace("\"nextCursor\":\"abc\"", "\"nextCursor\":null,\"changesCursor\":\"k1\"")) }
+
+        val page = assertIs<RepositoryResult.Content<MailThreadPage>>(server.mail().threads(MailThreadQuery())).value
+
+        assertEquals("k1", page.changesCursor)
+        assertNull(page.nextCursor)
+    }
+
+    @Test
+    fun theChangesSendTheViewAndTheCursorAndMapTheRowsAndTheRemovedIds() = runTest {
+        val server = server { request ->
+            if (request.url.encodedPath != "/api/mail/threads/changes") return@server null
+            ok(
+                THREADS.replace("\"nextCursor\":\"abc\"", "\"cursor\":\"k2\",\"removed\":[\"gone\"],\"reset\":false"),
+            )
+        }
+        val query = MailThreadQuery(
+            box = MailBox.SEMP_DRAFTS,
+            mailboxId = "m1",
+            folderId = "f1",
+            areaId = "ar1",
+            projectId = "pr1",
+            unreadOnly = true,
+            search = "ignored",
+            cursor = "ignored",
+        )
+
+        val answer = server.mail().threadChanges(query, "k1")
+
+        val changes = assertIs<RepositoryResult.Content<MailThreadChanges>>(answer).value
+        val sent = server.requests.single()
+        assertEquals(HttpMethod.Get, sent.method)
+        val expected = mapOf(
+            "box" to "sempDrafts", "mailboxId" to "m1", "folderId" to "f1", "areaId" to "ar1", "projectId" to "pr1",
+            "unread" to "true", "since" to "k1",
+        )
+        assertEquals(expected, sent.url.parameters.names().associateWith { sent.query(it).orEmpty() })
+        assertEquals(MailThreadChanges("k2", changes.threads, listOf("gone"), reset = false), changes)
+        assertEquals(THREAD, changes.threads.single().threadId)
+    }
+
+    @Test
+    fun aResetOfTheChangesCarriesOnlyTheNewCursor() = runTest {
+        val server = server { ok("""{"cursor":"k3","threads":[],"removed":[],"reset":true}""") }
+
+        val answer = server.mail().threadChanges(MailThreadQuery(), "old")
+
+        assertEquals(
+            RepositoryResult.Content(MailThreadChanges("k3", emptyList(), emptyList(), reset = true)),
+            answer,
+        )
+        assertEquals(
+            mapOf("box" to "inbox", "since" to "old"),
+            server.requests.single().let { sent ->
+                sent.url.parameters.names().associateWith { sent.query(it).orEmpty() }
+            }
+        )
     }
 
     @Test
@@ -209,6 +275,8 @@ class HttpMailRepositoryTest {
         val file = first.attachments.single()
         assertEquals("nabidka.pdf", file.filename)
         assertEquals("Web", file.project?.name)
+        assertEquals(Triple("a1", "b1", "f1"), Triple(file.attachmentId, file.blobId, file.fileItemId))
+        assertTrue(file.stored)
         assertEquals(MailLinkKind.DERIVED, file.projectLink?.kind)
         assertNull(detail.messages.last().from)
         val task = detail.tasks.single()

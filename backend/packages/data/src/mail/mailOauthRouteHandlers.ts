@@ -12,6 +12,7 @@ import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import type { ItemRow } from "../types.js";
 import {
+  clearMailSyncFailure,
   defaultSyncModeForProvider,
   ensureMailAccountSyncState,
   findMailboxByProviderAccountAddress,
@@ -514,11 +515,11 @@ interface Reauthorization {
 }
 
 /**
- * Replaces an existing mailbox's refresh token and its recorded granted scopes, clears a calendar sync status that
- * waits for a new sign-in and queues its mail sync and, with Calendars on, its calendar sync, checking
- * `reauthorizationProvider` and the signed-in address under this transaction's locks. The sync state row is locked
- * before the Mailboxes item, the order the sync job takes them; an unseeded mailbox gets its sync state row here,
- * before either lock.
+ * Replaces an existing mailbox's refresh token and its recorded granted scopes, clears its mail sync failure record
+ * and a calendar sync status that waits for a new sign-in, and queues its mail sync and, with Calendars on, its
+ * calendar sync, checking `reauthorizationProvider` and the signed-in address under this transaction's locks. The
+ * sync state row is locked before the Mailboxes item, the order the sync job takes them; an unseeded mailbox gets its
+ * sync state row here, before either lock.
  */
 async function replaceMailboxCredential(client: PoolClient, reauthorization: Reauthorization): Promise<void> {
   const { mailboxItemId, provider } = reauthorization;
@@ -547,6 +548,8 @@ async function replaceMailboxCredential(client: PoolClient, reauthorization: Rea
     plaintext: reauthorization.refreshToken,
   });
   await recordGrantedOauthScopes(client, mailboxItemId, reauthorization.grantedScopes);
+  // A refused sign-in stops the account's passes and its live sync until the failure kind is cleared.
+  await clearMailSyncFailure(client, mailboxItemId);
   await clearCalendarSyncCredentialRefusal(client, mailboxItemId);
   await enqueueMailAccountSync(client, mailboxItemId);
   if (areCalendarsEnabled(mailbox.properties)) await enqueueCalendarAccountSync(client, mailboxItemId);

@@ -336,6 +336,7 @@ export {
   type MailServerSettingsInput,
 } from "./mail/mailServerSettingsStore.js";
 export {
+  classifyImapConnectFailure,
   createSmtpTransporter,
   openImapConnection,
   openImapFlow,
@@ -357,6 +358,7 @@ export {
   type ImapIdleFlowOptions,
 } from "./mail/imapIdleClient.js";
 export { imapConnectionLimitForProvider, sharedImapConnectionLimiter } from "./mail/imapConnectionLimiter.js";
+export { sharedImapSessionPool, type ImapSessionPool } from "./mail/imapSessionPool.js";
 export { getDecryptedCredential } from "./credentials/externalCredentialsStore.js";
 export {
   MailConnectionLimitError,
@@ -409,6 +411,8 @@ export { GOOGLE_TOKEN_URL, MICROSOFT_TOKEN_URL } from "./mail/oauthTokenExchange
 export { GmailRestClient } from "./mail/gmailRestClient.js";
 export { GraphRestClient } from "./mail/graphRestClient.js";
 export type { MailSyncAdapterFactory } from "./mail/mailSyncJob.js";
+export type { MailContentProviders, MailProviderAccess } from "./mail/mailMessageContent.js";
+export { bindMailAgentRemoteSearch } from "./mail/mailRemoteSearch.js";
 export type { MailSendAdapterFactory } from "./mail/send.js";
 export {
   createImapMailFlagWritebackAdapter,

@@ -105,6 +105,8 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
 
     const { itemId } = await withTransaction(pool, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: emailsId,
         filesDatabaseId: filesId,
         folderRelationPropertyId: folderProperty.id,
@@ -172,6 +174,8 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
     const second = await withTransaction(pool, async (client) => {
       const row = await createItemWithClient(client, { databaseId: emailsId, properties: {} });
       await upsertMailMessageMeta(client, {
+        arrival: "live",
+        contentState: "full",
         itemId: row.id,
         messageId: "<second@example.com>",
         mailboxItemId,
@@ -210,6 +214,8 @@ describe("mailMessageFlagsItemUpdateHook, run through the choke point's registry
     const emailsId = await databaseIdFor("emails");
     const item = await chokePoint.createItem({ databaseId: emailsId, properties: {} });
     await upsertMailMessageMeta(pool, {
+      arrival: "live",
+      contentState: "full",
       itemId: item.id,
       messageId: "<legacy@example.com>",
       mailboxItemId: null,

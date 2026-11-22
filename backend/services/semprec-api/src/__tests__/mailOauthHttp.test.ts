@@ -32,6 +32,9 @@ import { logger } from "../logger.js";
 import { createMailOauthCallbackRequestListener } from "../mailOauthCallbackHandler.js";
 import { createClientIpThrottle } from "../clientIpThrottle.js";
 
+/** These tests host no IMAP sync session to close. */
+const keptNoImapSessions = { closeAccount: async () => {} };
+
 /**
  * Mail OAuth through the production composition: the real dispatcher, the manifest routes behind the REST adapter
  * and the hand-wired public callback. Handler branches are covered by the data package's `mailOauthRoutes.test.ts`;
@@ -66,7 +69,7 @@ const outboundHttp: typeof fetch = async (input, init) => {
   return route(init);
 };
 
-const liveSync = createMailLiveSyncControl();
+const liveSync = createMailLiveSyncControl(keptNoImapSessions);
 
 const dependencies: CustomRouteDependencies = {
   oauth: {
@@ -644,7 +647,7 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
     const address = `${randomUUID()}@gmail.com`;
     const mailboxId = await hostedMailbox(address);
     const unbound = await listen({
-      customRouteDependencies: { ...dependencies, mailLiveSync: createMailLiveSyncControl().control },
+      customRouteDependencies: { ...dependencies, mailLiveSync: createMailLiveSyncControl(keptNoImapSessions).control },
     });
     const logged = vi.spyOn(logger, "error");
     try {

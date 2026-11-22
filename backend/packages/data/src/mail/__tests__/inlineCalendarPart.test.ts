@@ -142,7 +142,11 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         yield {
           seq: 1,
           uid: 1,
-          envelope: { messageId: "<imap-invite@example.test>", from: [{ address: "olga@example.test" }] },
+          envelope: {
+            messageId: "<imap-invite@example.test>",
+            from: [{ address: "olga@example.test" }],
+            date: new Date(),
+          },
           bodyStructure: {
             type: "multipart/alternative",
             childNodes: [
@@ -227,12 +231,14 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
             ),
         ),
       );
-      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1");
+      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1", "full");
       if (!fetched) throw new Error("The stubbed Gmail message was not returned");
       expect(fetched.message.attachments.map((entry) => entry.contentType)).toEqual(["text/calendar"]);
 
       await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: setup.emailsId,
           filesDatabaseId: setup.filesId,
           folderRelationPropertyId: setup.folderRelationPropertyId,

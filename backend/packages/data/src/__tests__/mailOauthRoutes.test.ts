@@ -23,11 +23,15 @@ import { logger as mailLogger } from "../mail/logger.js";
 import {
   ensureMailAccountSyncState,
   findMailboxByProviderAccountAddress,
+  getMailAccountSyncState,
   getProviderAccountAddress,
   recordGmailActivity,
+  recordGmailSyncCursor,
   recordGmailWatchEmailAddress,
   recordGraphActivity,
+  recordGraphSyncCursor,
   recordProviderAccountAddress,
+  recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
 import { createMailLiveSyncRoot, type MailLiveSyncLifecycleFactory } from "../mail/mailLiveSyncRoot.js";
 import { createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
@@ -46,6 +50,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -1450,10 +1455,11 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     const mailboxId = await existingMailbox(caller.tenantId);
     await inTenant(caller.tenantId, async (client) => {
       const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+      await recordGmailSyncCursor(client, mailboxId, { historyId: "4711", listingPhase: null, listingPageToken: null });
       await recordGmailActivity(client, {
         itemId: mailboxId,
-        historyId: "4711",
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+        completesInitialSync: true,
       });
       await updateItemWithClient(
         client,
@@ -1495,18 +1501,56 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     expect(s256(provider.calls[0]?.form?.get("code_verifier") ?? "")).toBe(url.searchParams.get("code_challenge"));
   });
 
+  it("clears the refused sign-in before the queued sync and the restart, so both reach the provider again", async () => {
+    const mailboxId = await existingMailbox(caller.tenantId);
+    await inTenant(caller.tenantId, (client) =>
+      recordSyncError(client, mailboxId, "The refresh token was revoked", "reauthorization"),
+    );
+    const failureRecord = () =>
+      inTenant(caller.tenantId, async (client) => {
+        const state = await getMailAccountSyncState(client, mailboxId);
+        return {
+          lastError: state?.lastError,
+          lastFailureKind: state?.lastFailureKind,
+          failingSince: state?.failingSince,
+          nextExpectedActivityAt: state?.nextExpectedActivityAt,
+        };
+      });
+    expect((await failureRecord()).lastFailureKind).toBe("reauthorization");
+    let seenAtRestart: Awaited<ReturnType<typeof failureRecord>> | undefined;
+    const liveSync = liveSyncSpy(async () => {
+      seenAtRestart = await failureRecord();
+    });
+
+    const result = await completeReauthorization(
+      stateOf(await reauthorize(mailboxId)),
+      fakeProvider(googleRoutes()),
+      liveSync.control,
+    );
+
+    expect(result).toEqual({ status: 200, body: { mailboxId } });
+    const cleared = { lastError: null, lastFailureKind: null, failingSince: null, nextExpectedActivityAt: null };
+    expect(await failureRecord()).toEqual(cleared);
+    expect(seenAtRestart).toEqual(cleared);
+    expect((await storedMailbox(caller.tenantId, mailboxId)).jobs).toEqual([`mail-account-sync:${mailboxId}`]);
+  });
+
   it("replaces the refresh token of an Outlook mailbox and keeps its delta link", async () => {
     const mailboxId = await existingMailbox(caller.tenantId, {
       provider: "outlook",
       address: "work.user@contoso.com",
     });
-    await inTenant(caller.tenantId, (client) =>
-      recordGraphActivity(client, {
-        itemId: mailboxId,
+    await inTenant(caller.tenantId, async (client) => {
+      await recordGraphSyncCursor(client, mailboxId, {
         deltaLink: "https://graph.microsoft.com/v1.0/me/messages/delta?$deltatoken=kept",
+        nextLink: null,
+      });
+      await recordGraphActivity(client, {
+        itemId: mailboxId,
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
-      }),
-    );
+        completesInitialSync: true,
+      });
+    });
     const provider = fakeProvider(microsoftRoutes({ mail: "Work.User@Contoso.com" }));
     const liveSync = liveSyncSpy();
 
@@ -1947,7 +1991,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
         transport: {
           async registerWatch(_mailboxItemId, credential) {
             registered.push(credential);
-            return { historyId: "1", expiresAt: new Date("2031-01-01T00:00:00Z") };
+            return { expiresAt: new Date("2031-01-01T00:00:00Z") };
           },
           pull: async () => [],
           acknowledge: async () => undefined,
@@ -2074,13 +2118,8 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     const presented: string[] = [];
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "2",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
-      listAllMessageIds: async () => ["new-message"],
+      listHistorySince: async () => gmailHistory("2"),
+      listMessageIds: recentGmailListing(["new-message"]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({
         id: "new-message",

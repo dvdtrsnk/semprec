@@ -1,7 +1,6 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.MailAddress
-import cz.semprec.app.domain.MailAttachment
 import cz.semprec.app.domain.MailDraft
 import cz.semprec.app.domain.MailDraftFields
 import cz.semprec.app.domain.MailMessage
@@ -16,25 +15,6 @@ private const val TASK_DONE = "done"
 internal fun MailMessage.isDraft() = folderPurpose == DRAFTS
 
 internal fun MailAddress.label() = name.ifBlank { address }
-
-private fun MailAttachment.toItem() = MailAttachmentItem(
-    filename = filename,
-    contentType = contentType,
-    byteSize = byteSize,
-    project = MailLinkedValue(project?.name, projectLink.toInfo()),
-)
-
-private fun MailMessage.toItem(expanded: Boolean) = MailMessageItem(
-    emailId = emailId,
-    fromName = from?.label().orEmpty(),
-    fromAddress = from?.address.orEmpty(),
-    own = own,
-    toNames = to.map { it.label() },
-    date = date,
-    bodyText = bodyText,
-    attachments = attachments.map { it.toItem() },
-    expanded = expanded,
-)
 
 private fun MailThreadTask.toItem() = MailTaskItem(
     id = id,
@@ -52,16 +32,20 @@ internal fun MailThreadDetail.replySource(): MailMessage? {
     return sent.lastOrNull { !it.own } ?: sent.lastOrNull()
 }
 
+/** The messages the screen shows: every one but the drafts. */
+internal fun MailThreadDetail.shownMessages(): List<MailMessage> = messages.filterNot { it.isDraft() }
+
 /** The ids of the messages the screen shows open: the last one that is not a draft. */
 internal fun MailThreadDetail.defaultExpanded(): Set<String> =
     messages.lastOrNull { !it.isDraft() }?.let { setOf(it.emailId) }.orEmpty()
 
 internal fun MailThreadDetail.toState(
     expanded: Set<String>,
+    fetches: MailThreadFetches,
     draft: MailSempDraft?,
     previous: MailThreadState,
 ): MailThreadState {
-    val shown = messages.filterNot { it.isDraft() }
+    val shown = shownMessages()
     val purposes = shown.mapNotNull { it.folderPurpose }
     return previous.copy(
         phase = MailThreadPhase.CONTENT,
@@ -76,7 +60,7 @@ internal fun MailThreadDetail.toState(
         flagged = flagged,
         company = MailLinkedValue(company?.name, companyLink.toInfo()),
         project = MailLinkedValue(project?.name, projectLink.toInfo()),
-        messages = shown.map { it.toItem(it.emailId in expanded) },
+        messages = messageItems(expanded, fetches),
         tasks = tasks.map { it.toItem() },
         draft = draft,
         archivedOrTrashed = purposes.isNotEmpty() && purposes.size == shown.size &&

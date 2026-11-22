@@ -254,7 +254,7 @@ describe("the mail.draft.send agent tool (issue gh-1949)", () => {
       expect(names(await toolsFor(tenant, inboxRun, inbox.ownerProjectItemId))).toEqual([]);
       expect(
         names(await toolsFor(tenant, mailRun, tenant.mailProjectId, new Set(["mail.read", "mail.draft"]))),
-      ).toEqual(["mail.draft.create", "mail.draft.update", "mail.thread.get"]);
+      ).toEqual(["mail.draft.create", "mail.draft.update", "mail.search", "mail.thread.get"]);
       expect(names(await toolsFor(tenant, mailRun, tenant.mailProjectId, new Set(["mail.send"])))).toEqual([
         "mail.draft.send",
       ]);

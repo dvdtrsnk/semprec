@@ -1508,6 +1508,8 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
           mailboxItemId: null,
           messageId: `<${randomUUID()}@example.test>`,
           envelope: { from: { address: "sender@example.test" } },
+          arrival: "live",
+          contentState: "full",
         }),
       );
       const heartbeat = await withTransaction(pool, (client) =>

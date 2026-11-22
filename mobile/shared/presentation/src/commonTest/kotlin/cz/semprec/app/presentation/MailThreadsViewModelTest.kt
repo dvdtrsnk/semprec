@@ -25,7 +25,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
         start: MailListStart = MailListStart(),
-    ) = MailViewModelFactory(mail, ScriptedMailDraftRepository(), mailboxes).threadsViewModel(start)
+    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail).threadsViewModel(start)
 
     @Test fun `starts loading and publishes the rows the server listed`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedMailRepository(threads = MailCall(mailContent(mailPage(next = "c1")))))
@@ -73,13 +73,85 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
                 MailThreadQuery(),
                 MailThreadQuery(unreadOnly = true),
                 MailThreadQuery(box = MailBox.FLAGGED),
-                MailThreadQuery(search = "from:petr"),
-                MailThreadQuery(search = "from:petr", mailboxId = "m1"),
             ),
             mail.threads.asked,
         )
+        assertEquals(listOf("from:petr" to null, "from:petr" to "m1"), mail.searches.asked)
         vm.close()
     }
+
+    @Test fun `a search lists what the mail search found with what the providers added`() = runTest(dispatcher) {
+        val found = mailSearch(mailThread("t7"), mailThread("t8"), failed = listOf("m1", "m9"), unindexed = 12)
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage(next = "c1"))),
+            searches = MailCall(mailContent(found)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        assertNull(vm.state.value.remoteSearch)
+        vm.onAction(MailThreadsAction.Search("faktura"))
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+        runCurrent()
+        val state = vm.state.value
+        assertEquals(MailThreadsPhase.CONTENT, state.phase)
+        assertEquals(listOf("t7", "t8"), state.threads.map { it.threadId })
+        assertFalse(state.hasMore)
+        assertEquals(
+            MailRemoteSearchSummary(12, listOf(MailMailboxChip("m1", "Gmail"), MailMailboxChip("m9", ""))),
+            state.remoteSearch,
+        )
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(1, mail.threads.count)
+        vm.onAction(MailThreadsAction.Search(""))
+        runCurrent()
+        assertNull(vm.state.value.remoteSearch)
+        assertEquals(2, mail.threads.count)
+        vm.close()
+    }
+
+    @Test fun `a failed provider search names its mailbox once the mailboxes are known`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mailboxes = ScriptedMailboxRepository(
+            list = MailCall(answersLate(gate, RepositoryResult.Content(listOf(mailAccount("m2"))))),
+        )
+        val mail = ScriptedMailRepository(searches = MailCall(mailContent(mailSearch(failed = listOf("m2")))))
+        val vm = viewModel(mail, mailboxes)
+        vm.onAction(MailThreadsAction.Search("x"))
+        runCurrent()
+        assertEquals(listOf(MailMailboxChip("m2", "")), vm.state.value.remoteSearch?.failedAccounts)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(MailMailboxChip("m2", "Gmail")), vm.state.value.remoteSearch?.failedAccounts)
+        vm.close()
+    }
+
+    @Test fun `a failed search is an error and a failed refresh of a search keeps what it found`() =
+        runTest(dispatcher) {
+            val mail = ScriptedMailRepository(
+                searches = MailCall(
+                    mailFailure(FailureKind.UNAVAILABLE),
+                    mailContent(mailSearch(unindexed = 3)),
+                    mailFailure(FailureKind.UNAVAILABLE),
+                ),
+            )
+            val vm = viewModel(mail)
+            runCurrent()
+            vm.onAction(MailThreadsAction.Search("x"))
+            runCurrent()
+            assertEquals(MailThreadsPhase.ERROR, vm.state.value.phase)
+            assertEquals(FailureKind.UNAVAILABLE, vm.state.value.failure)
+            vm.onAction(MailThreadsAction.Retry)
+            runCurrent()
+            assertEquals(3, vm.state.value.remoteSearch?.unindexed)
+            vm.onAction(MailThreadsAction.Refresh)
+            runCurrent()
+            assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+            assertTrue(vm.state.value.actionFailed)
+            assertEquals(3, vm.state.value.remoteSearch?.unindexed)
+            assertEquals(3, mail.searches.count)
+            vm.close()
+        }
 
     @Test fun `choosing the chosen mailbox again clears it and an unchanged search loads nothing`() =
         runTest(dispatcher) {
@@ -232,6 +304,41 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertFalse(vm.state.value.threads.single().unread)
         assertEquals(listOf("a" to true), mail.read.asked)
+        vm.close()
+    }
+
+    @Test fun `a read mark stays when the next page comes and so does one set while it loaded`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mail = ScriptedMailRepository(
+            threads = MailCall(
+                mailContent(mailPage(mailThread("a", unread = true), mailThread("b", unread = true), next = "c1")),
+                mailContent(mailPage(mailThread("c", unread = true), next = "c2")),
+                answersLate(gate, RepositoryResult.Content(mailPage(mailThread("d", unread = true)))),
+            ),
+            read = MailCall(mailDone(false), mailDone(false)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("a"))
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(
+            listOf("a" to false, "b" to true, "c" to true),
+            vm.state.value.threads.map { it.threadId to it.unread },
+        )
+
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("b"))
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(
+            listOf("a" to false, "b" to false, "c" to true, "d" to true),
+            vm.state.value.threads.map { it.threadId to it.unread },
+        )
         vm.close()
     }
 
@@ -411,7 +518,8 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         val mail = ScriptedMailRepository(
             threads = MailCall(mailContent(mailPage()), mailContent(mailPage(mailThread(id = "t2")))),
         )
-        val vm = MailViewModelFactory(mail, ScriptedMailDraftRepository(), ScriptedMailboxRepository(), changes)
+        val drafts = ScriptedMailDraftRepository()
+        val vm = MailViewModelFactory(mail, mail, drafts, ScriptedMailboxRepository(), mail, changes)
             .threadsViewModel(MailListStart())
         runCurrent()
         changes.emit(Unit)

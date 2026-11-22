@@ -254,6 +254,16 @@ const KEYS: ItemKey[] = [
     insert: (c, id) => c.query("INSERT INTO mail_folder_sync_state (item_id) VALUES ($1)", [id]),
   },
   {
+    table: "mail_message_content_cache",
+    column: "item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query(
+        "INSERT INTO mail_message_content_cache (item_id, body_text, expires_at) VALUES ($1, 'probe', now() + interval '1 day')",
+        [id],
+      ),
+  },
+  {
     table: "mail_message_flag_sync_state",
     column: "message_item_id",
     behaviour: "cascade",
@@ -303,6 +313,12 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "cascade",
     insert: (c, id) => c.query("INSERT INTO project_kept_dates (item_id, kept_date) VALUES ($1, '{}')", [id]),
+  },
+  {
+    table: "project_mail_signals",
+    column: "project_item_id",
+    behaviour: "cascade",
+    insert: (c, id) => c.query("INSERT INTO project_mail_signals (project_item_id) VALUES ($1)", [id]),
   },
   {
     table: "recording_requests",
@@ -355,10 +371,10 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "noAction",
     insert: (c, id) =>
-      c.query("INSERT INTO mail_message_meta (item_id, message_id) VALUES ($1, $2)", [
-        id,
-        `<${randomUUID()}@example.com>`,
-      ]),
+      c.query(
+        "INSERT INTO mail_message_meta (item_id, message_id, arrival, content_state) VALUES ($1, $2, 'live', 'full')",
+        [id, `<${randomUUID()}@example.com>`],
+      ),
   },
   {
     table: "value_link_sources",

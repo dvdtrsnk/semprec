@@ -39,7 +39,19 @@ internal data class MailThreadDto(
 )
 
 @Serializable
-internal data class MailThreadPageDto(val threads: List<MailThreadDto> = emptyList(), val nextCursor: String? = null)
+internal data class MailThreadPageDto(
+    val threads: List<MailThreadDto> = emptyList(),
+    val nextCursor: String? = null,
+    val changesCursor: String? = null,
+)
+
+@Serializable
+internal data class MailThreadChangesDto(
+    val cursor: String,
+    val threads: List<MailThreadDto> = emptyList(),
+    val removed: List<String> = emptyList(),
+    val reset: Boolean,
+)
 
 @Serializable
 internal data class MailFacetItemDto(val id: String, val count: Int = 0, val areaId: String? = null)
@@ -68,12 +80,25 @@ internal data class MailAttachmentLinksDto(val project: ValueLinkDto? = null)
 
 @Serializable
 internal data class MailAttachmentDto(
+    val attachmentId: String,
     val filename: String,
     val contentType: String = "",
     val byteSize: Long = 0,
+    val stored: Boolean = false,
+    val blobId: String? = null,
+    val fileItemId: String? = null,
     val project: MailNamedDto? = null,
     val links: MailAttachmentLinksDto = MailAttachmentLinksDto(),
 )
+
+@Serializable
+internal enum class MailContentStateDto {
+    @SerialName("full") FULL,
+
+    @SerialName("cached") CACHED,
+
+    @SerialName("remote") REMOTE,
+}
 
 @Serializable
 internal data class MailMessageDto(
@@ -86,6 +111,8 @@ internal data class MailMessageDto(
     val cc: List<MailAddressDto> = emptyList(),
     val date: String? = null,
     val bodyText: String = "",
+    val contentState: MailContentStateDto = MailContentStateDto.FULL,
+    val preview: String? = null,
     val read: Boolean = false,
     val attachments: List<MailAttachmentDto> = emptyList(),
 )

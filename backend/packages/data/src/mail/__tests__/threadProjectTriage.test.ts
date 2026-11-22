@@ -25,6 +25,8 @@ import { reindexPersonEmails } from "../personEmailIndexStore.js";
 import { createCoreTaskList } from "../../worker.js";
 import type { BlobStorageWriter } from "../blobStorage.js";
 import { ingestEmailMessage } from "../ingest.js";
+import { createProjectMailSignalsReplaceRouteHandler } from "../projectMailSignalsRoutes.js";
+import type { MailArrival } from "../mailArrival.js";
 import {
   enqueueThreadProjectTriage,
   handleMailTriageThreadProject,
@@ -51,7 +53,13 @@ interface World {
   tenant: string;
   databases: Record<string, string>;
   properties: Record<
-    "threadProject" | "threadCompany" | "emailFolder" | "emailAttachments" | "personCompanies" | "projectCompany",
+    | "threadProject"
+    | "threadCompany"
+    | "emailFolder"
+    | "emailAttachments"
+    | "personCompanies"
+    | "projectCompany"
+    | "projectPeople",
     string
   >;
   mailboxId: string;
@@ -73,6 +81,7 @@ interface IngestOptions {
   bodyHtml?: string;
   folder?: "inbox" | "sent";
   inReplyTo?: string;
+  arrival?: MailArrival;
 }
 
 let admin: Pool;
@@ -117,6 +126,7 @@ async function buildWorld(): Promise<World> {
       emailAttachments: await propertyId("emails", "attachments"),
       personCompanies: await propertyId("people", "companies"),
       projectCompany: await propertyId("projects", "company"),
+      projectPeople: await propertyId("projects", "people"),
     };
     const folder = (client: PoolClient, name: string, purpose: string) =>
       createItemWithClient(
@@ -145,6 +155,8 @@ async function ingest(options: IngestOptions = {}, target = world): Promise<Test
     () =>
       withTransaction(data, async (client) => {
         const result = await ingestEmailMessage(client, {
+          arrival: options.arrival ?? "live",
+          contentState: "full",
           emailsDatabaseId: databaseId("emails", target),
           filesDatabaseId: databaseId("files", target),
           folderRelationPropertyId: target.properties.emailFolder,
@@ -309,6 +321,20 @@ describe("the thread project triage task (issue gh-1872)", () => {
       expect(delay).toBeLessThanOrEqual(THREAD_PROJECT_TRIAGE_DELAY_MS + 30_000);
     });
 
+    it("queues no task for the first inbound message of a backfilled thread, but still its link propagation", async () => {
+      const propagationJobs = async () => {
+        const { rows } = await admin.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = $1",
+          [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE],
+        );
+        return rows[0]?.n ?? -1;
+      };
+      const before = await propagationJobs();
+      await ingest({ arrival: "backfill" });
+      expect(await triageJobs()).toEqual([]);
+      expect(await propagationJobs()).toBeGreaterThan(before);
+    });
+
     it("queues nothing for a later message of a thread that has its first inbound message", async () => {
       const first = await ingest({ messageId: "<first@example.test>" });
       await ingest({ messageId: "<second@example.test>", inReplyTo: "<first@example.test>" });
@@ -326,6 +352,8 @@ describe("the thread project triage task (issue gh-1872)", () => {
         inTenant(() =>
           withTransaction(data, async (client) => {
             await ingestEmailMessage(client, {
+              arrival: "live",
+              contentState: "full",
               emailsDatabaseId: databaseId("emails"),
               filesDatabaseId: databaseId("files"),
               folderRelationPropertyId: world.properties.emailFolder,
@@ -777,6 +805,111 @@ describe("the thread project triage task (issue gh-1872)", () => {
 
       expect(await projectOf(thread.threadItemId)).toEqual([]);
       expect(events.filter((event) => event.scope === "mailThread")).toEqual([]);
+    });
+  });
+
+  describe("the project mail signals, before the model", () => {
+    const saveSignals = (projectId: string, body: unknown) =>
+      inTenant(() => createProjectMailSignalsReplaceRouteHandler(data)({ params: { projectId }, body }));
+
+    async function addPerson(projectId: string, address: string): Promise<string> {
+      const person = (
+        await inTenant(() => cp.createItem({ databaseId: databaseId("people"), properties: { name: "Contact" } }))
+      ).id;
+      await inTenant(() => withTransaction(data, (client) => reindexPersonEmails(client, person, [address])));
+      await inTenant(() =>
+        cp.createRelation(
+          { relationPropertyId: world.properties.projectPeople, callerItemId: projectId, targetItemId: person },
+          USER,
+        ),
+      );
+      return person;
+    }
+
+    function candidatesOf(call: AiGatewayCompletionInput | undefined): string[] {
+      const prompt = promptOf(call);
+      return z
+        .array(z.object({ id: z.uuid() }).loose())
+        .parse(JSON.parse(prompt.slice(prompt.indexOf("Candidate projects: ") + "Candidate projects: ".length)))
+        .map((candidate) => candidate.id)
+        .sort();
+    }
+
+    it("gives a thread the one active project its signals match as an inherited value, without asking the model", async () => {
+      const thread = await ingest({ from: { name: "Jana", address: "jana@acme.test" } });
+      const website = await createProject("Website", "inProgress");
+      await createProject("Other", "inProgress");
+      const finished = await createProject("Finished", "done");
+      await saveSignals(website, { domains: ["acme.test"] });
+      await saveSignals(finished, { domains: ["acme.test"] });
+      events.length = 0;
+      const gateway = choosing(null);
+
+      expect(await triage(thread.threadItemId, gateway.client)).toBe("assignedFromSignals");
+
+      expect(gateway.calls).toEqual([]);
+      expect(await projectOf(thread.threadItemId)).toEqual([website]);
+      const links = (await inTenant(() => cp.getValueLinksForItems([thread.threadItemId]))).get(thread.threadItemId);
+      expect(links?.project).toMatchObject({
+        valueKind: "inherited",
+        sources: [{ kind: "item", itemId: website, propertyKey: "mailSignals" }],
+      });
+      const rule = await admin.query<{ rule_key: string }>("SELECT rule_key FROM value_links WHERE item_id = $1", [
+        thread.threadItemId,
+      ]);
+      expect(rule.rows).toEqual([{ rule_key: "threadProjectFromSignals" }]);
+      expect(events).toContainEqual({ scope: "mailThread", threadId: thread.threadId });
+    });
+
+    it("counts the addresses of a project's people as its signals", async () => {
+      const thread = await ingest({ from: { name: "Jana", address: "jana@freemail.test" } });
+      const website = await createProject("Website", "inProgress");
+      await addPerson(website, "jana@freemail.test");
+      const gateway = choosing(null);
+      expect(await triage(thread.threadItemId, gateway.client)).toBe("assignedFromSignals");
+      expect(gateway.calls).toEqual([]);
+      expect(await projectOf(thread.threadItemId)).toEqual([website]);
+    });
+
+    it("asks the model to choose among only the projects whose signals match when several do", async () => {
+      const thread = await ingest({ subject: "Faktura za web", from: { name: "Jana", address: "jana@acme.test" } });
+      const website = await createProject("Website", "inProgress");
+      const hosting = await createProject("Hosting", "longTerm");
+      await createProject("Unrelated", "inProgress");
+      await saveSignals(website, { domains: ["acme.test"] });
+      await saveSignals(hosting, { keywords: ["faktury"] });
+      const gateway = choosing(hosting);
+
+      expect(await triage(thread.threadItemId, gateway.client)).toBe("assigned");
+
+      expect(gateway.calls).toHaveLength(1);
+      expect(candidatesOf(gateway.calls[0])).toEqual([website, hosting].sort());
+      expect(await projectOf(thread.threadItemId)).toEqual([hosting]);
+      expect(await valueLinkRows()).toBe(0);
+    });
+
+    it("offers every active project when no signals match, as without signals", async () => {
+      const thread = await ingest({ from: { name: "Jana", address: "jana@acme.test" } });
+      const website = await createProject("Website", "inProgress");
+      const hosting = await createProject("Hosting", "inProgress");
+      await saveSignals(website, { domains: ["other.test"], keywords: ["smlouva"] });
+      const gateway = choosing(null);
+
+      expect(await triage(thread.threadItemId, gateway.client)).toBe("noAssignment");
+
+      expect(candidatesOf(gateway.calls[0])).toEqual([website, hosting].sort());
+      expect(await projectOf(thread.threadItemId)).toEqual([]);
+    });
+
+    it("leaves a backfilled thread to the user: no task is queued and nothing assigns it", async () => {
+      const website = await createProject("Website", "inProgress");
+      await saveSignals(website, { domains: ["acme.test"] });
+      const thread = await ingest({ arrival: "backfill", from: { name: "Jana", address: "jana@acme.test" } });
+      await runPropagation();
+
+      expect(await triageJobs()).toEqual([]);
+      expect(await projectOf(thread.threadItemId)).toEqual([]);
+      expect(await valueLinkRows()).toBe(0);
     });
   });
 

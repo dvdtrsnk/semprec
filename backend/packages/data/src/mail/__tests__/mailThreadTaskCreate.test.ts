@@ -99,6 +99,8 @@ async function newMessage(messageId: string, references: string[] = [], bodyText
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: databaseId("emails"),
         filesDatabaseId: databaseId("files"),
         folderRelationPropertyId: properties.emailFolder,

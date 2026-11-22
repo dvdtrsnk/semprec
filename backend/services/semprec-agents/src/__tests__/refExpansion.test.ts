@@ -991,6 +991,8 @@ describe("tenant-scoped reference blob expansion", () => {
             specialPurpose: "inbox",
           });
           const email = await ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
             folderRelationPropertyId: folder.id,

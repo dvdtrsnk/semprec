@@ -478,6 +478,8 @@ describe("Semp history reference resolution", () => {
             specialPurpose: "inbox",
           });
           const email = await ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
             folderRelationPropertyId: folder.id,
@@ -806,6 +808,8 @@ describe("Semp history reference resolution", () => {
             specialPurpose: "inbox",
           });
           const email = await ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: ids.emailsDatabaseId,
             filesDatabaseId: ids.filesDatabaseId,
             folderRelationPropertyId: folderProperty.id,

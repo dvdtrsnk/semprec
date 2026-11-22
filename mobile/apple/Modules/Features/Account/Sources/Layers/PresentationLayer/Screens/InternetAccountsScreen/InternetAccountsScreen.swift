@@ -108,6 +108,9 @@ private extension InternetAccountsScreen {
                         InternetServiceStatusLabel(service: .mail, status: account.mail)
                         InternetServiceStatusLabel(service: .calendars, status: account.calendars)
                     }
+                    if let indexing = viewModel.state.historyIndexing, indexing.accountId == account.id {
+                        historyIndexing(indexing)
+                    }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
@@ -117,6 +120,18 @@ private extension InternetAccountsScreen {
         }
         .listRowButton()
         .accessibilityIdentifier(AccountIdentifiers.internetAccountRowPrefix + account.id)
+    }
+
+    /// What the history indexing of a just connected account has done, below its statuses.
+    func historyIndexing(_ indexing: InternetHistoryIndexing) -> some View {
+        HStack(spacing: Theme.Spacing.small) {
+            ProgressView().controlSize(.mini)
+            Text(verbatim: Self.historyText(indexing))
+                .font(.caption)
+                .foregroundStyle(Theme.Colors.secondaryText)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(AccountIdentifiers.internetAccountHistoryPrefix + indexing.accountId)
     }
 
     func signInAgain(_ account: InternetAccountItem) -> some View {
@@ -155,6 +170,16 @@ private extension InternetAccountsScreen {
         )
     }
 
+    static func historyText(_ indexing: InternetHistoryIndexing) -> String {
+        guard indexing.foldersTotal > 0 else {
+            return String(localized: "internetAccounts.history.waiting", bundle: .module)
+        }
+        let format = String(localized: "internetAccounts.history.progress", bundle: .module)
+        return String(
+            format: format, locale: .current, indexing.foldersDone, indexing.foldersTotal, indexing.messagesUploaded
+        )
+    }
+
     /// Closes the add sheet and opens the account that already holds the address.
     func openExisting() {
         adding = false
@@ -173,13 +198,16 @@ private extension InternetAccountsScreen {
                         accounts: [
                             InternetAccountItem(
                                 id: "a1", name: "iCloud", address: "david@icloud.com", provider: "icloud",
-                                mail: .ok, calendars: .pending
+                                mail: .syncing, calendars: .pending
                             ),
                             InternetAccountItem(
                                 id: "a2", name: "Work", address: "david@firma.cz", provider: "generic",
                                 mail: .needsReauthorization, calendars: .off, canSignInAgain: true
                             )
-                        ]
+                        ],
+                        historyIndexing: InternetHistoryIndexing(
+                            accountId: "a1", foldersDone: 2, foldersTotal: 5, messagesUploaded: 1_840
+                        )
                     )
                 ),
                 router: PreviewAccountRouter()

@@ -113,6 +113,70 @@
         }
       }
     },
+    "mail.attachment.open" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open"
+          }
+        }
+      }
+    },
+    "mail.attachment.save" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit do Souborů"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Files"
+          }
+        }
+      }
+    },
+    "mail.attachment.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uloženo"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved"
+          }
+        }
+      }
+    },
+    "mail.attachment.saving" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukládám…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saving…"
+          }
+        }
+      }
+    },
     "mail.chip.area" : {
       "localizations" : {
         "cs" : {
@@ -365,6 +429,102 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remove %@"
+          }
+        }
+      }
+    },
+    "mail.content.attachmentTooLarge" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příloha je na uložení příliš velká."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment is too large to save."
+          }
+        }
+      }
+    },
+    "mail.content.mailboxUnavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet je odebraný nebo má vypnutou poštu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The account is removed or has Mail switched off."
+          }
+        }
+      }
+    },
+    "mail.content.messageNotFound" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server už tuto zprávu nemá."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server no longer has this message."
+          }
+        }
+      }
+    },
+    "mail.content.providerUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server teď není dostupný."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server cannot be reached right now."
+          }
+        }
+      }
+    },
+    "mail.content.rateLimited" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příliš mnoho požadavků na poštovní server. Zkuste to za chvíli znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Too many requests to the mail server. Try again in a moment."
+          }
+        }
+      }
+    },
+    "mail.content.reauthorizationRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pro načtení z poštovního serveru se k účtu znovu přihlaste."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to this account again to load it from the mail server."
           }
         }
       }
@@ -1009,6 +1169,38 @@
         }
       }
     },
+    "mail.message.loading" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načítám zprávu z poštovního serveru…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading the message from the mail server…"
+          }
+        }
+      }
+    },
+    "mail.message.retry" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načíst znovu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Load again"
+          }
+        }
+      }
+    },
     "mail.message.to" : {
       "localizations" : {
         "cs" : {
@@ -1473,6 +1665,22 @@
         }
       }
     },
+    "mail.search.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na poštovním serveru se nepodařilo hledat pro: %@."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server could not be searched for: %@."
+          }
+        }
+      }
+    },
     "mail.search.prompt" : {
       "localizations" : {
         "cs" : {
@@ -1485,6 +1693,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search (e.g. from:petr is:unread)"
+          }
+        }
+      }
+    },
+    "mail.search.unindexed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další výsledky na poštovním serveru zatím nejsou zaindexované: %lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More results on the mail server are not indexed yet: %lld."
+          }
+        }
+      }
+    },
+    "mail.search.unknownAccount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "účet"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "an account"
           }
         }
       }
@@ -1533,6 +1773,642 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The mail server could not be reached. Try again."
+          }
+        }
+      }
+    },
+    "mail.signals.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        }
+      }
+    },
+    "mail.signals.addresses" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adresy"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Addresses"
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "K projektu patří pošta z těchto adres nebo na ně."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from or to these addresses belongs to the project."
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte e-mailovou adresu, třeba jana@firma.cz. Projekt může mít nejvýše 100 adres."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter an e-mail address such as jana@firma.cz. A project keeps at most 100 addresses."
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat adresu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add an address"
+          }
+        }
+      }
+    },
+    "mail.signals.assign" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákna k projektu"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákna k projektu"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákno k projektu"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vláken k projektu"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Assign %lld thread to the project"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Assign %lld threads to the project"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.assign.unsaved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nejdřív signály uložte: vlákna přiřazují jen uložené signály."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save the signals first: only saved signals assign threads."
+          }
+        }
+      }
+    },
+    "mail.signals.assignFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vlákna se nepodařilo přiřadit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The threads were not assigned"
+          }
+        }
+      }
+    },
+    "mail.signals.assigned" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přiřazeno: %1$lld. Přeskočeno: %2$lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Assigned: %1$lld. Skipped: %2$lld."
+          }
+        }
+      }
+    },
+    "mail.signals.assigned.dismiss" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skrýt"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide"
+          }
+        }
+      }
+    },
+    "mail.signals.domains" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domény"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domains"
+          }
+        }
+      }
+    },
+    "mail.signals.domains.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "K projektu patří pošta od kohokoli z těchto domén nebo pro něj. Bezplatné služby jako gmail.com se jako doména nepočítají."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from or to anyone at these domains belongs to the project. Free mail services such as gmail.com never count as a domain."
+          }
+        }
+      }
+    },
+    "mail.signals.domains.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte název domény, třeba firma.cz. Projekt může mít nejvýše 50 domén."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a domain name such as firma.cz. A project keeps at most 50 domains."
+          }
+        }
+      }
+    },
+    "mail.signals.domains.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat doménu, třeba firma.cz"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a domain, such as firma.cz"
+          }
+        }
+      }
+    },
+    "mail.signals.keywords" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klíčová slova"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keywords"
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klíčové slovo najde i jiné tvary slova: „faktura“ najde „faktury“ i „fakturou“. Krátká slova a čísla se musí shodovat přesně."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A keyword also finds its other word forms: “faktura” finds “faktury” and “fakturou”. Short words and numbers match only exactly."
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte slovo nebo frázi o nejvýše 100 znacích. Projekt může mít nejvýše 50 klíčových slov."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a word or phrase of at most 100 characters. A project keeps at most 50 keywords."
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat slovo nebo frázi"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a word or phrase"
+          }
+        }
+      }
+    },
+    "mail.signals.people" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lidé projektu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "People of the project"
+          }
+        }
+      }
+    },
+    "mail.signals.people.empty" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Žádný člověk projektu zatím nemá e-mailovou adresu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No person of the project has an e-mail address yet."
+          }
+        }
+      }
+    },
+    "mail.signals.people.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošta od lidí projektu a pro ně k projektu patří bez dalšího nastavení. Lidi přidáte nebo odeberete na projektu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from and to the project's people belongs to the project without anything set here. Add or remove people on the project."
+          }
+        }
+      }
+    },
+    "mail.signals.preview" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpovídající vlákna"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matching threads"
+          }
+        }
+      }
+    },
+    "mail.signals.preview.alreadyAssigned" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Další %lld odpovídající vlákna už projekt mají"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dalších %lld odpovídajícího vlákna už projekt má"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Další %lld odpovídající vlákno už projekt má"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dalších %lld odpovídajících vláken už projekt má"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld more matching thread already has a project"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld more matching threads already have a project"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.preview.count" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídají %lld vlákna bez projektu"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vlákna bez projektu"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vlákno bez projektu"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vláken bez projektu"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld thread without a project matches"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld threads without a project match"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.preview.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpovídající vlákna se nepodařilo načíst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The matching threads could not be loaded."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.loading" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hledám odpovídající vlákna…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Looking for matching threads…"
+          }
+        }
+      }
+    },
+    "mail.signals.preview.newest" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zobrazeno je nejnovějších %1$lld z %2$lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The newest %1$lld of %2$lld are listed."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.none" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neodpovídá žádné vlákno bez projektu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No thread without a project matches."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.retry" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zkusit znovu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Try again"
+          }
+        }
+      }
+    },
+    "mail.signals.remove" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odebrat %@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@"
+          }
+        }
+      }
+    },
+    "mail.signals.save" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        }
+      }
+    },
+    "mail.signals.saveFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signály se nepodařilo uložit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The signals were not saved"
+          }
+        }
+      }
+    },
+    "mail.signals.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní signály"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail signals"
           }
         }
       }

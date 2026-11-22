@@ -1,14 +1,13 @@
 import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 import type { PoolClient } from "pg";
-import { runAfterCommit } from "../db/pool.js";
-import { notifyInvalidation } from "../realtimeHook.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
-import { buildMailPreviewFromBody } from "./mailPlainText.js";
+import { buildMailPreview, buildMailPreviewFromBody } from "./mailPlainText.js";
 import {
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
@@ -18,7 +17,12 @@ import {
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
-import { ingestAttachments, type ClassifiedAttachment } from "./attachments.js";
+import {
+  ingestAttachments,
+  recordIndexedAttachments,
+  type ClassifiedAttachment,
+  type IndexedAttachment,
+} from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { reindexItemSearch } from "./search.js";
 import { buildMailSearchText } from "./mailSearchText.js";
@@ -31,6 +35,7 @@ import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
 import { enqueueThreadLinkRulesForFirstInbound } from "./threadLinkRules.js";
 import { enqueueThreadProjectTriage } from "./threadProjectTriage.js";
+import type { MailArrival } from "./mailArrival.js";
 
 export function formatAddress(address: MailEnvelopeAddress): string {
   return address.name ? `${address.name} <${address.address}>` : address.address;
@@ -43,7 +48,18 @@ export function formatAddressList(list: MailEnvelopeAddress[] | undefined): stri
 /** System-owned Emails properties mirrored from the mailbox; `read`/`flagged` are user-owned and need no exemption. */
 export const EMAIL_INGEST_ALLOWED_SYSTEM_KEYS = ["name", "sender", "recipients", "body", "date"];
 
-export interface IngestEmailMessageInput {
+/**
+ * What of a message's content ingest stores: a `full` message its body and attachment bytes, an `index` message a
+ * plain-text snippet for its preview and search, and its attachments' metadata. Stored on a new message only; one
+ * already ingested keeps its own content and content state.
+ */
+export type IngestedMailContent =
+  | { contentState: "full"; bodyText?: string; bodyHtml?: string; attachments: ClassifiedAttachment[] }
+  | { contentState: "index"; snippet?: string; attachments: IndexedAttachment[] };
+
+export type IngestEmailMessageInput = IngestEmailMessageEnvelope & IngestedMailContent;
+
+export interface IngestEmailMessageEnvelope {
   emailsDatabaseId: string;
   filesDatabaseId: string;
   folderRelationPropertyId: string;
@@ -55,16 +71,15 @@ export interface IngestEmailMessageInput {
   /** IMAP only: the UID in this folder, stored on the relation edge. */
   folderUid?: number;
   messageId: string;
+  /** Stored on a new message only; one already ingested keeps its own. */
+  arrival: MailArrival;
   inReplyTo?: string | null;
   references?: string[];
   subject?: string;
   envelope: MailEnvelope;
-  bodyText?: string;
-  bodyHtml?: string;
   date?: Date;
   providerThreadId?: string | null;
   providerMessageId?: string | null;
-  attachments: ClassifiedAttachment[];
   storage: BlobStorageWriter;
   storageKeyPrefix: string;
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
@@ -103,7 +118,8 @@ export interface IngestEmailMessageResult {
  * Message-ID per mailbox (so read/flag state never leaks across mailboxes), resolves the thread,
  * always links the folder (a known message can appear in a new folder), ingests attachments and
  * reindexes search. Only a newly created message announces its thread after commit, triggers
- * first-inbound thread rules and triage, and (if the user's own) retires outdated Semp drafts.
+ * first-inbound thread rules, and (if the user's own) retires outdated Semp drafts; only a new live one
+ * also queues thread project triage.
  *
  * Must run in a transaction: the item and `mail_message_meta` writes must commit together so
  * person linking sees a consistent envelope.
@@ -142,7 +158,7 @@ export async function ingestEmailMessage(
             name: input.subject ?? "(no subject)",
             sender: input.envelope.from ? formatAddress(input.envelope.from) : "",
             recipients: formatAddressList(input.envelope.to),
-            body: input.bodyHtml ?? input.bodyText ?? "",
+            body: input.contentState === "full" ? (input.bodyHtml ?? input.bodyText ?? "") : "",
             ...(input.date ? { date: input.date.toISOString() } : {}),
             // Seeded from the server only at creation; later passes must not overwrite user changes.
             ...messageFlagProperties(input.flags),
@@ -184,37 +200,58 @@ export async function ingestEmailMessage(
         // First ingest only: the upsert's DO UPDATE never touches is_bulk.
         isBulk: detectBulkMail({ ...input.bulkHeaders, senderAddress: input.envelope.from?.address }),
         dsnOriginalMessageId,
-        previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
+        previewText:
+          input.contentState === "full"
+            ? buildMailPreviewFromBody(input.bodyText, input.bodyHtml)
+            : buildMailPreview(input.snippet ?? ""),
         ingestedAt: new Date(),
+        arrival: input.arrival,
+        contentState: input.contentState,
       });
 
-      const { extractedTexts } = await ingestAttachments(client, {
-        messageItemId: itemId,
-        threadItemId: await getMailThreadItemId(client, threadId),
-        filesDatabaseId: input.filesDatabaseId,
-        attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
-        attachments: input.attachments,
-        storage: input.storage,
-        storageKeyPrefix: input.storageKeyPrefix,
-      });
-
-      // Attachment text is folded into the message's own search text; there is no per-attachment index.
-      await reindexItemSearch(client, {
-        itemId,
-        databaseId: input.emailsDatabaseId,
-        text: buildMailSearchText({
-          subject: input.subject,
-          senderName: input.envelope.from?.name,
-          senderAddress: input.envelope.from?.address,
-          bodyText: input.bodyText,
-          bodyHtml: input.bodyHtml,
-          extractedTexts,
-        }),
-      });
+      const searchedEnvelope = {
+        subject: input.subject,
+        senderName: input.envelope.from?.name,
+        senderAddress: input.envelope.from?.address,
+      };
+      if (input.contentState === "full") {
+        const { extractedTexts } = await ingestAttachments(client, {
+          messageItemId: itemId,
+          threadItemId: await getMailThreadItemId(client, threadId),
+          filesDatabaseId: input.filesDatabaseId,
+          attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
+          attachments: input.attachments,
+          storage: input.storage,
+          storageKeyPrefix: input.storageKeyPrefix,
+        });
+        // Attachment text is folded into the message's own search text; there is no per-attachment index.
+        await reindexItemSearch(client, {
+          itemId,
+          databaseId: input.emailsDatabaseId,
+          text: buildMailSearchText({
+            ...searchedEnvelope,
+            bodyText: input.bodyText,
+            bodyHtml: input.bodyHtml,
+            extractedTexts,
+          }),
+        });
+      } else {
+        await recordIndexedAttachments(client, itemId, input.attachments);
+        await reindexItemSearch(client, {
+          itemId,
+          databaseId: input.emailsDatabaseId,
+          text: buildMailSearchText({
+            ...searchedEnvelope,
+            bodyText: input.snippet ?? "",
+            extractedTexts: input.attachments.map((attachment) => attachment.filename),
+          }),
+        });
+      }
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
-      // Tenant-wide (no `userId`); a converged provider-id conflict never reaches here.
-      runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
+      // Publishes the thread's tenant-wide `mailThread` invalidation after commit; a converged provider-id conflict
+      // never reaches here.
+      touchMailThreads(client, [threadId]);
       newMessageThreadId = threadId;
     } catch (err) {
       if (!isProviderMessageIdConflict(err)) throw err;
@@ -272,10 +309,11 @@ export async function ingestEmailMessage(
   );
 
   // Needs the folder edge to tell inbound mail from own mail and drafts. Triage is delayed so the
-  // inherited company/project is set first.
+  // inherited company/project is set first, and is a model call, so backfilled history gets none.
   if (created) {
     const firstInboundThreadItemId = await enqueueThreadLinkRulesForFirstInbound(client, itemId);
-    if (firstInboundThreadItemId !== null) await enqueueThreadProjectTriage(client, firstInboundThreadItemId);
+    if (firstInboundThreadItemId !== null && input.arrival === "live")
+      await enqueueThreadProjectTriage(client, firstInboundThreadItemId);
   }
 
   return { itemId, created };

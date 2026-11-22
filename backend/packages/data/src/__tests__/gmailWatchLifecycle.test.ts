@@ -9,7 +9,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
-  recordGmailActivity,
+  recordGmailSyncCursor,
 } from "../mail/mailAccountSyncStateStore.js";
 import {
   createGmailPubSubDispatcher,
@@ -76,7 +76,7 @@ function createFakeTransport(options: FakeTransportOptions = {}): {
     async registerWatch(mailboxItemId, credential) {
       registerWatchCalls.push({ mailboxItemId, credential });
       if (options.registerWatch) return options.registerWatch(mailboxItemId, credential);
-      return { historyId: "1000", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) };
+      return { expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) };
     },
     async pull() {
       pullCallCount.value++;
@@ -112,12 +112,12 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
     vi.useRealTimers();
   });
 
-  it("registers the watch and persists its expiry and history cursor on the very first registration", async () => {
+  it("registers the watch and persists its expiry, leaving the history cursor to the sync pass", async () => {
     const mailboxItemId = await createMailboxItem("A");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const { transport, registerWatchCalls } = createFakeTransport({
-      registerWatch: async () => ({ historyId: "999999", expiresAt }),
+      registerWatch: async () => ({ expiresAt }),
     });
     const factory = createGmailWatchLifecycleFactory(pool, transport, {
       getCredential: async () => "refresh-token",
@@ -131,21 +131,24 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
       expect(state?.gmailWatchExpiresAt).toBe(expiresAt.toISOString());
     });
     expect(registerWatchCalls.length).toBe(1);
-    // The account had no cursor yet, so the watch registration's historyId seeds it, sparing
-    // reconcileGmailAccount a full listAllMessageIds() resync on first sync.
-    expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBe("999999");
+    // The first sync pass finds no cursor and lists the mailbox; the watch never stands in for that listing.
+    expect((await getMailAccountSyncState(pool, mailboxItemId))?.gmailHistoryId).toBeNull();
 
     await lifecycle.stop();
   });
 
-  it("never overwrites an already-advanced history cursor with a later renewal's historyId", async () => {
+  it("leaves a history cursor the sync pass stored as it is", async () => {
     const mailboxItemId = await createMailboxItem("A2");
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "gmail_api" });
-    // Simulates a reconcile pass having already advanced the cursor past this renewal's historyId.
-    await recordGmailActivity(pool, { itemId: mailboxItemId, historyId: "500000", nextExpectedActivityAt: new Date() });
+    // A sync pass stored this cursor.
+    await recordGmailSyncCursor(pool, mailboxItemId, {
+      historyId: "500000",
+      listingPhase: null,
+      listingPageToken: null,
+    });
 
     const { transport, registerWatchCalls } = createFakeTransport({
-      registerWatch: async () => ({ historyId: "1", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }),
+      registerWatch: async () => ({ expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) }),
     });
     const factory = createGmailWatchLifecycleFactory(pool, transport, {
       getCredential: async () => "refresh-token",
@@ -218,7 +221,7 @@ describe("Gmail Pub/Sub watch lifecycle (issue #197)", () => {
     const { transport, registerWatchCalls } = createFakeTransport({
       registerWatch: async () => {
         call++;
-        return { historyId: "1", expiresAt: new Date(Date.now() + call * 1000) };
+        return { expiresAt: new Date(Date.now() + call * 1000) };
       },
     });
     const factory = createGmailWatchLifecycleFactory(pool, transport, {

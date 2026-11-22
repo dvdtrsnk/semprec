@@ -43,7 +43,7 @@ final class MailNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheEditorAndTheTaskOfAThreadArePresentedAsSheetsOverTheStack() {
+    func testTheEditorTheTaskAndAFileOfAThreadArePresentedAsSheetsOverTheStack() {
         let context = NavigationContext()
         let overview = MailStackSpy()
         context.register(overview, for: .overview)
@@ -52,9 +52,15 @@ final class MailNavigationTests: XCTestCase {
         router.showCompose(.new)
         router.showCompose(reply)
         router.showTask(taskId: "k1")
+        router.showFile(fileItemId: "f1")
         XCTAssertEqual(
             overview.sheets,
-            [.mailCompose(.new), .mailCompose(reply), .details(ItemDetailsTarget(kind: .task, id: "k1"))]
+            [
+                .mailCompose(.new),
+                .mailCompose(reply),
+                .details(ItemDetailsTarget(kind: .task, id: "k1")),
+                .itemSheet(itemId: "f1", databaseKey: "files", tab: .overview)
+            ]
         )
         XCTAssertTrue(overview.pushed.isEmpty)
     }
@@ -111,6 +117,20 @@ final class MailNavigationTests: XCTestCase {
         try await eventually { window.presentsSheet }
         XCTAssertTrue(window.presentsSheet, "The accounts must open in the settings sheet")
         XCTAssertEqual(window.stackTitle, "Mailboxes", "The Overview stack keeps the mailboxes under the sheet")
+        window.close()
+    }
+
+    @MainActor
+    func testTheSceneShowsTheMailSignalsOfAProjectOnTheStackOfItsTab() async throws {
+        let window = try SceneWindow()
+        let scene = AppComposition(models: SignedInModels())
+        try await window.show(AppScene(composition: scene))
+        try await eventually { scene.navigation.stack(for: .overview) != nil }
+
+        scene.collectionsRouter.showProjectMailSignals(projectId: "p1")
+        try await eventually { window.stackTitle == "Mail signals" }
+        XCTAssertEqual(window.stackTitle, "Mail signals")
+        XCTAssertFalse(window.presentsSheet)
         window.close()
     }
 

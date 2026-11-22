@@ -1,7 +1,11 @@
+import { Readable } from "node:stream";
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
-import type { ImapFetchedMessage, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
+import type { ImapFetchedMessage, ImapFetchedRange, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
+import { IMAP_SNIPPET_BYTES } from "../mail/imapSnippet.js";
 import type { SentCopyImapClient } from "../mail/mailSentCopies.js";
+import { fakeFetchedMessage } from "./fakeImapMessages.js";
 import type { MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
+import type { FetchedMessage } from "../mail/providerTypes.js";
 import type { WritableImapFlag } from "../mail/messageFlags.js";
 
 interface FakeImapMessage {
@@ -26,7 +30,7 @@ export interface FakeImapAccountOptions {
   latencyMs?: number;
 }
 
-/** One client call the account answered, in order. */
+/** One client call the account answered, or a message content it gave (`fetchContent`), in order. */
 export interface FakeImapCall {
   method: string;
   path?: string;
@@ -141,13 +145,29 @@ export class FakeImapAccount {
           ...(this.options.condstore ? { status: this.selection(folder) } : {}),
         })),
       selectFolder: async (path) => this.selection(this.folder(path)),
-      fetchMessagesSince: async (path, sinceUid, limit) => {
-        const selected = this.folder(path)
-          .messages.filter((message) => message.uid >= sinceUid)
-          .slice(0, limit);
-        const fetched: ImapFetchedMessage[] = [];
-        for (const message of selected) fetched.push({ uid: message.uid, message: await parsed(message) });
-        return fetched;
+      fetchMessagesSince: async (path, sinceUid, limit) =>
+        this.range(
+          path,
+          this.folder(path).messages.filter((message) => message.uid >= sinceUid),
+          limit,
+        ),
+      fetchMessagesBefore: async (path, beforeUid, limit) =>
+        this.range(
+          path,
+          this.folder(path)
+            .messages.filter((message) => message.uid < beforeUid)
+            .reverse(),
+          limit,
+        ),
+      fetchSnippets: async (path, requests) => {
+        const snippets = new Map<number, string>();
+        for (const { uid } of requests) {
+          const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+          if (!message) continue;
+          const text = (await parsed(message)).bodyText ?? "";
+          snippets.set(uid, Buffer.from(text).subarray(0, IMAP_SNIPPET_BYTES).toString("utf8"));
+        }
+        return snippets;
       },
       fetchChangesSince: async () => null,
       fetchAllUids: async (path) => this.folder(path).messages.map((message) => message.uid),
@@ -190,19 +210,56 @@ export class FakeImapAccount {
           targetUidValidity: String(this.folder(targetPath).uidValidity),
         };
       },
-    } satisfies Omit<Required<ImapMailClient & SentCopyImapClient>, "close">;
-    // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not.
+      fetchMessageBody: async (path, uid) => {
+        const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+        if (!message) return null;
+        const { bodyText, bodyHtml } = await parsed(message);
+        return { bodyText, bodyHtml };
+      },
+      searchMessageId: async (path, messageId) => {
+        const uids: number[] = [];
+        for (const message of this.folder(path).messages)
+          if ((await parsed(message)).messageId.includes(messageId)) uids.push(message.uid);
+        return uids;
+      },
+      searchText: async (path, terms) => {
+        const uids: number[] = [];
+        for (const message of this.folder(path).messages) {
+          const text = message.raw.toString("utf8").toLowerCase();
+          const holds = (term: string) => text.includes(term.toLowerCase());
+          if (terms.include.every(holds) && !terms.exclude.some(holds)) uids.push(message.uid);
+        }
+        return uids;
+      },
+      downloadPart: async (path, uid, part) => {
+        const message = this.folder(path).messages.find((candidate) => candidate.uid === uid);
+        if (!message) return null;
+        // As the light fetch numbers them: the attachments from part 2.
+        const attachment = (await simpleParser(message.raw)).attachments[Number(part) - 2];
+        return attachment ? Readable.from(attachment.content) : null;
+      },
+    } satisfies Omit<Required<ImapMailClient & SentCopyImapClient>, "close" | "isReusable" | "ping">;
+    // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not. A call that
+    // rejected leaves the client not reusable, as it leaves a real connection in doubt.
+    let failed = false;
     const logged =
       <A extends unknown[], R>(method: string, fn: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
-        await answer(method, typeof args[0] === "string" ? args[0] : undefined);
-        return fn(...args);
+        try {
+          await answer(method, typeof args[0] === "string" ? args[0] : undefined);
+          return await fn(...args);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
       };
     return {
       getCapabilities: logged("getCapabilities", methods.getCapabilities),
       listFolders: logged("listFolders", methods.listFolders),
       selectFolder: logged("selectFolder", methods.selectFolder),
       fetchMessagesSince: logged("fetchMessagesSince", methods.fetchMessagesSince),
+      fetchMessagesBefore: logged("fetchMessagesBefore", methods.fetchMessagesBefore),
+      fetchSnippets: logged("fetchSnippets", methods.fetchSnippets),
       fetchChangesSince: logged("fetchChangesSince", methods.fetchChangesSince),
       fetchAllUids: logged("fetchAllUids", methods.fetchAllUids),
       fetchFlagsChangedSince: logged("fetchFlagsChangedSince", methods.fetchFlagsChangedSince),
@@ -211,8 +268,33 @@ export class FakeImapAccount {
       hasMessageWithId: logged("hasMessageWithId", methods.hasMessageWithId),
       prepareMove: logged("prepareMove", methods.prepareMove),
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
+      fetchMessageBody: logged("fetchMessageBody", methods.fetchMessageBody),
+      searchMessageId: logged("searchMessageId", methods.searchMessageId),
+      searchText: logged("searchText", methods.searchText),
+      downloadPart: logged("downloadPart", methods.downloadPart),
+      isReusable: () => !failed,
       close: async () => {},
     };
+  }
+
+  /** The light fetch of the first `limit` of `matching`, as a range whose search found every one of `matching`. */
+  private async range(path: string, matching: FakeImapMessage[], limit: number): Promise<ImapFetchedRange> {
+    const taken = matching.slice(0, limit);
+    return {
+      uids: taken.map((message) => message.uid),
+      messages: await this.light(path, taken),
+      more: matching.length > taken.length,
+    };
+  }
+
+  /** The light fetch of `messages`; a message's `fetchContent` is logged as a call too. */
+  private async light(path: string, messages: FakeImapMessage[]): Promise<ImapFetchedMessage[]> {
+    const fetched: ImapFetchedMessage[] = [];
+    for (const message of messages)
+      fetched.push(
+        fakeFetchedMessage(message.uid, await parsed(message), () => this.calls.push({ method: "fetchContent", path })),
+      );
+    return fetched;
   }
 
   private selection(folder: FakeImapFolder) {
@@ -237,7 +319,7 @@ function messageIdHeaderOf(raw: Buffer): string | undefined {
   return /^message-id:\s*(.+?)\s*$/im.exec(header)?.[1];
 }
 
-async function parsed(message: FakeImapMessage): Promise<ImapFetchedMessage["message"]> {
+async function parsed(message: FakeImapMessage): Promise<FetchedMessage> {
   const mail = await simpleParser(message.raw);
   const [from] = addressesOf(mail.from);
   return {

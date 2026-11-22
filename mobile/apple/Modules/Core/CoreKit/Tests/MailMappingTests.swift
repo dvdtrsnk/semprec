@@ -72,6 +72,27 @@ final class MailMappingTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadsMapWhatTheProviderSearchAddedAndNoSummaryOutsideASearch() {
+        let summary = SharedSDK.MailRemoteSearchSummary(
+            unindexed: 12,
+            failedAccounts: [
+                SharedSDK.MailMailboxChip(id: "m1", name: "Gmail"), SharedSDK.MailMailboxChip(id: "m9", name: "")
+            ]
+        )
+        let searched = SharedMailThreadsScreenModel.state(threadsState(.content, remoteSearch: summary))
+        XCTAssertEqual(
+            searched.remoteSearch,
+            CoreKit.MailRemoteSearchSummary(
+                unindexed: 12,
+                failedAccounts: [
+                    CoreKit.MailMailboxChip(id: "m1", name: "Gmail"), CoreKit.MailMailboxChip(id: "m9", name: "")
+                ]
+            )
+        )
+        XCTAssertNil(SharedMailThreadsScreenModel.state(threadsState(.content)).remoteSearch)
+    }
+
+    @MainActor
     func testThreadsMapEveryBoxFilterAndFacetsPhase() {
         let boxes: [(SharedSDK.MailListBox, CoreKit.MailListBox)] = [
             (.inbox, .inbox), (.flagged, .flagged), (.sempDrafts, .sempDrafts)

@@ -32,10 +32,10 @@ described elsewhere and only referenced here:
   `FOR UPDATE` before the update locks the Mailboxes item, the order of a removal. The update hook decides by
   the locked row, so a repeated write changes nothing.
   - Off (`pauseMailAccountSync`), in the write's transaction: set `sync_paused_at` (seeding a row for a
-    never-connected mailbox) and reset the account to never synced (Gmail history id, Graph delta link,
-    initial-sync mark, next expected activity and failure record cleared); delete the folder sync states;
-    resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the mail-off `mailboxRemoval` job. After
-    the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
+    never-connected mailbox) and reset the account to never synced (Gmail history id and listing cursor, Graph
+    delta link and delta round in progress, initial-sync mark, next expected activity and failure record
+    cleared); delete the folder sync states; resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the
+    mail-off `mailboxRemoval` job. After the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
     (`semprec-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
     a binding the next discovery pass unhosts the account. The item, credential, server settings, sync mode,
     provider account and Gmail routing addresses and the Graph subscription id stay; the provider-side Gmail
@@ -65,6 +65,15 @@ described elsewhere and only referenced here:
 - A refused address and every connect/TLS failure become `MailServerUnreachableError`
   (`mail_server_unreachable`) without cause or address; a refused address is indistinguishable from an
   unreachable server. Authentication failures keep their own classification. imapflow's logger is disabled.
+- `openImapFlow()` waits for a login admission of the server host (`admitLogin` of the shared IMAP connection
+  limiter, see [IMAP connection limits](#imap-connection-limits-and-kept-sync-sessions)) before it connects, so every
+  sync, move, Sent APPEND and IDLE login is rate limited; the credential verifications of the connect and sign-in
+  routes do not use it (they are throttled per user).
+- The sync adapter and the IDLE connection factory report a failed `openImapFlow()` through one classifier,
+  `classifyImapConnectFailure()`: too many sessions → `MailConnectionLimitError`; a refused LOGIN →
+  `MailReauthorizationRequiredError`, unless its RFC 5530 code is a transient one (`UNAVAILABLE`, `INUSE`, `LIMIT`,
+  `SERVERBUG`); unreachable stays `MailServerUnreachableError`; anything else becomes a fixed generic error. None
+  keeps a cause.
 - IMAP IDLE (`mail/imapIdleClient.ts`, `mail/imapIdleLifecycle.ts`) receives a connected client from
   `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
   itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
@@ -75,8 +84,10 @@ described elsewhere and only referenced here:
   due 15 s and 60 s later (`enqueuePostSendMailSyncs`, `mail/mailSyncEnqueue.ts`), enqueued by `recordPendingSentCopy`
   in the transaction that records the send and its Sent copy (draft and approved agent sends, invitations and their
   replies). Each slot has its own job key per mailbox with `preserve_run_at`, so further sends while it is pending
-  keep its due time; the job is the normal pass, so one that starts during a pass only asks it for one more round.
-  Gmail and Graph file their own Sent copy and schedule none.
+  keep its due time; the job is the normal pass with its single attempt, so one that starts during a pass only asks
+  it for one more round, and one that starts while the account backs off a sync failure ends in the job's prologue
+  without a login like any other trigger (the SMTP server took the message; the failing IMAP server is left to the
+  sweep). Gmail and Graph file their own Sent copy and schedule none.
 - A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
   established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
   recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing
@@ -197,8 +208,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `replaceMailboxCredential`: unlocked sanity read of the item → `ensureMailAccountSyncState` → lock sync state
   row → lock Mailboxes item → re-check on locked rows. The **sync mode** (not the user-owned `provider`
   property) must match the state's provider (`gmail_api`↔`gmail`, `graph_api`↔`outlook`). A different stored
-  account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes,
-  `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
+  account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes, clears the sync
+  failure record (`clearMailSyncFailure`, as the password route does) and the calendar credential refusal
+  (`clearCalendarSyncCredentialRefusal`: `needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
   and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
 - After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`), so the hosted
   lifecycle reads the new token before the answer when it can. A failed restart is logged (`mailboxItemId`,
@@ -220,41 +232,111 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ### Sync pass and the mailbox sync guard
 
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
-  mailbox, state and credential happen first. A Gmail or Graph pass then reconciles in one transaction that also
-  talks to the provider (existing, accepted cost; do not add new network work there).
+  mailbox, state and credential happen first. No pass, in any sync mode, talks to the provider inside a
+  transaction: every provider call runs between short write transactions, each of which starts with
+  `enterSyncPass` and then takes the mail-thread guard (`inPassTransaction`, `mail/mailSyncPass.ts`). A failed
+  batch deletes the attachment bytes it wrote (`withBatchStorage`); committed batches keep theirs.
 - One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
   sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
   `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
   beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
   pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
   When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
-  A Gmail or Graph pass keeps the row locked for its whole transaction, so the claim waits for the row lock at most
+  Each write transaction of a running pass holds the row from its lease renewal to its commit, and a removal or the
+  Mail switch holds it for its own transaction, so the claim waits for the row lock at most
   `MAILBOX_SYNC_PASS_WAIT_MS` (a transaction-local `lock_timeout`); then it throws `MailboxSyncBusyError` and the job
   is skipped like one that finds the mailbox sync guard held. Only a job holding the lease records a failure: one
-  that fails before it holds the lease writes no error, status, problem or notification and rethrows for
-  graphile-worker's retry.
+  that fails before it holds the lease (it has made no provider call yet) writes no error, status, backoff, problem
+  or notification, is logged and rethrown, and is not retried (`maxAttempts` 1); the sweep queues the account again
+  once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
   ends the pass when another one does. An IMAP pass that completed takes a rerun request in its final transaction
-  (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease and in the same connection slot,
-  on its open IMAP connection: the move phase on pending moves read anew, then the reconcile. It runs at most
-  `IMAP_PASS_MAX_ROUNDS` (3) rounds, so a trigger during a pass is served without a new job, connection or login. On
-  every way out of the pass one transaction releases the lease and, when a rerun is still requested (one after the
-  last round, an unfinished backfill, or any Gmail or Graph pass), enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease, on the sync connection it holds
+  checked out: the move phase on pending moves read anew, then the reconcile. It runs at most `IMAP_PASS_MAX_ROUNDS`
+  (3) rounds, so a trigger during a pass is served without a new job, connection or login; a round that left new
+  messages or backfill for later (`complete` false) ends the rounds and leaves them to the follow-up. On every way out
+  of the pass one transaction releases the lease and, when a rerun is still requested (one after the last round, an
+  unfinished backfill, or any Gmail or Graph pass) and the pass did not fail, enqueues exactly one follow-up pass. A
+  holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
-  transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every
-  attachment's bytes (spooled to a temp file, `mail/imapAttachmentSpool.ts`) are fetched with no transaction
-  open and no guard held; the writes then run in short transactions: a prepare transaction (Folder items, each
-  folder's sync state), one transaction per folder batch, one for the flag write-back confirmations (the IMAP
-  `STORE`s run before it, outside any transaction) and a final one (account activity, the next pass, `ok`
-  status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
-  batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
-  from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
-  cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+  transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
+  message's body parts and attachment bytes (spooled to a temp file, `mail/mailAttachmentSpool.ts`) and every index
+  message's snippet are fetched with no transaction open and no guard held; the writes then run in short
+  transactions: a prepare transaction (Folder items, each folder's sync state), one transaction per folder batch
+  (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
+  write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
+  activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
+  batch locks its `mail_folder_sync_state` row and writes only while it still holds the cursors its fetch started
+  from: a live step compares the live cursors (UIDVALIDITY, `uidnext`, HIGHESTMODSEQ, message count, `live_from_uid`)
+  and keeps the stored backfill cursor, a backfill batch also compares `backfill_below_uid` and writes nothing while a
+  native client holds the folder's lease. If another pass (or a client's upload) moved the folder on meanwhile it
+  writes nothing and ends the pass incomplete, so a cursor never moves back. A failed batch deletes the attachment
+  bytes it wrote; committed batches keep theirs.
+- A Gmail pass (`reconcileGmailAccount` in `mail/gmailReconcile.ts`): the label list, then a prepare transaction
+  (label Folders, the cursor read), then the live step, then the listing, then the flag write-back (pending writes
+  read in one transaction, `messages.modify` outside it, confirmations in the final transaction) and the final
+  transaction (account activity, the next pass, `ok` status, problem resolved). Every write transaction also takes
+  the Gmail folder-state guard after the mail-thread guard, locks the sync state row and writes only while the
+  stored cursor is still the one its fetch started from; otherwise it writes nothing and ends the pass incomplete.
+  - Cursor (`mail_account_sync_state`): `gmail_history_id`, the start of the live step, and the listing cursor
+    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`. Only the sync
+    pass writes `gmail_history_id`: a watch registration (`recordGmailWatchRegistration`) records the watch's expiry
+    and routing address alone, so a first pass lists the mailbox whether the watch was registered before it or while
+    it ran.
+  - A first pass (no history id) captures the current history id (`users.getProfile`) before anything is listed
+    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which is logged and
+    is no failure: `last_error` keeps describing the outcome of the last failed pass, cleared by a successful one. Every later pass applies the history since the stored id first, then
+    continues the listing, so new mail is never held back by a running listing.
+  - Live step: `history.list` from the stored id (all its pages, its records in history order, parsed at the edge),
+    the changed messages in history order (a message several records name once, at its first), in write transactions
+    of `GMAIL_MESSAGES_PER_BATCH` (50). Each transaction drops the edges of the messages the records it completes
+    deleted and stores the id of the last record it completed; the last one stores the new history id. The step
+    charges the pass budget, and once it is spent it stops before the next record (a record is never split between
+    passes), so the stored id never passes a record left unapplied; the next pass lists the history from there. An
+    interrupted step lists the same history again from the last stored record, and the messages its committed
+    batches wrote are then known.
+  - Listing: `messages.list` newest first, `maxResults` 50 (`GMAIL_LISTING_PAGE_SIZE`), one page per write
+    transaction, which stores the page token of the next page; the last page of `full` moves the cursor to `index`,
+    the last page of `index` ends the listing. Phase `full` searches `after:<window start>`, phase `index`
+    `before:<window start + 1 s>`, the window start being `connected_at` less 90 days in epoch seconds (the
+    phases may overlap by a second; a message both list is ingested once). An interrupted listing resumes at its
+    stored page, and its history id is kept.
+  - Fetches: a message the mailbox already holds by its Gmail id is fetched with `format=metadata` (labels and
+    flags are what can change) and converges; otherwise a `full`-phase message with `format=full`, an `index`-phase
+    message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and Content-Type
+    headers) and its `snippet`, and a live-step message with `format=metadata` first: its arrival and Date decide its
+    content state (`mailContentStateOf`), and only a `full` one is fetched again with `format=full`, so old mail
+    another client labels or moves is stored as an index.
+  - Budget: `GMAIL_FULL_MESSAGES_PER_PASS` (50) full and `GMAIL_INDEX_MESSAGES_PER_PASS` (500) index or known
+    messages per pass, shared by the live step and the listing, spent page by page; a pass whose history or listing
+    is left unfinished is incomplete, requests a rerun
+    in its final transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset, which the
+    pass that ends the listing sets.
+- A Graph pass (`reconcileGraphAccount` in `mail/graphReconcile.ts`): the folder list, then a prepare transaction
+  (Folder items, the cursor read), then the delta round page by page, then the flag write-back and the final
+  transaction as for Gmail. Every write transaction locks the sync state row and writes only while the stored cursor
+  is still the one its fetch started from.
+  - Cursor: `graph_delta_link`, the delta link of the last completed round, and `graph_delta_next_link`, the next
+    page of the round in progress. A pass continues the round at the stored next link, else starts a round at the
+    delta link, else from scratch. Each page (`Prefer: odata.maxpagesize=50`, `GRAPH_DELTA_PAGE_SIZE`, `$select`
+    without `body`) is written in one transaction that stores its next link; the page carrying the round's delta
+    link stores it as `graph_delta_link` and clears the next link, and only then is the round complete. A
+    `410 Gone`/`resyncRequired` on a stored link clears both (logged, no failure, so `last_error` is left as it is),
+    and the same pass starts a round from scratch.
+  - Per page, outside any transaction: which Message-IDs the mailbox already holds (those converge, nothing is
+    fetched), and for each other message its content state by `mailContentStateOf` (`receivedDateTime` as its
+    Date); a `full` one's body (`GET /messages/{id}?$select=body,bodyPreview,hasAttachments`) and, when it has
+    attachments, its attachment list, the bytes spooled.
+  - Budget: `GRAPH_FULL_MESSAGES_PER_PASS` (50) full and `GRAPH_INDEX_MESSAGES_PER_PASS` (500) index or known
+    messages per pass, for rounds from scratch and from the delta link alike, spent page by page; a pass that ends
+    its round unfinished is incomplete like a Gmail one, and `initial_sync_completed_at` is set by the pass that
+    completes the first round.
 - On a CONDSTORE server the folder list carries each folder's STATUS (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ,
   MESSAGES), inline where the server offers LIST-STATUS and otherwise one STATUS per folder. A folder whose four
-  values equal its `mail_folder_sync_state` (`message_count` included) is skipped: no SELECT, no fetch, no write
-  transaction. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
+  values equal its `mail_folder_sync_state` (`message_count` included) skips its live step: no SELECT, no fetch, no
+  write transaction. The STATUS tells nothing of the backfill, so a folder whose backfill is unfinished still runs
+  its backfill step. A changed folder is selected once (`ImapFlowMailClient` reuses the selection for its fetches and
   STOREs); the new-UID search runs only when UIDNEXT passed the cursor, the flag fetch only when HIGHESTMODSEQ moved
   (always without CONDSTORE), and the vanished check only when UIDNEXT or the message count differs from the stored
   ones. The folder list is fetched on every pass: it is how an added or removed folder shows, and it brings the
@@ -264,9 +346,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   vanished check are one `UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE m VANISHED)` (`fetchChangesSince`), whose
   `VANISHED (EARLIER)` names the expunged UIDs. Whether those (or, without QRESYNC, none) are every UID that left is
   decided by the message count: the stored count, less the reported vanished UIDs below the stored UIDNEXT, plus the
-  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a UIDVALIDITY change, a
-  partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
-  known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
+  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a partial batch or with no
+  stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
   UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
 - A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
   row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
@@ -276,29 +357,385 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   goes too), as the Mail-off removal does, so it leaves every thread count and a re-delivery is ingested anew. The
   decision waits for the final transaction because another client's move shows as the target folder's new UID,
   ingested onto the same item by Message-ID, and the source folder's vanished UID; both are seen in one pass, so a
-  move keeps its item and its mark is cleared. A marked Email with a move in flight keeps its mark for a later pass. A target UID left beyond the pass's budget makes the move a removal and a new item in the
-  next pass. The standalone `reconcileImapFolder` removes in its own write transaction.
-- An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
-  inbox first, lowest UIDs first. A folder left partial records its `uidnext` after the last ingested UID. An
-  unfinished pass requests a rerun of itself in its final transaction, leaves the account due at once and keeps
-  `initial_sync_completed_at` unset, so the backfill of a large mailbox is many passes of small batches.
+  move keeps its item and its mark is cleared. A marked Email with a move in flight keeps its mark for a later pass.
+  A target UID left beyond the pass's budget makes the move a removal and a new item in the next pass. The
+  standalone `reconcileImapFolder` removes in its own write transaction.
+- IMAP cursors, per folder in `mail_folder_sync_state`. When the folder's state is established (its first pass, or
+  the first after a UIDVALIDITY change, which `resetForUidvalidityChange` clears it for) the selected UIDNEXT becomes
+  `live_from_uid`, the live cursor `uidnext` and `backfill_below_uid` (`NULL` for a UIDNEXT of 1). Every UID at or
+  above `uidnext` is new; every UID from 1 below `backfill_below_uid` still awaits the backfill; `backfill_below_uid`
+  `NULL` with `live_from_uid` set means the folder's backfill is done. The two ranges never meet: the backfill only
+  covers UIDs the folder held when its state was established.
+- Order of a pass. First every folder's live step, the inbox first: the UIDs from `uidnext` up, lowest first, in one
+  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` above
+  the last UID the step's `UID SEARCH` took when it wrote them all, else after the last ingested UID. Then every
+  folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`, highest (newest) first, in write
+  transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
+  of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
+  left. New mail is therefore ingested before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
+  older history, stored as an index, which a native client may then upload (see
+  [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
+  under an unexpired lease is skipped by the backfill step (no SELECT); its live step runs as always.
+  How far a step reached is decided by its `UID SEARCH`, never by how many messages the `UID FETCH` after it
+  returned: a message expunged between the two leaves a gap, not the end of the folder (`ImapFetchedRange`).
+- Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
+  `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
+  as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
+  is two steps: a light `UID FETCH` (UID, flags, ENVELOPE, BODYSTRUCTURE, the threading and delivery headers,
+  Gmail labels; a Message-ID, In-Reply-To, reference, address or provider id over `MAIL_HEADER_VALUE_MAX_BYTES` is left
+  out as if the message had none, so no server can make a message fail every pass) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
+  (`listKnownMailMessageIds`); only after that a full message's body parts are downloaded and its attachments
+  spooled, and every index message's snippet part is read in one partial `UID FETCH … BODY.PEEK[<part>]<0.2048>` per
+  distinct part (`fetchSnippets`, decoded by `mail/imapSnippet.ts`). A known message downloads nothing; a known one
+  whose meta row is gone by the batch's write (removed meanwhile) ends the batch there, unwritten, for a later pass.
+  A pass that leaves new messages or any folder's backfill behind requests a rerun of itself in its final
+  transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset; it is set by the first
+  pass that ends with every folder's backfill done, or by the upload that finishes the last one. A backfill left to a
+  client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
+  minutes, when an expired or released lease has given the folder back to the server.
+- Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
+  against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
+  before its backfill is simply not found by it.
+- A UIDVALIDITY change. The live step that finds it fetches no flags and lists no UIDs: the known UIDs name other
+  messages under the new UIDVALIDITY, so neither their flags nor their absence tells anything. In the transaction
+  that resets the folder's state (`resetForUidvalidityChange`) every edge of the folder that carries a UID keeps its
+  Email but trades the UID for `staleUid` (`retireFolderUids`), so no reader ever pairs an old UID with the new
+  UIDVALIDITY: the vanished diff, the flag observation and write-back, the moves, the content and attachment reads
+  (which then search the folder by Message-ID) and the provider search see such an edge as one without a UID. The
+  folder's backfill then reaches every message the folder holds and ingests it by Message-ID (without download),
+  which gives its edge the new UID. The write that ends the folder's backfill (the server's, or the upload of a
+  native client) removes every edge still left with only a `staleUid`, a message the folder no longer holds, and
+  marks its Email as a vanished copy's (`removeStaleFolderCopies`); the next final transaction trashes it when it has
+  no folder edge left. An Email with a move in flight keeps its edge.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
-- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction (every
-  transaction of an IMAP pass), then re-reads the Mailboxes item and sync state row; a trashed/missing item, a
+- In a pass, `enterSyncPass` takes the guard as the first statement of each write transaction, then re-reads
+  the Mailboxes item and sync state row; a trashed/missing item, a
   missing row or a paused row (Mail off) ends the pass with no further provider call and no further write. A
-  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and an IMAP
-  pass it overtakes ends at its next transaction. The pass waits for the guard at most
+  removal or the Mail switch therefore waits for a pass's transaction, not for its provider calls, and a pass it
+  overtakes ends at its next transaction. The pass waits for the guard at most
   `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a removal still holds it, the pass is skipped and records
   nothing (no failure, status, problem or notification); the sweep re-enqueues an account that is still due.
-- A pass with no stored credential fails with `MailReauthorizationRequiredError` (failure kind `reauthorization`,
-  `syncStatus` `needsReauthorization`), whatever the status it read: only the user can store one again.
-- The sweep (`listAccountsDueForSync`) leaves out an account whose last failure kind is `reauthorization`; the
-  sign-in again (OAuth reauthorization or the password route) queues its next pass.
+- A pass with no stored credential, or whose provider refused the stored sign-in, fails with
+  `MailReauthorizationRequiredError` (failure kind `reauthorization`, `syncStatus` `needsReauthorization`),
+  whatever the status it read: only the user can store one again. The job records it and returns without
+  rethrowing, so graphile-worker does not retry it.
+- An account whose last failure kind is `reauthorization` is left alone everywhere until a sign-in clears the kind:
+  the sweep (`listAccountsDueForSync`) does not list it, live-sync discovery does not host it, and the job's
+  prologue ends after the sync state read, before the pass lease, the credential read or any provider call. The
+  sign-in again (OAuth reauthorization or the password route) clears the failure record (`clearMailSyncFailure`) in
+  the transaction that stores the credential and queues the next pass.
+- A failed pass pushes `next_expected_activity_at` out by a jittered delay that grows over the failure streak
+  (decorrelated jitter, `mail/mailBackoff.ts`): uniform between the base and three times the previous delay, capped
+  at 6 hours. The base is 5 minutes, or for `MailConnectionLimitError` the provider's connection-limit backoff
+  (`connectionLimitBackoffSecondsForProvider`, 5 or 10 minutes). The previous delay is read from the row
+  (`next_expected_activity_at − last_activity_at` while `failing_since` is set); a successful pass ends the streak.
+  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1). While
+  `failing_since` is set and the backed-off `next_expected_activity_at` lies ahead (`isMailSyncBackingOff`, by the
+  database clock), the job's prologue ends after the sync state read, before the pass lease, the credential read or
+  any provider call, whoever queued it (IDLE, a push, a flag or move write-back); and the release of a failed pass
+  queues no follow-up for a trigger that asked for one while it ran (`pass_rerun_requested` is dropped). The sweep
+  queues the next pass once the account is due, so a failing server sees one login per backoff delay. A sign-in
+  again (`clearMailSyncFailure`) and the Mail switch (`pauseMailAccountSync`) clear the failure record before they
+  queue a pass, so theirs runs at once.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
+
+### Arrival: live and backfill
+
+- Ingest stamps every new message's `mail_message_meta.arrival` once: `live` for new mail after the account
+  connected, `backfill` for history an initial sync or a full resync imports. A message ingested again (another
+  folder, a repeat observation, the sync confirmation of a sent message) keeps the stored value; a send claim is
+  `live`.
+- The anchor is `mail_account_sync_state.connected_at`, set to `now()` by the first pass that finds it unset
+  (`anchorMailAccountConnection`) and cleared by `pauseMailAccountSync`, so switching Mail off and on again anchors the
+  account as a new one.
+- The adapter decides whether the provider reports a message as new (`mail/mailArrival.ts`, `mailArrivalOf`):
+  - IMAP: per folder, `mail_folder_sync_state.live_from_uid` is the UIDNEXT selected when the folder's state is first
+    established, and again after a UIDVALIDITY reset (`resetForUidvalidityChange` clears it). A UID at or above it is
+    new; every message the folder already held, including the rest of a backfill spread over many passes, is not.
+  - Gmail: a message reached through `history.list` from the stored history id is new; the full listing of a first
+    pass or of the resync after a history invalidation is not.
+  - Graph: a message of a delta round started from the stored delta link is new; a delta from scratch (first pass, or
+    after `410 Gone`/`resyncRequired`) is not.
+- A message the provider reports as new is still `backfill` when its Date is older than `connected_at` less one day
+  (`MAIL_LIVE_ARRIVAL_DATE_GRACE_MS`): old mail another client moves into a folder is not new mail. A message without a
+  Date is judged by the provider alone.
+- Only `live` mail triggers model calls or notifications: the `newEmail` heartbeat (`core.agentRun` with the
+  `liveMailFilter` gate, checked before the answer-expected gate's model call), thread project triage
+  (`mailThreadProject`, queued by ingest, with the project signal match it runs first), and the
+  `calendar_invitation` notification of an iMIP invitation
+  (`calendar/invitationIngestAction.ts` still writes the Invitations item of a backfilled message, unnotified, as a
+  calendar's initial sync does). Person linking, thread link rules, invitation reply application and search indexing
+  run for backfilled mail too.
+
+### Content: full and index
+
+- Ingest stamps every new message's `mail_message_meta.content_state` once (`mail/mailContentState.ts`,
+  `mailContentStateOf`); a message ingested again keeps it, a send claim is `full`. A message is `full` when it is
+  `live`, or when its Date is at most `MAIL_FULL_CONTENT_WINDOW_DAYS` (90) before the account's `connected_at`;
+  older history, and history without a Date, is `index`.
+  - Gmail decides by where the pass reaches the message: the live step (`history.list`) by `mailContentStateOf` from
+    its metadata (new mail `full`, old mail another client labels or moves `index`), the listing by its phase, which
+    Gmail's search decides by the internal date (`full` inside the window, `index` beyond it).
+  - Graph decides by `mailContentStateOf` with `receivedDateTime` as the Date.
+- `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
+  blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment
+  text folded into the search text. `mail_attachments.provider_part` records where the provider holds the bytes: IMAP
+  the body part id, Graph the attachment id, Gmail the payload's `partId` (Gmail's attachment ids change between
+  `messages.get` calls, so they are not stored).
+- `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
+  `preview_text` from the snippet (IMAP: the first 2 KiB of the text part, else HTML part; Gmail: `snippet`, its
+  HTML entities decoded; Graph: `bodyPreview`); for IMAP each attachment as a `mail_attachments` row with `blob_id`
+  NULL, its `provider_part` and the size BODYSTRUCTURE gives (0 when the server gives no count of octets), and no Files
+  item and no edge; the search text is
+  subject, sender, snippet and attachment filenames. A Gmail or Graph index message records no attachment: a
+  `format=metadata` fetch lists no parts, and a Graph attachment list per message would cost a request per
+  message of the backfill. A row has a blob or a provider
+  part (`mail_attachments_stored_or_located_check`).
+- Readers of `mail_attachments` treat a NULL `blob_id` as bytes not stored: the thread detail answers each message's
+  `contentState` and `preview`, and each attachment's `attachmentId` and `stored` (`blobId`, `fileItemId` NULL); the
+  removal impact counts only stored attachments as kept; a Semp attachment reference has no blob; calendar parts
+  are read from stored ones only. A forward copies only attachments that have a Files item.
+
+### On-demand content and attachments
+
+- `contentState` as readers see it (`MAIL_MESSAGE_CONTENT_STATES`): `full` (the body is stored, `Emails.body`), `cached`
+  (an `index` message with an unexpired row in `mail_message_content_cache`) or `remote` (an `index` message without
+  one). The thread detail serves a `cached` message's body from the row (HTML part, else text part, sanitized like a
+  stored body) and a `remote` one with both bodies empty; `preview` is always the stored snippet.
+- `mail_message_content_cache` (`mail/mailContentCacheStore.ts`): per Emails item (`ON DELETE CASCADE`) the HTML and the
+  text part as the provider returned them, unsanitized, with `fetched_at` and `expires_at` = `fetched_at` +
+  `MAIL_CONTENT_CACHE_DAYS` (7). An expired row reads as none. Its one writer is `writeMailContentCache`, called only by
+  the content route's fetch: it locks the Emails item `FOR KEY SHARE`, writes nothing for a trashed or gone item, and
+  upserts on `(tenant_id, item_id)`, so a repeat fetch replaces the row and two writers never fail on each other.
+  Trash, Mail off and removal leave rows to expire; a purge removes them with the item.
+- `mailContentCacheSweep` (daily 03:55, `api` runtime, system task) deletes expired rows, one transaction per active
+  tenant (`forEachActiveTenant`, as every scheduled sweep); a failing tenant does not stop the others. A suspended
+  tenant's expired rows wait for its reactivation (no reader serves an expired row, and a suspended tenant has no
+  reader), a deleted tenant's go with its purge.
+- `GET /api/mail/messages/:emailId/content[?allowRemoteImages=true]` (`mail/mailMessageContent.ts`) answers
+  `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt, attachments }` (the two times
+  `null` for a stored body; `attachments` as the thread detail lists them, `{ attachmentId, filename, contentType,
+byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until the bytes are saved, read with the body's
+  source before any provider call, `mail/mailMessageAttachments.ts`). A malformed id is 400; an unknown, foreign or trashed id the same 404. A `full` message (or one without
+  a meta row) answers its stored body, an `index` message its unexpired cache row; otherwise the body is fetched from the
+  provider outside any transaction, written as the cache row in a short transaction and answered `cached`.
+  - Before any provider call, an account that is trashed, has no sync state or has Mail off answers 409
+    `mail_content_unavailable` with `details.reason` `mailboxUnavailable`; one whose last sync failure is
+    `reauthorization` answers `reauthorizationRequired`.
+  - IMAP: the stored password (access logged as the user, purpose `imap_content`), then the account's client from the
+    sync's factory (the kept session of `sharedImapSessionPool`, else a new connection under the connection limiter).
+    Folder edge by folder, those with a UID first: the edge's UID while the folder's UIDVALIDITY equals the stored
+    `mail_folder_sync_state.uidvalidity`, else (UID gone, UIDVALIDITY changed, edge without UID) the first five UIDs
+    `UID SEARCH HEADER Message-ID` finds in that folder. A folder whose SELECT the server refuses as one it does not
+    hold or does not let the login open (`NO` with `NONEXISTENT`, `NOPERM` or no response code,
+    `ImapFolderUnavailableError`) is passed over and the next edge tried; any other failure, a dropped connection
+    included, ends the read. The body parts are chosen as the full ingest chooses them
+    (`walkBodyStructure`), each read up to 16 MiB (`IMAP_CONTENT_MAX_PART_BYTES`) under a 60 s deadline; a SEARCH has
+    30 s. Gmail and Graph refresh the access token as the sync does, the stored refresh token's access logged as the
+    user with purpose `gmail_api_content` or `graph_api_content` (an attachment save too), and read the body with the
+    sync's own full read, so it is chosen and annotated as the full ingest
+    stores it: Gmail `fetchMessage(id, "full")` (`messages.get format=full` by `provider_message_id`), Graph
+    `fetchMessageContent` (`GET /me/messages/{id}?$select=body,bodyPreview,hasAttachments`, then the attachment list
+    of a message that has attachments, item and reference attachments annotated into the body; no attachment byte is
+    fetched). Both: 30 s per request, every JSON response of the Gmail and Graph clients capped at 64 MiB, 404 = no
+    such message.
+  - Failures: a refused sign-in is `reauthorizationRequired`; a provider that holds no such message is
+    `messageNotFound`; any other provider failure (connect, limiter wait, timeout, refused command, HTTP status) is
+    logged by error name with local ids and answered `providerUnreachable`. A database failure keeps its identity.
+    Nothing is cached on a failure.
+  - A read that missed a fetch which just ended re-reads the cache before asking the provider. Every read that then needs
+    the provider is counted by the throttle for its own user, whether it starts the fetch or joins one: action
+    `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as the password routes), refusal 429
+    `rate_limited` with `Retry-After`. Concurrent reads of one message by one user in the process share one fetch (keyed
+    by tenant, user and item id), so the credential access it logs is that user's.
+- `POST /api/mail/messages/:emailId/attachments/:attachmentId/save` (`mail/mailAttachmentSave.ts`) answers
+  `{ fileItemId }`. A user action; no agent tool calls it. An attachment of another message, an unknown, foreign or
+  trashed id is the same 404. An attachment with stored bytes and a live Files item of the Email (same blob and name)
+  answers that item without a provider call. Otherwise the bytes are fetched by `provider_part` (IMAP: the same folder
+  and UID resolution, the leaf part streamed with the `MAX_ATTACHMENT_BYTES` cap; Gmail: the message read again with
+  `format=full`, the attachment of the stored `partId` and filename taken from it and its bytes read by the attachment
+  id of that read (`attachments.get`), or from its inline data; Graph `/attachments/{id}/$value` with the immutable-id
+  header). Only IMAP records attachments without bytes (a Gmail or Graph index message records none, and a full
+  one stores every attachment's bytes). The bytes are counted by `mailContentFetch`, and written to the mail
+  attachment storage before the transaction; a stream that sends nothing for 60 s fails, and a storage write that fails
+  before the end destroys the provider's stream, so an IMAP session with the download still running is closed instead
+  of kept. An attachment the IMAP or
+  Gmail client reports over the cap is 409 `attachmentTooLarge` (Graph's stream fails as `providerUnreachable`), other
+  failures are answered as for the content route, and the written bytes are removed.
+  - The transaction (`saveMailAttachmentFile`, `mail/attachments.ts`) takes the mail-thread guard, locks the
+    `mail_attachments` row `FOR UPDATE`, gives a row without bytes the blob (`findOrCreateBlob`, deduplicated by content
+    hash) and the stored size, then answers the Email's live Files item over that blob and name or creates one with the
+    `Emails.attachments` and `Threads.attachments` edges, as the full ingest does (no attachment text is indexed).
+    Concurrent saves queue on the guard and the row, so a second save finds what the first wrote; bytes nothing
+    references (a duplicate blob, or a save that lost) are deleted after the transaction.
+- Agent reads never fetch a body (`mail.search` asks the providers to search only): `mail.thread.get` gives a
+  `remote` message's preview as `bodyText` with a `contentNote` saying its content is not downloaded, and the
+  answer-expected gate shows it as a preview marked so; a `cached` message is read like a stored one.
+
+### Search
+
+- Two layers: the local index (`item_search_index`, the thread list's `matchesSearch`) knows an `index` message only by
+  subject, addresses, snippet and attachment names, so a word only an older body holds is found at the provider.
+  `GET /api/mail/threads?q=` and global search stay local; `GET /api/mail/search` and the `mail.search` tool ask both
+  (`mail/mailRemoteSearch.ts`).
+- `GET /api/mail/search?q=&mailboxId=&limit=` answers
+  `{ threads, localCount, remote: { searched, failed: [{ mailboxId, reason }], unindexed } }`. `q` (trimmed, 1–1000
+  characters, required) and `limit` (1–200, default 50) are read as the thread list reads them, a `before:`/`after:`
+  that is no ISO date is 400. `threads` are thread list rows: the local matches over every box (a thread with a copy
+  outside Junk and Trash, `box: "all"`) together with the threads of the Emails the providers found, which must meet the
+  query's operators too (`searchMessageItemIds`), deduplicated, newest first, at most `limit`; `localCount` is how many
+  of them the local search matched. A `mailboxId` narrows both; an unknown, foreign or trashed one is the 404 of a
+  random id, before any provider call.
+- Provider search runs only for a query with free text (`parseMailSearchTerms`: words and quoted phrases, `-` excludes,
+  `or` is dropped, at most 8 terms of 100 characters): every operator is a condition on the stored index. Each live
+  account with a sync state is searched outside any transaction, at most 3 at a time (`MAIL_REMOTE_SEARCH_CONCURRENCY`),
+  with an overall deadline of 15 s (`MAIL_REMOTE_SEARCH_DEADLINE_MS`) and at most 100 hits per account
+  (`MAIL_REMOTE_SEARCH_MAX_HITS`); hits are mapped to Emails in a short transaction afterwards. An account with Mail off
+  (`mailOff`) or whose last sync failure is `reauthorization` (`reauthorizationRequired`) is reported in `failed`
+  without a provider call. A refused sign-in is `reauthorizationRequired`, any other provider failure is logged by error
+  name with local ids and is `providerUnreachable`, an account that has not answered by the deadline is `timeout` (its
+  Gmail or Graph request is aborted, its IMAP search stops at the next folder, a wait for its IMAP connection slot or
+  login ends, what it finds later is dropped). A
+  database failure keeps its identity. A hit no local Emails item records is counted in `unindexed`.
+  - IMAP: the stored password (access logged as the user, or `ai_agent` with the run id, purpose `imap_search`), the
+    client from the content reads' factory (kept session or a new connection under the limiter). Folders: Inbox, Archive
+    and Sent, in that order; an account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk,
+    Drafts and the user's own folders are not searched. A folder the server no longer holds
+    (`ImapFolderUnavailableError`) is passed over. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
+    an excluded one), 30 s each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that
+    refuses it is asked again with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the
+    folder's stored UIDVALIDITY equals the one the search selected, as the search began and again in the mapping's
+    transaction (a pass that established the folder anew meanwhile gave its edges other UIDs); otherwise, or without an
+    edge, it is unindexed.
+  - Gmail and Graph refresh the access token with the stored refresh token's access logged as the user, or `ai_agent`
+    with the run id, purpose `gmail_api_search` or `graph_api_search`.
+  - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
+    Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
+    `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
+    the local box filter leaves out a thread only in Junk or Trash. Both map by `provider_message_id` of the account; 30
+    s per request, ended earlier by the deadline.
+- Only a search that asks a provider is counted by the throttle: action `mailRemoteSearch`, 30 per 15 minutes **per user
+  id** (the `throttle` member), refusal 429 `rate_limited` with `Retry-After`, before any provider call.
+- `mail.search` (capability `mail.read`, approval none, risk `read`, declared for MCP like `mail.thread.get`) takes
+  `{ query, mailboxId?, limit? (1–50, default 20) }` and answers compact rows (`threadId`, `subject`, `lastMessageAt`,
+  `lastSender`, `snippet`), `localCount`, `remote` and `remoteSearch` (`searched`, `notNeeded`, `unavailable`,
+  `runBudgetSpent`, `rateLimited`). A refusal of the provider part makes the call local-only, never a failure. A run
+  makes at most 5 provider searches (`MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN`), counted in the process that runs it (no
+  per-run budget exists elsewhere); the run's user is counted by `mailRemoteSearch` as well. A human `/mcp` session's
+  handler gets the providers and throttle from the custom routes' container; a run's handler is built without it and
+  reads them from `bindMailAgentRemoteSearch`, which `semprec-api`'s `createDispatcher` binds. A process that binds
+  nothing (`semprec-agents` today, which composes no provider clients) answers local matches with
+  `remoteSearch: "unavailable"`.
+
+### History upload from a native client
+
+An IMAP account's older history can be fetched by the user's native app from the user's own network and uploaded,
+so the server's address does not pull years of every account's history. The server still stores live mail and the
+history inside the full-content window itself; without a client it backfills the rest alone, as above. Gmail and
+Graph accounts import their history server-side only. Code: `mail/mailHistoryUpload.ts`; the raw responses are parsed
+by `mail/imapFetchResponseParser.ts` (imapflow 1.7.6's own `ImapStream`, parser and `tools.formatMessageResponse`,
+internals proven against the real library by its unit test; an upgrade must re-prove them).
+
+- The lease. `mail_folder_sync_state.client_backfill_lease_token` and `client_backfill_lease_until`
+  (`MAIL_HISTORY_LEASE_MS`, 10 minutes). While the lease is unexpired the server's backfill skips the folder; the
+  live step is unaffected. A lease ends at its expiry, by the release route, or with the folder's state on a
+  UIDVALIDITY change (`resetForUidvalidityChange` clears it and `backfill_index_only`). While a client holds the
+  lease, the upload is the second writer of the folder's `backfill_below_uid`, and the one that finishes an account's
+  last folder backfill sets `initial_sync_completed_at` (`recordImapInitialSyncCompleted`).
+- Every route answers a malformed, unknown, foreign or trashed mailbox id with the same 404 `not_found`, and a mailbox
+  whose sync mode is not `imap`, that has Mail off or no sync state, or whose last sync failure is `reauthorization`
+  with 409 `mail_history_unavailable`, `details.reason` `notImap`, `mailboxUnavailable` or `reauthorizationRequired`.
+  Each runs in READ COMMITTED transactions that take the mailbox sync guard first (≤ 15 s, else 409
+  `mailbox_sync_busy`), so a removal or the Mail switch waits for them as for a pass's, and re-read the Mailboxes item
+  and the sync state under it. The claim and the upload count against the per-user throttle, action
+  `mailHistoryUpload`, 600 per 15 minutes; a refusal is 429 `rate_limited` with `Retry-After`.
+- `POST /api/mail/mailboxes/:id/history-index/claim`, body `{ leaseToken? }` (a UUID; without it a new token). One
+  statement leases to the token every folder of the mailbox (live Folder items with a `providerId`) whose backfill is
+  index-only and unfinished and that no other token holds unexpired, and renews those the token holds. Answer:
+  `{ leaseToken, leaseExpiresAt: string | null, folders: [{ folderId, path, uidvalidity, backfillBelowUid }],
+  pendingFullBackfill: boolean }` (`leaseExpiresAt` `null` when nothing was leased). `pendingFullBackfill` is true
+  while the mailbox has no folder state yet, or some folder is not established or still in the server's in-window
+  backfill (unfinished, not index-only): claiming again later may lease more.
+- `POST /api/mail/mailboxes/:id/history-index/release`, body `{ leaseToken }`: ends the token's leases on the mailbox's
+  folders, expired ones included; answers `{ released }`. Not throttled.
+- `POST /api/mail/mailboxes/:id/history-index`, body (at most `MAIL_HISTORY_MAX_BODY_BYTES`, 8 MiB, declared as the
+  route's `maxBodyBytes` and enforced while the adapter reads it, 413 `payload_too_large` beyond):
+  `{ leaseToken, folderId, uidvalidity, rangeHigh, rangeLow, uids: number[], messages: [{ uid, fetch }] }`. One
+  contiguous slice of the folder's history, newest first: the client sends `UID SEARCH UID rangeLow:rangeHigh-1`, then
+  `UID FETCH <uids> MAIL_HISTORY_FETCH_ITEMS`, exactly
+
+  `(UID FLAGS ENVELOPE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (REFERENCES DELIVERED-TO X-ORIGINAL-TO ENVELOPE-TO LIST-UNSUBSCRIBE LIST-ID PRECEDENCE AUTO-SUBMITTED)] BODY.PEEK[TEXT]<0.2048>)`
+
+  (the light fetch's items and header fields, `IMAP_LIGHT_FETCH_HEADERS`, plus the first `IMAP_SNIPPET_BYTES` octets
+  of the TEXT section), and uploads each untagged FETCH response's bytes, as its server sent them (literals inline),
+  base64 in `fetch`. Other data items a server adds (MODSEQ under CONDSTORE) are ignored; an `EMAILID` a client asks
+  for on an OBJECTID server becomes the provider message id, as in the light fetch.
+  - Validated before anything is written, a malformed one 400 `validation_failed` naming the field by its path
+    (`messages.3.fetch`): integers in the IMAP number range, `rangeLow < rangeHigh`; `uids` unique, inside
+    `[rangeLow, rangeHigh)`, at most `MAIL_HISTORY_MAX_MESSAGES` (500); `messages` at most 500, exactly one per listed
+    UID; each `fetch` strict base64 of at most `MAIL_HISTORY_MAX_FETCH_BYTES` (64 KiB) holding exactly one untagged
+    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section, whose
+    BODYSTRUCTURE sizes are integers from 0 to `Number.MAX_SAFE_INTEGER` and whose Message-ID, In-Reply-To, addresses
+    and `EMAILID` hold at most `MAIL_HEADER_VALUE_MAX_BYTES` (998) bytes of UTF-8, a header line, inside the row a
+    btree index takes.
+  - Each response is read as the light fetch reads its own (`lightFetchedMessageOf` in `mail/imapLightFetch.ts`:
+    envelope, flags, threading, delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and
+    sizes). The snippet comes from the part the light fetch reads it from (the text part, else the HTML part): a
+    single-part message's TEXT section itself, else that part found in the cut TEXT section by the boundaries
+    BODYSTRUCTURE names, its header block skipped (`bodyPartPrefixInText`); a part whose content starts beyond the
+    cut, or one inside an attached message, gives no snippet. Of a multipart message less than 2 KiB of the part is
+    read, so its search text can be shorter than the server's; the 200-character preview is the same.
+  - Written in READ COMMITTED transactions of at most `IMAP_MESSAGES_PER_BATCH` (50) messages, newest first: mailbox
+    sync guard → the account's sync state row `FOR UPDATE` and the mailbox re-read → mail-thread guard → the folder's
+    sync state row
+    `FOR UPDATE`, which must still hold the uploaded UIDVALIDITY (else 409 `mail_history_uidvalidity_changed`), an
+    unexpired lease of the token (else 409 `mail_history_lease_expired`) and the cursor the batch continues (the first
+    at `rangeHigh`; else 409 `mail_history_range_stale` with `details.backfillBelowUid`, the cursor the folder holds).
+    A folder that is not one of the mailbox's is 404 `not_found`. Each message is ingested as a server backfill
+    batch ingests it, `arrival` `backfill` and `content_state` `index` (a message inside the window too; its body is
+    read on demand), with the moves in flight protected; a known Message-ID converges as always. Then the cursor moves
+    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done, which
+    removes the edges a UIDVALIDITY change left with only a `staleUid` as the server's backfill does), and the lease is
+    renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
+  - Answer: `{ accepted, backfillBelowUid: number | null, leaseExpiresAt }`.
+- The client. The mobile apps upload the history of an IMAP account right after the person connected it with a
+  password, while that password is in memory; it is never stored on the device. One IMAP connection per accounts
+  screen, implicit TLS on 993 with the certificate checked against the host name (a STARTTLS-only server is left to
+  the server's backfill), read-only (`EXAMINE`). Per leased folder whose UIDVALIDITY matches, from the cursor down: a `UID SEARCH`
+  per 2000 UIDs, a `UID FETCH` per 200, uploads well under the body limit; a stale cursor is taken over, a response
+  over 64 KiB ends the client's work on that folder just above it, and the lease is renewed by claiming again with the
+  same token every 4 minutes. It stops on `mail_history_lease_expired`, `mail_history_unavailable`, a 429 or any other
+  failure, and releases the lease whenever it ends, also when the screen closes. Code and the client-side rules:
+  `mobile/docs/architecture.md`, "Mail history from the device".
+
+### IMAP connection limits and kept sync sessions
+
+- `mail/imapConnectionLimiter.ts` is the one per-process limiter of IMAP connections, shared by sync passes, moves,
+  Sent APPEND and IDLE (`sharedImapConnectionLimiter`). It bounds open connections per account
+  (`imapConnectionLimitForProvider`: the mailbox's `connectionLimit`, else Gmail 5, iCloud and Outlook 3, others 2),
+  open work connections per server host (`HOST_IMAP_CONNECTION_LIMIT`, 10, the same for every host), and logins per
+  server host (`HOST_IMAP_LOGINS_PER_MINUTE`, 20: a burst of 20, then one every 3 s). A slot is taken account first,
+  then host. Waits are FIFO and reject after 3 minutes; an IDLE lifecycle's waits also end when it stops.
+- An IDLE connection, open for hours, counts against its account only (`kind: "idle"`): counted against the host,
+  it would cap how many accounts of one provider can listen at all. Everything else (`kind: "work"`: a sync session,
+  the IDLE folder lookup, a Sent APPEND) counts against both.
+- `mail/imapSessionPool.ts` keeps one IMAP sync connection per account open between uses in the process
+  (`sharedImapSessionPool`, used by the composition root's sync adapter, its on-demand content reads and the provider
+  search). The move drain and the pass of a job, consecutive passes and content reads take the same connection in turn,
+  exclusively; a second concurrent caller gets a connection of its own. A kept connection is reused only when it was
+  opened with the same server settings, user name and credential, answers a NOOP, and nothing it ran failed
+  (`ImapMailClient.isReusable`); a rejected operation, a failed or timed-out fetch, an ambiguous move or a changed
+  sign-in closes it instead.
+- A kept connection holds its account and host slots while it is unused, because the provider counts it, and gives
+  them up as soon as another caller has to wait for one of them (the limiter asks it to close). It is closed after
+  4 minutes unused (`IMAP_SESSION_IDLE_TIMEOUT_MS`, below common server idle cutoffs), on `closeAccount` (the
+  live-sync control calls it after every `restartAccount` and `stopMailbox`: a sign-in again, Mail switched off, a
+  removal) and on shutdown (`close()`, after which checkouts are refused).
 
 ### Live sync root and hosted lifecycles
 
@@ -307,8 +744,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   transactions.
 - Discovery takes no sync guard and never waits: for an account without a sync state row it seeds one only
   after `SELECT … FOR SHARE SKIP LOCKED` on the live Mailboxes item (`ensureMailAccountSyncStateOfLiveMailbox`).
-  A skipped account is left out of the pass silently, as is a paused one (Mail off); a hosted account left out
-  is stopped by the pass.
+  A skipped account is left out of the pass silently, as are a paused one (Mail off) and one whose last sync
+  failure is `reauthorization`; a hosted account left out is stopped by the pass. `restartAccount` does not host an
+  account the root does not host, so an account signed in again is hosted by the next discovery pass.
 - `restartAccount(mailboxItemId)` stops and re-hosts one entry, running in the root's captured async context
   inside `runAsSystem("mail:liveSync")`; the tenant comes from the recorded entry, never from the caller, and a
   caller in a tenant scope only reaches its own tenant's entries. The root must be created outside any scope.
@@ -316,29 +754,41 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   entry once. Routes reach the root through `createMailLiveSyncControl`
   (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
-- The hosted IMAP lifecycle owns its discovery/startup task: policy refusals and transient errors go into the
-  bounded backoff, while `MailReauthorizationRequiredError` (the composition root's `getCredential` throws it when no
-  credential is stored) ends the discovery after one report until `restartAccount` hosts a new lifecycle; stop cancels waits and joins all owned work before pool shutdown. IDLE logout grace is 10 s,
-  then public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
+- The hosted IMAP lifecycle owns its discovery/startup task. A start queues the account's pass once, however often
+  its discovery is retried, and every established IDLE session queues one catch-up pass (see the IDLE transport
+  above). The folder lookup runs under a work slot of the limiter and each folder's IDLE
+  connection under an IDLE slot. Policy refusals, transient errors and a session that ended with an error go into a
+  jittered backoff (decorrelated jitter between 5 s and 5 min; a clean server close and the 6 h recycle reconnect at
+  once), while `MailReauthorizationRequiredError` (the composition root's `getCredential`
+  throws it when no credential is stored; its connection factory classifies a refused login as it) ends the
+  discovery or the folder's loop after one report until `restartAccount` hosts a new lifecycle; stop cancels waits
+  (a slot or login wait included) and joins all owned work before pool shutdown. IDLE logout grace is 10 s, then
+  public `close()`; work that has not settled keeps stop pending (it is never abandoned as "done").
 - The Gmail Pub/Sub dispatcher (`createGmailPubSubDispatcher`, `mail/gmailWatchLifecycle.ts`) routes each
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
   after every hand-off.
+- Graph ids: every Graph mail request (sync reads, attachment streams, flag write-back, moves, drafts and sends,
+  the subscription's creation) sends `Prefer: IdType="ImmutableId"` (`mail/graphImmutableIds.ts`), so
+  `provider_message_id` of a Graph account holds the immutable id, which survives a folder move; a move response
+  names the same id, and change notifications name messages by it.
 - `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
-  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` → `pool.end()`.
+  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` →
+  `imapSessions.close()` (the kept IMAP sync sessions, once no pass runs) → `pool.end()`.
   A future long-lived outbound loop that enqueues work stops after the drain, before what it would race.
 
 ### Provider moves
 
 - A user move records a desire in `mail_message_move_sync_state` (`mail/mailMessageMoveSyncStore.ts`,
-  `recordDesiredMailMessageMove`); sync executes it in a move phase **before** the reconcile transaction
+  `recordDesiredMailMessageMove`); sync executes it in a move phase **before** the reconcile
   (`mail/mailMessageMoveSync.ts`). Independently callable reconcilers only observe move state.
 - Each step is claimed atomically in a short guarded transaction (operation token, monotonic desired revision,
   captured revision, durable phase, bounded validated evidence) and committed before dispatch. Only the
-  claiming token records the outcome. The provider call runs outside every transaction, with the shared IMAP
-  connection limiter, under a 30 s elapsed deadline per preparation/step.
-- An IMAP move phase (`drainImapMoves`) runs all its moves over one connection it owns and closes; a later round of a
-  pass hands it the pass's open connection. A move whose provider outcome is unknown (a failed or unanswered command,
-  a preparation without a result) closes that connection, and the next move opens a new one.
+  claiming token records the outcome. The provider call runs outside every transaction, on the account's IMAP sync
+  connection (the kept session, see above), under a 30 s elapsed deadline per preparation/step.
+- An IMAP move phase (`drainImapMoves`) runs all its moves one after another over one connection it owns and closes,
+  which hands a pooled one back to the session pool; a later round of a pass hands it the pass's open connection. A
+  move after which the connection is not known to be clean (a failed or unanswered command, a preparation without a
+  result, a client that does not report itself reusable) closes that connection, and the next move opens a new one.
 - OAuth tokens are acquired before the claim into a private one-use command; a lost claim discards it.
 - Unknown acknowledgement or owner death leaves the operation in-flight/uncertain; nothing (lease, timer, new
   desire) clears it automatically and no command is blindly repeated. IMAP identity includes UIDVALIDITY and
@@ -357,9 +807,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - It is taken first, before membership reads, thread resolution, metadata or item locks, by: the resolver,
   ingest (before its existing-message read and savepoint), the IMAP/Gmail/Graph reconcilers (Gmail before its
   folder-state guard), SMTP failed-claim cleanup, merges, thread actions, thread-task writes, the
-  `mail.thread.proposeTask` tool and the mail purge hook.
-- It serializes all thread decisions of a tenant across mailboxes and inherits the reconcile transaction's
-  lifetime, provider calls included.
+  `mail.thread.proposeTask` tool, the attachment save (it writes a `Threads.attachments` edge), the project signal apply,
+  thread project triage and the mail purge hook.
+- It serializes all thread decisions of a tenant across mailboxes for the lifetime of the transaction that takes
+  it; no sync pass, content read, attachment save or project triage holds it across a provider or model call.
 - Only writers that hold several Emails items in one transaction take it. Single-item writers (generic item
   PATCH, draft writes, person linking) do not.
 
@@ -377,7 +828,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - The Threads domain hook (`mail/threadValueEdges.ts`) reserves every Threads endpoint of any relation mutation
   (UUID order, `FOR UPDATE` or the value-link NOWAIT wrapper), rechecks liveness, and enforces at most one
   project/company per thread. All production writes incident on Threads go through these owners.
-- Edges of `Threads.company`/`project` publish a `mailThread` invalidation after commit.
+- Edges of `Threads.company`/`project` stamp the thread's list row, which publishes its `mailThread` invalidation
+  after commit (Thread list changes).
 - Failed-SMTP-claim cleanup removes an emptied thread by soft-deleting its Threads item, then the row.
 
 ### Thread actions
@@ -404,6 +856,42 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   or a Sent folder (an earlier record stays when it left neither); restore returns the copy there, and only a copy
   without a record goes by received (Inbox) or own (Sent).
 
+### Thread list changes
+
+The server index stays the only source of truth; a client keeps the rows of a list view and asks only for what
+changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks.ts`).
+
+- `GET /api/mail/threads` answers `changesCursor` beside each page, read in the page's own `repeatable_read`
+  snapshot. `GET /api/mail/threads/changes?since=<cursor>` takes the list's view filters (`box`, `folderId`,
+  `mailboxId`, `projectId`, `areaId`, `personId`, `unread`; no `q`, a search is not a view) and answers
+  `{ cursor, threads, removed, reset }` in one `repeatable_read` snapshot: `threads` are the stamped threads still in
+  the view, shaped as the list shapes them, `removed` the stamped ids that are not (moved out, merged away,
+  deleted). A malformed or missing `since` is 400. `reset: true` (no rows) when the cursor names another counter
+  epoch, a step the tenant never reached, a step before the last change of every row, or more than
+  `MAIL_THREAD_CHANGES_LIMIT` (500) changed threads; the client then reads the first page again.
+- The cursor is `{ epoch, step }` of the tenant's `mail_thread_change_counters` row. A transaction that changes a
+  list row records the thread (`touchMailThreads`, or `touchAllMailThreads` for a change of every row) in a
+  transaction-local set; its pre-commit flush (`runBeforeCommitOnce`) increments the counter row by one step and
+  upserts `mail_thread_changes (thread_id, seq)` with that step, then registers one tenant-wide `mailThread`
+  invalidation per thread after commit. `touchAllMailThreads` sets `reset_seq` to the step instead.
+- Why the order is the commit order: the counter row's lock is taken in the flush and held until `COMMIT`, so a
+  second transaction gets its step only after the first committed. A reader whose snapshot shows step `n` therefore
+  sees every transaction of steps `≤ n` and none above, and the rows it reads reflect exactly those. A later delta
+  from `n` lists every thread stamped `> n`; a transaction that recorded its change before another but committed
+  after it still gets the higher step. A timestamp or a sequence drawn mid-transaction would not hold this.
+  `mail_thread_changes` has no foreign key, so a thread deleted or merged away keeps its row and reads as removed.
+- Who stamps: ingest of a new message; the meta deletes of a removed item (purge, Mail off) and merges (both
+  threads); thread actions and every other `announceMailThreadChanged` caller (send, draft retirement, draft
+  writes); an update of an Emails item's `read`, `flagged`, `name` or `date` (flag observations of a sync included),
+  and its trash or restore; an edge of an Emails item's `folder` or `senderPeople`/`recipientsPeople`, of a Threads
+  item's `project` or `company`, or a project's `area`, created or deleted (a metadata update or a repeated create
+  only on a Sent folder edge, whose UID decides `received`); a project's or company's `name`, trash or restore (its
+  threads); a person's `name`, `relationship`, trash or restore and a released or claimed `person_email_index`
+  address (threads with mail from those addresses). A mailbox's `name`, `provider` or `addresses`, a folder's
+  `specialPurpose`, and the trash or restore of either change every row: `touchAllMailThreads`.
+- Not stamped: the `links` value-link states of a row change without an edge change only (the mobile list does not
+  read them). `mail_thread_changes` keeps one row per thread ever stamped, deleted ones included.
+
 ### Inherited values
 
 - `threadCompanyFromSender` / `threadProjectFromCompany` (`mail/threadLinkRules.ts`) are resolver link rules
@@ -426,6 +914,39 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   and companies links when its last Event source is detached; it must stay registered **directly before**
   `linkRuleEdgeHook` in `domainWriteHooks.ts`.
 - No inherited value is backfilled.
+
+### Project signals
+
+- `project_mail_signals` (one row per project, `mail/projectMailSignalsStore.ts` its only writer; the row goes with
+  the project's item) holds a project's own `domains`, `addresses` and `keywords`. The addresses of the project's live
+  `people` (from `person_email_index`) count as signals too and are not copied. Routes (session user): `GET`/`PUT
+  /api/mail/projects/:projectId/signals` (replace, last write wins), `POST …/signals/preview` (optional
+  `{ draft }` matched instead of the saved set; answers `{ total, alreadyAssigned, threads }`, at most 50 thread list
+  rows, newest first; each preview scans the tenant's mail index, so each is counted by the throttle, action
+  `mailSignalPreview`, 120 per 15 minutes per user id, refusal 429 `rate_limited` with `Retry-After`) and
+  `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
+  unknown, trashed or foreign project is 404.
+- Normalized at the boundary (`parseMailSignalSet`): a domain is the lower-case host `webHost` gives (URL or bare host,
+  no `www.`, needs a dot), an address trimmed and lower-cased, a keyword trimmed with its whitespace collapsed; at most
+  50 domains, 100 addresses and 50 keywords of 100 characters, duplicates dropped.
+- Matching (`mail/projectMailSignals.ts`, over the local index only): a thread matches when one of its counted messages
+  (not a draft, not only in Junk or Trash) has a sender, `to` or `cc` address among the addresses, or at a domain or a
+  subdomain of it, or when its `item_search_index` vector matches a keyword. A freemail domain (`FREEMAIL_DOMAINS`) is
+  no domain signal and the tenant's own mailbox addresses never match. A keyword's words are folded (lower case, no
+  diacritics), lose one Czech case or number ending if at least four letters remain (`mail/mailSignalKeywords.ts`) and
+  match as `czech_simple` prefixes (`faktur:*`), in order and adjacent; a word under four letters or holding a digit
+  matches exactly.
+- Open thread: a live Threads item with no `Threads.project` edge and no project value link in any state. The preview
+  lists open matches and counts the others as `alreadyAssigned`. The apply writes, in one transaction: mail-thread
+  guard → project `FOR SHARE` → its signals row `FOR SHARE` → each matching listed Threads item in id order (locked,
+  rechecked open) → the edge through `createRelationWithClient` as the session's user, the write of a user's own
+  project edit. Only the saved signals count there, and only the preview and the apply ever look at history.
+- Live triage (`mailTriageThreadProject`, still 60 s after the first inbound live message) matches first, under the
+  mail-thread guard and the Threads item lock: exactly one matching `inProgress`/`longTerm` project is written by the
+  resolver link rule `threadProjectFromSignals` (no inputs, so nothing else queues it; source: the project, key
+  `mailSignals`) without a model call; several restrict the model's candidates to them; none leaves every active
+  project as before. A thread that inherited from its company before the task runs is left alone, and the company
+  rules leave a signal link alone.
 
 ### Thread refs
 
@@ -483,7 +1004,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   send nowhere else, a transaction of its own right after the acceptance (`recordPendingSentCopyAfterSend`, retried,
   never thrown, since a throw would send the invitation again; a copy still not recorded is logged as an error). A
   finalization that fails after the acceptance records the copy the same way before its error is answered.
-  The job runs at least once: under the account's IMAP connection slot it searches the Sent folder for the
+  The job runs at least once: under an IMAP work slot of the account and the server host, its login admitted by the
+  host's login rate, it searches the Sent folder for the
   Message-ID (`SEARCH HEADER Message-ID`) and APPENDs with `\Seen` only when it is absent, then deletes the row, so a
   repeated run appends nothing twice. A copy of a mailbox that is gone, in the trash or has Mail off drops every copy
   of that mailbox without an APPEND and resolves its problem (`dropSentCopiesOfMailbox`, logged); switching Mail off
@@ -508,7 +1030,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   retried. At most once.
 - Tool `mail.draft.send` is declared `approval: "none"` but its handler only files the request; the request
   is the gate.
-- MCP: tools opt in with `mcp: { humanHandlerExport }` (`mail.thread.get`, `mail.draft.create`,
+- MCP: tools opt in with `mcp: { humanHandlerExport }` (`mail.thread.get`, `mail.search`, `mail.draft.create`,
   `mail.draft.update`, `mail.draft.send`). A run credential sees a tool only if it lists the module
   capability and the run's project holds it. A human session runs the human handler as the user, writing as
   `writerKind: "agent"` on behalf of the user with the external-client marker; its `mail.draft.send` sends
@@ -556,7 +1078,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 ## Provider failure privacy
 
 Applies to SMTP send, IMAP connect and later IMAP calls/streams, Gmail/Graph sync reads and attachment
-streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification and removal cleanup.
+streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential verification, removal cleanup, the
+on-demand content and attachment reads and the provider search.
 
 - Inside the operation owner, keep the original primary and secondary failure values (including `undefined`)
   until settlement and cleanup finish; cleanup never replaces the primary.
@@ -671,7 +1194,10 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 ## Lock orders to keep
 
 - Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
-  folder/item rows.
+  folder/item rows; an IMAP pass's final transaction then the mailbox's failed `mail_sent_copies` rows
+  (`requeueFailedSentCopies`). The Sent-copy job takes its copy rows without the sync state row.
+- History claim, release and upload: mailbox sync guard → sync state row → (upload) mail-thread guard → folder sync
+  state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)
@@ -680,9 +1206,12 @@ streams, Gmail/Graph send and upload, provider moves, hosted IDLE, credential ve
 - Send claim: sync state row (share) → Emails item → `mail_drafts` row → mail-thread guard.
 - Merge: thread guard → both Threads items (UUID order) → definition reservations (id order) → edges.
 - Draft writers: Emails item → `mail_drafts` row → Files item.
+- Attachment save: mail-thread guard → `mail_attachments` row → blob → Files item and its edges.
 - Inbox: source item → attachment row; source → blob; card holders never wait for the source and source
   holders never wait for a card.
 - Value-link evaluation: target item row → its link row.
+- Project signal apply: mail-thread guard → project item (share) → `project_mail_signals` row (share) → Threads items
+  (id order) → relation definition. Signal triage: mail-thread guard → Threads item → its link row.
 
 ## Related rules
 

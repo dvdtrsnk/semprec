@@ -14,7 +14,10 @@ import {
   getTestPool,
   insertItemsWithIds,
   reconcileGmailAccount,
+  gmailHistory,
+  recentGmailListing,
   resetDatabase,
+  UNGUARDED_MAIL_SYNC_PASS,
   type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
@@ -261,13 +264,8 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
       const uploadedFirst = await uploadIn(tenantA, "first.txt", uploadedFirstContent);
       const gmail: GmailMailClient = {
         getCurrentHistoryId: async () => "100",
-        listHistorySince: async () => ({
-          invalidated: false,
-          newHistoryId: "101",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
-        listAllMessageIds: async () => ["sent-message", "uploaded-first"],
+        listHistorySince: async () => gmailHistory("101"),
+        listMessageIds: recentGmailListing(["sent-message", "uploaded-first"]),
         listLabels: async () => [{ id: "SENT", name: "Sent", type: "system" }],
         fetchMessage: async (id) => ({
           id,
@@ -290,34 +288,36 @@ describe("GET /api/blobs/:id resolves the blob in the caller's tenant (issue #10
         }),
         modifyMessageLabels: async () => undefined,
       };
-      await runInTenant(tenantA, () =>
-        withTransaction(pool, async (client) => {
+      await runInTenant(tenantA, async () => {
+        const { ids, mailbox } = await withTransaction(pool, async (client) => {
           const ids = await resolveMailModuleIds(client);
-          const chokePoint = createChokePoint(pool);
-          const emailProperties = await chokePoint.listProperties(ids.emailsDatabaseId);
-          const folderProperties = await chokePoint.listProperties(ids.foldersDatabaseId);
-          const propertyId = (properties: typeof emailProperties, key: string): string => {
-            const property = properties.find((entry) => entry.key === key);
-            if (!property) throw new Error(`Missing ${key} property`);
-            return property.id;
-          };
           const mailbox = await createItemWithClient(client, {
             databaseId: ids.mailboxesDatabaseId,
             properties: { name: "Gmail", provider: "gmail" },
           });
-          await reconcileGmailAccount(client, gmail, {
-            mailboxItemId: mailbox.id,
-            emailsDatabaseId: ids.emailsDatabaseId,
-            filesDatabaseId: ids.filesDatabaseId,
-            foldersDatabaseId: ids.foldersDatabaseId,
-            folderRelationPropertyId: propertyId(emailProperties, "folder"),
-            attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
-            mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
-            storage: mailStorage,
-            storageKeyPrefix: "sent-test",
-          });
-        }),
-      );
+          return { ids, mailbox };
+        });
+        const chokePoint = createChokePoint(pool);
+        const emailProperties = await chokePoint.listProperties(ids.emailsDatabaseId);
+        const folderProperties = await chokePoint.listProperties(ids.foldersDatabaseId);
+        const propertyId = (properties: typeof emailProperties, key: string): string => {
+          const property = properties.find((entry) => entry.key === key);
+          if (!property) throw new Error(`Missing ${key} property`);
+          return property.id;
+        };
+        await reconcileGmailAccount(pool, gmail, {
+          mailboxItemId: mailbox.id,
+          emailsDatabaseId: ids.emailsDatabaseId,
+          filesDatabaseId: ids.filesDatabaseId,
+          foldersDatabaseId: ids.foldersDatabaseId,
+          folderRelationPropertyId: propertyId(emailProperties, "folder"),
+          attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+          mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+          storage: mailStorage,
+          storageKeyPrefix: "sent-test",
+          pass: UNGUARDED_MAIL_SYNC_PASS,
+        });
+      });
       const { rows } = await runInTenant(tenantA, () =>
         withTransaction(pool, (client) =>
           client.query<{ blob_id: string; provider_message_id: string }>(

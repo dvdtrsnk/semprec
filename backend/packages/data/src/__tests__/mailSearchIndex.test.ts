@@ -96,6 +96,8 @@ describe("mail search at ingest", () => {
       };
       const message = await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           ...common,
           messageId: "<search-sender@example.test>",
           subject: "Subjectneedle",
@@ -114,6 +116,8 @@ describe("mail search at ingest", () => {
       );
       const withoutSender = await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           ...common,
           messageId: "<search-no-sender@example.test>",
           subject: "Senderlessneedle",

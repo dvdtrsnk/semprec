@@ -335,6 +335,8 @@ async function mailIngest(
     runInTenant(tenant, async () => {
       const { itemId } = await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: c.emailsId,
           filesDatabaseId: mail.filesId,
           folderRelationPropertyId: mail.folderPropertyId,
@@ -610,6 +612,8 @@ describe("People lastContact (issue #1660)", () => {
       runInTenant(tenantA, async () => {
         const { itemId } = await withTransaction(pool, (client) =>
           ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: c.emailsId,
             filesDatabaseId: mail.filesId,
             folderRelationPropertyId: mail.folderPropertyId,

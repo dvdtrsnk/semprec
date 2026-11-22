@@ -1,11 +1,13 @@
 import { isIPv4, isIPv6 } from "node:net";
 
 /**
- * `mailboxCredentialVerification` (the password mailbox connect login check) is counted per user;
- * the others are public actions reachable without a session, counted per client address.
- * `mailOauthCallback` is the provider's OAuth redirect target, `calendarWebhook` a Google or
- * Microsoft Graph calendar change notification and `mailWebhook` a Microsoft Graph mail change
- * notification.
+ * `mailboxCredentialVerification` (the password mailbox connect login check), `mailContentFetch` (a message body or an
+ * attachment fetched from the mail provider on demand), `mailRemoteSearch` (a mail search that asks the providers),
+ * `mailHistoryUpload` (a native client's claim or upload of IMAP history) and `mailSignalPreview` (a project's mail
+ * signals matched against the whole mail index) are counted per user; the others are
+ * public actions reachable without a session, counted per client address. `mailOauthCallback` is the provider's OAuth
+ * redirect target, `calendarWebhook` a Google or Microsoft Graph calendar change notification and `mailWebhook` a
+ * Microsoft Graph mail change notification.
  */
 export type ThrottledAction =
   | "login"
@@ -13,6 +15,10 @@ export type ThrottledAction =
   | "passwordResetConsume"
   | "invitationAccept"
   | "mailboxCredentialVerification"
+  | "mailContentFetch"
+  | "mailRemoteSearch"
+  | "mailHistoryUpload"
+  | "mailSignalPreview"
   | "mailOauthCallback"
   | "calendarWebhook"
   | "mailWebhook";
@@ -29,6 +35,12 @@ export const CLIENT_IP_THROTTLE_LIMITS: Record<ThrottledAction, ClientIpThrottle
   passwordResetConsume: { maxEvents: 10, windowSeconds: 60 * 60 },
   invitationAccept: { maxEvents: 10, windowSeconds: 60 * 60 },
   mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 15 * 60 },
+  mailContentFetch: { maxEvents: 120, windowSeconds: 15 * 60 },
+  mailRemoteSearch: { maxEvents: 30, windowSeconds: 15 * 60 },
+  // 500 messages a request: a 15-minute window takes up to 300 000 messages of history.
+  mailHistoryUpload: { maxEvents: 600, windowSeconds: 15 * 60 },
+  // A setup screen previews as the user edits the signals; each preview scans the tenant's mail index.
+  mailSignalPreview: { maxEvents: 120, windowSeconds: 15 * 60 },
   mailOauthCallback: { maxEvents: 30, windowSeconds: 15 * 60 },
   // A provider delivers every subscribed account's notifications from a few addresses, so the
   // budget is per minute and well above one user's edit rate.
@@ -92,12 +104,17 @@ export function throttleKeyForIp(ip: string): string {
     .join(":")}::/64`;
 }
 
-/**
- * `mailboxCredentialVerification` is keyed by the user id as is; every other action by client
- * address via `throttleKeyForIp`.
- */
+/** The actions keyed by the user id as is; every other action by client address via `throttleKeyForIp`. */
+const PER_USER_ACTIONS: ReadonlySet<ThrottledAction> = new Set([
+  "mailboxCredentialVerification",
+  "mailContentFetch",
+  "mailRemoteSearch",
+  "mailHistoryUpload",
+  "mailSignalPreview",
+]);
+
 function throttleKey(action: ThrottledAction, subject: string): string {
-  return action === "mailboxCredentialVerification" ? subject : throttleKeyForIp(subject);
+  return PER_USER_ACTIONS.has(action) ? subject : throttleKeyForIp(subject);
 }
 
 export interface ClientIpThrottleOptions {
@@ -107,7 +124,7 @@ export interface ClientIpThrottleOptions {
   limits?: Partial<typeof CLIENT_IP_THROTTLE_LIMITS>;
 }
 
-/** `subject` is the user id for `mailboxCredentialVerification`, the client address otherwise. */
+/** `subject` is the user id for the per-user actions, the client address otherwise. */
 export interface ClientIpThrottle {
   /**
    * `null` while under the limit; otherwise whole seconds (>= 1) until the oldest counted event

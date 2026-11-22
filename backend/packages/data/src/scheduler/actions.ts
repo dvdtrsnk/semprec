@@ -19,6 +19,7 @@ import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxT
 import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
 import { ValidationError } from "../errors.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
+import { parseLiveMailFilterConfig, passesLiveMailFilter } from "./liveMailFilter.js";
 import { logger } from "./logger.js";
 import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderKnownFilter.js";
 
@@ -145,7 +146,8 @@ function answerGateOf(dependencies: CoreAgentRunDependencies): AnswerExpectedGat
 
 /**
  * `core.agentRun`: runs the project's agent with `action_config.task`. Item-triggered fires may be gated by
- * `itemRelationFilter` and `answerExpectedFilter` and moved by `runProject`. A retry runs as the next
+ * `itemRelationFilter`, `liveMailFilter`, `senderKnownFilter` and `answerExpectedFilter` (in that order, the
+ * model-calling gate last) and moved by `runProject`. A retry runs as the next
  * attempt of the retried run.
  *
  * Every failed attempt closes its run as `error`, but only the final attempt writes the `agent_run_error`
@@ -165,12 +167,14 @@ export function coreAgentRunAction(
     let runProjectItemId = context.projectItemId;
     let taskNote: string | null = null;
     if (context.itemId) {
+      const liveFilter = parseLiveMailFilterConfig(actionConfig.liveMailFilter);
       const senderFilter = parseSenderKnownFilterConfig(actionConfig.senderKnownFilter);
       const answerFilter = parseAnswerExpectedFilterConfig(actionConfig.answerExpectedFilter);
       const resolverName = parseRunProjectConfig(actionConfig.runProject);
       // A heartbeat needing a dependency the composition root did not provide is refused before any work.
       const resolver = resolverName === null ? null : resolverNamed(dependencies, resolverName);
       const gate = answerFilter ? answerGateOf(dependencies) : null;
+      if (liveFilter && !(await passesLiveMailFilter(pool, context.itemId, liveFilter))) return;
       if (senderFilter && !(await passesSenderKnownFilter(pool, context.itemId, senderFilter))) return;
       if (gate !== null) {
         const decision = await gate(context.itemId);

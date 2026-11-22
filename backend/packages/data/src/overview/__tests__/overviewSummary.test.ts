@@ -166,6 +166,8 @@ async function unreadMessages(owner: Tenant, count: number): Promise<void> {
     });
     for (let n = 0; n < count; n += 1) {
       await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),

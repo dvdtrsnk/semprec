@@ -70,7 +70,10 @@ async function readConversation(client: PoolClient, threadId: string, itemId: st
     "",
     ...history.flatMap((message) => [
       `--- ${message.isOwn ? "the user" : (message.from?.address ?? "unknown")}, ${message.date ?? "undated"}`,
-      cutText(message.bodyText.replace(/\s+/g, " ").trim(), MAX_PROMPT_MESSAGE_CHARACTERS),
+      // An older message whose content is not downloaded is shown by its preview; nothing is fetched here.
+      message.contentState === "remote"
+        ? `[Only a preview; the content of this message is not downloaded] ${message.preview ?? ""}`
+        : cutText(message.bodyText.replace(/\s+/g, " ").trim(), MAX_PROMPT_MESSAGE_CHARACTERS),
     ]),
   ].join("\n");
 }
