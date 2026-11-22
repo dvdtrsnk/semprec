@@ -377,9 +377,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, `never` or
   `error`, or `ok` and last synced 4 min ago or more; a `needsReauthorization` or `needsConsent` account is left out
   until a new sign-in (a replaced password or OAuth grant) sets it back to `never` and queues its pass;
-  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
+  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 15 s per account and never
   dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
-  under the account row's share lock. With none in the last 60 s the pass runs now; a request inside the window of a
+  under the account row's share lock. With none in the last 15 s the pass runs now; a request inside the window of a
   pass that started queues one at the window's end; while that one is still ahead it serves the request too. The
   deferred pass is queued under the account's job key with that `run_at` and `jobKeyMode` `preserve_run_at`, so a pass
   already waiting keeps its earlier time. Neither lock is waited for longer than 50 ms: while another writer holds

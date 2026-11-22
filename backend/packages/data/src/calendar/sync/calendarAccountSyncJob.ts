@@ -65,7 +65,7 @@ const CALENDAR_SYNC_GUARD_WAIT_MS = 5_000;
 /** A pass that ended `ok` this long ago is due again; the sweep runs every five minutes. */
 const CALENDAR_SYNC_DUE_AFTER_SECONDS = 4 * 60;
 /** Manual sync requests of one account closer together than this queue one pass. */
-export const MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS = 60;
+export const MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS = 15;
 
 const payloadSchema = z.strictObject({ accountItemId: z.uuid() });
 
