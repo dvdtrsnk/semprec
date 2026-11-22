@@ -415,8 +415,8 @@ function syncState(mailboxItemId: string) {
 }
 
 /** The time the sweep waits after a failed pass: the account is due again. */
-function backoffElapsed(mailboxItemId: string): Promise<void> {
-  return withTransaction(pool, (client) => elapseMailSyncBackoff(client, mailboxItemId));
+async function backoffElapsed(mailboxItemId: string): Promise<void> {
+  await withTransaction(pool, (client) => elapseMailSyncBackoff(client, mailboxItemId));
 }
 
 async function syncStatusOf(mailboxItemId: string): Promise<unknown> {
