@@ -379,6 +379,53 @@ export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, ite
   );
 }
 
+/**
+ * Gives a just-sent message the identity its provider filed it under (`messageId`, the provider message and thread
+ * ids), so the synced copy converges onto it instead of being ingested beside it, and replies naming the provider's
+ * Message-ID thread onto it. A copy of the same message already ingested in the mailbox (its sync won the race with
+ * the send's finalization) is removed as `deleteMailMessageMetaOfRemovedItem` removes a message: its Email is trashed
+ * as the system writer and its meta row deleted. Runs under the tenant's mail-thread guard, which every ingest takes.
+ */
+export async function adoptProviderSentIdentity(
+  client: PoolClient,
+  input: {
+    itemId: string;
+    mailboxItemId: string;
+    messageId?: string;
+    providerMessageId?: string;
+    providerThreadId?: string;
+  },
+): Promise<void> {
+  await lockMailThreadMutation(client);
+  const { rows: copies } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE mailbox_item_id = $1 AND item_id <> $2 AND (message_id = $3 OR provider_message_id = $4)
+      ORDER BY item_id`,
+    [input.mailboxItemId, input.itemId, input.messageId ?? null, input.providerMessageId ?? null],
+  );
+  for (const copy of copies) {
+    const [item] = await getItemsByIdsIncludingDeleted(client, [copy.item_id]);
+    if (item && item.deletedAt === null) {
+      await itemDeleteWithClient(client, item.databaseId, item.id, {
+        queueAffinity: createActionQueueAffinity(),
+        writer: SYSTEM_WRITER,
+      });
+    }
+    await deleteMailMessageMetaOfRemovedItem(client, copy.item_id);
+  }
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_meta
+          SET message_id = COALESCE($2, message_id),
+              provider_message_id = COALESCE($3, provider_message_id),
+              provider_thread_id = COALESCE($4, provider_thread_id)
+        WHERE item_id = $1`,
+      [input.itemId, input.messageId ?? null, input.providerMessageId ?? null, input.providerThreadId ?? null],
+    ),
+    "update of a sent message's provider identity",
+  );
+}
+
 export interface MailThreadRow {
   id: string;
   subjectHint: string | null;
