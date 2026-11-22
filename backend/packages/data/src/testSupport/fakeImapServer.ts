@@ -44,6 +44,11 @@ export interface FakeImapServerOptions {
 
 type Token = string | Token[];
 
+/** A mailbox name as an atom, or quoted when it holds a space (iCloud's "Sent Messages"); ASCII names only. */
+function mailboxName(path: string): string {
+  return /^[\x21-\x7e]+$/.test(path) && !/["\\()]/.test(path) ? path : `"${path}"`;
+}
+
 /** Splits an IMAP command's arguments into atoms, quoted strings and parenthesized lists; no literals. */
 function tokenize(input: string): Token[] {
   const root: Token[] = [];
@@ -553,19 +558,22 @@ export class FakeImapServer {
         for (const [path, folder] of this.folders) {
           if (pattern !== "*" && pattern.toUpperCase() !== path.toUpperCase()) continue;
           const attributes = ["\\HasNoChildren", ...(folder.specialUse && path !== "INBOX" ? [folder.specialUse] : [])];
-          text += `* LIST (${attributes.join(" ")}) "/" ${path}\r\n`;
-          if (statusItems.length > 0) text += `* STATUS ${path} (${this.statusItems(folder, statusItems)})\r\n`;
+          text += `* LIST (${attributes.join(" ")}) "/" ${mailboxName(path)}\r\n`;
+          if (statusItems.length > 0)
+            text += `* STATUS ${mailboxName(path)} (${this.statusItems(folder, statusItems)})\r\n`;
         }
         return { text: text + ok() };
       }
       case "LSUB": {
         let text = "";
-        for (const path of this.folders.keys()) text += `* LSUB () "/" ${path}\r\n`;
+        for (const path of this.folders.keys()) text += `* LSUB () "/" ${mailboxName(path)}\r\n`;
         return { text: text + ok() };
       }
       case "STATUS": {
         const path = String(args[0]);
-        return { text: `* STATUS ${path} (${this.statusItems(this.folder(path), atoms(args[1]))})\r\n${ok()}` };
+        return {
+          text: `* STATUS ${mailboxName(path)} (${this.statusItems(this.folder(path), atoms(args[1]))})\r\n${ok()}`,
+        };
       }
       case "SELECT":
       case "EXAMINE": {
