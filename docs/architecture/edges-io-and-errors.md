@@ -286,9 +286,8 @@ Test it through the real route, not a shared test transaction.
   3. the HTTP drain (`SHUTDOWN_DRAIN_TIMEOUT_MS`, then `closeAllConnections`);
   4. the Gmail Pub/Sub dispatcher;
   5. the mail live-sync root;
-  6. the Sent copies of sends that already answered, bounded by `SENT_COPY_DRAIN_TIMEOUT_MS`;
-  7. the queue runtime;
-  8. `pool.end()`, bounded by `POOL_END_TIMEOUT_MS`.
+  6. the queue runtime;
+  7. `pool.end()`, bounded by `POOL_END_TIMEOUT_MS`.
 - A server tearing itself down uses `terminate()`, not a `close()` handshake that one unresponsive
   client can hold forever. The sync server's 1012 close is the exception, and it is safe only
   because its `WebSocketServer` is `noServer: true`.

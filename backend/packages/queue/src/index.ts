@@ -56,6 +56,8 @@ export const CORE_TASK_NAMES = {
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
   MAIL_ACCOUNT_SYNC: "mailAccountSync",
   MAIL_ACCOUNT_SYNC_SWEEP: "mailAccountSyncSweep",
+  // Appends one SMTP send's recorded Sent copy to its IMAP Sent folder; job key `mail-sent-copy:<copyId>`.
+  MAIL_SENT_COPY: "mailSentCopy",
   // Safety net for Emails items whose search index write was skipped.
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
   // Recomputes one Journal day item's cached `items.computed` Inbox-item list.
@@ -168,6 +170,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: "api",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
@@ -246,6 +249,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: "tenant",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",

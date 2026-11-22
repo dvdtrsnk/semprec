@@ -308,8 +308,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
   after every hand-off.
 - `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
-  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → detached Sent copies drained (at most
-  `SENT_COPY_DRAIN_TIMEOUT_MS`) → `queueRuntime.stop()` → `pool.end()`.
+  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` → `pool.end()`.
   A future long-lived outbound loop that enqueues work stops after the drain, before what it would race.
 
 ### Provider moves
@@ -458,15 +457,22 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
   No automatic send retry.
 - Transports: SMTP (`createSmtpMailTransport`), Gmail and Graph REST clients. Once the provider accepted the
-  message, close/Sent-copy/response-cleanup failures keep the accepted result. The submission stays synchronous:
-  the request answers only after the provider accepted or refused the message, so a refusal is the answer and the
-  claim decides exactly-once. The IMAP connection for an SMTP account's Sent copy opens while SMTP submits (inside
-  the account's IMAP connection slot), the APPEND runs only after acceptance, and a refused submission closes that
-  connection unused before the refusal is answered. In `semprec-api` the transports of the send route get
-  `detachedSentCopies`: an accepted SMTP send answers without waiting for its Sent copy, which may wait for a slot a
-  sync pass holds; the copy runs on in the process, logs a failure with stage `sent_copy`, and shutdown drains it.
-  The Semprec item is in Sent from the finalization either way. Queue jobs that send (invitations) wait for the copy. A Graph failure before
-  acceptance best-effort deletes the owned draft.
+  message, close/response-cleanup failures keep the accepted result. The submission stays synchronous: the request
+  answers only after the provider accepted or refused the message, so a refusal is the answer and the claim decides
+  exactly-once. The send opens no IMAP connection.
+- Sent copy (`mail/mailSentCopies.ts`). Gmail and Graph file sent mail themselves; an SMTP transport answers an
+  accepted send with `needsSentCopy`. The caller then records the accepted bytes and the Message-ID in
+  `mail_sent_copies` and enqueues `mailSentCopy` (job key `mail-sent-copy:<copyId>`, tenant-scoped) in the
+  transaction that records the send: `sendDraftEmail`'s finalization, or for the invitation jobs, which record their
+  send nowhere else, a transaction of its own right after the acceptance (`recordPendingSentCopyAfterSend`, retried,
+  never thrown, since a throw would send the invitation again; a copy still not recorded is logged as an error).
+  The job runs at least once: under the account's IMAP connection slot it searches the Sent folder for the
+  Message-ID (`SEARCH HEADER Message-ID`) and APPENDs with `\Seen` only when it is absent, then deletes the row, so a
+  repeated run appends nothing twice. A copy of a mailbox that is gone, in the trash or has Mail off ends without an
+  APPEND (logged). Every other failure keeps the row and retries with graphile-worker's backoff
+  (`MAIL_SENT_COPY_MAX_ATTEMPTS`, about 1.5 h); the final attempt marks the row failed and raises the mailbox's
+  `mailSentCopyFailed` problem (`mail:sentCopy:<mailbox>`). The next copy of that mailbox that is appended gives
+  every failed copy a new job, and the problem resolves once none is left. A purged mailbox takes its copies with it.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.
 

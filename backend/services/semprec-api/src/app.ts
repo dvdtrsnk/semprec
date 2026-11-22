@@ -10,13 +10,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext, type GenericApplicationPort } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
-import type {
-  BlobStorageWriter,
-  DetachedSentCopies,
-  InviteMailer,
-  PasswordResetMailer,
-  loadFullModuleRegistry,
-} from "@semprec/data";
+import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
 import {
   createCustomRouteDependencies,
@@ -91,11 +85,6 @@ export interface AppOptions {
    * `throttle` when the container carries none.
    */
   customRouteDependencies?: CustomRouteDependencies;
-  /**
-   * Given, an SMTP send of the draft send route answers once the server accepted it, and its Sent copy runs on in
-   * here; absent, the send waits for the copy. `serve.ts` drains it at shutdown.
-   */
-  detachedSentCopies?: DetachedSentCopies;
 }
 
 /**
@@ -157,7 +146,6 @@ export async function createDispatcher(
           ...(callerDependencies.oauth?.gmail ? { gmailOAuthClient: callerDependencies.oauth.gmail } : {}),
           ...(callerDependencies.oauth?.msGraph ? { graphOAuthClient: callerDependencies.oauth.msGraph } : {}),
           ...(callerDependencies.outboundHttp ? { fetchImpl: callerDependencies.outboundHttp } : {}),
-          ...(options.detachedSentCopies ? { detachedSentCopies: options.detachedSentCopies } : {}),
         }),
         attachmentStorage: {
           files: options.blobStorage,

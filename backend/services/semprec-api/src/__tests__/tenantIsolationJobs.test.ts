@@ -62,6 +62,7 @@ import {
   mintMcpRunCredential,
   mutateYDoc,
   provisionTenant,
+  recordPendingSentCopy,
   removeMailbox,
   resolveMailModuleIds,
   recordHeartbeatFailure,
@@ -1313,6 +1314,33 @@ const cases: Record<string, TaskCase> = {
         "SELECT user_id FROM notifications WHERE kind = 'mail_sync_error' AND source_id = $1",
         [mailboxItemId],
         [{ user_id: tenant.userId }],
+      );
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant);
+      // Recording queues this job itself; the driver discards it.
+      const copyId = await inTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          recordPendingSentCopy(client, {
+            mailboxItemId,
+            messageId: `<${randomUUID()}@example.test>`,
+            raw: Buffer.from("Subject: Sent\r\n\r\nHello\r\n"),
+          }),
+        ),
+      );
+      return { copyId };
+    },
+    // The fixture mailbox has no folders, so the job finds no Sent folder after its tenant-scoped reads.
+    expectedError: /^The mailbox has no Sent folder yet$/,
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT failed_at IS NULL AS pending FROM mail_sent_copies WHERE id = $1",
+        [str(payload, "copyId")],
+        [{ pending: true }],
       );
     },
   },

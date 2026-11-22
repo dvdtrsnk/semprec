@@ -130,7 +130,6 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
-      detachedSentCopies: { drain: async () => true },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -171,7 +170,6 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop: async () => {} },
       mailLiveSync: { stop: async () => {} },
-      detachedSentCopies: { drain: async () => true },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -205,7 +203,6 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
-      detachedSentCopies: { drain: async () => true },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -233,7 +230,6 @@ describe("semprec-api graceful shutdown closes the sync server first (issue #698
       voiceServer,
       queueRuntime: { stop },
       mailLiveSync: { stop: async () => {} },
-      detachedSentCopies: { drain: async () => true },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -297,7 +293,6 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       voiceServer,
       queueRuntime: { stop: async () => {} },
       mailLiveSync: { stop: async () => {} },
-      detachedSentCopies: { drain: async () => true },
       pool: dedicatedPool,
       logger,
     })("SIGTERM");
@@ -419,7 +414,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
             poolEndedAtRootStop = dedicatedPool.ended;
           },
         },
-        detachedSentCopies: { drain: async () => true },
         pool: dedicatedPool,
         logger,
       })("SIGTERM");
@@ -571,7 +565,6 @@ describe("semprec-api graceful shutdown stops the Gmail Pub/Sub dispatcher befor
         voiceServer,
         queueRuntime: { stop: async () => {} },
         mailLiveSync: { stop: async () => {} },
-        detachedSentCopies: { drain: async () => true },
         pool: dedicatedPool,
         logger,
       })("SIGTERM");

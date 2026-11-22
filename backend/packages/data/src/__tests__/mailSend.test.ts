@@ -28,7 +28,8 @@ import {
   type SendEmailModuleIds,
   type UserSendEmailInput,
 } from "../mail/send.js";
-import { createSentCopySaver, createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
+import { createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
+import { handleMailSentCopyTask } from "../mail/mailSentCopies.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
@@ -392,6 +393,8 @@ describe("drafts and authorized SMTP sending", () => {
         copied = Buffer.from(raw);
         return { destination: "Sent", uidValidity: 1n, uid: 7 };
       });
+      vi.spyOn(imap, "mailboxOpen").mockResolvedValue({ path: "Sent" } as never);
+      vi.spyOn(imap, "search").mockResolvedValue([]);
       vi.spyOn(imap, "logout").mockResolvedValue(undefined);
       vi.spyOn(imap, "close").mockImplementation(() => {});
       const smtp = createSmtpMailTransport(
@@ -407,9 +410,16 @@ describe("drafts and authorized SMTP sending", () => {
           },
           close: () => {},
         }),
-        createSentCopySaver(pool, mailboxId, { password: "fixture" }, async () => new ImapFlowMailClient(imap)),
       );
       const result = await sendAsUser(draft.id, sendAdapters(transportFor(smtp)));
+      expect(copied).toBeUndefined();
+      const { rows: copies } = await pool.query<{ id: string }>("SELECT id FROM mail_sent_copies");
+      expect(copies).toHaveLength(1);
+      await handleMailSentCopyTask(
+        pool,
+        { copyId: copies[0]!.id },
+        { jobId: "attempt-1", isFinalAttempt: false, openImap: async () => new ImapFlowMailClient(imap) },
+      );
 
       expect(copied).toBeDefined();
       expect(copied).toEqual(accepted);

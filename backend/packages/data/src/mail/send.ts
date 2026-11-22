@@ -37,6 +37,7 @@ import {
   type OutgoingMimeDeps,
 } from "./outgoingMime.js";
 import type { MailTransportFactory } from "./mailTransport.js";
+import { recordPendingSentCopy } from "./mailSentCopies.js";
 
 /**
  * An agent run (or an MCP client holding a run credential). An agent never sends directly: `sendDraftEmail`
@@ -184,7 +185,8 @@ async function unlinkFromFoldersWithSpecialPurpose(
  * Emails item and its `mail_drafts` row, refuses a trashed or sent draft, runs `beforeClaim`, and writes the
  * claim. While held, draft writers refuse the draft as sent, so no edit or discard commits before
  * finalization. After a successful send one transaction moves the draft to Sent, links People, sets
- * `sent_at`, announces the thread and retires outdated Semp drafts.
+ * `sent_at`, announces the thread, retires outdated Semp drafts and, for a provider that files no Sent copy (SMTP),
+ * records the copy and enqueues the job that appends it.
  * A failure before or during delivery undoes the claim so a genuine retry can still send.
  *
  * The claim is the `mail_message_meta` row written before the transport's `send`. Its `item_id` primary
@@ -302,6 +304,7 @@ export async function sendDraftEmail(
   }
 
   // Any failure here, including building the transport, undoes the claim.
+  let sentCopy: Buffer | null = null;
   try {
     const transport = await transports.forMailbox(input.mailboxItemId, syncMode);
     const mime = await buildOutgoingMime(
@@ -320,11 +323,12 @@ export async function sendDraftEmail(
       },
       { client: pool, files: attachmentStorage.files, mailAttachments: attachmentStorage.mailAttachments },
     );
-    await transport.send({
+    const sent = await transport.send({
       raw: mime.raw,
       envelope: { from: input.from.address, recipients: mime.envelopeRecipients },
       ...(input.providerThreadId === undefined ? {} : { providerThreadId: input.providerThreadId }),
     });
+    if (sent.needsSentCopy) sentCopy = mime.raw;
   } catch (err) {
     // Best-effort: the send failure in `err` must surface even if the compensating delete fails, which
     // leaves the claim in place (a retry then sees a conflict until it is cleared directly).
@@ -383,6 +387,10 @@ export async function sendDraftEmail(
     const threadId = (await getMailMessageMetaByItemId(client, input.draftItemId))?.threadId;
     if (!threadId) throw new Error(`The claim of draft ${input.draftItemId} has no thread`);
     announceMailThreadChanged(client, threadId);
+    // The provider files no Sent copy: it is recorded with the send, and its job appends it after the commit.
+    if (sentCopy !== null) {
+      await recordPendingSentCopy(client, { mailboxItemId: input.mailboxItemId, messageId, raw: sentCopy });
+    }
     // The user's own message makes the thread's Semp draft outdated, unless the Semp draft is the message.
     await retireSupersededSempDrafts(client, {
       threadId,

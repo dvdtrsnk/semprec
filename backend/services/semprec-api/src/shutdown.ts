@@ -8,8 +8,6 @@ export const DRAIN_POLL_INTERVAL_MS = 50;
 export const POOL_END_TIMEOUT_MS = 5_000;
 /** How long shutdown waits for the deactivation listener's in-flight handlers. */
 export const LISTENER_CLOSE_TIMEOUT_MS = 5_000;
-/** How long shutdown waits for the Sent copies of sends that already answered. */
-export const SENT_COPY_DRAIN_TIMEOUT_MS = 30_000;
 
 export interface QueueRuntimeHandle {
   stop(): Promise<void>;
@@ -28,8 +26,6 @@ export interface CreateGracefulShutdownOptions {
    */
   gmailPubSubDispatcher?: { stop(): Promise<void> };
   mailLiveSync: { stop(): Promise<void> };
-  /** Drained after `mailLiveSync`, whose IDLE connections take the connection slots a waiting copy needs. */
-  detachedSentCopies: { drain(timeoutMs: number): Promise<boolean> };
   pool: Pool;
   logger: Logger;
   /** Lets a test shrink the drain bound below the integration `testTimeout`. */
@@ -151,10 +147,8 @@ function closeListener(listener: { close(): Promise<void> }, logger: Logger, sig
  * anything pulled but not handed off stays unacknowledged for redelivery.
  * 5. Mail live-sync root, before the queue runtime, because a lifecycle's `start()` enqueues a
  * `mailAccountSync` job that must not race the runner's stop.
- * 6. Sent copies of sends that already answered, at most `SENT_COPY_DRAIN_TIMEOUT_MS`: no request
- * adds one after the drain, and the live-sync stop has freed the IDLE connections' slots.
- * 7. Queue runtime.
- * 8. Pool.
+ * 6. Queue runtime.
+ * 7. Pool.
  * This ordering is specific to this service and has no heartbeat step
  * (docs/architecture/agents-approvals-and-ai.md#process-lifecycle).
  */
@@ -167,7 +161,6 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
     queueRuntime,
     gmailPubSubDispatcher,
     mailLiveSync,
-    detachedSentCopies,
     pool,
     logger,
   } = options;
@@ -210,10 +203,6 @@ export function createGracefulShutdown(options: CreateGracefulShutdownOptions): 
       await mailLiveSync.stop();
     } catch (err) {
       logger.error({ err, signal }, "mailLiveSync.stop() failed");
-    }
-
-    if (!(await detachedSentCopies.drain(SENT_COPY_DRAIN_TIMEOUT_MS))) {
-      logger.error({ signal }, "Sent copies were still running after SENT_COPY_DRAIN_TIMEOUT_MS");
     }
 
     try {

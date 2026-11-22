@@ -674,6 +674,17 @@ export class ImapFlowMailClient implements ImapMailClient {
    * Keeps a sent message's copy in Sent. Raced against a timer; on timeout the command may still be
    * in flight until the caller's `close()`. Unknown refusals become a fixed safe error.
    */
+  /** `SEARCH HEADER Message-ID`; a search that did not run fails rather than answering "absent". */
+  async hasMessageWithId(path: string, messageId: string): Promise<boolean> {
+    await this.providerCall(() => this.client.mailboxOpen(path));
+    const found = await this.providerCall(async () => {
+      const uids = await this.client.search({ header: { "message-id": messageId } }, { uid: true });
+      if (uids === false) throw new Error("IMAP search did not run");
+      return uids;
+    });
+    return found.length > 0;
+  }
+
   async appendMessage(path: string, raw: Buffer, flags: readonly WritableImapFlag[]): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     try {

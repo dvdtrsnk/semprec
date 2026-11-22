@@ -374,10 +374,9 @@ export {
 } from "./mail/mailCredentialVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
+export { recordPendingSentCopy, type PendingSentCopy } from "./mail/mailSentCopies.js";
 export {
-  createDetachedSentCopies,
   createMailTransportFactory,
-  type DetachedSentCopies,
   type MailTransport,
   type MailTransportFactory,
   type MailTransportMessage,
