@@ -15,6 +15,7 @@ import { withSavepoint, withTransaction } from "../../db/pool.js";
 import { ValidationError } from "../../errors.js";
 import { areCalendarsEnabled } from "../../mail/mailboxServiceHooks.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
+import { enqueueCalendarPushChannels } from "./calendarPushChannelsEnqueue.js";
 import { resolveProblem } from "../../semp/sempProblemsStore.js";
 import { calendarProblemKey } from "../../semp/sourceProblemKeys.js";
 import { CALENDAR_MODULE_ID } from "../calendarModuleId.js";
@@ -712,6 +713,9 @@ async function finishPass(
   });
   await recordCalendarSyncSuccess(client, accountItemId);
   await resolveProblem(client, { dedupeKey: calendarProblemKey(accountItemId), resolutionKind: "recovered" });
+  // The account's calendars are known from its first completed pass on, so its push channels need not wait for the
+  // hourly maintenance sweep.
+  if (pass.initialSync) await enqueueCalendarPushChannels(client, accountItemId);
   return {
     kind: "applied",
     initialSync: pass.initialSync,

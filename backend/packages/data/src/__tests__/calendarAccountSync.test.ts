@@ -16,6 +16,7 @@ import {
   calendarAccountCleanupJobKey,
   calendarAccountSyncJobKey,
 } from "../calendar/sync/calendarAccountSyncEnqueue.js";
+import { calendarPushChannelsJobKey } from "../calendar/sync/calendarPushChannelsEnqueue.js";
 import { lockCalendarAccountSync } from "../calendar/sync/calendarAccountSyncGuard.js";
 import {
   createCalendarAccountSyncRouteHandler,
@@ -469,6 +470,19 @@ describe("calendar sync of internet accounts", () => {
     expect(await syncState(accountId)).toMatchObject({ status: "ok", failing_since: null, last_error_code: null });
     expect((await syncState(accountId))?.initial_sync_completed_at).toBeInstanceOf(Date);
     expect(await calendarStatus(accountId)).toBe("ok");
+  });
+
+  it("the first completed pass queues the account's push channel maintenance, a later pass does not", async () => {
+    const fake = provider();
+    const accountId = await createAccount();
+    await switchCalendars(accountId, true);
+    await clearJobs();
+    expect((await runPass(accountId, fake))?.kind).toBe("applied");
+    expect(await jobKeys(accountId)).toContain(calendarPushChannelsJobKey(accountId));
+
+    await clearJobs();
+    expect((await runPass(accountId, fake))?.kind).toBe("applied");
+    expect(await jobKeys(accountId)).not.toContain(calendarPushChannelsJobKey(accountId));
   });
 
   it("an account created with Calendars on queues its first pass", async () => {
