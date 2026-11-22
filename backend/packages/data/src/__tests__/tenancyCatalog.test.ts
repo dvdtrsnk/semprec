@@ -34,6 +34,7 @@ const TENANT_TABLES = [
   "rollup_dependencies",
   "task_recurrence",
   "project_kept_dates",
+  "project_mail_signals",
   "item_automation",
   "recording_requests",
   "item_search_index",

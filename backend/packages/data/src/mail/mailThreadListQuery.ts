@@ -218,6 +218,8 @@ export async function listMailThreads(
     personId?: string | null;
     /** Detail-only mode: one thread in any box or folder, drafts included. The list never sets it. */
     threadId?: string | null;
+    /** Only these threads, in any box or folder. */
+    threadIds?: readonly string[] | null;
     /** With `search`: the message satisfying it must be one of these Emails items. */
     searchMessageItemIds?: readonly string[];
   } = {
@@ -237,8 +239,9 @@ export async function listMailThreads(
     if (!folder.rows.length) throw new NotFoundError("Folder not found");
   }
   const predicates: string[] = [
-    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
+    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR $10::uuid[] IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
     `($9::uuid IS NULL OR l.thread_id = $9::uuid)`,
+    `($10::uuid[] IS NULL OR l.thread_id = ANY($10::uuid[]))`,
     `($4::uuid IS NULL OR ${mailThreadPredicates.inFolder(4)})`,
     `($5::uuid IS NULL OR ${mailThreadPredicates.inMailbox(5)})`,
   ];
@@ -252,7 +255,7 @@ export async function listMailThreads(
   predicates.push(
     `($8::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $8))`,
   );
-  const search = filters.search ? matchesSearch(filters.search, 10, filters.searchMessageItemIds) : null;
+  const search = filters.search ? matchesSearch(filters.search, 11, filters.searchMessageItemIds) : null;
   if (search) predicates.push(search.sql);
   const result = await client.query<{ thread: unknown; thread_item_id: string | null }>(
     `
@@ -351,6 +354,7 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
       filters.areaId ?? null,
       filters.personId ?? null,
       filters.threadId ?? null,
+      filters.threadIds ?? null,
       ...(search?.params ?? []),
     ],
   );

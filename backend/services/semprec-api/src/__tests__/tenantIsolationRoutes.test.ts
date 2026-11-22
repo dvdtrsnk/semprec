@@ -2632,6 +2632,51 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectForeign404(b.member, [foreign.attachmentId], ([attachmentId]) => save(own.emailId, attachmentId));
     expectText(await sendOk(a.member, save(foreign.emailId, foreign.attachmentId)), [foreign.fileItemId], []);
   },
+  "project mail signals read": async () => {
+    const signals = (projectId: string | undefined): Request => GET(`/api/mail/projects/${projectId}/signals`);
+    const keyword = `isolation${randomUUID().slice(0, 8)}`;
+    await sendOk(a.member, PUT(`/api/mail/projects/${a.projectItemId}/signals`, { keywords: [keyword] }));
+    expectText(await sendOk(b.member, signals(b.projectItemId)), [b.projectItemId], [a.projectItemId, keyword]);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => signals(id));
+    expectText(await sendOk(a.member, signals(a.projectItemId)), [a.projectItemId, keyword], [b.projectItemId]);
+  },
+  "project mail signals replace": async () => {
+    const replace = (projectId: string | undefined, keyword: string): Request =>
+      PUT(`/api/mail/projects/${projectId}/signals`, { keywords: [keyword] });
+    const ownKeyword = `own${randomUUID().slice(0, 8)}`;
+    const leaked = `leak${randomUUID().slice(0, 8)}`;
+    expectText(await sendOk(b.member, replace(b.projectItemId, ownKeyword)), [b.projectItemId, ownKeyword], []);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => replace(id, leaked));
+    expectText(await sendOk(a.member, GET(`/api/mail/projects/${a.projectItemId}/signals`)), [], [leaked, ownKeyword]);
+  },
+  "project mail signals preview": async () => {
+    const threadOfA = await seedMailThread(a, `<${randomUUID()}@example.test>`, `signals-${randomUUID()}`);
+    const threadOfB = await seedMailThread(b, `<${randomUUID()}@example.test>`, `signals-${randomUUID()}`);
+    const draft = { draft: { addresses: ["sender@example.test"] } };
+    const preview = (projectId: string | undefined, body?: unknown): Request =>
+      POST(`/api/mail/projects/${projectId}/signals/preview`, body);
+    expectText(await sendOk(b.member, preview(b.projectItemId, draft)), [threadOfB], [threadOfA]);
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => preview(id, draft));
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => preview(id));
+    expectText(await sendOk(a.member, preview(a.projectItemId, draft)), [threadOfA], [threadOfB]);
+  },
+  "project mail signals apply": async () => {
+    const threadOfA = await seedMailThread(a, `<${randomUUID()}@example.test>`, `apply-${randomUUID()}`);
+    const threadOfB = await seedMailThread(b, `<${randomUUID()}@example.test>`, `apply-${randomUUID()}`);
+    for (const fixture of [a, b])
+      await sendOk(
+        fixture.member,
+        PUT(`/api/mail/projects/${fixture.projectItemId}/signals`, { addresses: ["sender@example.test"] }),
+      );
+    const apply = (projectId: string | undefined, threadId: string | undefined): Request =>
+      POST(`/api/mail/projects/${projectId}/signals/apply`, { threadIds: [threadId] });
+    await expectForeign404(b.member, [a.projectItemId], ([id]) => apply(id, threadOfB));
+    expect(JSON.parse(await sendOk(b.member, apply(b.projectItemId, threadOfA)))).toEqual({ assigned: 0, skipped: 1 });
+    const openOfA = await sendOk(a.member, POST(`/api/mail/projects/${a.projectItemId}/signals/preview`));
+    expectText(openOfA, [threadOfA], [threadOfB, b.projectItemId]);
+    expect(JSON.parse(await sendOk(b.member, apply(b.projectItemId, threadOfB)))).toEqual({ assigned: 1, skipped: 0 });
+    expectText(await sendOk(a.member, GET(`/api/mail/threads/${threadOfA}`)), [], [b.projectItemId]);
+  },
   "mail draft create": async () => {
     const ofA = await mailboxForDrafts(a);
     const ofB = await mailboxForDrafts(b);
