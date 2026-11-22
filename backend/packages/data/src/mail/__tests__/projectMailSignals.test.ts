@@ -8,7 +8,7 @@ import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.j
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { withTransaction } from "../../db/pool.js";
-import { NotFoundError, ValidationError } from "../../errors.js";
+import { NotFoundError, RateLimitedError, ValidationError } from "../../errors.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import {
   createMoveFixtureMailbox,
@@ -233,8 +233,25 @@ async function saveSignals(projectId: string, body: unknown, target = world) {
   return signalsSchema.parse(answer.body);
 }
 
-async function previewOf(projectId: string, body?: unknown, target = world) {
-  const answer = await inTenant(() => preview(runtime)({ params: { projectId }, body }), target.tenant);
+/** A throttle granting `limit` previews, then refusing; records each user it was asked for. */
+function countingThrottle(limit = Number.MAX_SAFE_INTEGER) {
+  const asked: string[] = [];
+  return {
+    asked,
+    throttle: {
+      tryAcquire(_action: "mailSignalPreview", userId: string) {
+        asked.push(userId);
+        return asked.length <= limit ? { granted: true as const } : { granted: false as const, retryAfterSeconds: 42 };
+      },
+    },
+  };
+}
+
+async function previewOf(projectId: string, body?: unknown, target = world, throttle = countingThrottle().throttle) {
+  const answer = await inTenant(
+    () => preview(runtime, { throttle })({ params: { projectId }, body, identity: { user: { id: USER_ID } } }),
+    target.tenant,
+  );
   return previewSchema.parse(answer.body);
 }
 
@@ -407,6 +424,22 @@ describe("project mail signals", () => {
         );
         expect(fieldOf(failure)).toBe(field);
       }
+    });
+
+    it("counts every preview for its user and refuses one over the throttle with 429", async () => {
+      const project = await createProject("Website");
+      await saveSignals(project, { domains: ["acme.test"] });
+      const { asked, throttle } = countingThrottle(1);
+
+      expect((await previewOf(project, undefined, world, throttle)).total).toBe(0);
+      const refused = await previewOf(project, undefined, world, throttle).then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      expect(refused).toBeInstanceOf(RateLimitedError);
+      expect(refused).toMatchObject({ status: 429, retryAfterSeconds: 42 });
+      expect(asked).toEqual([USER_ID, USER_ID]);
     });
 
     it("matches the addresses of the project's people without saved signals", async () => {

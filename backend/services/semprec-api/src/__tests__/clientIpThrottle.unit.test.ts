@@ -25,6 +25,7 @@ const SMALL_LIMITS = {
   mailContentFetch: { maxEvents: 2, windowSeconds: 100 },
   mailRemoteSearch: { maxEvents: 2, windowSeconds: 100 },
   mailHistoryUpload: { maxEvents: 2, windowSeconds: 100 },
+  mailSignalPreview: { maxEvents: 2, windowSeconds: 100 },
 };
 
 describe("CLIENT_IP_THROTTLE_LIMITS", () => {
@@ -38,6 +39,7 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       mailContentFetch: { maxEvents: 120, windowSeconds: 900 },
       mailRemoteSearch: { maxEvents: 30, windowSeconds: 900 },
       mailHistoryUpload: { maxEvents: 600, windowSeconds: 900 },
+      mailSignalPreview: { maxEvents: 120, windowSeconds: 900 },
       mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
       calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
     });
@@ -285,6 +287,7 @@ describe.each([
   { action: "mailContentFetch" as const, maxEvents: 120 },
   { action: "mailRemoteSearch" as const, maxEvents: 30 },
   { action: "mailHistoryUpload" as const, maxEvents: 600 },
+  { action: "mailSignalPreview" as const, maxEvents: 120 },
 ])("$action", ({ action, maxEvents }) => {
   const USER = "0b0e0c4e-6f0e-4d53-9d0b-6f3c5a2f1a11";
   const OTHER_USER = "7c1d2a90-3b54-4e0f-8a55-1f2e3d4c5b66";

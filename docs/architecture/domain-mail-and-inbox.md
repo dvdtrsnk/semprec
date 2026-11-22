@@ -892,7 +892,9 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   `people` (from `person_email_index`) count as signals too and are not copied. Routes (session user): `GET`/`PUT
   /api/mail/projects/:projectId/signals` (replace, last write wins), `POST …/signals/preview` (optional
   `{ draft }` matched instead of the saved set; answers `{ total, alreadyAssigned, threads }`, at most 50 thread list
-  rows, newest first) and `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
+  rows, newest first; each preview scans the tenant's mail index, so each is counted by the throttle, action
+  `mailSignalPreview`, 120 per 15 minutes per user id, refusal 429 `rate_limited` with `Retry-After`) and
+  `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
   unknown, trashed or foreign project is 404.
 - Normalized at the boundary (`parseMailSignalSet`): a domain is the lower-case host `webHost` gives (URL or bare host,
   no `www.`, needs a dot), an address trimmed and lower-cased, a keyword trimmed with its whitespace collapsed; at most
