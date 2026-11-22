@@ -445,6 +445,37 @@ describe("IMAP history as an index, backfilled newest first", () => {
     120_000,
   );
 
+  tenantIt("fails a pass whose backfill search the server refuses, leaving the backfill where it was", async () => {
+    const { server: fake, pass } = await account();
+    for (const subject of ["One", "Two", "Three"]) fake.deliver("INBOX", [], plainMessage(subject));
+    fake.refusedVerbs.add("SEARCH");
+
+    await expect(pass()).rejects.toThrow();
+
+    expect((await messages()).size).toBe(0);
+    expect(await folderState("INBOX")).toMatchObject({ live_from_uid: "4", backfill_below_uid: "4" });
+  });
+
+  tenantIt("fails a pass whose UID searches the server refuses, removing no known copy", async () => {
+    const { server: fake, pass } = await account(PLAIN);
+    for (const subject of ["One", "Two"]) fake.deliver("INBOX", [], plainMessage(subject));
+    await pass();
+    // The count no longer accounts for the folder, so the pass would list every UID to find the vanished ones.
+    fake.expunge("INBOX", 1);
+    fake.deliver("INBOX", [], plainMessage("Three"));
+    fake.refusedVerbs.add("SEARCH");
+
+    await expect(pass()).rejects.toThrow();
+
+    const after = await messages();
+    expect([...after.values()].map(({ subject, trashed, uids }) => ({ subject, trashed, uids }))).toEqual(
+      expect.arrayContaining([
+        { subject: "One", trashed: false, uids: ["INBOX:1"] },
+        { subject: "Two", trashed: false, uids: ["INBOX:2"] },
+      ]),
+    );
+  });
+
   tenantIt(
     "establishes a folder anew after a UIDVALIDITY reset and backfills it again without downloading known mail",
     async () => {

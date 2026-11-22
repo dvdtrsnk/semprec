@@ -604,8 +604,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedRange> {
     await this.ensureSelected(path);
     // "*" in a range can include one message below sinceUid on an empty-range edge case.
-    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
-    const all = (found === false ? [] : found).filter((uid) => uid >= sinceUid).sort((a, b) => a - b);
+    const found = await this.cursorSearch({ uid: `${sinceUid}:*` });
+    const all = found.filter((uid) => uid >= sinceUid).sort((a, b) => a - b);
     // A prefix of every UID from sinceUid up, so the range between its ends holds exactly these messages.
     const uids = all.slice(0, limit);
     const messages = (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
@@ -615,8 +615,8 @@ export class ImapFlowMailClient implements ImapMailClient {
   async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedRange> {
     if (beforeUid <= 1) return { uids: [], messages: [], more: false };
     await this.ensureSelected(path);
-    const found = await this.providerCall(() => this.client.search({ uid: `1:${beforeUid - 1}` }, { uid: true }));
-    const all = (found === false ? [] : found).filter((uid) => uid < beforeUid).sort((a, b) => b - a);
+    const found = await this.cursorSearch({ uid: `1:${beforeUid - 1}` });
+    const all = found.filter((uid) => uid < beforeUid).sort((a, b) => b - a);
     // The highest UIDs below beforeUid; no UID between their ends is missing from them, and none is added later.
     const uids = all.slice(0, limit);
     const messages = (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
@@ -671,8 +671,20 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   async fetchAllUids(path: string): Promise<number[]> {
     await this.ensureSelected(path);
-    const uids = await this.providerCall(() => this.client.search({ all: true }, { uid: true }));
-    return uids === false ? [] : uids;
+    return this.cursorSearch({ all: true });
+  }
+
+  /**
+   * A `UID SEARCH` whose answer moves a sync cursor or decides which copies vanished. imapflow answers a refused search
+   * with `false`; read as "no UIDs" it would end a backfill or remove every known copy, so it fails the call instead.
+   */
+  private async cursorSearch(query: SearchObject): Promise<number[]> {
+    const found = await this.providerCall(() => this.client.search(query, { uid: true }));
+    if (found === false) {
+      this.failed = true;
+      throw new Error("IMAP provider operation failed unexpectedly");
+    }
+    return found;
   }
 
   /** Peek-only; `sinceModSeq` scopes via `changedSince`, `null` fetches every UID's flags. */
