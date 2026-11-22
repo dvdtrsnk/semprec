@@ -250,11 +250,13 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   or notification, is logged and rethrown, and is not retried (`maxAttempts` 1); the sweep queues the account again
   once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
-  ends the pass when another one does. An IMAP pass that completed takes a rerun request in its final transaction
+  ends the pass when another one does. An IMAP pass that completed, or whose round a trigger recorded meanwhile
+  (`isMailSyncRerunRequested`, which a backfill yields to), takes a rerun request in its final transaction
   (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease, on the sync connection it holds
   checked out: the move phase on pending moves read anew, then the reconcile. It runs at most `IMAP_PASS_MAX_ROUNDS`
   (3) rounds, so a trigger during a pass is served without a new job, connection or login; a round that left new
-  messages or backfill for later (`complete` false) ends the rounds and leaves them to the follow-up. On every way out
+  messages or backfill for later (`complete` false) with no trigger recorded ends the rounds and leaves them to the
+  follow-up. On every way out
   of the pass one transaction releases the lease and, when a rerun is still requested (one after the last round, an
   unfinished backfill, or any Gmail or Graph pass) and the pass did not fail, enqueues exactly one follow-up pass. A
   holder that died blocks its mailbox for at most

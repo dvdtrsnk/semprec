@@ -336,18 +336,18 @@ describe("IMAP history as an index, backfilled newest first", () => {
       history: "older history, stored as an index",
       daysAgo: 200,
       count: 3 * IMAP_MESSAGES_PER_BATCH,
-      // After the batch it was writing.
+      // The batch it was writing.
       firstPass: IMAP_MESSAGES_PER_BATCH,
     },
     {
       history: "recent history, downloaded in full",
       daysAgo: 1,
       count: IMAP_FULL_MESSAGES_PER_PASS,
-      // Before the next full download, writing the one it had.
+      // The one full message it had downloaded.
       firstPass: 1,
     },
   ])(
-    "yields a backfill of $history to a trigger that arrives during it, so the next pass takes the new mail first",
+    "yields a backfill of $history to a trigger that arrives during it, taking the new mail first",
     ({ daysAgo, count, firstPass }) =>
       runInTenant(tenant, async () => {
         const fake = new FakeImapServer({ folders: FOLDERS, capabilities: QRESYNC, latencyMs: 0 });
@@ -377,14 +377,14 @@ describe("IMAP history as an index, backfilled newest first", () => {
 
         await mailbox.sync(triggeringClient, recordingStorage());
 
-        expect((await messages()).size).toBe(firstPass);
-        expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(false);
-
-        await mailbox.sync(triggeringClient, recordingStorage());
-
-        const after = await messages();
-        expect(after.get("New during the backfill")).toMatchObject({ arrival: "live", content_state: "full" });
-        expect(after.size).toBeGreaterThan(firstPass + 1);
+        // The backfill stopped, the next round of the pass took the new mail, then the rest of the history.
+        const all = await messages();
+        const fresh = all.get("New during the backfill");
+        expect(fresh).toMatchObject({ arrival: "live", content_state: "full" });
+        const history = [...all.values()].filter((message) => message.subject.startsWith("History "));
+        expect(history).toHaveLength(count);
+        expect(history.filter((message) => message.created_at < fresh!.created_at)).toHaveLength(firstPass);
+        expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(true);
       }),
     60_000,
   );
