@@ -709,6 +709,57 @@ describe("Google Calendar adapter", () => {
       expect(live.size).toBe(1);
     });
 
+    it("a create with both an iCalendar UID and a local key names only the UID, and restores a deleted event under it", async () => {
+      const icalUid = `${randomUUID()}@semprec`;
+      let taken: "no" | "live" | "cancelled" = "no";
+      google.on("POST", `/calendars/${PRIMARY}/events`, (request) => {
+        const sent = z.object({ id: z.string().optional(), iCalUID: z.string().optional() }).parse(request.body);
+        // Google's rule: an insert naming both is refused; it derives the id from the iCalUID.
+        if (sent.id !== undefined && sent.iCalUID !== undefined) return { status: 400 };
+        if (taken !== "no") return { status: 409 };
+        taken = "live";
+        return { status: 200, body: { id: "uidid", etag: '"e-1"', status: "confirmed", iCalUID: icalUid } };
+      });
+      google.on("GET", `/calendars/${PRIMARY}/events`, (request) => ({
+        status: 200,
+        body: {
+          items:
+            request.query.get("iCalUID") === icalUid && request.query.get("showDeleted") === "true"
+              ? [
+                  {
+                    id: "uidid",
+                    etag: '"e-1"',
+                    status: taken === "cancelled" ? "cancelled" : "confirmed",
+                    iCalUID: icalUid,
+                  },
+                ]
+              : [],
+        },
+      }));
+      google.on("PATCH", `/calendars/${PRIMARY}/events/uidid`, (request) =>
+        request.headers.get("if-match") === '"e-1"'
+          ? { status: 200, body: { id: "uidid", etag: '"e-2"' } }
+          : { status: 412 },
+      );
+      const run = adapterIn(await createGoogleAccount(GRANT));
+      const create = () =>
+        run((adapter) => adapter.putEvent(calendar, { ref: null, fields, icalUid, createKey: randomUUID() }, signal()));
+
+      expect(await create()).toEqual({ remoteId: "uidid", href: null, etag: '"e-1"' });
+      expect(google.requests[0]?.body).toMatchObject({ iCalUID: icalUid, summary: "Standup" });
+      expect(google.requests[0]?.body).not.toHaveProperty("id");
+
+      taken = "cancelled";
+      google.requests.length = 0;
+      expect(await create()).toEqual({ remoteId: "uidid", href: null, etag: '"e-2"' });
+      expect(google.requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+        `POST /calendars/${PRIMARY}/events`,
+        `GET /calendars/${PRIMARY}/events`,
+        `PATCH /calendars/${PRIMARY}/events/uidid`,
+      ]);
+      expect(google.requests.at(-1)?.body).toMatchObject({ summary: "Standup", status: "confirmed" });
+    });
+
     it("an all-day Event without a zone is written with an exclusive end day", async () => {
       google.on("POST", `/calendars/${PRIMARY}/events`, () => ({ status: 200, body: { id: "conf", etag: '"e1"' } }));
       const run = adapterIn(await createGoogleAccount(GRANT));

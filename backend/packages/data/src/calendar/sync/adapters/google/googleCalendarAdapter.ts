@@ -270,10 +270,11 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     const zone = fields.timeFrom === null ? "UTC" : (fields.timeZone ?? (await this.calendarZone(calendar, signal)));
     const body = googleEventBody(fields, zone);
     if (ref === null) {
-      const created = event.icalUid ? { ...body, iCalUID: event.icalUid } : body;
+      // Google refuses an insert naming both an id and an iCalUID; it derives the id from the iCalUID itself.
+      if (event.icalUid) return this.createWithIcalUid(calendar, event.icalUid, body, signal);
       return event.createKey
-        ? this.createNamed(calendar, event.createKey, created, body, signal)
-        : this.writeEvent(calendar, { method: "POST", body: created }, signal);
+        ? this.createNamed(calendar, event.createKey, body, body, signal)
+        : this.writeEvent(calendar, { method: "POST", body }, signal);
     }
     return this.writeEvent(calendar, { method: "PATCH", eventId: ref.remoteId, body, ifMatch: ref.etag }, signal);
   }
@@ -315,6 +316,52 @@ export class GoogleCalendarAdapter implements CalendarSyncAdapter {
     }
     // Every id of the Event was used and deleted in this calendar; Google names this one.
     return this.writeEvent(calendar, { method: "POST", body: created }, signal);
+  }
+
+  /**
+   * Creates the event under `icalUid`. Google keeps one event per iCalUID in a calendar, deleted ones included, and
+   * answers 409 for a taken one: the event an earlier attempt made (or one Google already had under that iCalUID)
+   * gets `body`, a deleted one being restored as confirmed.
+   */
+  private async createWithIcalUid(
+    calendar: RemoteCalendar,
+    icalUid: string,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<RemoteEventRef> {
+    const answer = await this.http.request(
+      {
+        method: "POST",
+        path: `${calendarPath(calendar)}/events`,
+        query: new URLSearchParams({ sendUpdates: "none" }),
+        body: { ...body, iCalUID: icalUid },
+      },
+      signal,
+      [409],
+    );
+    if (answer.status !== 409) return refOfWritten(answer.body);
+    const { body: page } = await this.http.request(
+      {
+        method: "GET",
+        path: `${calendarPath(calendar)}/events`,
+        query: new URLSearchParams({ iCalUID: icalUid, showDeleted: "true" }),
+      },
+      signal,
+    );
+    const existing = this.readableEvents(parseGoogleBody(eventsPageSchema, page).items).find(
+      (candidate) => candidate.iCalUID === icalUid && candidate.recurringEventId === undefined,
+    );
+    if (existing === undefined) throw new Error("Google Calendar refused the request with status 409");
+    return this.writeEvent(
+      calendar,
+      {
+        method: "PATCH",
+        eventId: existing.id,
+        body: isCancelled(existing) ? { ...body, status: "confirmed" } : body,
+        ifMatch: existing.etag ?? null,
+      },
+      signal,
+    );
   }
 
   private async writeEvent(
