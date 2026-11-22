@@ -57,6 +57,11 @@ export { createMailSummaryRouteHandler } from "./mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mailFolderList.js";
 export { createMailMessageContentRouteHandler } from "./mailMessageContent.js";
 export { createMailAttachmentSaveRouteHandler } from "./mailAttachmentSave.js";
+export {
+  createMailHistoryClaimRouteHandler,
+  createMailHistoryReleaseRouteHandler,
+  createMailHistoryUploadRouteHandler,
+} from "./mailHistoryUpload.js";
 import type { ModuleManifest } from "@semprec/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
@@ -70,6 +75,7 @@ import { THREAD_ATTACHMENT_PROJECT_RULE_KEY } from "./threadAttachmentLinks.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 import { THREAD_COMPANY_LINK_RULE_KEY, THREAD_PROJECT_LINK_RULE_KEY } from "./threadLinkRules.js";
 import { MAIL_SYNC_THREAD_TASK_PEOPLE_TASK } from "./threadTaskPeople.js";
+import { MAIL_HISTORY_MAX_BODY_BYTES } from "./mailHistoryUpload.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 export { createMailboxRemovalImpactRouteHandler } from "./mailboxRemovalImpact.js";
@@ -440,6 +446,30 @@ export const manifest: ModuleManifest = {
       // Records the fetched bytes on the attachment row and creates the Files item with its Email and Thread edges in
       // one transaction.
       justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryClaim",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index/claim",
+      handlerExport: "createMailHistoryClaimRouteHandler",
+      // Leases the index-only backfill of the mailbox's folders to a native client in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryRelease",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index/release",
+      handlerExport: "createMailHistoryReleaseRouteHandler",
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryUpload",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index",
+      handlerExport: "createMailHistoryUploadRouteHandler",
+      // Ingests a slice of a folder's history and moves its backfill cursor in guarded transactions, as the sync does.
+      justification: "transactional-semantics",
+      maxBodyBytes: MAIL_HISTORY_MAX_BODY_BYTES,
     },
     {
       name: "mailboxRemoval",

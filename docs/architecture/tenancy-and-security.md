@@ -275,8 +275,9 @@ tenant by earliest, first or `LIMIT 1`.
 - The routes reachable without a session (login, password-reset request and consume, invitation
   acceptance) are throttled per client address in process memory (`createClientIpThrottle` in
   `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`). The
-  same throttle counts two signed-in actions per user id: mailbox credential verification and a mail
-  provider fetch on demand (`mailContentFetch`).
+  same throttle counts three signed-in actions per user id: mailbox credential verification, a mail
+  provider fetch on demand (`mailContentFetch`) and a native client's IMAP history claim or upload
+  (`mailHistoryUpload`).
 - `tryAcquire` reserves a slot before the body is read. Outcomes that must not count release the
   slot. A refused attempt gets `429 rate_limited` with `Retry-After`.
 - An IPv4 address is its own key, an IPv4-mapped address counts as its IPv4 address, and any other

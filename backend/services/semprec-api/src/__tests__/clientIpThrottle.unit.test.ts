@@ -34,6 +34,7 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       invitationAccept: { maxEvents: 10, windowSeconds: 3600 },
       mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 900 },
       mailContentFetch: { maxEvents: 120, windowSeconds: 900 },
+      mailHistoryUpload: { maxEvents: 600, windowSeconds: 900 },
     });
   });
 });

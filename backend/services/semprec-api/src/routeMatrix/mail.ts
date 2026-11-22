@@ -227,4 +227,28 @@ export const MAIL_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "mail history claim",
+    method: "POST",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}/history-index/claim`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mail history release",
+    method: "POST",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}/history-index/release`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "mail history upload",
+    method: "POST",
+    path: `/api/mail/mailboxes/${EXAMPLE_ID}/history-index`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];
