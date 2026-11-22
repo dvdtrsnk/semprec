@@ -77,4 +77,5 @@ internal fun MailConnectRefusal.toFailure(): InternetConnectFailure = when (this
     MailConnectRefusal.ALREADY_CONNECTED -> InternetConnectFailure.ALREADY_CONNECTED
     MailConnectRefusal.RATE_LIMITED -> InternetConnectFailure.RATE_LIMITED
     MailConnectRefusal.WRONG_ACCOUNT -> InternetConnectFailure.WRONG_ACCOUNT
+    MailConnectRefusal.MAIL_CONSENT_MISSING -> InternetConnectFailure.MAIL_CONSENT_MISSING
 }

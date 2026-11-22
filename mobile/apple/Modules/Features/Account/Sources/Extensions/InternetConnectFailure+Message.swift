@@ -21,6 +21,7 @@ extension InternetConnectFailure {
         case .alreadyConnected: "internetAccounts.add.error.alreadyConnected"
         case .rateLimited: "internetAccounts.add.error.rateLimited"
         case .wrongAccount: "internetAccounts.add.error.wrongAccount"
+        case .mailConsentMissing: "internetAccounts.add.error.mailConsentMissing"
         }
     }
 }

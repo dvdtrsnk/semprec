@@ -14,7 +14,8 @@ final class InternetAccountSignInMappingTests: XCTestCase {
             (.wrongCredentials, .wrongCredentials), (.appPasswordRequired, .appPasswordRequired),
             (.serverUnreachable, .serverUnreachable), (.tlsFailed, .tlsFailed), (.caldavRefused, .caldavRefused),
             (.caldavUnreachable, .caldavUnreachable), (.alreadyConnected, .alreadyConnected),
-            (.rateLimited, .rateLimited), (.wrongAccount, .wrongAccount)
+            (.rateLimited, .rateLimited), (.wrongAccount, .wrongAccount),
+            (.mailConsentMissing, .mailConsentMissing)
         ]
         for (kotlin, swift) in failures {
             XCTAssertEqual(CoreKit.InternetConnectFailure(kotlin), swift)

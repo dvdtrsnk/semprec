@@ -495,6 +495,7 @@ class HttpMailboxRepositoryTest {
         val refusals = listOf(
             Triple(HttpStatusCode.BadRequest, "mail_reauth_wrong_account", MailConnectRefusal.WRONG_ACCOUNT),
             Triple(HttpStatusCode.Conflict, "provider_account_already_connected", MailConnectRefusal.ALREADY_CONNECTED),
+            Triple(HttpStatusCode.BadRequest, "mail_consent_missing", MailConnectRefusal.MAIL_CONSENT_MISSING),
         )
         for ((status, code, refusal) in refusals) {
             val server = MailTestServer { status to """{"error":{"code":"$code"}}""" }

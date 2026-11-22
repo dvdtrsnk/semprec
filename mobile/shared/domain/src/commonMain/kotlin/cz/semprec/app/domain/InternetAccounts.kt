@@ -38,7 +38,8 @@ sealed interface OAuthOutcome {
 
     /**
      * The server refused the signed-in account: another mailbox already holds it ([MailConnectRefusal.ALREADY_CONNECTED])
-     * or it is not the account being signed in again ([MailConnectRefusal.WRONG_ACCOUNT]).
+     * it is not the account being signed in again ([MailConnectRefusal.WRONG_ACCOUNT]), or the sign-in did not allow
+     * access to its mail ([MailConnectRefusal.MAIL_CONSENT_MISSING]).
      */
     data class Refused(val reason: MailConnectRefusal) : OAuthOutcome
 }

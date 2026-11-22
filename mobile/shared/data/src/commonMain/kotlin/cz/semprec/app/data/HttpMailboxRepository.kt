@@ -238,6 +238,7 @@ private fun ApiResponse.connectOutcome(): RepositoryResult<MailConnectOutcome> =
 private val OAUTH_REFUSALS = mapOf(
     "provider_account_already_connected" to MailConnectRefusal.ALREADY_CONNECTED,
     "mail_reauth_wrong_account" to MailConnectRefusal.WRONG_ACCOUNT,
+    "mail_consent_missing" to MailConnectRefusal.MAIL_CONSENT_MISSING,
 )
 
 /**

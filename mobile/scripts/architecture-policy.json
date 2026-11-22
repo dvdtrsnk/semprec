@@ -926,6 +926,7 @@
         "internetAccounts.add.error.alreadyConnected",
         "internetAccounts.add.error.rateLimited",
         "internetAccounts.add.error.wrongAccount",
+        "internetAccounts.add.error.mailConsentMissing",
         "internetAccounts.add.openExisting",
         "internetAccount.name",
         "internetAccount.services",

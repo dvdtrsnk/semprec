@@ -64,6 +64,9 @@ enum class MailConnectRefusal {
 
     /** A browser sign-in again came back with another account than the one the mailbox is connected to. */
     WRONG_ACCOUNT,
+
+    /** A browser sign-in did not allow reading and sending the account's mail (its boxes left unchecked). */
+    MAIL_CONSENT_MISSING,
 }
 
 /**

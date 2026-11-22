@@ -53,6 +53,7 @@ extension InternetConnectFailure {
         case .alreadyConnected: self = .alreadyConnected
         case .rateLimited: self = .rateLimited
         case .wrongAccount: self = .wrongAccount
+        case .mailConsentMissing: self = .mailConsentMissing
         }
     }
 }
