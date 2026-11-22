@@ -25,6 +25,7 @@ import {
   type MailContentProviders,
   type MailContentRouteDependencies,
   type MailMessageLocator,
+  type MailProviderAccess,
 } from "./mailMessageContent.js";
 import { AttachmentCapExceededError } from "./providerTypes.js";
 import { logger } from "./logger.js";
@@ -64,16 +65,24 @@ function guardProviderStream(source: Readable): Readable {
   return guarded;
 }
 
-/** Writes the provider's bytes at `storageKey`; a provider failure removes what was written and is answered 409. */
+/**
+ * Writes the provider's bytes at `storageKey`; a provider failure removes what was written and is answered 409. A
+ * storage write that fails before the stream's end leaves the provider's download running: it is destroyed, and its
+ * close marks an IMAP connection not reusable, before the client is handed back.
+ */
 async function storeProviderBytes(
   storage: BlobStorageWriter,
   storageKey: string,
   source: Readable,
 ): Promise<FetchedAttachmentBytes> {
+  const guarded = guardProviderStream(source);
   try {
-    const written = await storage.writeStream(storageKey, guardProviderStream(source));
+    const written = await storage.writeStream(storageKey, guarded);
     return { storageKey, ...written };
   } catch (error) {
+    guarded.destroy();
+    source.destroy();
+    if (!source.closed) await new Promise<void>((resolve) => source.once("close", () => resolve()));
     await deleteStoredBytes(storage, storageKey);
     if (error instanceof ProviderStreamFailure)
       throw new MailContentUnavailableError(error.capExceeded ? "attachmentTooLarge" : "providerUnreachable");
@@ -171,18 +180,19 @@ async function fetchAttachmentBytes(
   }
   const providerMessageId = locator.providerMessageId;
   if (providerMessageId === null) throw new MailContentUnavailableError("messageNotFound");
+  const access: MailProviderAccess = { actor: { actorType: "user", actorId: userId }, use: "content" };
   let source: Readable | null;
   if (locator.syncMode === "gmail_api") {
     const create = providers.createGmailClient;
     if (!create) throw new Error("No Gmail adapter configured for this composition root");
     source = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).openAttachmentContent(providerMessageId, providerPart, filename),
+      create(locator.mailboxItemId, access).openAttachmentContent(providerMessageId, providerPart, filename),
     );
   } else {
     const create = providers.createGraphClient;
     if (!create) throw new Error("No Graph adapter configured for this composition root");
     source = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).openAttachmentContent(providerMessageId, providerPart),
+      create(locator.mailboxItemId, access).openAttachmentContent(providerMessageId, providerPart),
     );
   }
   if (source === null) throw new MailContentUnavailableError("messageNotFound");

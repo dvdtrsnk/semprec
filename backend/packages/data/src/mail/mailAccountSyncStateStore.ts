@@ -338,17 +338,6 @@ export async function setSyncMode(client: Queryable, itemId: string, syncMode: S
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
 
-/** After a `history.list` 404: clears the history id and any listing, so a full resync starts. */
-export async function invalidateGmailHistory(client: Queryable, itemId: string, reason: string): Promise<void> {
-  const result = await client.query(
-    `UPDATE mail_account_sync_state
-        SET gmail_history_id = NULL, gmail_listing_phase = NULL, gmail_listing_page_token = NULL, last_error = $2
-      WHERE item_id = $1`,
-    [itemId, reason],
-  );
-  requireAffectedRows(result, `Gmail history invalidation of item ${itemId}`);
-}
-
 /**
  * Where a Gmail pass resumes: `historyId` is the `history.list` start of the live step, the listing fields the full
  * listing in progress (`listingPhase` NULL when none runs).
@@ -409,16 +398,15 @@ export async function recordGmailActivity(client: Queryable, input: RecordGmailA
 }
 
 export interface RecordGmailWatchRegistrationInput {
-  historyId: string;
   expiresAt: Date;
   /** Normalized; the key `route_gmail_address` matches notifications against. */
   emailAddress: string;
 }
 
 /**
- * `gmail_history_id` is only seeded via `COALESCE` when absent: overwriting an existing cursor
- * could skip changes the reconcile pass has not yet observed. The routing address is replaced on
- * every registration; the OAuth connect flow sets it once beforehand.
+ * The watch's expiry and the routing address, replaced on every registration (the OAuth connect flow sets the address
+ * once beforehand). The history cursor is not the watch's: only the sync pass writes `gmail_history_id`, so the first
+ * pass, which finds none, runs the full listing whether the watch was registered before it or while it ran.
  */
 export async function recordGmailWatchRegistration(
   client: Queryable,
@@ -427,10 +415,9 @@ export async function recordGmailWatchRegistration(
 ): Promise<void> {
   const result = await client.query(
     `UPDATE mail_account_sync_state
-     SET gmail_watch_expires_at = $2, gmail_history_id = COALESCE(gmail_history_id, $3),
-         gmail_watch_email_address = $4
+     SET gmail_watch_expires_at = $2, gmail_watch_email_address = $3
      WHERE item_id = $1`,
-    [itemId, input.expiresAt, input.historyId, input.emailAddress],
+    [itemId, input.expiresAt, input.emailAddress],
   );
   requireAffectedRows(result, `gmail watch registration for item ${itemId}`);
 }
@@ -569,16 +556,6 @@ export async function getGmailAccountUse(client: Queryable, itemId: string): Pro
   const own = rows[0];
   if (!own?.recorded) return "unknown";
   return own.shared ? "shared" : "sole";
-}
-
-/** After a delta 410 / `resyncRequired`: clears the delta link and the round in progress, so a full resync starts. */
-export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
-  const result = await client.query(
-    `UPDATE mail_account_sync_state SET graph_delta_link = NULL, graph_delta_next_link = NULL, last_error = $2
-      WHERE item_id = $1`,
-    [itemId, reason],
-  );
-  requireAffectedRows(result, `Graph delta invalidation of item ${itemId}`);
 }
 
 /**
@@ -769,6 +746,19 @@ async function recordFailureWithBackoff(
   // The row is locked above, so the update finds it.
   requireAffectedRows(result, `mail sync failure of item ${itemId}`);
   return result.rows[0]?.failing_since ?? null;
+}
+
+/**
+ * The account's last pass failed and its backed-off `next_expected_activity_at` is still to come, by the database
+ * clock. `false` for an account without a row.
+ */
+export async function isMailSyncBackingOff(client: Queryable, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ backing_off: boolean }>(
+    `SELECT failing_since IS NOT NULL AND COALESCE(next_expected_activity_at > now(), false) AS backing_off
+       FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
+  return rows[0]?.backing_off ?? false;
 }
 
 /** Pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */

@@ -18,7 +18,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import type { ItemRow } from "../types.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
-import { fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
+import { fakeFetchedMessage, fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 describe("relation invalidations", () => {
   let admin: Pool;
@@ -237,10 +237,10 @@ describe("relation invalidations", () => {
           return { uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 };
         },
         async fetchMessagesSince() {
-          return [];
+          return fakeImapRange([]);
         },
         async fetchMessagesBefore() {
-          return [
+          return fakeImapRange([
             fakeFetchedMessage(1, {
               messageId: "<labels@example.test>",
               envelope: { from: { address: "sender@example.test" } },
@@ -248,7 +248,7 @@ describe("relation invalidations", () => {
               attachments: [],
               gmailLabels: Array.from({ length: 9 }, (_, i) => `Label ${i}`),
             }),
-          ];
+          ]);
         },
         async fetchSnippets() {
           return new Map();

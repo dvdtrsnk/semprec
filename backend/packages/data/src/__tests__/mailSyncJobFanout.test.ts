@@ -23,7 +23,7 @@ import { ITEM_EVENT_BATCH_ACTION_IDS } from "../scheduler/itemEventBatchActions.
 import { createHeartbeatFireCoreTask } from "../scheduler/sweep.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
+import { backfillOfFetchedSince, fakeFetchedMessage, fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -54,7 +54,10 @@ function inboxAccount(): ImapMailClient {
     listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
     selectFolder: async () => ({ uidvalidity: 1, uidnext: MESSAGES + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (_path, sinceUid, limit) =>
-      messages.filter((message) => message.uid >= sinceUid).slice(0, limit),
+      fakeImapRange(
+        messages.filter((message) => message.uid >= sinceUid),
+        limit,
+      ),
     fetchMessagesBefore: async (path, beforeUid, limit) => backfillOfFetchedSince(account)(path, beforeUid, limit),
     fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ImapFetchedMessage, ImapMailClient } from "./imapReconcile.js";
+import type { ImapFetchedRange, ImapMailClient } from "./imapReconcile.js";
 import {
   sharedImapConnectionLimiter,
   type ImapConnectionLease,
   type ImapConnectionLimiter,
 } from "./imapConnectionLimiter.js";
 import { logger } from "./logger.js";
+import { ImapFolderUnavailableError } from "./providerTypes.js";
 
 /**
  * How long a sync session stays open unused. Below the idle cutoff of common servers (RFC 9051 asks for at least 30
@@ -27,6 +28,8 @@ export interface ImapSessionRequest {
   signIn: string;
   /** Opens and signs in a new connection; called only when no kept session can be used. */
   connect(): Promise<ImapMailClient>;
+  /** Abandons the wait for a connection slot (the caller's deadline); `connect` takes it from the request too. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -115,14 +118,20 @@ export function createImapSessionPool(
     const use = <T>(operation: (client: ImapMailClient) => Promise<T>): Promise<T> => {
       if (handedBack) return Promise.reject(new Error("The IMAP session was handed back"));
       return operation(session.client).catch((error: unknown) => {
-        session.discard = true;
+        // A folder the server holds no longer leaves the connection as it was.
+        if (!(error instanceof ImapFolderUnavailableError)) session.discard = true;
         throw error;
       });
     };
     const { client } = session;
     // A full message's content is downloaded later over the same connection, so it goes through the same guard.
-    const guardContent = (messages: ImapFetchedMessage[]): ImapFetchedMessage[] =>
-      messages.map((message) => ({ ...message, fetchContent: () => use(() => message.fetchContent()) }));
+    const guardContent = (range: ImapFetchedRange): ImapFetchedRange => ({
+      ...range,
+      messages: range.messages.map((message) => ({
+        ...message,
+        fetchContent: () => use(() => message.fetchContent()),
+      })),
+    });
     const wrapped: ImapMailClient = {
       getCapabilities: () => use((c) => c.getCapabilities()),
       listFolders: () => use((c) => c.listFolders()),
@@ -200,12 +209,15 @@ export function createImapSessionPool(
         }
         if (closed) throw new Error("The IMAP session pool is closed");
       }
-      const lease = await limiter.acquire({
-        accountId: request.mailboxItemId,
-        accountLimit: request.accountLimit,
-        host: request.host,
-        kind: "work",
-      });
+      const lease = await limiter.acquire(
+        {
+          accountId: request.mailboxItemId,
+          accountLimit: request.accountLimit,
+          host: request.host,
+          kind: "work",
+        },
+        request.signal,
+      );
       let client: ImapMailClient;
       try {
         client = await request.connect();

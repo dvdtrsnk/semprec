@@ -5,7 +5,7 @@ import { currentTenantScope } from "@semprec/shared";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
-import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
+import { getDecryptedCredential, type CredentialActorType } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, NotFoundError, RateLimitedError, ValidationError } from "../errors.js";
 import type { CustomRouteResult, RouteParams, RouteUrl, RouteUser } from "../customRoute.js";
@@ -16,13 +16,18 @@ import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
 import type { GmailMailClient } from "./gmailReconcile.js";
 import type { GraphMailClient } from "./graphReconcile.js";
 import type { ImapMailClient, ImapMessageBody } from "./imapMailClient.js";
+import type { ImapFolderSelection } from "./imapReconcile.js";
 import { getMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
 import { readFreshMailContentCache, writeMailContentCache, type MailContentCacheRow } from "./mailContentCacheStore.js";
 import { readMailMessageAttachments, type MailMessageAttachment } from "./mailMessageAttachments.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import type { MailSearchTerms } from "./mailSearchTerms.js";
-import { AttachmentCapExceededError, MailReauthorizationRequiredError } from "./providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  ImapFolderUnavailableError,
+  MailReauthorizationRequiredError,
+} from "./providerTypes.js";
 import { logger } from "./logger.js";
 
 /** Why a message's content or an attachment's bytes could not be fetched from the provider. */
@@ -61,14 +66,29 @@ export interface MailContentGraphClient extends Pick<GraphMailClient, "fetchMess
 }
 
 /**
+ * Who asks a Gmail or Graph provider on demand and for what, so the token refresh's credential access is logged as
+ * that user or agent run, with a purpose of the use.
+ */
+export interface MailProviderAccess {
+  actor: { actorType: Extract<CredentialActorType, "user" | "ai_agent">; actorId: string };
+  use: "content" | "search";
+}
+
+/**
  * The provider clients the on-demand content reads and the provider search use, built by the composition root from
  * the same factories as the sync's: an IMAP client is the account's kept sync session or a new connection under the
  * shared connection limiter.
  */
 export interface MailContentProviders {
-  createImapClient?: (mailboxItemId: string, credential: string, accountLimit: number) => Promise<ImapMailClient>;
-  createGmailClient?: (mailboxItemId: string) => MailContentGmailClient;
-  createGraphClient?: (mailboxItemId: string) => MailContentGraphClient;
+  /** `signal` abandons the wait for a connection slot and the login, as a provider search's deadline does. */
+  createImapClient?: (
+    mailboxItemId: string,
+    credential: string,
+    accountLimit: number,
+    signal?: AbortSignal,
+  ) => Promise<ImapMailClient>;
+  createGmailClient?: (mailboxItemId: string, access: MailProviderAccess) => MailContentGmailClient;
+  createGraphClient?: (mailboxItemId: string, access: MailProviderAccess) => MailContentGraphClient;
   /** Where a saved attachment's bytes are written: the mail attachment root. */
   attachmentStorage?: BlobStorageWriter;
 }
@@ -292,7 +312,8 @@ const MAX_SEARCH_CANDIDATES = 5;
 /**
  * Finds the message on the IMAP server and reads it with `read`. Folder by folder (the edges with a UID first): the
  * edge's UID while the folder's UIDVALIDITY still equals the stored one, else (UID gone, UIDVALIDITY changed, edge
- * without UID) the UIDs `UID SEARCH HEADER Message-ID` finds in that folder. `null` when no folder holds it.
+ * without UID) the UIDs `UID SEARCH HEADER Message-ID` finds in that folder. A folder the server no longer holds is
+ * passed over; any other provider failure ends the search. `null` when no folder holds it.
  */
 export async function locateImapMessage<T>(
   imap: ImapMailClient,
@@ -301,7 +322,13 @@ export async function locateImapMessage<T>(
   read: (path: string, uid: number) => Promise<T | null>,
 ): Promise<T | null> {
   for (const edge of locator.imapEdges) {
-    const selection = await imap.selectFolder(edge.path);
+    let selection: ImapFolderSelection;
+    try {
+      selection = await imap.selectFolder(edge.path);
+    } catch (error) {
+      if (error instanceof ImapFolderUnavailableError) continue;
+      throw error;
+    }
     if (edge.uid !== null && edge.uidValidity === String(selection.uidvalidity)) {
       const found = await read(edge.path, edge.uid);
       if (found !== null) return found;
@@ -332,30 +359,34 @@ async function fetchProviderBody(
   }
   const providerMessageId = locator.providerMessageId;
   if (providerMessageId === null) return null;
+  const access: MailProviderAccess = { actor: { actorType: "user", actorId: userId }, use: "content" };
   // The body parts the sync's full read gives; its attachment streams are lazy and never opened here.
   if (locator.syncMode === "gmail_api") {
     const create = providers.createGmailClient;
     if (!create) throw new Error("No Gmail adapter configured for this composition root");
     const fetched = await providerPhase(locator, () =>
-      create(locator.mailboxItemId).fetchMessage(providerMessageId, "full"),
+      create(locator.mailboxItemId, access).fetchMessage(providerMessageId, "full"),
     );
     return fetched === null ? null : { bodyText: fetched.message.bodyText, bodyHtml: fetched.message.bodyHtml };
   }
   const create = providers.createGraphClient;
   if (!create) throw new Error("No Graph adapter configured for this composition root");
   const content = await providerPhase(locator, () =>
-    create(locator.mailboxItemId).fetchMessageContent(providerMessageId),
+    create(locator.mailboxItemId, access).fetchMessageContent(providerMessageId),
   );
   return content === null ? null : { bodyText: content.bodyText, bodyHtml: content.bodyHtml };
 }
 
-/** In-process fetches of one message's body by tenant and Emails item id; concurrent readers share one. */
+/**
+ * In-process fetches of one message's body by tenant, user and Emails item id: concurrent reads of one user share one,
+ * so the provider sees one read and its credential access is logged as that user's.
+ */
 const inFlightFetches = new Map<string, Promise<MailContentCacheRow>>();
 
-function flightKey(emailId: string): string {
+function flightKey(emailId: string, userId: string): string {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("An on-demand mail content read runs in a tenant scope");
-  return `${scope.tenantId}:${emailId}`;
+  return `${scope.tenantId}:${userId}:${emailId}`;
 }
 
 /** Fetches the body from the provider outside any transaction, then stores it as the message's cache row. */
@@ -421,8 +452,9 @@ async function readContentSource(
 
 /**
  * A stored body as it is; for an `index` message an unexpired cache row, else a fetch from the provider whose result
- * becomes the cache row. The attachments are read with the body's source, before any provider call. Concurrent reads of one message in this process share one fetch, and a read that missed a
- * fetch that just ended finds its row; only a read that asks the provider is counted by the throttle.
+ * becomes the cache row. The attachments are read with the body's source, before any provider call. A read that missed
+ * a fetch that just ended finds its row. Every read that needs the provider is counted by the throttle for its own
+ * user before it starts a fetch or joins one of the same user in flight in this process.
  */
 export async function readMailMessageContent(
   pool: Pool,
@@ -445,17 +477,23 @@ export async function readMailMessageContent(
   if (source.kind === "cached") return present("cached", cachedBody(source.cache), source.cache);
 
   const providers = requireMailContentDependency(dependencies, "mailContent");
-  const key = flightKey(input.emailId);
+  // A fetch that ended after this read's snapshot left its row: read it again before asking the provider.
+  const fresh = await withTransaction(pool, (client) => readFreshMailContentCache(client, input.emailId));
+  if (fresh !== null) return present("cached", cachedBody(fresh), fresh);
+  // Counted and joined in one synchronous step, so no fetch of this user starts or ends in between.
+  acquireMailContentFetch(dependencies, input.userId);
+  const key = flightKey(input.emailId, input.userId);
   let flight = inFlightFetches.get(key);
   if (flight === undefined) {
-    const started = (async () => {
-      // A fetch that ended after this read's snapshot left its row: read it again before asking the provider.
-      const fresh = await withTransaction(pool, (client) => readFreshMailContentCache(client, input.emailId));
-      if (fresh !== null) return fresh;
-      acquireMailContentFetch(dependencies, input.userId);
-      return fetchAndCacheBody(pool, providers, source.locator, input.userId);
-    })();
-    flight = started.finally(() => inFlightFetches.delete(key));
+    const started: Promise<MailContentCacheRow> = fetchAndCacheBody(
+      pool,
+      providers,
+      source.locator,
+      input.userId,
+    ).finally(() => {
+      if (inFlightFetches.get(key) === started) inFlightFetches.delete(key);
+    });
+    flight = started;
     inFlightFetches.set(key, flight);
   }
   const cache = await flight;

@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
+import { RateLimitedError, ValidationError } from "../errors.js";
 import type { CustomRouteResult, RouteBody, RouteParams, RouteUser } from "../customRoute.js";
 import { requireUuidParam } from "../customRoute.js";
 import { listMailThreads } from "./mailThreadListQuery.js";
@@ -23,6 +23,17 @@ import {
   type StoredMailSignals,
 } from "./projectMailSignalsStore.js";
 import { projectPropertyIdIfOpen } from "./threadProjectTriage.js";
+
+type ThrottleAttempt = { granted: true } | { granted: false; retryAfterSeconds: number };
+
+export interface MailSignalPreviewThrottle {
+  /** Checks and counts in the same synchronous step, per user. */
+  tryAcquire(action: "mailSignalPreview", userId: string): ThrottleAttempt;
+}
+
+export interface ProjectMailSignalsRouteDependencies {
+  throttle?: MailSignalPreviewThrottle;
+}
 
 /** The threads a preview lists; `total` counts them all. */
 export const MAIL_SIGNAL_PREVIEW_LIMIT = 50;
@@ -103,11 +114,21 @@ function previewDraft(body: unknown): MailSignalSet | null {
  * The open threads (no project, no project link) the project's signals match, the newest `MAIL_SIGNAL_PREVIEW_LIMIT`
  * as thread list rows, with the count of all of them and of the matching threads that already have a project. An
  * optional `{ draft: { domains, addresses, keywords } }` is matched instead of the saved signals, so a setup can be
- * previewed before it is saved; the people's addresses count either way. Reads one snapshot and writes nothing.
+ * previewed before it is saved; the people's addresses count either way. Reads one snapshot and writes nothing. Counted
+ * per user by the throttle (`mailSignalPreview`); a refusal is 429 `rate_limited`.
  */
-export function createProjectMailSignalsPreviewRouteHandler(pool: Pool) {
-  return async (ctx: RouteParams & RouteBody) => {
+export function createProjectMailSignalsPreviewRouteHandler(
+  pool: Pool,
+  dependencies: ProjectMailSignalsRouteDependencies,
+) {
+  return async (ctx: RouteParams & RouteBody & RouteUser) => {
     const projectId = requireUuidParam(ctx.params, "projectId");
+    // Each preview matches the signals against the tenant's whole mail index, so each counts for the user; a mount
+    // without a throttle fails (500).
+    const { throttle } = dependencies;
+    if (throttle === undefined) throw new Error('custom route dependency "throttle" is not configured');
+    const attempt = throttle.tryAcquire("mailSignalPreview", ctx.identity.user.id);
+    if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
     const draft = previewDraft(ctx.body);
     const body = await withTransaction(
       pool,

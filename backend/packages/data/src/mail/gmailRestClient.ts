@@ -4,12 +4,14 @@ import {
   gmailMoveRequest,
   type GmailMoveResult,
 } from "./mailMoveProviderAdapters.js";
+import { z } from "zod";
 import { searchHitIds } from "./mailSearchTerms.js";
 import { privateSendOperation, readSendBody } from "./mailSendPrivacy.js";
 import { Readable } from "node:stream";
 import { simpleParser } from "mailparser";
 import type {
   GmailFetchedMessage,
+  GmailHistoryRecord,
   GmailHistoryResult,
   GmailLabelRef,
   GmailMailClient,
@@ -386,6 +388,41 @@ async function sendFailure(response: Response): Promise<Error> {
 }
 
 /** `GmailMailClient` over the Gmail REST API. Tokens come from `getAccessToken`, so no refresh token is held here. */
+const providerId = z.string().min(1).max(1024);
+
+const historyMessages = z.array(z.object({ message: z.object({ id: providerId }) })).optional();
+type GmailHistoryMessages = z.infer<typeof historyMessages>;
+
+/** One page of `history.list`: its records in history order, the mailbox's current history id, the next page. */
+const historyPageSchema = z.object({
+  history: z
+    .array(
+      z.object({
+        id: providerId,
+        messagesAdded: historyMessages,
+        messagesDeleted: historyMessages,
+        labelsAdded: historyMessages,
+        labelsRemoved: historyMessages,
+      }),
+    )
+    .optional(),
+  historyId: providerId.optional(),
+  nextPageToken: z.string().min(1).optional(),
+});
+
+/** One page of `messages.list`; its entries are read like a search's hits (`searchHitIds`). */
+const listingPageSchema = z.object({
+  messages: z.array(z.unknown()).optional(),
+  nextPageToken: z.string().min(1).optional(),
+});
+
+/** A response body of the shape `schema` names, else the fixed failure of an unreadable response. */
+function parseProviderResponse<T>(schema: z.ZodType<T>, body: unknown): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new Error("Gmail sync provider response could not be read");
+  return parsed.data;
+}
+
 export class GmailRestClient implements GmailMailClient {
   constructor(
     private readonly getAccessToken: () => Promise<string>,
@@ -461,38 +498,30 @@ export class GmailRestClient implements GmailMailClient {
   }
 
   async listHistorySince(startHistoryId: string): Promise<GmailHistoryResult> {
-    const changedIds = new Set<string>();
-    const removedIds = new Set<string>();
+    const records: GmailHistoryRecord[] = [];
     let newHistoryId = startHistoryId;
     let pageToken: string | undefined;
 
     do {
       const query = new URLSearchParams({ startHistoryId, ...(pageToken ? { pageToken } : {}) });
-      const { status, json } = await this.request<{
-        history?: Array<{
-          messagesAdded?: { message: { id: string } }[];
-          messagesDeleted?: { message: { id: string } }[];
-          labelsAdded?: { message: { id: string } }[];
-          labelsRemoved?: { message: { id: string } }[];
-        }>;
-        historyId?: string;
-        nextPageToken?: string;
-      }>(`/history?${query.toString()}`);
-
-      if (status === 404)
-        return { invalidated: true, newHistoryId: startHistoryId, changedMessageIds: [], removedMessageIds: [] };
-
-      for (const entry of json?.history ?? []) {
-        for (const m of entry.messagesAdded ?? []) changedIds.add(m.message.id);
-        for (const m of entry.labelsAdded ?? []) changedIds.add(m.message.id);
-        for (const m of entry.labelsRemoved ?? []) changedIds.add(m.message.id);
-        for (const m of entry.messagesDeleted ?? []) removedIds.add(m.message.id);
+      const { status, json } = await this.request<unknown>(`/history?${query.toString()}`);
+      if (status === 404) return { invalidated: true, newHistoryId: startHistoryId, records: [] };
+      const page = parseProviderResponse(historyPageSchema, json ?? {});
+      for (const entry of page.history ?? []) {
+        const ids = (list: GmailHistoryMessages) => (list ?? []).map((item) => item.message.id);
+        records.push({
+          id: entry.id,
+          changedMessageIds: [
+            ...new Set([...ids(entry.messagesAdded), ...ids(entry.labelsAdded), ...ids(entry.labelsRemoved)]),
+          ],
+          removedMessageIds: [...new Set(ids(entry.messagesDeleted))],
+        });
       }
-      if (json?.historyId) newHistoryId = json.historyId;
-      pageToken = json?.nextPageToken;
+      if (page.historyId) newHistoryId = page.historyId;
+      pageToken = page.nextPageToken;
     } while (pageToken);
 
-    return { invalidated: false, newHistoryId, changedMessageIds: [...changedIds], removedMessageIds: [...removedIds] };
+    return { invalidated: false, newHistoryId, records };
   }
 
   async listMessageIds(query: string, pageToken: string | null): Promise<GmailMessageIdPage> {
@@ -501,10 +530,10 @@ export class GmailRestClient implements GmailMailClient {
       q: query,
       ...(pageToken ? { pageToken } : {}),
     });
-    const { json } = await this.request<{ messages?: { id: string }[]; nextPageToken?: string }>(
-      `/messages?${params.toString()}`,
-    );
-    return { ids: (json?.messages ?? []).map((m) => m.id), nextPageToken: json?.nextPageToken ?? null };
+    const { json } = await this.request<unknown>(`/messages?${params.toString()}`);
+    // A page token of another type would end the listing with pages left, so it fails the request instead.
+    const page = parseProviderResponse(listingPageSchema, json ?? {});
+    return { ids: searchHitIds(page.messages, GMAIL_LISTING_PAGE_SIZE), nextPageToken: page.nextPageToken ?? null };
   }
 
   /**

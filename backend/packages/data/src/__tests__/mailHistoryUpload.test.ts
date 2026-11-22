@@ -6,7 +6,9 @@ import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
-import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { MAIL_HEADER_VALUE_MAX_BYTES } from "../mail/imapLightFetch.js";
+import { getMailAccountSyncState, lockMailAccountSyncPaused } from "../mail/mailAccountSyncStateStore.js";
+import { lockMailThreadMutation } from "../mail/mailThreadMutationGuard.js";
 import {
   createMailHistoryClaimRouteHandler,
   createMailHistoryReleaseRouteHandler,
@@ -202,6 +204,20 @@ function upload(mailboxId: string, body: unknown, dependencies = unlimited) {
 
 type LeasedFolder = MailHistoryClaim["folders"][number];
 
+/** The slice with its first FETCH response rewritten by `rewrite`, which must change it. */
+function withFirstFetch(body: SliceBody, rewrite: (text: string) => string): SliceBody {
+  return {
+    ...body,
+    messages: body.messages.map((message, index) => {
+      if (index > 0) return message;
+      const text = Buffer.from(message.fetch, "base64").toString("latin1");
+      const rewritten = rewrite(text);
+      if (rewritten === text) throw new Error("The rewrite matched nothing of the FETCH response");
+      return { ...message, fetch: Buffer.from(rewritten, "latin1").toString("base64") };
+    }),
+  };
+}
+
 /** What the client sends for `[rangeLow, folder.backfillBelowUid)`, read from the server as the contract says. */
 async function sliceBody(account: Account, leaseToken: string, folder: LeasedFolder, rangeLow = 1) {
   const client = await RawImapHistoryClient.connect(account.port);
@@ -258,6 +274,15 @@ async function folderState(mailboxId: string, path: string) {
     [mailboxId, path, ids.foldersDatabaseId],
   );
   return folderStateRow.parse(rows[0]);
+}
+
+/** Whether a session of this database waits for a lock another holds. */
+async function someoneWaitsForALock(): Promise<boolean> {
+  const { rows } = await admin.query<{ waiting: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+                     WHERE NOT l.granted AND d.datname = current_database()) AS waiting`,
+  );
+  return rows[0]?.waiting === true;
 }
 
 async function initialSyncCompleted(mailboxId: string): Promise<boolean> {
@@ -469,6 +494,33 @@ describe("IMAP history uploaded by a native client", () => {
     });
   }, 180_000);
 
+  tenantIt("completes the initial sync beside a send claim holding the account's row, without a deadlock", async () => {
+    const imap = await account();
+    await imap.pass();
+    const answer = await claim(imap.mailboxId);
+    await imap.pass();
+    const body = await sliceBody(imap, answer.body.leaseToken, leasedFolder(answer));
+    let holding = () => {};
+    const held = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    // A send claim's lock order: the account's sync state row (share), then the mail-thread guard. It takes the guard
+    // only once the upload waits for a lock, so the upload has gone as far as it can beside the held row.
+    const sendClaim = withTransaction(runtime, async (client) => {
+      await lockMailAccountSyncPaused(client, imap.mailboxId);
+      holding();
+      for (let waited = 0; waited < 10_000 && !(await someoneWaitsForALock()); waited += 20)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      await lockMailThreadMutation(client);
+    });
+    await held;
+
+    const [uploaded] = await Promise.all([upload(imap.mailboxId, body), sendClaim]);
+
+    expect(uploaded.body.backfillBelowUid).toBeNull();
+    expect(await initialSyncCompleted(imap.mailboxId)).toBe(true);
+  });
+
   tenantIt("takes a folder's history in contiguous slices, newest first, over more than one write batch", async () => {
     const imap = await account(history(60));
     await imap.pass();
@@ -489,6 +541,40 @@ describe("IMAP history uploaded by a native client", () => {
       expect(messages.get(messageIdOf(`Older ${index}`))).toMatchObject({ content_state: "index" });
   });
 
+  tenantIt(
+    "removes, once an upload finishes a renumbered folder, the copy of a message the server expunged",
+    async () => {
+      const imap = await account();
+      const uploadAll = async () => {
+        const answer = await claim(imap.mailboxId);
+        await upload(imap.mailboxId, await sliceBody(imap, answer.body.leaseToken, leasedFolder(answer)));
+      };
+      await imap.pass();
+      await uploadAll();
+      expect(await folderState(imap.mailboxId, "INBOX")).toMatchObject({ backfill_below_uid: null });
+      const oldest = messageIdOf("Old newsletter");
+      const next = messageIdOf("Re Old offer");
+      expect((await messagesOf(imap.mailboxId)).get(oldest)?.folders).toEqual(["INBOX:1"]);
+      // New mail the next pass finds only after the renumbering, so its backfill reaches it newest first: an old message,
+      // which makes the folder index-only again, then more recent ones than its full budget takes.
+      for (let index = 1; index <= 26; index++)
+        imap.server.deliver("INBOX", [], raw({ subject: `Renumbered recent ${index}`, daysAgo: 2 }, Date.now()));
+      imap.server.deliver("INBOX", [], raw({ subject: "Renumbered old", daysAgo: 400 }, Date.now()));
+      // The oldest message leaves and the server renumbers the rest from 1.
+      imap.server.expunge("INBOX", 1);
+      imap.server.resetUidValidity("INBOX", 1);
+
+      await imap.pass();
+      expect(await folderState(imap.mailboxId, "INBOX")).toMatchObject({ backfill_index_only: true });
+      await uploadAll();
+      await imap.pass();
+
+      const messages = await messagesOf(imap.mailboxId);
+      expect(messages.has(oldest)).toBe(false);
+      expect(messages.get(next)?.folders).toEqual(["INBOX:1"]);
+    },
+  );
+
   describe("refusals, which write nothing", () => {
     async function leased() {
       const imap = await account();
@@ -505,7 +591,7 @@ describe("IMAP history uploaded by a native client", () => {
       return { imap, answer, body, expectNothingWritten };
     }
 
-    it.each([
+    it.each<{ name: string; alter: (body: SliceBody) => SliceBody; status: number; code: string; field?: string }>([
       {
         name: "a slice that does not continue at the cursor",
         alter: (body: SliceBody) => ({ ...body, rangeHigh: body.rangeHigh + 1 }),
@@ -584,6 +670,24 @@ describe("IMAP history uploaded by a native client", () => {
             index === 0 ? { ...message, fetch: "*not base64*" } : message,
           ),
         }),
+        status: 400,
+        code: "validation_failed",
+        field: "messages.0.fetch",
+      },
+      ...["1.5", "-7", "1e20"].map((size) => ({
+        name: `a body part size of ${size}`,
+        alter: (body: SliceBody) =>
+          withFirstFetch(body, (text) => text.replace(/(BODYSTRUCTURE \(.*?"7BIT" )\d+/, `$1${size}`)),
+        status: 400,
+        code: "validation_failed",
+        field: "messages.0.fetch",
+      })),
+      {
+        name: "a Message-ID longer than a header line",
+        alter: (body: SliceBody) =>
+          withFirstFetch(body, (text) =>
+            text.replace(messageIdOf("Old newsletter"), `<${"x".repeat(3 * MAIL_HEADER_VALUE_MAX_BYTES)}@long.test>`),
+          ),
         status: 400,
         code: "validation_failed",
         field: "messages.0.fetch",

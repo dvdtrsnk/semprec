@@ -1,8 +1,16 @@
 import { executeImapMoveStep, type SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
-import type { ImapFlow, FetchMessageObject, MessageStructureObject, SearchObject, StatusObject } from "imapflow";
+import type {
+  ImapFlow,
+  FetchMessageObject,
+  MailboxObject,
+  MessageStructureObject,
+  SearchObject,
+  StatusObject,
+} from "imapflow";
 import { Readable } from "node:stream";
 import type {
   ImapFetchedMessage,
+  ImapFetchedRange,
   ImapFolderRef,
   ImapFolderSelection,
   ImapMailClient,
@@ -10,7 +18,12 @@ import type {
   ImapMessageContent,
   ImapSnippetPart,
 } from "./imapReconcile.js";
-import { AttachmentCapExceededError, FlagFetchCapExceededError, MAX_ATTACHMENT_BYTES } from "./providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  FlagFetchCapExceededError,
+  ImapFolderUnavailableError,
+  MAX_ATTACHMENT_BYTES,
+} from "./providerTypes.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import { IMAP_SNIPPET_BYTES, imapSnippetText } from "./imapSnippet.js";
 import {
@@ -56,6 +69,14 @@ const IMAP_SEARCH_TIMEOUT_MS = 30_000;
 
 // iCloud Mail Drop needs no special case: the server already stores a small download-link body,
 // with no placeholder MIME part to fetch.
+
+/** The `NO` a server answers a SELECT of a folder it does not hold, or does not let this login open. */
+function isFolderUnavailableRefusal(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const status: unknown = Reflect.get(error, "responseStatus");
+  const code: unknown = Reflect.get(error, "serverResponseCode");
+  return status === "NO" && (code === undefined || code === "NONEXISTENT" || code === "NOPERM");
+}
 
 /** UIDs as an IMAP sequence set (`1:3,7`). */
 function uidSet(uids: number[]): string {
@@ -287,7 +308,7 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   async selectFolder(path: string): Promise<ImapFolderSelection> {
-    const mailbox = await this.providerCall(() => this.client.mailboxOpen(path));
+    const mailbox = await this.openMailbox(path);
     return {
       uidvalidity: Number(mailbox.uidValidity),
       uidnext: mailbox.uidNext,
@@ -300,7 +321,27 @@ export class ImapFlowMailClient implements ImapMailClient {
   private async ensureSelected(path: string): Promise<void> {
     const current = this.client.mailbox;
     if (current && current.path === path) return;
-    await this.providerCall(() => this.client.mailboxOpen(path));
+    await this.openMailbox(path);
+  }
+
+  /**
+   * SELECT. A `NO` naming no such folder or no permission for it (`NONEXISTENT`, `NOPERM`, or no response code, as
+   * older servers answer) is `ImapFolderUnavailableError`, which leaves the connection usable: imapflow then holds no
+   * folder selected, as the server does. Any other failure is a provider failure.
+   */
+  private async openMailbox(path: string): Promise<MailboxObject> {
+    let unavailable = false;
+    const mailbox = await this.providerCall(async () => {
+      try {
+        return await this.client.mailboxOpen(path);
+      } catch (error) {
+        if (!isFolderUnavailableRefusal(error)) throw error;
+        unavailable = true;
+        return null;
+      }
+    });
+    if (unavailable || mailbox === null) throw new ImapFolderUnavailableError();
+    return mailbox;
   }
 
   private async downloadText(uid: number, part: string): Promise<string> {
@@ -600,28 +641,26 @@ export class ImapFlowMailClient implements ImapMailClient {
     return raws.map((raw) => this.parseFetchedMessage(path, raw));
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
+  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedRange> {
     await this.ensureSelected(path);
     // "*" in a range can include one message below sinceUid on an empty-range edge case.
-    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
+    const found = await this.cursorSearch({ uid: `${sinceUid}:*` });
+    const all = found.filter((uid) => uid >= sinceUid).sort((a, b) => a - b);
     // A prefix of every UID from sinceUid up, so the range between its ends holds exactly these messages.
-    const uids = (found === false ? [] : found)
-      .filter((uid) => uid >= sinceUid)
-      .sort((a, b) => a - b)
-      .slice(0, limit);
-    return (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
+    const uids = all.slice(0, limit);
+    const messages = (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
+    return { uids, messages, more: all.length > uids.length };
   }
 
-  async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedMessage[]> {
-    if (beforeUid <= 1) return [];
+  async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedRange> {
+    if (beforeUid <= 1) return { uids: [], messages: [], more: false };
     await this.ensureSelected(path);
-    const found = await this.providerCall(() => this.client.search({ uid: `1:${beforeUid - 1}` }, { uid: true }));
+    const found = await this.cursorSearch({ uid: `1:${beforeUid - 1}` });
+    const all = found.filter((uid) => uid < beforeUid).sort((a, b) => b - a);
     // The highest UIDs below beforeUid; no UID between their ends is missing from them, and none is added later.
-    const uids = (found === false ? [] : found)
-      .filter((uid) => uid < beforeUid)
-      .sort((a, b) => b - a)
-      .slice(0, limit);
-    return (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
+    const uids = all.slice(0, limit);
+    const messages = (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
+    return { uids, messages, more: all.length > uids.length };
   }
 
   /** One partial FETCH per distinct section, of the first `IMAP_SNIPPET_BYTES` octets only. */
@@ -672,8 +711,20 @@ export class ImapFlowMailClient implements ImapMailClient {
 
   async fetchAllUids(path: string): Promise<number[]> {
     await this.ensureSelected(path);
-    const uids = await this.providerCall(() => this.client.search({ all: true }, { uid: true }));
-    return uids === false ? [] : uids;
+    return this.cursorSearch({ all: true });
+  }
+
+  /**
+   * A `UID SEARCH` whose answer moves a sync cursor or decides which copies vanished. imapflow answers a refused search
+   * with `false`; read as "no UIDs" it would end a backfill or remove every known copy, so it fails the call instead.
+   */
+  private async cursorSearch(query: SearchObject): Promise<number[]> {
+    const found = await this.providerCall(() => this.client.search(query, { uid: true }));
+    if (found === false) {
+      this.failed = true;
+      throw new Error("IMAP provider operation failed unexpectedly");
+    }
+    return found;
   }
 
   /** Peek-only; `sinceModSeq` scopes via `changedSince`, `null` fetches every UID's flags. */

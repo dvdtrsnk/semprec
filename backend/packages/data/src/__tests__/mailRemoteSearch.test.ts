@@ -124,12 +124,13 @@ async function imapAccount(options: { refuseSearchCharset?: boolean } = {}): Pro
     connects,
     providers: {
       // As the composition root's: the account's kept session, or a new connection under the connection limiter.
-      createImapClient: (mailboxItemId, credential, accountLimit) =>
+      createImapClient: (mailboxItemId, credential, accountLimit, signal) =>
         sessions.checkout({
           mailboxItemId,
           accountLimit,
           host: "127.0.0.1",
           signIn: credential,
+          ...(signal ? { signal } : {}),
           connect: async () => {
             connects.count++;
             return connectLoopbackImapClient(port);
@@ -357,6 +358,88 @@ describe("two-layer mail search", () => {
       expect(account.server.searches.length).toBe(searchesBefore);
       expect(asked).toHaveLength(1);
     });
+
+    tenantIt("ends the wait for a connection slot at the deadline, opening no connection after it", async () => {
+      const account = await imapAccount();
+      account.deliver("INBOX", "Old offer", "the zanzibar clause");
+      await account.pass();
+      const create = account.providers.createImapClient!;
+      // One connection for the account, taken while the search runs, so the search waits for its slot.
+      const providers: MailContentProviders = {
+        ...account.providers,
+        createImapClient: (mailboxItemId, credential, _accountLimit, signal) =>
+          create(mailboxItemId, credential, 1, signal),
+      };
+      const held = await providers.createImapClient!(account.mailboxId, "app-password", 1);
+      const connects = account.connects.count;
+      try {
+        const answer = await search({ mailContent: providers, throttle: countingThrottle().throttle }, "q=zanzibar", {
+          deadlineMs: 200,
+        });
+        expect(answer.remote.failed).toEqual([{ mailboxId: account.mailboxId, reason: "timeout" }]);
+      } finally {
+        await held.close();
+      }
+      // The slot is free now; a search still waiting for it would connect at once.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(account.connects.count).toBe(connects);
+    });
+
+    tenantIt("searches the other folders when the server no longer holds one of them", async () => {
+      const account = await imapAccount();
+      const messageId = account.deliver("INBOX", "Old offer", "the zanzibar clause");
+      account.deliver("Archive", "Archived offer", "the zanzibar clause");
+      await account.pass();
+      account.server.deleteFolder("Archive");
+
+      const answer = await search(
+        { mailContent: account.providers, throttle: countingThrottle().throttle },
+        "q=zanzibar",
+      );
+
+      expect(answer.threads.map((thread) => thread.threadId)).toEqual([
+        (await messageByMessageId(messageId)).thread_id,
+      ]);
+      expect(answer.remote).toEqual({ searched: [account.mailboxId], failed: [], unindexed: 0 });
+    });
+
+    tenantIt(
+      "maps no hit over edges a pass renumbered under a new UIDVALIDITY after the provider searched",
+      async () => {
+        const account = await imapAccount();
+        account.deliver("INBOX", "Old offer", "the zanzibar clause");
+        const otherId = account.deliver("INBOX", "Other offer", "another clause");
+        await account.pass();
+        const create = account.providers.createImapClient!;
+        let renumbered = false;
+        const providers: MailContentProviders = {
+          ...account.providers,
+          createImapClient: async (...args) => {
+            const client = await create(...args);
+            const searchText = client.searchText!.bind(client);
+            client.searchText = async (path, terms) => {
+              const uids = await searchText(path, terms);
+              if (path === "INBOX" && !renumbered) {
+                renumbered = true;
+                // The hit's message leaves and the server renumbers the rest: the other message takes its UID 1.
+                account.server.expunge("INBOX", 1);
+                account.server.resetUidValidity("INBOX", 1);
+                await account.pass();
+              }
+              return uids;
+            };
+            return client;
+          },
+        };
+
+        const answer = await search({ mailContent: providers, throttle: countingThrottle().throttle }, "q=zanzibar");
+
+        expect(renumbered).toBe(true);
+        const other = await messageByMessageId(otherId);
+        expect(answer.threads.map((thread) => thread.threadId)).not.toContain(other.thread_id);
+        expect(answer.remote).toEqual({ searched: [account.mailboxId], failed: [], unindexed: 1 });
+      },
+    );
 
     tenantIt(
       "searches a non-ASCII word with CHARSET UTF-8, and again folded to ASCII where the server refuses it",

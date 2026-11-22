@@ -5,7 +5,12 @@ import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/pool.js";
-import { IMAP_FULL_MESSAGES_PER_PASS } from "../mail/imapReconcile.js";
+import {
+  IMAP_FULL_MESSAGES_PER_PASS,
+  IMAP_INDEX_MESSAGES_PER_PASS,
+  IMAP_MESSAGES_PER_BATCH,
+} from "../mail/imapReconcile.js";
+import { MAIL_HEADER_VALUE_MAX_BYTES } from "../mail/imapLightFetch.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { getMailThreadDetail } from "../mail/mailThreadDetail.js";
@@ -96,6 +101,17 @@ async function messages(): Promise<Map<string, z.infer<typeof messageRow>>> {
   return new Map(rows.map((row) => messageRow.parse(row)).map((row) => [row.subject, row]));
 }
 
+/** Whether each Emails item named by its subject is flagged. */
+async function flaggedOf(subjects: readonly string[]): Promise<Record<string, boolean>> {
+  const ids = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+  const { rows } = await runtime.query<{ subject: string; flagged: boolean }>(
+    `SELECT properties->>'name' AS subject, COALESCE((properties->>'flagged')::boolean, false) AS flagged
+       FROM items WHERE tenant_id = app_tenant_default() AND database_id = $1 AND properties->>'name' = ANY($2::text[])`,
+    [ids.emailsDatabaseId, [...subjects]],
+  );
+  return Object.fromEntries(rows.map((row) => [row.subject, row.flagged]));
+}
+
 const attachmentRow = z.object({
   id: z.string(),
   filename: z.string(),
@@ -170,6 +186,18 @@ function bodyReads(fake: FakeImapServer, path: string, from = 0): string[] {
     .sort();
 }
 
+/** Expunges `uid` from `path` once, right after the next `UID SEARCH` was answered and before the `UID FETCH` after it. */
+function expungeBetweenSearchAndFetch(fake: FakeImapServer, path: string, uid: number): void {
+  let searched = false;
+  fake.beforeCommand = (verb) => {
+    if (verb === "SEARCH") searched = true;
+    else if (verb === "FETCH" && searched) {
+      fake.beforeCommand = undefined;
+      fake.expunge(path, uid);
+    }
+  };
+}
+
 describe("IMAP history as an index, backfilled newest first", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -192,7 +220,8 @@ describe("IMAP history as an index, backfilled newest first", () => {
     await admin.end();
   });
 
-  const tenantIt = (name: string, fn: () => Promise<void>) => it(name, () => runInTenant(tenant, fn), 60_000);
+  const tenantIt = (name: string, fn: () => Promise<void>, timeoutMs = 60_000) =>
+    it(name, () => runInTenant(tenant, fn), timeoutMs);
 
   tenantIt(
     "stores recent history in full and older history as an index, newest first over passes, then completes",
@@ -377,6 +406,134 @@ describe("IMAP history as an index, backfilled newest first", () => {
         expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(true);
       }),
     60_000,
+  );
+
+  tenantIt(
+    "keeps the new UIDs after a batch for the next pass when one of them is expunged between its search and fetch",
+    async () => {
+      const { server: fake, pass } = await account();
+      await pass();
+      // Dated beyond the full-content window, so each costs the index budget and only the batch size cuts the step.
+      const old = new Date(Date.now() - 200 * DAY_MS);
+      const total = IMAP_MESSAGES_PER_BATCH + 10;
+      for (let index = 1; index <= total; index++)
+        fake.deliver("INBOX", [], plainMessage(`New ${index}`, { date: old }));
+      expungeBetweenSearchAndFetch(fake, "INBOX", 10);
+
+      await pass();
+      expect((await messages()).size).toBe(IMAP_MESSAGES_PER_BATCH - 1);
+      expect(await folderState("INBOX")).toMatchObject({ uidnext: String(IMAP_MESSAGES_PER_BATCH + 1) });
+
+      await pass();
+      expect((await messages()).size).toBe(total - 1);
+      expect(await folderState("INBOX")).toMatchObject({ uidnext: String(total + 1) });
+    },
+  );
+
+  tenantIt(
+    "keeps the backfill cursor above the UIDs left when one message of a range is expunged between its search and fetch",
+    async () => {
+      const { server: fake, pass } = await account();
+      const limit = IMAP_FULL_MESSAGES_PER_PASS + IMAP_INDEX_MESSAGES_PER_PASS;
+      // The newest messages fill the full budget and the older ones the index budget, so the range alone ends the step.
+      const total = limit + 2;
+      for (let uid = 1; uid <= total; uid++) {
+        const daysAgo = uid > total - IMAP_FULL_MESSAGES_PER_PASS ? 1 : 200;
+        fake.deliver("INBOX", [], plainMessage(`History ${uid}`, { date: new Date(Date.now() - daysAgo * DAY_MS) }));
+      }
+      expungeBetweenSearchAndFetch(fake, "INBOX", 300);
+
+      await pass();
+      // The search took the `limit` highest UIDs, down to UID 3; UIDs 2 and 1 are left for the next pass.
+      expect((await messages()).size).toBe(limit - 1);
+      expect(await folderState("INBOX")).toMatchObject({ backfill_below_uid: "3" });
+
+      await pass();
+      const all = await messages();
+      expect(all.size).toBe(total - 1);
+      expect(all.has("History 1")).toBe(true);
+      expect(await folderState("INBOX")).toMatchObject({ backfill_below_uid: null });
+    },
+    120_000,
+  );
+
+  tenantIt("fails a pass whose backfill search the server refuses, leaving the backfill where it was", async () => {
+    const { server: fake, pass } = await account();
+    for (const subject of ["One", "Two", "Three"]) fake.deliver("INBOX", [], plainMessage(subject));
+    fake.refusedVerbs.add("SEARCH");
+
+    await expect(pass()).rejects.toThrow();
+
+    expect((await messages()).size).toBe(0);
+    expect(await folderState("INBOX")).toMatchObject({ live_from_uid: "4", backfill_below_uid: "4" });
+  });
+
+  tenantIt("fails a pass whose UID searches the server refuses, removing no known copy", async () => {
+    const { server: fake, pass } = await account(PLAIN);
+    for (const subject of ["One", "Two"]) fake.deliver("INBOX", [], plainMessage(subject));
+    await pass();
+    // The count no longer accounts for the folder, so the pass would list every UID to find the vanished ones.
+    fake.expunge("INBOX", 1);
+    fake.deliver("INBOX", [], plainMessage("Three"));
+    fake.refusedVerbs.add("SEARCH");
+
+    await expect(pass()).rejects.toThrow();
+
+    const after = await messages();
+    expect([...after.values()].map(({ subject, trashed, uids }) => ({ subject, trashed, uids }))).toEqual(
+      expect.arrayContaining([
+        { subject: "One", trashed: false, uids: ["INBOX:1"] },
+        { subject: "Two", trashed: false, uids: ["INBOX:2"] },
+      ]),
+    );
+  });
+
+  it.each(["1.5", "-7", "1e20"])(
+    "ingests a message whose server gives an attachment size of %s and an overlong Message-ID, the size as unknown",
+    (size) =>
+      runInTenant(tenant, async () => {
+        const { server: fake, pass } = await account();
+        const messageId = `<${randomUUID()}@sender.example.test>`;
+        fake.deliver("INBOX", [], messageWithAttachment("Broken", 200, messageId));
+        const overlong = `<${"x".repeat(3 * MAIL_HEADER_VALUE_MAX_BYTES)}@sender.example.test>`;
+        fake.rewriteResponse = (text) =>
+          text.replace(/("BASE64" )\d+/, `$1${size}`).replace(`"${messageId}"`, `"${overlong}"`);
+
+        await pass();
+
+        const broken = (await messages()).get("Broken");
+        expect(broken).toMatchObject({ content_state: "index", uids: ["INBOX:1"] });
+        const [attachment] = await attachmentsOf(broken!.id);
+        expect(attachment).toMatchObject({ filename: "report.pdf", byte_size: "0" });
+        const { rows } = await runtime.query<{ message_id: string }>(
+          "SELECT message_id FROM mail_message_meta WHERE item_id = $1",
+          [broken!.id],
+        );
+        expect(rows).toEqual([{ message_id: "<no-message-id-uid-1@generated>" }]);
+      }),
+    60_000,
+  );
+
+  tenantIt(
+    "takes no UID of a replaced UIDVALIDITY for another message's: flags, vanished copies and edges follow the new UIDs",
+    async () => {
+      const { server: fake, pass } = await account();
+      for (const subject of ["Expunged", "Kept", "Flagged"]) fake.deliver("INBOX", [], plainMessage(subject));
+      await pass();
+      // Renumbered from 1 without the expunged message: "Kept" takes its old UID 1, "Flagged" the old UID 2 of "Kept".
+      fake.expunge("INBOX", 1);
+      fake.resetUidValidity("INBOX", 1);
+      fake.setFlags("INBOX", 2, ["\\Flagged"]);
+
+      await pass();
+
+      const after = await messages();
+      expect([...after.keys()].sort()).toEqual(["Flagged", "Kept"]);
+      expect(after.get("Kept")?.uids).toEqual(["INBOX:1"]);
+      expect(after.get("Flagged")?.uids).toEqual(["INBOX:2"]);
+      expect(await flaggedOf(["Kept", "Flagged"])).toEqual({ Kept: false, Flagged: true });
+      expect(await folderState("INBOX")).toMatchObject({ uidvalidity: "2", backfill_below_uid: null });
+    },
   );
 
   tenantIt(

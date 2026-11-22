@@ -231,7 +231,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
   ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
-  rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  rerun was requested and the pass did not fail, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
@@ -254,15 +254,22 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   the Gmail folder-state guard after the mail-thread guard, locks the sync state row and writes only while the
   stored cursor is still the one its fetch started from; otherwise it writes nothing and ends the pass incomplete.
   - Cursor (`mail_account_sync_state`): `gmail_history_id`, the start of the live step, and the listing cursor
-    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`.
+    `gmail_listing_phase` (`full`, `index`, NULL when no listing runs) with `gmail_listing_page_token`. Only the sync
+    pass writes `gmail_history_id`: a watch registration (`recordGmailWatchRegistration`) records the watch's expiry
+    and routing address alone, so a first pass lists the mailbox whether the watch was registered before it or while
+    it ran.
   - A first pass (no history id) captures the current history id (`users.getProfile`) before anything is listed
-    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which also records
-    the invalidation as `last_error`. Every later pass applies the history since the stored id first, then
+    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which is logged and
+    is no failure: `last_error` keeps describing the outcome of the last failed pass, cleared by a successful one. Every later pass applies the history since the stored id first, then
     continues the listing, so new mail is never held back by a running listing.
-  - Live step: `history.list` from the stored id (all its pages, ids only), the changed messages in write
-    transactions of `GMAIL_MESSAGES_PER_BATCH` (50); the last one drops the edges of deleted messages and stores the
-    new history id. It is not bounded by the pass budget; an interrupted step lists the same history again, and the
-    messages its committed batches wrote are then known.
+  - Live step: `history.list` from the stored id (all its pages, its records in history order, parsed at the edge),
+    the changed messages in history order (a message several records name once, at its first), in write transactions
+    of `GMAIL_MESSAGES_PER_BATCH` (50). Each transaction drops the edges of the messages the records it completes
+    deleted and stores the id of the last record it completed; the last one stores the new history id. The step
+    charges the pass budget, and once it is spent it stops before the next record (a record is never split between
+    passes), so the stored id never passes a record left unapplied; the next pass lists the history from there. An
+    interrupted step lists the same history again from the last stored record, and the messages its committed
+    batches wrote are then known.
   - Listing: `messages.list` newest first, `maxResults` 50 (`GMAIL_LISTING_PAGE_SIZE`), one page per write
     transaction, which stores the page token of the next page; the last page of `full` moves the cursor to `index`,
     the last page of `index` ends the listing. Phase `full` searches `after:<window start>`, phase `index`
@@ -270,11 +277,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     phases may overlap by a second; a message both list is ingested once). An interrupted listing resumes at its
     stored page, and its history id is kept.
   - Fetches: a message the mailbox already holds by its Gmail id is fetched with `format=metadata` (labels and
-    flags are what can change) and converges; otherwise a live-step or `full`-phase message with `format=full`, an
-    `index`-phase message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and
-    Content-Type headers) and its `snippet`.
+    flags are what can change) and converges; otherwise a `full`-phase message with `format=full`, an `index`-phase
+    message with `format=metadata` (`metadataHeaders`: the envelope, threading, delivery, bulk and Content-Type
+    headers) and its `snippet`, and a live-step message with `format=metadata` first: its arrival and Date decide its
+    content state (`mailContentStateOf`), and only a `full` one is fetched again with `format=full`, so old mail
+    another client labels or moves is stored as an index.
   - Budget: `GMAIL_FULL_MESSAGES_PER_PASS` (50) full and `GMAIL_INDEX_MESSAGES_PER_PASS` (500) index or known
-    messages per pass, spent page by page; a pass whose listing is left unfinished is incomplete, requests a rerun
+    messages per pass, shared by the live step and the listing, spent page by page; a pass whose history or listing
+    is left unfinished is incomplete, requests a rerun
     in its final transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset, which the
     pass that ends the listing sets.
 - A Graph pass (`reconcileGraphAccount` in `mail/graphReconcile.ts`): the folder list, then a prepare transaction
@@ -286,8 +296,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     delta link, else from scratch. Each page (`Prefer: odata.maxpagesize=50`, `GRAPH_DELTA_PAGE_SIZE`, `$select`
     without `body`) is written in one transaction that stores its next link; the page carrying the round's delta
     link stores it as `graph_delta_link` and clears the next link, and only then is the round complete. A
-    `410 Gone`/`resyncRequired` on a stored link clears both, records the invalidation as `last_error`, and the same
-    pass starts a round from scratch.
+    `410 Gone`/`resyncRequired` on a stored link clears both (logged, no failure, so `last_error` is left as it is),
+    and the same pass starts a round from scratch.
   - Per page, outside any transaction: which Message-IDs the mailbox already holds (those converge, nothing is
     fetched), and for each other message its content state by `mailContentStateOf` (`receivedDateTime` as its
     Date); a `full` one's body (`GET /messages/{id}?$select=body,bodyPreview,hasAttachments`) and, when it has
@@ -310,9 +320,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   vanished check are one `UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE m VANISHED)` (`fetchChangesSince`), whose
   `VANISHED (EARLIER)` names the expunged UIDs. Whether those (or, without QRESYNC, none) are every UID that left is
   decided by the message count: the stored count, less the reported vanished UIDs below the stored UIDNEXT, plus the
-  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a UIDVALIDITY change, a
-  partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
-  known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
+  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a partial batch or with no
+  stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
   UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
 - A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
   row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
@@ -332,20 +341,24 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `NULL` with `live_from_uid` set means the folder's backfill is done. The two ranges never meet: the backfill only
   covers UIDs the folder held when its state was established.
 - Order of a pass. First every folder's live step, the inbox first: the UIDs from `uidnext` up, lowest first, in one
-  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` after
-  the last ingested UID. Then every folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`,
-  highest (newest) first, in write transactions of at most 50 messages, each moving `backfill_below_uid` down to the
-  lowest UID it wrote; the batch that writes the folder's lowest UID sets it `NULL`. New mail is therefore ingested
-  before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` above
+  the last UID the step's `UID SEARCH` took when it wrote them all, else after the last ingested UID. Then every
+  folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`, highest (newest) first, in write
+  transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
+  of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
+  left. New mail is therefore ingested before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
   the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
   older history, stored as an index, which a native client may then upload (see
   [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
   under an unexpired lease is skipped by the backfill step (no SELECT); its live step runs as always.
+  How far a step reached is decided by its `UID SEARCH`, never by how many messages the `UID FETCH` after it
+  returned: a message expunged between the two leaves a gap, not the end of the folder (`ImapFetchedRange`).
 - Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
   `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
   as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
   is two steps: a light `UID FETCH` (UID, flags, ENVELOPE, BODYSTRUCTURE, the threading and delivery headers,
-  Gmail labels) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
+  Gmail labels; a Message-ID, In-Reply-To, reference, address or provider id over `MAIL_HEADER_VALUE_MAX_BYTES` is left
+  out as if the message had none, so no server can make a message fail every pass) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
   (`listKnownMailMessageIds`); only after that a full message's body parts are downloaded and its attachments
   spooled, and every index message's snippet part is read in one partial `UID FETCH … BODY.PEEK[<part>]<0.2048>` per
   distinct part (`fetchSnippets`, decoded by `mail/imapSnippet.ts`). A known message downloads nothing; a known one
@@ -357,9 +370,18 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   minutes, when an expired or released lease has given the folder back to the server.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
-  before its backfill is simply not found by it. A UIDVALIDITY change removes every old-UID edge in the live step;
-  the backfill of the same pass re-adds each message it reaches under its new UID by Message-ID (without download),
-  and the final transaction trashes only an item left with no folder edge.
+  before its backfill is simply not found by it.
+- A UIDVALIDITY change. The live step that finds it fetches no flags and lists no UIDs: the known UIDs name other
+  messages under the new UIDVALIDITY, so neither their flags nor their absence tells anything. In the transaction
+  that resets the folder's state (`resetForUidvalidityChange`) every edge of the folder that carries a UID keeps its
+  Email but trades the UID for `staleUid` (`retireFolderUids`), so no reader ever pairs an old UID with the new
+  UIDVALIDITY: the vanished diff, the flag observation and write-back, the moves, the content and attachment reads
+  (which then search the folder by Message-ID) and the provider search see such an edge as one without a UID. The
+  folder's backfill then reaches every message the folder holds and ingests it by Message-ID (without download),
+  which gives its edge the new UID. The write that ends the folder's backfill (the server's, or the upload of a
+  native client) removes every edge still left with only a `staleUid`, a message the folder no longer holds, and
+  marks its Email as a vanished copy's (`removeStaleFolderCopies`); the next final transaction trashes it when it has
+  no folder edge left. An Email with a move in flight keeps its edge.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
@@ -385,9 +407,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   at 6 hours. The base is 5 minutes, or for `MailConnectionLimitError` the provider's connection-limit backoff
   (`connectionLimitBackoffSecondsForProvider`, 5 or 10 minutes). The previous delay is read from the row
   (`next_expected_activity_at − last_activity_at` while `failing_since` is set); a successful pass ends the streak.
-  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1): the
-  sweep queues the next pass once the backed-off `next_expected_activity_at` is due, so a failing server never sees
-  a burst of logins.
+  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1). While
+  `failing_since` is set and the backed-off `next_expected_activity_at` lies ahead (`isMailSyncBackingOff`, by the
+  database clock), the job's prologue ends after the sync state read, before the pass lease, the credential read or
+  any provider call, whoever queued it (IDLE, a push, a flag or move write-back); and the release of a failed pass
+  queues no follow-up for a trigger that asked for one while it ran (`pass_rerun_requested` is dropped). The sweep
+  queues the next pass once the account is due, so a failing server sees one login per backoff delay. A sign-in
+  again (`clearMailSyncFailure`) and the Mail switch (`pauseMailAccountSync`) clear the failure record before they
+  queue a pass, so theirs runs at once.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 
@@ -425,9 +452,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `mailContentStateOf`); a message ingested again keeps it, a send claim is `full`. A message is `full` when it is
   `live`, or when its Date is at most `MAIL_FULL_CONTENT_WINDOW_DAYS` (90) before the account's `connected_at`;
   older history, and history without a Date, is `index`.
-  - Gmail decides by where the pass reaches the message: the live step (`history.list`) stores it `full`, the
-    listing by its phase, which Gmail's search decides by the internal date (`full` inside the window, `index`
-    beyond it).
+  - Gmail decides by where the pass reaches the message: the live step (`history.list`) by `mailContentStateOf` from
+    its metadata (new mail `full`, old mail another client labels or moves `index`), the listing by its phase, which
+    Gmail's search decides by the internal date (`full` inside the window, `index` beyond it).
   - Graph decides by `mailContentStateOf` with `receivedDateTime` as the Date.
 - `full`: `Emails.body` (the HTML part, else the text part), `preview_text` from it, every attachment's bytes as a
   blob with a `mail_attachments` row, a Files item and the `Emails.attachments`/`Threads.attachments` edges, attachment
@@ -437,7 +464,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
   `preview_text` from the snippet (IMAP: the first 2 KiB of the text part, else HTML part; Gmail: `snippet`, its
   HTML entities decoded; Graph: `bodyPreview`); for IMAP each attachment as a `mail_attachments` row with `blob_id`
-  NULL, its `provider_part` and the size BODYSTRUCTURE gives, and no Files item and no edge; the search text is
+  NULL, its `provider_part` and the size BODYSTRUCTURE gives (0 when the server gives no count of octets), and no Files
+  item and no edge; the search text is
   subject, sender, snippet and attachment filenames. A Gmail or Graph index message records no attachment: a
   `format=metadata` fetch lists no parts, and a Graph attachment list per message would cost a request per
   message of the backfill. A row has a blob or a provider
@@ -460,7 +488,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   upserts on `(tenant_id, item_id)`, so a repeat fetch replaces the row and two writers never fail on each other.
   Trash, Mail off and removal leave rows to expire; a purge removes them with the item.
 - `mailContentCacheSweep` (daily 03:55, `api` runtime, system task) deletes expired rows, one transaction per active
-  tenant (`forEachActiveTenant`); a failing tenant does not stop the others.
+  tenant (`forEachActiveTenant`, as every scheduled sweep); a failing tenant does not stop the others. A suspended
+  tenant's expired rows wait for its reactivation (no reader serves an expired row, and a suspended tenant has no
+  reader), a deleted tenant's go with its purge.
 - `GET /api/mail/messages/:emailId/content[?allowRemoteImages=true]` (`mail/mailMessageContent.ts`) answers
   `{ emailId, contentState: "full" | "cached", bodyHtml, bodyText, fetchedAt, expiresAt, attachments }` (the two times
   `null` for a stored body; `attachments` as the thread detail lists them, `{ attachmentId, filename, contentType,
@@ -475,9 +505,14 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     sync's factory (the kept session of `sharedImapSessionPool`, else a new connection under the connection limiter).
     Folder edge by folder, those with a UID first: the edge's UID while the folder's UIDVALIDITY equals the stored
     `mail_folder_sync_state.uidvalidity`, else (UID gone, UIDVALIDITY changed, edge without UID) the first five UIDs
-    `UID SEARCH HEADER Message-ID` finds in that folder. The body parts are chosen as the full ingest chooses them
+    `UID SEARCH HEADER Message-ID` finds in that folder. A folder whose SELECT the server refuses as one it does not
+    hold or does not let the login open (`NO` with `NONEXISTENT`, `NOPERM` or no response code,
+    `ImapFolderUnavailableError`) is passed over and the next edge tried; any other failure, a dropped connection
+    included, ends the read. The body parts are chosen as the full ingest chooses them
     (`walkBodyStructure`), each read up to 16 MiB (`IMAP_CONTENT_MAX_PART_BYTES`) under a 60 s deadline; a SEARCH has
-    30 s. Gmail and Graph read the body with the sync's own full read, so it is chosen and annotated as the full ingest
+    30 s. Gmail and Graph refresh the access token as the sync does, the stored refresh token's access logged as the
+    user with purpose `gmail_api_content` or `graph_api_content` (an attachment save too), and read the body with the
+    sync's own full read, so it is chosen and annotated as the full ingest
     stores it: Gmail `fetchMessage(id, "full")` (`messages.get format=full` by `provider_message_id`), Graph
     `fetchMessageContent` (`GET /me/messages/{id}?$select=body,bodyPreview,hasAttachments`, then the attachment list
     of a message that has attachments, item and reference attachments annotated into the body; no attachment byte is
@@ -487,10 +522,11 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     `messageNotFound`; any other provider failure (connect, limiter wait, timeout, refused command, HTTP status) is
     logged by error name with local ids and answered `providerUnreachable`. A database failure keeps its identity.
     Nothing is cached on a failure.
-  - Concurrent reads of one message in the process share one fetch (keyed by tenant and item id); a read that missed a
-    fetch which just ended re-reads the cache before asking the provider. Only a read that asks the provider is
-    counted by the throttle: action `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as
-    the password routes), refusal 429 `rate_limited` with `Retry-After`.
+  - A read that missed a fetch which just ended re-reads the cache before asking the provider. Every read that then needs
+    the provider is counted by the throttle for its own user, whether it starts the fetch or joins one: action
+    `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as the password routes), refusal 429
+    `rate_limited` with `Retry-After`. Concurrent reads of one message by one user in the process share one fetch (keyed
+    by tenant, user and item id), so the credential access it logs is that user's.
 - `POST /api/mail/messages/:emailId/attachments/:attachmentId/save` (`mail/mailAttachmentSave.ts`) answers
   `{ fileItemId }`. A user action; no agent tool calls it. An attachment of another message, an unknown, foreign or
   trashed id is the same 404. An attachment with stored bytes and a live Files item of the Email (same blob and name)
@@ -500,7 +536,9 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   id of that read (`attachments.get`), or from its inline data; Graph `/attachments/{id}/$value` with the immutable-id
   header). Only IMAP records attachments without bytes (a Gmail or Graph index message records none, and a full
   one stores every attachment's bytes). The bytes are counted by `mailContentFetch`, and written to the mail
-  attachment storage before the transaction; a stream that sends nothing for 60 s fails. An attachment the IMAP or
+  attachment storage before the transaction; a stream that sends nothing for 60 s fails, and a storage write that fails
+  before the end destroys the provider's stream, so an IMAP session with the download still running is closed instead
+  of kept. An attachment the IMAP or
   Gmail client reports over the cap is 409 `attachmentTooLarge` (Graph's stream fails as `providerUnreachable`), other
   failures are answered as for the content route, and the written bytes are removed.
   - The transaction (`saveMailAttachmentFile`, `mail/attachments.ts`) takes the mail-thread guard, locks the
@@ -535,15 +573,21 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   (`mailOff`) or whose last sync failure is `reauthorization` (`reauthorizationRequired`) is reported in `failed`
   without a provider call. A refused sign-in is `reauthorizationRequired`, any other provider failure is logged by error
   name with local ids and is `providerUnreachable`, an account that has not answered by the deadline is `timeout` (its
-  Gmail or Graph request is aborted, its IMAP search stops at the next folder, what it finds later is dropped). A
+  Gmail or Graph request is aborted, its IMAP search stops at the next folder, a wait for its IMAP connection slot or
+  login ends, what it finds later is dropped). A
   database failure keeps its identity. A hit no local Emails item records is counted in `unindexed`.
   - IMAP: the stored password (access logged as the user, or `ai_agent` with the run id, purpose `imap_search`), the
     client from the content reads' factory (kept session or a new connection under the limiter). Folders: Inbox, Archive
     and Sent, in that order; an account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk,
-    Drafts and the user's own folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
+    Drafts and the user's own folders are not searched. A folder the server no longer holds
+    (`ImapFolderUnavailableError`) is passed over. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
     an excluded one), 30 s each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that
     refuses it is asked again with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the
-    folder's UIDVALIDITY equals the stored one; otherwise, or without an edge, it is unindexed.
+    folder's stored UIDVALIDITY equals the one the search selected, as the search began and again in the mapping's
+    transaction (a pass that established the folder anew meanwhile gave its edges other UIDs); otherwise, or without an
+    edge, it is unindexed.
+  - Gmail and Graph refresh the access token with the stored refresh token's access logged as the user, or `ai_agent`
+    with the run id, purpose `gmail_api_search` or `graph_api_search`.
   - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
     Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
     `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
@@ -609,7 +653,10 @@ internals proven against the real library by its unit test; an upgrade must re-p
     (`messages.3.fetch`): integers in the IMAP number range, `rangeLow < rangeHigh`; `uids` unique, inside
     `[rangeLow, rangeHigh)`, at most `MAIL_HISTORY_MAX_MESSAGES` (500); `messages` at most 500, exactly one per listed
     UID; each `fetch` strict base64 of at most `MAIL_HISTORY_MAX_FETCH_BYTES` (64 KiB) holding exactly one untagged
-    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section.
+    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section, whose
+    BODYSTRUCTURE sizes are integers from 0 to `Number.MAX_SAFE_INTEGER` and whose Message-ID, In-Reply-To, addresses
+    and `EMAILID` hold at most `MAIL_HEADER_VALUE_MAX_BYTES` (998) bytes of UTF-8, a header line, inside the row a
+    btree index takes.
   - Each response is read as the light fetch reads its own (`lightFetchedMessageOf` in `mail/imapLightFetch.ts`:
     envelope, flags, threading, delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and
     sizes). The snippet comes from the part the light fetch reads it from (the text part, else the HTML part): a
@@ -618,15 +665,17 @@ internals proven against the real library by its unit test; an upgrade must re-p
     cut, or one inside an attached message, gives no snippet. Of a multipart message less than 2 KiB of the part is
     read, so its search text can be shorter than the server's; the 200-character preview is the same.
   - Written in READ COMMITTED transactions of at most `IMAP_MESSAGES_PER_BATCH` (50) messages, newest first: mailbox
-    sync guard → the mailbox and its sync state re-read → mail-thread guard → the folder's sync state row
+    sync guard → the account's sync state row `FOR UPDATE` and the mailbox re-read → mail-thread guard → the folder's
+    sync state row
     `FOR UPDATE`, which must still hold the uploaded UIDVALIDITY (else 409 `mail_history_uidvalidity_changed`), an
     unexpired lease of the token (else 409 `mail_history_lease_expired`) and the cursor the batch continues (the first
     at `rangeHigh`; else 409 `mail_history_range_stale` with `details.backfillBelowUid`, the cursor the folder holds).
     A folder that is not one of the mailbox's is 404 `not_found`. Each message is ingested as a server backfill
     batch ingests it, `arrival` `backfill` and `content_state` `index` (a message inside the window too; its body is
     read on demand), with the moves in flight protected; a known Message-ID converges as always. Then the cursor moves
-    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done), and
-    the lease is renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
+    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done, which
+    removes the edges a UIDVALIDITY change left with only a `staleUid` as the server's backfill does), and the lease is
+    renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
   - Answer: `{ accepted, backfillBelowUid: number | null, leaseExpiresAt }`.
 - The client. The mobile apps upload the history of an IMAP account right after the person connected it with a
   password, while that password is in memory; it is never stored on the device. One IMAP connection per accounts
@@ -843,7 +892,9 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   `people` (from `person_email_index`) count as signals too and are not copied. Routes (session user): `GET`/`PUT
   /api/mail/projects/:projectId/signals` (replace, last write wins), `POST …/signals/preview` (optional
   `{ draft }` matched instead of the saved set; answers `{ total, alreadyAssigned, threads }`, at most 50 thread list
-  rows, newest first) and `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
+  rows, newest first; each preview scans the tenant's mail index, so each is counted by the throttle, action
+  `mailSignalPreview`, 120 per 15 minutes per user id, refusal 429 `rate_limited` with `Retry-After`) and
+  `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
   unknown, trashed or foreign project is 404.
 - Normalized at the boundary (`parseMailSignalSet`): a domain is the lower-case host `webHost` gives (URL or bare host,
   no `www.`, needs a dot), an address trimmed and lower-cased, a keyword trimmed with its whitespace collapsed; at most
@@ -1095,7 +1146,8 @@ on-demand content and attachment reads and the provider search.
 
 - Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
   folder/item rows.
-- History claim, release and upload: mailbox sync guard → (upload) mail-thread guard → folder sync state rows.
+- History claim, release and upload: mailbox sync guard → sync state row → (upload) mail-thread guard → folder sync
+  state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)

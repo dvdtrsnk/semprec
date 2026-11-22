@@ -18,7 +18,6 @@ import {
 import {
   anchorMailAccountConnection,
   ensureMailAccountSyncState,
-  invalidateGraphDeltaLink,
   lockGraphSyncCursor,
   recordGraphActivity,
   recordGraphSyncCursor,
@@ -31,6 +30,7 @@ import { createAttachmentSpool, type AttachmentSpool } from "./mailAttachmentSpo
 import { inPassTransaction, withBatchStorage, type MailSyncPass, type MailSyncPassResult } from "./mailSyncPass.js";
 import type { ClassifiedAttachment } from "./attachments.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import { logger } from "./logger.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
 /** Messages one pass ingests in full: each costs a body request, an attachment list and the attachments' bytes. */
@@ -391,14 +391,12 @@ export async function reconcileGraphAccount(
       let step: GraphStep;
       if (!page) {
         if (url === null) throw new Error("Microsoft Graph refused a delta round from scratch as expired");
-        step = await writeGraphStep(ctx, cursor, async (client) => {
-          await invalidateGraphDeltaLink(
-            client,
-            params.mailboxItemId,
-            "delta 410 Gone / resyncRequired, running full resync",
-          );
-          return { cursor: { deltaLink: null, nextLink: null }, stopped: false };
-        });
+        // A resync is no failure, so it leaves `last_error` to the pass's outcome.
+        logger.info({ mailboxItemId: params.mailboxItemId }, "Graph delta link expired; a round from scratch starts");
+        step = await writeGraphStep(ctx, cursor, async () => ({
+          cursor: { deltaLink: null, nextLink: null },
+          stopped: false,
+        }));
       } else {
         const expected = cursor;
         const changes = await prepareGraphPage(ctx, page.changes, expected.deltaLink !== null, budget);

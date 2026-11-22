@@ -50,7 +50,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
-import { recentGmailListing } from "../testSupport/gmailListing.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -1988,7 +1988,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
         transport: {
           async registerWatch(_mailboxItemId, credential) {
             registered.push(credential);
-            return { historyId: "1", expiresAt: new Date("2031-01-01T00:00:00Z") };
+            return { expiresAt: new Date("2031-01-01T00:00:00Z") };
           },
           pull: async () => [],
           acknowledge: async () => undefined,
@@ -2115,12 +2115,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     const presented: string[] = [];
     const gmail: GmailMailClient = {
       getCurrentHistoryId: async () => "1",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "2",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("2"),
       listMessageIds: recentGmailListing(["new-message"]),
       listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
       fetchMessage: async () => ({

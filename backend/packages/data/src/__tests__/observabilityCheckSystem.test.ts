@@ -28,6 +28,7 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { handleObservabilityCheckSystemTask } from "../observability/observabilityCheckSystem.js";
 
 let pool: Pool;
@@ -655,6 +656,10 @@ describe("observability.checkSystem (issue #169)", () => {
       expect(await mailProblems(mailboxItemId)).toMatchObject([
         { severity: "warning", occurrence_count: 2, resolved_at: null },
       ]);
+      // The next pass runs once the failure's backoff ran out, as the sweep queues it.
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) => elapseMailSyncBackoff(client, mailboxItemId)),
+      );
       await runInTenant(getTenantZeroId(), async () => {
         await expect(
           handleSyncMailAccountTask(
@@ -728,8 +733,8 @@ describe("observability.checkSystem (issue #169)", () => {
             getCapabilities: async () => new Set(),
             listFolders: async () => [],
             selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
-            fetchMessagesSince: async () => [],
-            fetchMessagesBefore: async () => [],
+            fetchMessagesSince: async () => ({ uids: [], messages: [], more: false }),
+            fetchMessagesBefore: async () => ({ uids: [], messages: [], more: false }),
             fetchSnippets: async () => new Map(),
             fetchChangesSince: async () => ({ flags: [], vanished: [] }),
             fetchAllUids: async () => [],
@@ -740,6 +745,10 @@ describe("observability.checkSystem (issue #169)", () => {
           };
           await expect(failing()).rejects.toThrow("synthetic sync failure");
           await runCheck("initial-check", runtime);
+          // The next pass runs once the failure's backoff ran out, as the sweep queues it.
+          await runInTenant(tenantId, () =>
+            withTransaction(runtime, (client) => elapseMailSyncBackoff(client, mailboxItemId)),
+          );
           await runInTenant(tenantId, () =>
             handleSyncMailAccountTask(
               runtime,

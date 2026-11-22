@@ -62,8 +62,14 @@ function mapRow(row: MailFolderSyncStateDbRow): MailFolderSyncStateRow {
   };
 }
 
-/** The row's columns, qualified by `table` (the table name, or the alias a query gives it). */
-function columnsOf(table: string): string {
+/** The table name, or the one alias a query of this module gives it. */
+type FolderSyncStateTable = "mail_folder_sync_state" | "s";
+
+/**
+ * The row's columns, qualified by `table`. Interpolated into SQL text: `table` is one of the closed literals of
+ * `FolderSyncStateTable`, never a caller's value.
+ */
+function columnsOf(table: FolderSyncStateTable): string {
   return [
     "item_id",
     "uidvalidity",

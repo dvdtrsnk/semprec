@@ -49,7 +49,7 @@ function fakeTransport(notifications: GmailPubSubNotification[]): { transport: G
   return {
     acks,
     transport: {
-      registerWatch: async () => ({ historyId: "1", expiresAt: new Date() }),
+      registerWatch: async () => ({ expiresAt: new Date() }),
       pull: async () => queue.shift() ?? [],
       acknowledge: async (ackIds) => {
         acks.push(ackIds);

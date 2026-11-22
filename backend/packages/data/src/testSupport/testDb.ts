@@ -10,7 +10,7 @@ export { ensureFolderItem } from "../mail/folderDiscovery.js";
 export { ingestEmailMessage } from "../mail/ingest.js";
 export { createThreadTask } from "../mail/threadTasks.js";
 export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
-export { recentGmailListing } from "./gmailListing.js";
+export { gmailHistory, recentGmailListing } from "./gmailListing.js";
 export { UNGUARDED_MAIL_SYNC_PASS } from "./mailSyncPass.js";
 export {
   bindToTenantZero,

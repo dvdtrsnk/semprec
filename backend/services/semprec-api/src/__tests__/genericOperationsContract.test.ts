@@ -16,6 +16,7 @@ import {
   clearHooksForTests,
   ensureMailAccountSyncState,
   reconcileGmailAccount,
+  gmailHistory,
   recentGmailListing,
   UNGUARDED_MAIL_SYNC_PASS,
   type GmailMailClient,
@@ -1146,12 +1147,7 @@ describe("generic operation REST contract", () => {
         const mailboxFolderRelationPropertyId = (await findProperty(cp, ids.foldersDatabaseId, "mailbox")).id;
         const gmail: GmailMailClient = {
           getCurrentHistoryId: async () => "1",
-          listHistorySince: async () => ({
-            invalidated: false,
-            newHistoryId: "2",
-            changedMessageIds: [],
-            removedMessageIds: [],
-          }),
+          listHistorySince: async () => gmailHistory("2"),
           listMessageIds: recentGmailListing(["message"]),
           listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
           fetchMessage: async () => ({

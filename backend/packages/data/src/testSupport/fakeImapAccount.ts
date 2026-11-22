@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
-import type { ImapFetchedMessage, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
+import type { ImapFetchedMessage, ImapFetchedRange, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
 import { IMAP_SNIPPET_BYTES } from "../mail/imapSnippet.js";
 import { fakeFetchedMessage } from "./fakeImapMessages.js";
 import type { MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
@@ -145,19 +145,18 @@ export class FakeImapAccount {
         })),
       selectFolder: async (path) => this.selection(this.folder(path)),
       fetchMessagesSince: async (path, sinceUid, limit) =>
-        this.light(
+        this.range(
           path,
-          this.folder(path)
-            .messages.filter((message) => message.uid >= sinceUid)
-            .slice(0, limit),
+          this.folder(path).messages.filter((message) => message.uid >= sinceUid),
+          limit,
         ),
       fetchMessagesBefore: async (path, beforeUid, limit) =>
-        this.light(
+        this.range(
           path,
           this.folder(path)
             .messages.filter((message) => message.uid < beforeUid)
-            .reverse()
-            .slice(0, limit),
+            .reverse(),
+          limit,
         ),
       fetchSnippets: async (path, requests) => {
         const snippets = new Map<number, string>();
@@ -263,6 +262,16 @@ export class FakeImapAccount {
       searchText: logged("searchText", methods.searchText),
       downloadPart: logged("downloadPart", methods.downloadPart),
       close: async () => {},
+    };
+  }
+
+  /** The light fetch of the first `limit` of `matching`, as a range whose search found every one of `matching`. */
+  private async range(path: string, matching: FakeImapMessage[], limit: number): Promise<ImapFetchedRange> {
+    const taken = matching.slice(0, limit);
+    return {
+      uids: taken.map((message) => message.uid),
+      messages: await this.light(path, taken),
+      more: matching.length > taken.length,
     };
   }
 

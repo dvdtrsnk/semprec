@@ -8,13 +8,14 @@ import { NotFoundError, RateLimitedError, ValidationError } from "../errors.js";
 import type { CustomRouteResult, RouteUrl, RouteUser } from "../customRoute.js";
 import { requestUrl } from "../customRoute.js";
 import { imapConnectionLimitForProvider } from "./imapConnectionLimiter.js";
+import type { ImapFolderSelection } from "./imapReconcile.js";
 import type { ImapMailClient } from "./imapMailClient.js";
 import { SYNC_MODES, type SyncMode } from "./mailAccountSyncStateStore.js";
 import type { MailContentProviders } from "./mailMessageContent.js";
 import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
 import { hasMailSearchTerms, parseMailSearchTerms, type MailSearchTerms } from "./mailSearchTerms.js";
 import { hasInvalidMailSearchDate, listMailThreads } from "./mailThreadListQuery.js";
-import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { ImapFolderUnavailableError, MailReauthorizationRequiredError } from "./providerTypes.js";
 import { parseMailSearchQuery, type ParsedMailSearchQuery } from "./search.js";
 import { logger } from "./logger.js";
 
@@ -261,7 +262,9 @@ interface ImapFolderHits {
   folder: ImapSearchFolder;
   /** Newest first. */
   uids: number[];
-  /** The folder's UIDVALIDITY equals the stored one, so the stored edges' UIDs name these messages. */
+  /** The folder's UIDVALIDITY as the search selected it. */
+  uidvalidity: string;
+  /** It equals the stored one as the search began, so the stored edges' UIDs name these messages. */
   uidsComparable: boolean;
 }
 
@@ -281,8 +284,9 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
   });
   if (credential === null) throw new ProviderSearchFailed("reauthorizationRequired");
   const accountLimit = imapConnectionLimitForProvider(mailbox.provider, mailbox.connectionLimit);
+  // The deadline also ends the wait for a connection slot, so a search nobody waits for opens no connection.
   const imap: ImapMailClient = await providerPhase(context, () =>
-    create(mailbox.mailboxItemId, credential, accountLimit),
+    create(mailbox.mailboxItemId, credential, accountLimit, context.signal),
   );
   try {
     const searchText = imap.searchText?.bind(imap);
@@ -291,13 +295,27 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
     let remaining = MAIL_REMOTE_SEARCH_MAX_HITS;
     for (const folder of mailbox.imapFolders) {
       if (remaining === 0 || context.signal.aborted) break;
-      const { uidvalidity, uids } = await providerPhase(context, async () => {
-        const selection = await imap.selectFolder(folder.path);
+      const searched = await providerPhase(context, async () => {
+        let selection: ImapFolderSelection;
+        try {
+          selection = await imap.selectFolder(folder.path);
+        } catch (error) {
+          // A folder the server no longer holds has nothing to find; the others are still searched.
+          if (error instanceof ImapFolderUnavailableError) return null;
+          throw error;
+        }
         return { uidvalidity: selection.uidvalidity, uids: await searchText(folder.path, context.search.terms) };
       });
+      if (searched === null) continue;
+      const { uidvalidity, uids } = searched;
       const newest = [...new Set(uids)].sort((a, b) => b - a).slice(0, remaining);
       remaining -= newest.length;
-      hits.push({ folder, uids: newest, uidsComparable: String(uidvalidity) === folder.uidValidity });
+      hits.push({
+        folder,
+        uids: newest,
+        uidvalidity: String(uidvalidity),
+        uidsComparable: String(uidvalidity) === folder.uidValidity,
+      });
     }
     return hits;
   } finally {
@@ -314,8 +332,10 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
 }
 
 /**
- * The Emails items the found UIDs name over each folder's edges. A UID no edge carries (the message is not ingested
- * yet, or the folder's UIDVALIDITY changed since its last sync) counts as unindexed; a trashed item is no hit.
+ * The Emails items the found UIDs name over each folder's edges, while the folder's stored UIDVALIDITY is still the one
+ * the search selected (a pass that established the folder anew since gave its edges other UIDs). A UID no edge carries
+ * (the message is not ingested yet, or the folder's UIDVALIDITY changed since its last sync) counts as unindexed; a
+ * trashed item is no hit.
  */
 async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFolderHits[]) {
   const folderProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "folder");
@@ -323,7 +343,7 @@ async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFol
   if (!definition) throw new Error("The Emails folder property has no relation definition");
   const emailIds: string[] = [];
   let unindexed = 0;
-  for (const { folder, uids, uidsComparable } of hits) {
+  for (const { folder, uids, uidvalidity, uidsComparable } of hits) {
     if (!uidsComparable) {
       unindexed += uids.length;
       continue;
@@ -334,9 +354,11 @@ async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFol
        FROM item_relations edge
        JOIN items email ON email.tenant_id = edge.tenant_id AND email.database_id = $3
          AND email.id = CASE WHEN edge.item_a = $1 THEN edge.item_b ELSE edge.item_a END
+       JOIN mail_folder_sync_state state ON state.tenant_id = edge.tenant_id AND state.item_id = $1
+         AND state.uidvalidity = $5::bigint
        WHERE edge.tenant_id = app_tenant_default() AND edge.relation_definition_id = $2
          AND (edge.item_a = $1 OR edge.item_b = $1) AND edge.metadata->>'uid' = ANY($4::text[])`,
-      [folder.folderItemId, definition.id, ids.emailsDatabaseId, uids.map(String)],
+      [folder.folderItemId, definition.id, ids.emailsDatabaseId, uids.map(String), uidvalidity],
     );
     const mapped = new Set(rows.map((row) => row.uid));
     unindexed += uids.filter((uid) => !mapped.has(String(uid))).length;
@@ -377,7 +399,7 @@ async function searchMailboxAtProvider(context: ProviderSearchContext, ids: Mail
       if (!create) noAdapter(context);
       // Gmail reads the user's query with its own operators, which `q` shares.
       providerIds = await providerPhase(context, () =>
-        create(mailbox.mailboxItemId).searchMessageIds(
+        create(mailbox.mailboxItemId, { actor: context.actor, use: "search" }).searchMessageIds(
           context.search.rawQuery,
           MAIL_REMOTE_SEARCH_MAX_HITS,
           context.signal,
@@ -387,7 +409,7 @@ async function searchMailboxAtProvider(context: ProviderSearchContext, ids: Mail
       const create = providers.createGraphClient;
       if (!create) noAdapter(context);
       providerIds = await providerPhase(context, () =>
-        create(mailbox.mailboxItemId).searchMessageIds(
+        create(mailbox.mailboxItemId, { actor: context.actor, use: "search" }).searchMessageIds(
           context.search.terms,
           MAIL_REMOTE_SEARCH_MAX_HITS,
           context.signal,

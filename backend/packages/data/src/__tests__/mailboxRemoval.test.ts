@@ -31,6 +31,8 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
+import { fakeImapRange } from "../testSupport/fakeImapMessages.js";
+import { gmailHistory } from "../testSupport/gmailListing.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -218,8 +220,8 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
       await options.onSelectFolder?.(path);
       return { uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 };
     },
-    fetchMessagesSince: async () => called("fetchMessagesSince", []),
-    fetchMessagesBefore: async () => called("fetchMessagesBefore", []),
+    fetchMessagesSince: async () => called("fetchMessagesSince", fakeImapRange([])),
+    fetchMessagesBefore: async () => called("fetchMessagesBefore", fakeImapRange([])),
     fetchSnippets: async () => called("fetchSnippets", new Map<number, string>()),
     fetchChangesSince: async () => called("fetchChangesSince", { flags: [], vanished: [] }),
     fetchAllUids: async () => called("fetchAllUids", []),
@@ -230,13 +232,7 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
   };
   const gmail: GmailMailClient = {
     getCurrentHistoryId: async () => called("getCurrentHistoryId", "1"),
-    listHistorySince: async () =>
-      called("listHistorySince", {
-        invalidated: false,
-        newHistoryId: "1",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
+    listHistorySince: async () => called("listHistorySince", gmailHistory("1")),
     listMessageIds: async () => called("listMessageIds", { ids: [], nextPageToken: null }),
     fetchMessage: async () => called("fetchMessage", null),
     listLabels: async () => called("listLabels", []),

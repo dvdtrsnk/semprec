@@ -49,6 +49,7 @@ import {
   resetDatabase,
 } from "../testSupport/testDb.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -1311,8 +1312,8 @@ describe("mail move intent store", () => {
       getCapabilities: async () => new Set<string>(),
       listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
       selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null, messages: 0 }),
-      fetchMessagesSince: async () => [],
-      fetchMessagesBefore: async () => [],
+      fetchMessagesSince: async () => fakeImapRange([]),
+      fetchMessagesBefore: async () => fakeImapRange([]),
       fetchSnippets: async () => new Map<number, string>(),
       fetchChangesSince: async () => null,
       fetchAllUids: async () => [23],
