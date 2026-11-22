@@ -259,8 +259,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     and routing address alone, so a first pass lists the mailbox whether the watch was registered before it or while
     it ran.
   - A first pass (no history id) captures the current history id (`users.getProfile`) before anything is listed
-    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which also records
-    the invalidation as `last_error`. Every later pass applies the history since the stored id first, then
+    and stores it with the listing cursor `full`; so does the resync after a `history.list` 404, which is logged and
+    is no failure: `last_error` keeps describing the outcome of the last failed pass, cleared by a successful one. Every later pass applies the history since the stored id first, then
     continues the listing, so new mail is never held back by a running listing.
   - Live step: `history.list` from the stored id (all its pages, its records in history order, parsed at the edge),
     the changed messages in history order (a message several records name once, at its first), in write transactions
@@ -296,8 +296,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
     delta link, else from scratch. Each page (`Prefer: odata.maxpagesize=50`, `GRAPH_DELTA_PAGE_SIZE`, `$select`
     without `body`) is written in one transaction that stores its next link; the page carrying the round's delta
     link stores it as `graph_delta_link` and clears the next link, and only then is the round complete. A
-    `410 Gone`/`resyncRequired` on a stored link clears both, records the invalidation as `last_error`, and the same
-    pass starts a round from scratch.
+    `410 Gone`/`resyncRequired` on a stored link clears both (logged, no failure, so `last_error` is left as it is),
+    and the same pass starts a round from scratch.
   - Per page, outside any transaction: which Message-IDs the mailbox already holds (those converge, nothing is
     fetched), and for each other message its content state by `mailContentStateOf` (`receivedDateTime` as its
     Date); a `full` one's body (`GET /messages/{id}?$select=body,bodyPreview,hasAttachments`) and, when it has

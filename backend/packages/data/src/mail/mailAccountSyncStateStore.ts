@@ -338,17 +338,6 @@ export async function setSyncMode(client: Queryable, itemId: string, syncMode: S
   await client.query(`UPDATE mail_account_sync_state SET sync_mode = $2 WHERE item_id = $1`, [itemId, syncMode]);
 }
 
-/** After a `history.list` 404: clears the history id and any listing, so a full resync starts. */
-export async function invalidateGmailHistory(client: Queryable, itemId: string, reason: string): Promise<void> {
-  const result = await client.query(
-    `UPDATE mail_account_sync_state
-        SET gmail_history_id = NULL, gmail_listing_phase = NULL, gmail_listing_page_token = NULL, last_error = $2
-      WHERE item_id = $1`,
-    [itemId, reason],
-  );
-  requireAffectedRows(result, `Gmail history invalidation of item ${itemId}`);
-}
-
 /**
  * Where a Gmail pass resumes: `historyId` is the `history.list` start of the live step, the listing fields the full
  * listing in progress (`listingPhase` NULL when none runs).
@@ -567,16 +556,6 @@ export async function getGmailAccountUse(client: Queryable, itemId: string): Pro
   const own = rows[0];
   if (!own?.recorded) return "unknown";
   return own.shared ? "shared" : "sole";
-}
-
-/** After a delta 410 / `resyncRequired`: clears the delta link and the round in progress, so a full resync starts. */
-export async function invalidateGraphDeltaLink(client: Queryable, itemId: string, reason: string): Promise<void> {
-  const result = await client.query(
-    `UPDATE mail_account_sync_state SET graph_delta_link = NULL, graph_delta_next_link = NULL, last_error = $2
-      WHERE item_id = $1`,
-    [itemId, reason],
-  );
-  requireAffectedRows(result, `Graph delta invalidation of item ${itemId}`);
 }
 
 /**

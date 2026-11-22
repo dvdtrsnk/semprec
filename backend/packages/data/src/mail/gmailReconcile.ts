@@ -19,7 +19,6 @@ import {
 import {
   anchorMailAccountConnection,
   ensureMailAccountSyncState,
-  invalidateGmailHistory,
   lockGmailSyncCursor,
   recordGmailActivity,
   recordGmailSyncCursor,
@@ -32,6 +31,7 @@ import { MAIL_FULL_CONTENT_WINDOW_DAYS, mailContentStateOf } from "./mailContent
 import { createAttachmentSpool, type AttachmentSpool } from "./mailAttachmentSpool.js";
 import { inPassTransaction, withBatchStorage, type MailSyncPass, type MailSyncPassResult } from "./mailSyncPass.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
+import { logger } from "./logger.js";
 import type { FetchedMessage } from "./providerTypes.js";
 
 export interface GmailLabelRef {
@@ -468,14 +468,12 @@ async function syncGmailHistory(
   if (history.invalidated) {
     // Captured before the listing: what arrives meanwhile is reported by the history after it.
     const historyId = await ctx.gmail.getCurrentHistoryId();
-    return writeGmailStep(ctx, cursor, async (client) => {
-      await invalidateGmailHistory(
-        client,
-        ctx.params.mailboxItemId,
-        "history.list: historyId too old, running full resync",
-      );
-      return { cursor: { historyId, listingPhase: "full", listingPageToken: null }, stopped: false };
-    });
+    // A resync is no failure, so it leaves `last_error` to the pass's outcome.
+    logger.info({ mailboxItemId: ctx.params.mailboxItemId }, "Gmail history expired; the mailbox is listed again");
+    return writeGmailStep(ctx, cursor, async () => ({
+      cursor: { historyId, listingPhase: "full", listingPageToken: null },
+      stopped: false,
+    }));
   }
   if (history.records.length === 0 && history.newHistoryId === cursor.historyId)
     return { kind: "written", cursor, stopped: false };

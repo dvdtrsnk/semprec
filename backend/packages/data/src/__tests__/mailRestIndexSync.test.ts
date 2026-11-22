@@ -502,8 +502,19 @@ describe("Gmail sync stores recent mail in full and older history as an index", 
       old: ["old-resynced"],
       history: (startHistoryId) => ({ invalidated: true, newHistoryId: startHistoryId, records: [] }),
     });
+    // Read once the resync's cursor is committed, before the pass ends: a resync is no failure to record.
+    const errorsDuringResync: Array<string | null> = [];
+    const client: GmailMailClient = {
+      ...account.client,
+      listMessageIds: async (query, pageToken) => {
+        errorsDuringResync.push((await syncState(params.mailboxItemId)).lastError);
+        return account.client.listMessageIds(query, pageToken);
+      },
+    };
 
-    await expect(reconcile(params, account.client)).resolves.toEqual({ ran: true, complete: true });
+    await expect(reconcile(params, client)).resolves.toEqual({ ran: true, complete: true });
+
+    expect(errorsDuringResync).toEqual([null, null]);
 
     expect(account.historyIdCaptures).toBe(1);
     // The known message is refreshed from its metadata, the new ones are fetched by their phase.
@@ -782,8 +793,19 @@ describe("Graph sync stores recent mail in full and older history as an index", 
     const account = graphAccount(
       new Map([[null, { changes: [graphChange("resynced", RECENT_DATE)], nextLink: null, deltaLink: "delta-new" }]]),
     );
+    // Read once the resync's cursor is committed, before the pass ends: a resync is no failure to record.
+    const errorsDuringResync: Array<string | null> = [];
+    const client: GraphMailClient = {
+      ...account.client,
+      fetchDeltaPage: async (url) => {
+        if (url === null) errorsDuringResync.push((await syncState(params.mailboxItemId)).lastError);
+        return account.client.fetchDeltaPage(url);
+      },
+    };
 
-    await expect(reconcile(params, account.client)).resolves.toEqual({ ran: true, complete: true });
+    await expect(reconcile(params, client)).resolves.toEqual({ ran: true, complete: true });
+
+    expect(errorsDuringResync).toEqual([null]);
 
     expect(account.deltaUrls).toEqual([cursor.nextLink ?? cursor.deltaLink, null]);
     expect(await storedMessages(params.mailboxItemId)).toEqual([
