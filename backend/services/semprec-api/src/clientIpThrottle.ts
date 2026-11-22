@@ -94,6 +94,7 @@ const PER_USER_ACTIONS: ReadonlySet<ThrottledAction> = new Set([
   "mailboxCredentialVerification",
   "mailContentFetch",
   "mailRemoteSearch",
+  "mailHistoryUpload",
 ]);
 
 function throttleKey(action: ThrottledAction, subject: string): string {
