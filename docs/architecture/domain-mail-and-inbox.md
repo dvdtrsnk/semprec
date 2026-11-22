@@ -69,6 +69,14 @@ described elsewhere and only referenced here:
   `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
   itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
   server reports a delivery unasked) starts at once instead of after imapflow's 15 s default.
+- A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
+  established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
+  recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing
+  is enqueued once `stop()` began. imapflow does not restart an IDLE that ended without the client's DONE, so the
+  transport checks `idling` every 60 s and ends the session (`ImapIdleStoppedError`, reconnect after backoff) when two
+  consecutive checks find the open connection not idling. A connection the server already closed is not logged out;
+  its close ends the cleanup. Every session start, end (`server-closed`, `error` with the error's name and code,
+  `recycle`, `stop`) and reconnect (attempt, delay) is logged at info with the mailbox id and folder only.
 - Tests reach local fake servers only through `allowLoopbackOutboundForTests()`. Host egress filtering stays
   the second layer.
 
