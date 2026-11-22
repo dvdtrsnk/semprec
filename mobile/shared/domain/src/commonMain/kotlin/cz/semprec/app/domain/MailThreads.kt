@@ -80,13 +80,27 @@ data class MailSummary(
     val needingReauthorization: List<MailNamedRef>,
 )
 
+/**
+ * A file of a message. [stored] says the server holds its bytes ([blobId]); an attachment of a message the server only
+ * indexed has none until it is saved. [fileItemId] is the Files item the attachment is saved as, if any.
+ */
 data class MailAttachment(
+    val attachmentId: String,
     val filename: String,
     val contentType: String,
     val byteSize: Long,
+    val stored: Boolean,
+    val blobId: String?,
+    val fileItemId: String?,
     val project: MailNamedRef?,
     val projectLink: MailLink?,
 )
+
+/**
+ * Where a message's body is: stored with the message ([FULL]), a copy the server fetched from the provider and still
+ * keeps ([CACHED]), or only at the provider ([REMOTE]), where the server fetches it when asked.
+ */
+enum class MailContentState { FULL, CACHED, REMOTE }
 
 data class MailMessage(
     val emailId: String,
@@ -97,10 +111,17 @@ data class MailMessage(
     val to: List<MailAddress>,
     val cc: List<MailAddress>,
     val date: String?,
+    /** Empty while [contentState] is [MailContentState.REMOTE]. */
     val bodyText: String,
+    val contentState: MailContentState,
+    /** The short snippet the server keeps for every message. */
+    val preview: String?,
     val read: Boolean,
     val attachments: List<MailAttachment>,
 )
+
+/** The body of one message as `messageContent` answers it, fetched from the provider when the server had none. */
+data class MailMessageContent(val emailId: String, val bodyText: String)
 
 /** A task made from a thread; [status] is the stored key (`notDone`, `done`). */
 data class MailThreadTask(
@@ -131,6 +152,15 @@ data class MailThreadDetail(
     val messages: List<MailMessage>,
     val tasks: List<MailThreadTask>,
 )
+
+/**
+ * What a search found: the threads of the local index, and what the provider search of each mailbox added.
+ * [MailRemoteSearch.searched] are the mailboxes whose provider was asked, [MailRemoteSearch.failed] those whose provider
+ * search failed, and [MailRemoteSearch.unindexed] counts the provider hits the local index does not hold yet.
+ */
+data class MailSearchResult(val threads: List<MailThreadSummary>, val remote: MailRemoteSearch)
+
+data class MailRemoteSearch(val searched: List<String>, val failed: List<String>, val unindexed: Int)
 
 /** A person suggested as a recipient. */
 data class MailContact(val name: String, val address: String, val relationship: String?)
