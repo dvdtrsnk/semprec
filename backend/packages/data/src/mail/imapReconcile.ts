@@ -881,8 +881,9 @@ export interface ReconcileImapAccountParams {
   mailboxAliases?: string[];
   pass: MailSyncPass;
   /**
-   * Whether a trigger for the account arrived while the pass runs. The backfill then stops between batches and the
-   * pass ends unfinished, so the follow-up pass takes the new mail first instead of after the rest of this backfill.
+   * Whether a trigger for the account arrived while the pass runs. The backfill then stops before its next batch or
+   * full download and the pass ends unfinished, so the next round takes the new mail first instead of after the rest
+   * of this backfill.
    */
   triggered?: () => Promise<boolean>;
 }
