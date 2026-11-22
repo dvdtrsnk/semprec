@@ -3,7 +3,17 @@ import type { Pool } from "pg";
 import { handleGraphChangeNotification } from "@semprec/data";
 import { runAsSystem } from "@semprec/shared";
 import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
+import { clientIpFromRequest } from "./clientIp.js";
+import { createClientIpThrottle, type ClientIpThrottle } from "./clientIpThrottle.js";
+import { distinctGraphNotifications } from "./graphNotificationBatch.js";
 import { logger } from "./logger.js";
+
+export interface GraphWebhookRequestListenerOptions {
+  /** Read the throttle key from the last `X-Forwarded-For` hop. */
+  trustProxy: boolean;
+  /** Defaults to one fresh limiter per listener. */
+  clientIpThrottle?: ClientIpThrottle;
+}
 
 /**
  * Generous for a real Graph delivery (Graph caps a batch around 20 notifications), but bounds a
@@ -11,37 +21,38 @@ import { logger } from "./logger.js";
  */
 const MAX_BODY_BYTES = 256 * 1024;
 
-interface RawNotification {
-  subscriptionId: string;
-  clientState?: string;
-}
-
-/** A Graph notification carries other fields this receiver does not act on. */
-function parseNotification(value: unknown): RawNotification | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.subscriptionId !== "string" || !record.subscriptionId) return undefined;
-  return {
-    subscriptionId: record.subscriptionId,
-    clientState: typeof record.clientState === "string" ? record.clientState : undefined,
-  };
-}
-
 /**
  * Unauthenticated by design: Graph is the only caller, and each notification's `clientState`
  * (checked in constant time by `handleGraphChangeNotification`) is the safeguard. Listed among the
  * public exceptions in `routeMatrix.ts`.
  *
- * The validation handshake (`?validationToken=`, body not a notification batch) is handled first
- * and unconditionally, answering the literal token as `text/plain`, which Graph matches
- * byte-for-byte.
+ * Every POST, the handshake included, counts under `mailWebhook` per client address first, before
+ * the body is read or the database is; over the limit it answers an empty 429 with `Retry-After`.
+ *
+ * The validation handshake (`?validationToken=`, body not a notification batch) is handled next,
+ * answering the literal token as `text/plain`, which Graph matches byte-for-byte.
+ *
+ * A repeated `(subscriptionId, clientState)` pair is looked up once, and at most
+ * `MAX_GRAPH_NOTIFICATIONS` distinct pairs per batch (`distinctGraphNotifications`).
  */
-export function createGraphWebhookRequestListener(pool: Pool) {
+export function createGraphWebhookRequestListener(pool: Pool, options: GraphWebhookRequestListenerOptions) {
+  const throttle = options.clientIpThrottle ?? createClientIpThrottle();
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (req.method !== "POST") {
       sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+
+    const acquisition = throttle.tryAcquire(
+      "mailWebhook",
+      clientIpFromRequest(req, { trustProxy: options.trustProxy }),
+    );
+    if (!acquisition.granted) {
+      res.writeHead(429, { "Retry-After": String(acquisition.retryAfterSeconds), "Cache-Control": NO_STORE });
+      res.end();
       return;
     }
 
@@ -67,18 +78,16 @@ export function createGraphWebhookRequestListener(pool: Pool) {
       }
 
       const rawValue = (parsed as Record<string, unknown>).value;
-      const notifications = Array.isArray(rawValue)
-        ? rawValue.map(parseNotification).filter((n): n is RawNotification => n !== undefined)
-        : [];
+      const notifications = Array.isArray(rawValue) ? distinctGraphNotifications(rawValue) : [];
 
       await runAsSystem("graph-webhook", async () => {
-        for (const notification of notifications) {
-          const outcome = await handleGraphChangeNotification(pool, notification);
+        for (const { subscriptionId, clientState } of notifications) {
+          const outcome = await handleGraphChangeNotification(pool, {
+            subscriptionId,
+            ...(clientState === null ? {} : { clientState }),
+          });
           if (outcome !== "accepted") {
-            logger.warn(
-              { subscriptionId: notification.subscriptionId, outcome },
-              "Graph webhook notification rejected",
-            );
+            logger.warn({ subscriptionId, outcome }, "Graph webhook notification rejected");
           }
         }
       });

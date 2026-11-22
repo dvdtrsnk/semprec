@@ -273,14 +273,16 @@ tenant by earliest, first or `LIMIT 1`.
 ### Public auth throttles
 
 - The routes reachable without a session (login, password-reset request and consume, invitation
-  acceptance, the mail OAuth callback, the Google and Graph calendar webhooks) are throttled per
+  acceptance, the mail OAuth callback, the Google and Graph calendar webhooks, the Graph mail
+  webhook) are throttled per
   client address in process memory (`createClientIpThrottle` in
   `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`);
   mailbox credential verification is throttled the same way per user id.
-- The mail OAuth callback (`mailOauthCallback`) and both calendar webhooks (`calendarWebhook`, one
-  budget shared by the two) count every request before any database read; a refused one gets `429`
-  with `Retry-After` (an empty body on the webhooks). A Graph calendar batch looks each distinct
-  `(subscriptionId, clientState)` pair up once, at most 20 per batch.
+- The mail OAuth callback (`mailOauthCallback`), both calendar webhooks (`calendarWebhook`, one
+  budget shared by the two) and the Graph mail webhook (`mailWebhook`, its own budget) count every
+  request before any database read; a refused one gets `429` with `Retry-After` (an empty body on
+  the webhooks). A Graph calendar or mail batch looks each distinct `(subscriptionId, clientState)`
+  pair up once, at most 20 per batch (`distinctGraphNotifications`).
 - `tryAcquire` reserves a slot before the body is read. Outcomes that must not count release the
   slot. A refused attempt gets `429 rate_limited` with `Retry-After`.
 - An IPv4 address is its own key, an IPv4-mapped address counts as its IPv4 address, and any other

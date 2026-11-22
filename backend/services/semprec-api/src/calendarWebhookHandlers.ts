@@ -5,6 +5,7 @@ import { runAsSystem } from "@semprec/shared";
 import { NO_STORE, PayloadTooLargeError, readRawBody, sendJson } from "./adapter/http.js";
 import { clientIpFromRequest } from "./clientIp.js";
 import { createClientIpThrottle, type ClientIpThrottle } from "./clientIpThrottle.js";
+import { distinctGraphNotifications } from "./graphNotificationBatch.js";
 import { logger } from "./logger.js";
 
 export interface CalendarWebhookRequestListenerOptions {
@@ -21,14 +22,6 @@ export const GRAPH_CALENDAR_WEBHOOK_PATH = "/api/calendar/graph/webhook";
 const MAX_GOOGLE_BODY_BYTES = 16 * 1024;
 /** Generous for a real Graph batch, but bounds a malicious POST. */
 const MAX_GRAPH_BODY_BYTES = 256 * 1024;
-/** Entries of one Graph batch read; anything after them is ignored. */
-const MAX_GRAPH_BATCH_ENTRIES = 100;
-/**
- * Distinct `(subscriptionId, clientState)` pairs of one batch looked up, after duplicates are dropped. Graph puts
- * about 20 notifications in a batch, and one per subscription is enough to queue its account's pass.
- */
-const MAX_GRAPH_NOTIFICATIONS = 20;
-const MAX_GRAPH_ID_LENGTH = 256;
 const MAX_SECRET_LENGTH = 256;
 const MAX_VALIDATION_TOKEN_LENGTH = 1024;
 /** Google's channel id alphabet and length; this server's ids are UUIDs. */
@@ -121,39 +114,6 @@ export function createGoogleCalendarWebhookRequestListener(pool: Pool, options: 
     }
     sendEmpty(res, 200);
   });
-}
-
-interface RawGraphNotification {
-  subscriptionId: string;
-  clientState: string | null;
-}
-
-/** A Graph notification carries other fields this receiver does not act on. */
-function parseGraphNotification(value: unknown): RawGraphNotification | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  const { subscriptionId, clientState } = record;
-  if (typeof subscriptionId !== "string" || !subscriptionId || subscriptionId.length > MAX_GRAPH_ID_LENGTH) {
-    return undefined;
-  }
-  return {
-    subscriptionId,
-    clientState: typeof clientState === "string" && clientState.length <= MAX_SECRET_LENGTH ? clientState : null,
-  };
-}
-
-/** The first `MAX_GRAPH_NOTIFICATIONS` distinct well-formed pairs among the batch's first entries. */
-function distinctGraphNotifications(entries: unknown[]): RawGraphNotification[] {
-  const seen = new Map<string, RawGraphNotification>();
-  for (const entry of entries.slice(0, MAX_GRAPH_BATCH_ENTRIES)) {
-    const notification = parseGraphNotification(entry);
-    if (notification === undefined) continue;
-    const key = JSON.stringify([notification.subscriptionId, notification.clientState]);
-    if (seen.has(key)) continue;
-    seen.set(key, notification);
-    if (seen.size === MAX_GRAPH_NOTIFICATIONS) break;
-  }
-  return [...seen.values()];
 }
 
 /**
