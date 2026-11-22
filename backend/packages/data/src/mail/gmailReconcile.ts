@@ -12,10 +12,14 @@ import { ingestEmailMessage, type IngestedMailContent } from "./ingest.js";
 import { createGmailMailFlagWritebackAdapter, writeBackProviderFlags } from "./mailFlagWriteback.js";
 import { recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
 import {
+  deleteMailMessageMetaOfRemovedItem,
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
   listKnownProviderMessageIds,
 } from "./mailMessageMetaStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import {
   anchorMailAccountConnection,
   ensureMailAccountSyncState,
@@ -341,7 +345,12 @@ async function ingestGmailBatch(
   return batch.length;
 }
 
-/** Drops every folder edge of the messages `history.list` reports deleted. */
+/**
+ * Removes each message `history.list` reports deleted: a Gmail message keeps one id across all its labels, so a
+ * deleted one is gone from the whole account. Its folder edges are dropped, then the Email is trashed as the system
+ * writer and loses its meta row (and a thread no other message names), as an IMAP pass does for a message whose last
+ * folder copy vanished. A message with a move in flight is left for a later pass.
+ */
 async function removeGmailMessages(
   client: PoolClient,
   ctx: GmailPassContext,
@@ -365,6 +374,11 @@ async function removeGmailMessages(
         EMAILS_RELATION_CONTEXT,
       );
     }
+    await itemDeleteWithClient(client, ctx.params.emailsDatabaseId, meta.itemId, {
+      queueAffinity: createActionQueueAffinity(),
+      writer: SYSTEM_WRITER,
+    });
+    await deleteMailMessageMetaOfRemovedItem(client, meta.itemId);
   }
 }
 

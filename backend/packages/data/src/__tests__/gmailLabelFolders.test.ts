@@ -325,6 +325,30 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
+  it("trashes a message Gmail reports deleted and drops its meta row, leaving the others", async () => {
+    const params = await setup();
+    await sync(params, { m1: ["INBOX"], m2: ["INBOX"] });
+    const deletedGmail: GmailMailClient = {
+      ...gmailClient({ m2: ["INBOX"] }),
+      listHistorySince: async () => gmailHistory("102", [], ["m1"]),
+      fetchMessage: async () => null,
+    };
+    await runInTenant(tenantId, () =>
+      reconcileGmailAccount(pool, deletedGmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+    );
+    const { rows } = await admin.query<{ subject: string; trashed: boolean; meta: boolean }>(
+      `SELECT i.properties ->> 'name' AS subject, i.deleted_at IS NOT NULL AS trashed,
+              EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.item_id = i.id) AS meta
+         FROM items i WHERE i.database_id = $1 ORDER BY 1`,
+      [params.emailsDatabaseId],
+    );
+    expect(rows).toEqual([
+      { subject: "m1", trashed: true, meta: false },
+      { subject: "m2", trashed: false, meta: true },
+    ]);
+    expect(await foldersOf(params, "m2")).toEqual(["INBOX"]);
+  });
+
   it("rejects missing and system tenant scope before Gmail reconciliation queries or provider calls", async () => {
     const params = await setup();
     const connect = vi.spyOn(pool, "connect");
