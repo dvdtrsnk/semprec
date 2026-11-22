@@ -18,7 +18,7 @@ import {
   createMailOauthStartRouteHandler,
 } from "../mail/mailOauthRouteHandlers.js";
 import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
-import { createSentCopySaver } from "../mail/mailTransport.js";
+import { handleMailSentCopyTask } from "../mail/mailSentCopies.js";
 import { GOOGLE_TOKEN_URL, MICROSOFT_TOKEN_URL } from "../mail/oauthTokenExchange.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
@@ -27,7 +27,6 @@ import {
   connectLoopbackImapClient,
   IMAP_FIXTURE_ACCOUNT,
   noAttachmentStorage,
-  plainMessage,
   PURELYMAIL_FOLDERS,
 } from "../testSupport/imapMailboxFixture.js";
 import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
@@ -173,8 +172,15 @@ async function draftAndSend(mailboxId: string, from: string): Promise<{ draftId:
   expect(await folderPurposesOf(draftId)).toEqual(["drafts"]);
 
   const transport = recordingTransport();
+  // As the SMTP transport: the server files no Sent copy, so the send records one.
+  const smtp = {
+    send: async (message: Parameters<typeof transport.send>[0]) => {
+      await transport.send(message);
+      return { needsSentCopy: true as const };
+    },
+  };
   const sent = await runInTenant(tenant, () =>
-    createMailDraftSendRouteHandler(runtime, { mailServerClients: { send: sendAdapters(transportFor(transport)) } })({
+    createMailDraftSendRouteHandler(runtime, { mailServerClients: { send: sendAdapters(transportFor(smtp)) } })({
       ...user(),
       params: { id: draftId },
       body: undefined,
@@ -200,14 +206,20 @@ describe("a password mailbox, right after POST /api/mail/mailboxes", () => {
       const { sentCount } = await draftAndSend(mailboxId, IMAP_FIXTURE_ACCOUNT);
       expect(sentCount).toBe(1);
 
-      // The SMTP transport's Sent copy goes to the folder the connect found.
+      // The send's recorded Sent copy goes to the folder the connect found.
       const account = new FakeImapAccount([...PURELYMAIL_FOLDERS]);
-      await runInTenant(tenant, () =>
-        createSentCopySaver(runtime, mailboxId, { password: PASSWORD }, async () => account.client())(
-          plainMessage("Hned po připojení"),
-          Promise.resolve(true),
-        ),
-      );
+      await runInTenant(tenant, async () => {
+        const { rows } = await runtime.query<{ id: string }>(
+          "SELECT id FROM mail_sent_copies WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1",
+          [mailboxId],
+        );
+        expect(rows).toHaveLength(1);
+        await handleMailSentCopyTask(
+          runtime,
+          { copyId: rows[0]!.id },
+          { jobId: "attempt-1", isFinalAttempt: false, openImap: async () => account.client() },
+        );
+      });
       expect(account.countIn("Sent")).toBe(1);
 
       await runInTenant(tenant, async () => {

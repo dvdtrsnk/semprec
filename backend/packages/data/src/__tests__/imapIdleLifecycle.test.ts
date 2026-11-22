@@ -12,6 +12,8 @@ import {
 } from "../mail/imapIdleLifecycle.js";
 import { createImapFlowIdleTransport } from "../mail/imapIdleClient.js";
 import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
+import { FakeImapServer } from "../testSupport/fakeImapServer.js";
+import { logger } from "../mail/logger.js";
 
 let pool: Pool;
 
@@ -23,6 +25,44 @@ async function pendingMailSyncJobCount(mailboxItemId: string): Promise<number> {
     [`mail-account-sync:${mailboxItemId}`],
   );
   return Number(rows[0]?.count ?? 0);
+}
+
+/** The account's pending sync job and how many enqueues replaced it (graphile-worker's `revision`), or `undefined`. */
+async function pendingMailSyncJob(mailboxItemId: string): Promise<{ enqueues: number } | undefined> {
+  const { rows } = await pool.query<{ revision: number }>(
+    `SELECT j.revision FROM graphile_worker._private_jobs j
+     JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+     WHERE t.identifier = 'mailAccountSync' AND j.key = $1`,
+    [`mail-account-sync:${mailboxItemId}`],
+  );
+  const row = rows[0];
+  return row === undefined ? undefined : { enqueues: row.revision + 1 };
+}
+
+async function clearMailSyncJobs(mailboxItemId: string): Promise<void> {
+  await pool.query(`DELETE FROM graphile_worker._private_jobs WHERE key = $1`, [`mail-account-sync:${mailboxItemId}`]);
+}
+
+/** Lets the second `connect` of `transport` start only once the test releases it. */
+function holdSecondConnect(transport: ImapIdleTransport): { entered: Promise<void>; release: () => void } {
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const connect = transport.connect.bind(transport);
+  let calls = 0;
+  transport.connect = async (...args) => {
+    if (++calls === 2) {
+      entered();
+      await gate;
+    }
+    return connect(...args);
+  };
+  return { entered: enteredPromise, release };
 }
 
 /** A connection that ends only when the test ends it: a healthy, indefinitely idling IMAP session. */
@@ -711,4 +751,124 @@ describe("bounded IMAP IDLE lifecycle (issue #196)", () => {
       if (cleanup) throw cleanup.value;
     },
   );
+  it.each([
+    ["a clean server close", undefined],
+    ["a connection error", new Error("private connection reset")],
+  ] as const)(
+    "a reconnect after %s enqueues exactly one catch-up sync once the new session is established",
+    async (_case, failure) => {
+      const info = vi.spyOn(logger, "info");
+      const errors: unknown[] = [];
+      const { transport, connections } = createFakeTransport();
+      const second = holdSecondConnect(transport);
+      const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+        getCredential: async () => "app-password",
+        getConnectionLimit: () => 5,
+        reconnectBaseDelayMs: 1,
+        onError: (_id, _folder, error) => errors.push(error),
+      })({ mailboxItemId: "catch-up", syncMode: "imap" });
+      await lifecycle.start();
+      await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+      // The start's sync and the first session's catch-up, coalesced into one job.
+      await vi.waitFor(async () => expect(await pendingMailSyncJob("catch-up")).toEqual({ enqueues: 2 }));
+      await clearMailSyncJobs("catch-up");
+
+      // Nothing signals: a message delivered now reaches no connection.
+      connections.get("INBOX")![0]!.fail(failure);
+      await second.entered;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await pendingMailSyncJob("catch-up")).toBeUndefined();
+
+      second.release();
+      await vi.waitFor(async () => expect(await pendingMailSyncJob("catch-up")).toBeDefined());
+      await lifecycle.stop();
+      expect(await pendingMailSyncJob("catch-up")).toEqual({ enqueues: 1 });
+      expect(connections.get("INBOX")).toHaveLength(2);
+      expect(errors).toEqual(failure === undefined ? [] : [failure]);
+
+      const sessionLogs = info.mock.calls.filter(([, message]) => String(message).startsWith("IMAP IDLE"));
+      info.mockRestore();
+      const folder = { mailboxItemId: "catch-up", folder: "INBOX" };
+      expect(sessionLogs).toEqual([
+        [folder, "IMAP IDLE session started"],
+        [
+          {
+            ...folder,
+            ...(failure === undefined ? { reason: "server-closed" } : { reason: "error", errorName: "Error" }),
+          },
+          "IMAP IDLE session ended",
+        ],
+        [{ ...folder, attempt: 1, delayMs: failure === undefined ? 0 : 1 }, "IMAP IDLE reconnecting"],
+        [folder, "IMAP IDLE session started"],
+        [{ ...folder, reason: "stop" }, "IMAP IDLE session ended"],
+      ]);
+      expect(JSON.stringify(sessionLogs)).not.toContain("private");
+      expect(JSON.stringify(sessionLogs)).not.toContain("app-password");
+    },
+  );
+
+  it("enqueues nothing when stop() begins while a reconnect is connecting", async () => {
+    const { transport, connections } = createFakeTransport();
+    const second = holdSecondConnect(transport);
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "app-password",
+      getConnectionLimit: () => 5,
+    })({ mailboxItemId: "stop-during-reconnect", syncMode: "imap" });
+    await lifecycle.start();
+    await vi.waitFor(() => expect(connections.get("INBOX")?.length).toBe(1));
+    await vi.waitFor(async () => expect(await pendingMailSyncJob("stop-during-reconnect")).toEqual({ enqueues: 2 }));
+    await clearMailSyncJobs("stop-during-reconnect");
+
+    connections.get("INBOX")![0]!.fail(undefined);
+    await second.entered;
+    const stopping = lifecycle.stop();
+    second.release();
+    await stopping;
+    expect(await pendingMailSyncJob("stop-during-reconnect")).toBeUndefined();
+    expect(connections.get("INBOX")?.[1]?.closed).toBe(true);
+  });
+
+  it("syncs a message delivered while the IMAP server had closed the IDLE connection", async () => {
+    const server = new FakeImapServer({
+      folders: [{ path: "INBOX", specialUse: "\\Inbox" }],
+      capabilities: ["IDLE", "SPECIAL-USE"],
+      latencyMs: 0,
+    });
+    const port = await server.listen();
+    let opened = 0;
+    const transport = createImapFlowIdleTransport(async (_mailboxItemId, credential, idleOptions) => {
+      // Discovery, the first IDLE connection, then the reconnect: the delivery lands in the gap.
+      if (++opened === 3) server.deliver("INBOX");
+      const client = new ImapFlow({
+        host: "127.0.0.1",
+        port,
+        secure: false,
+        auth: { user: "account", pass: credential },
+        logger: false,
+        ...idleOptions,
+      });
+      client.on("error", () => {});
+      await client.connect();
+      return client;
+    });
+    const lifecycle = createBoundedImapIdleLifecycleFactory(pool, transport, {
+      getCredential: async () => "app-password",
+      getConnectionLimit: () => 5,
+      reconnectBaseDelayMs: 1,
+    })({ mailboxItemId: "loopback-gap", syncMode: "imap" });
+    try {
+      await lifecycle.start();
+      await vi.waitFor(() => expect(server.isIdling("INBOX")).toBe(true), { timeout: 5_000, interval: 10 });
+      await vi.waitFor(async () => expect(await pendingMailSyncJob("loopback-gap")).toEqual({ enqueues: 2 }));
+      await clearMailSyncJobs("loopback-gap");
+
+      server.disconnectAll();
+      await vi.waitFor(() => expect(opened).toBe(3), { timeout: 5_000, interval: 10 });
+      await vi.waitFor(() => expect(server.isIdling("INBOX")).toBe(true), { timeout: 5_000, interval: 10 });
+      await vi.waitFor(async () => expect(await pendingMailSyncJob("loopback-gap")).toBeDefined());
+    } finally {
+      await lifecycle.stop();
+      await server.close();
+    }
+  });
 });

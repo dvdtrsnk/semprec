@@ -34,6 +34,7 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 900 },
       mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
       calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
+      mailWebhook: { maxEvents: 300, windowSeconds: 60 },
     });
   });
 });

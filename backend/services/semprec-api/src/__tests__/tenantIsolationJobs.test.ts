@@ -14,8 +14,6 @@ import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
   enqueueJob,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
   registerTask,
   runOnce,
   type TaskList,
@@ -62,6 +60,7 @@ import {
   mintMcpRunCredential,
   mutateYDoc,
   provisionTenant,
+  recordPendingSentCopy,
   removeMailbox,
   resolveMailModuleIds,
   recordHeartbeatFailure,
@@ -86,6 +85,7 @@ import {
   type BlobStorageWriter,
   type InvalidationEvent,
   type MailTransportFactory,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -1316,6 +1316,33 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const mailboxItemId = await createMailbox(tenant);
+      // Recording queues this job itself; the driver discards it.
+      const copyId = await inTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          recordPendingSentCopy(client, {
+            mailboxItemId,
+            messageId: `<${randomUUID()}@example.test>`,
+            raw: Buffer.from("Subject: Sent\r\n\r\nHello\r\n"),
+          }),
+        ),
+      );
+      return { copyId };
+    },
+    // The fixture mailbox has no folders, so the job finds no Sent folder after its tenant-scoped reads.
+    expectedError: /^The mailbox has no Sent folder yet$/,
+    async expectDone(tenant, payload) {
+      await expectRows(
+        tenant,
+        "SELECT failed_at IS NULL AS pending FROM mail_sent_copies WHERE id = $1",
+        [str(payload, "copyId")],
+        [{ pending: true }],
+      );
+    },
+  },
   [CORE_TASK_NAMES.CALENDAR_ACCOUNT_SYNC]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -2357,8 +2384,7 @@ describe("background task isolation across two tenants: api runtime", () => {
 
     adminPool = getTestPool();
     await resetDatabase(adminPool);
-    await ensureQueueSchema(adminPool);
-    await grantQueueSchemaPrivileges(adminPool);
+    await installQueueSchema(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
     const role = await runAsSystem("test:title-registry-role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(

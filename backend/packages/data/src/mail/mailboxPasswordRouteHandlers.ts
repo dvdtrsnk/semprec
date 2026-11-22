@@ -37,6 +37,7 @@ import type { RouteBody, RouteParams, RouteUser } from "../customRoute.js";
 import {
   ICLOUD_CALDAV_URL,
   isCalDavVerificationRefusal,
+  type CalDavVerification,
   type VerifyCalDavServerInput,
 } from "../calendar/sync/adapters/caldav/caldavConnectVerification.js";
 import { enqueueCalendarAccountSync } from "../calendar/sync/calendarAccountSyncEnqueue.js";
@@ -165,6 +166,8 @@ interface NewPasswordMailbox {
   request: ConnectRequest;
   name: string;
   verified: VerifiedMailServerSettings;
+  /** The account's CalDAV address: the body's, or the server its well-known address delegated it to. */
+  caldavUrl: string | null;
   /** The account's folders as listed at connect; empty when the listing failed. */
   folders: readonly ProviderFolder[];
   userId: string;
@@ -198,7 +201,7 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
     imap: mailbox.verified.imap,
     smtp: mailbox.verified.smtp,
     username: request.username,
-    caldavUrl: request.caldavUrl,
+    caldavUrl: mailbox.caldavUrl,
   });
   await ensureMailAccountSyncState(client, { itemId: created.id, syncMode: "imap" });
   await recordProviderAccountAddress(client, created.id, request.address);
@@ -210,7 +213,7 @@ async function createPasswordMailbox(client: PoolClient, mailbox: NewPasswordMai
 }
 
 type VerifyPassword = (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
-type VerifyCalDav = (input: VerifyCalDavServerInput) => Promise<void>;
+type VerifyCalDav = (input: VerifyCalDavServerInput) => Promise<CalDavVerification>;
 
 type VerificationAttempt = { granted: true } | { granted: false; retryAfterSeconds: number };
 
@@ -265,15 +268,21 @@ function logUnreportedCalDavFailure(error: unknown): void {
   );
 }
 
+interface VerifiedLogins {
+  mail: VerifiedMailServerSettings;
+  /** `null` when the account's calendars were not verified. */
+  calDav: CalDavVerification | null;
+}
+
 /**
  * Starts the mail and the CalDAV verification together and waits for both, so neither outlives the request. The mail
  * failure is reported before a CalDAV failure, a refusal as 400 with its code; a CalDAV failure behind a mail failure
  * is logged.
  */
-async function verifyLogins(request: VerificationRequest): Promise<VerifiedMailServerSettings> {
+async function verifyLogins(request: VerificationRequest): Promise<VerifiedLogins> {
   const [mail, calDav] = await Promise.allSettled([
     request.verifyPassword(request.mail),
-    request.calDav === null ? Promise.resolve() : request.calDav.verify(request.calDav.input),
+    request.calDav === null ? Promise.resolve(null) : request.calDav.verify(request.calDav.input),
   ]);
   if (mail.status === "rejected") {
     if (calDav.status === "rejected") logUnreportedCalDavFailure(calDav.reason);
@@ -286,7 +295,7 @@ async function verifyLogins(request: VerificationRequest): Promise<VerifiedMailS
     }
     throw calDav.reason;
   }
-  return mail.value;
+  return { mail: mail.value, calDav: calDav.value };
 }
 
 /** Fails like `requireVerifyPassword`, so the route never verifies a login it cannot count. */
@@ -307,7 +316,8 @@ function requireThrottle(dependencies: MailboxPasswordRouteDependencies): Verifi
  *    attempt stays counted.
  * 3. Outside any transaction the login is verified on IMAP and SMTP, and on CalDAV when the body names a CalDAV
  *    address, all concurrently; the IMAP verification lists the folders on its verified connection. A refusal answers
- *    400 with its code; a failed listing is logged and the mailbox is connected without the folders.
+ *    400 with its code; a failed listing is logged and the mailbox is connected without the folders. A well-known
+ *    CalDAV address that delegates the account to another server stores that server as its CalDAV address.
  * 4. One transaction rereads the duplicate rule and writes the mailbox with its Drafts and Sent folders; a race answers
  *    409 and rolls back everything.
  *
@@ -333,7 +343,7 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
     const attempt = throttle.tryAcquire("mailboxCredentialVerification", ctx.identity.user.id);
     if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
 
-    const verified = await verifyLogins({
+    const verifiedLogins = await verifyLogins({
       verifyPassword,
       mail: {
         provider: request.provider,
@@ -348,15 +358,22 @@ export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencie
           ? null
           : {
               verify: verifyCalDav,
-              input: { caldavUrl: request.caldavUrl, username: request.username, password: request.password },
+              input: {
+                caldavUrl: request.caldavUrl,
+                username: request.username,
+                password: request.password,
+                resolveServer: true,
+              },
             },
     });
+    const verified = verifiedLogins.mail;
+    const caldavUrl = verifiedLogins.calDav?.delegatedServerUrl ?? request.caldavUrl;
     // Until the first sync pass ran, a mailbox connected without its Drafts folder refuses a draft with
     // `mail_drafts_folder_missing`.
     const folders = (verified.folders ?? []).map(imapProviderFolder);
 
     const item = await withTransaction(pool, (client) =>
-      createPasswordMailbox(client, { request, name, verified, folders, userId: ctx.identity.user.id }),
+      createPasswordMailbox(client, { request, name, verified, caldavUrl, folders, userId: ctx.identity.user.id }),
     );
     return { status: 201, item };
   };
@@ -540,7 +557,7 @@ export function createMailboxPasswordReplaceRouteHandler(pool: Pool, dependencie
     const attempt = throttle.tryAcquire("mailboxCredentialVerification", ctx.identity.user.id);
     if (!attempt.granted) throw new RateLimitedError(attempt.retryAfterSeconds);
 
-    const verified = await verifyLogins({
+    const { mail: verified } = await verifyLogins({
       verifyPassword,
       mail: {
         provider: account.provider,
@@ -554,7 +571,7 @@ export function createMailboxPasswordReplaceRouteHandler(pool: Pool, dependencie
       calDav:
         verifyCalDav === null || caldavUrl === null
           ? null
-          : { verify: verifyCalDav, input: { caldavUrl, username: login, password } },
+          : { verify: verifyCalDav, input: { caldavUrl, username: login, password, resolveServer: false } },
     });
 
     const item = await withTransaction(pool, (client) =>

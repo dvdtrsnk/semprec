@@ -229,17 +229,44 @@ export function createCalDavAdapter(
   const settings = account.serverSettings;
   if (settings === null) throw new Error(`Account ${account.accountItemId} has no mail server settings`);
   const login: CalDavLogin = { username: settings.username, password: account.credential };
-  const start = caldavStartUrl({
+  let start = caldavStartUrl({
     provider: account.provider,
     caldavUrl: settings.caldavUrl,
     address: account.primaryAddress ?? settings.username,
   });
-  const session = <T>(signal: AbortSignal, fn: (session: CalDavSession) => Promise<T>): Promise<T> =>
-    withCalDavSession(login, { signal, start, ...(options.policy ? { policy: options.policy } : {}) }, fn);
+  // Only an account with no CalDAV server stored resolves one, from its domain's well-known address.
+  let resolvesServer = account.provider !== "icloud" && settings.caldavUrl === null;
+  let delegatedServer: URL | null = null;
+  const session = <T>(
+    signal: AbortSignal,
+    fn: (session: CalDavSession) => Promise<T>,
+    resolveServer = false,
+  ): Promise<T> =>
+    withCalDavSession(
+      login,
+      { signal, start, resolveServer, ...(options.policy ? { policy: options.policy } : {}) },
+      fn,
+    );
 
   return {
     listCalendars: (signal) =>
-      session(signal, async (s) => listCalendarCollections(s, await discoverCalendarHome(s, start))),
+      session(
+        signal,
+        async (s) => {
+          const home = await discoverCalendarHome(s, start);
+          const server = s.delegatedServer();
+          if (server !== null) {
+            // The rest of the pass, and every pass once the job stored it, starts at the delegated server.
+            start = server;
+            delegatedServer = server;
+            resolvesServer = false;
+          }
+          return listCalendarCollections(s, home);
+        },
+        resolvesServer,
+      ),
+
+    delegatedServerUrl: () => delegatedServer?.href ?? null,
 
     fetchChanges: (calendar, cursor, { window, signal, known }) =>
       session(signal, (s) => fetchChanges(s, calendar, cursor, { window, known })),

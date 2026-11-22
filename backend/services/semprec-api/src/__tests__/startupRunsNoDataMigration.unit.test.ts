@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
  * (`db/runMigrationsCli.ts`) as the migrating role. A service start runs outside any tenant scope, so under strict
  * scope a data step there would stop the process before it listens.
  *
- * `ensureQueueSchema` and `grantQueueSchemaPrivileges` are not matched: idempotent schema steps, each in its own
+ * `installQueueSchema` and `ensureQueueSchema` are not matched: idempotent schema steps in
  * `runAsSystem("queue-schema", ...)`, which every queue runtime calls at start.
  */
 
@@ -72,9 +72,7 @@ describe("a service start runs no data migration", () => {
     expect(findDataMigration("await runExampleCutoverMigration(pool);")).toBe("runExampleCutoverMigration");
     expect(findDataMigration("await runExampleBackfillCutover(pool, false);")).toBe("runExampleBackfillCutover");
     expect(findDataMigration("await runExampleBackfillJob(pool);")).toBe("runExampleBackfillJob");
-    expect(
-      findDataMigration("await ensureQueueSchema(pool);\nawait grantQueueSchemaPrivileges(pool);"),
-    ).toBeUndefined();
+    expect(findDataMigration("await installQueueSchema(pool);\nawait ensureQueueSchema(pool);")).toBeUndefined();
     expect(findDataMigration("await runWorker({ pgPool: pool });\nawait runOnce(pool);")).toBeUndefined();
   });
 

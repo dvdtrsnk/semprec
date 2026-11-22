@@ -793,6 +793,19 @@ export async function requestMailSyncRerun(client: Queryable, itemId: string, to
 }
 
 /**
+ * Clears a rerun request made while `token` holds the lease and returns whether there was one; the holder then runs
+ * once more itself. `false` with nothing changed when none was made or the lease is no longer `token`'s.
+ */
+export async function takeMailSyncRerunRequest(client: Queryable, itemId: string, token: string): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE mail_account_sync_state SET pass_rerun_requested = false
+      WHERE item_id = $1 AND pass_lease_token = $2 AND pass_rerun_requested`,
+    [itemId, token],
+  );
+  return result.rowCount === 1;
+}
+
+/**
  * Gives up `token`'s lease and returns whether a rerun was requested while it was held. `false` with nothing changed
  * when the lease is no longer `token`'s or the row is gone (a removal deleted it).
  */

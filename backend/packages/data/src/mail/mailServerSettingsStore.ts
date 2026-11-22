@@ -97,6 +97,17 @@ export function normalizeCalDavUrl(raw: unknown, field = "caldavUrl"): string {
   return url.href;
 }
 
+/** Whether `normalizeCalDavUrl` accepts the value. */
+export function isStorableCalDavUrl(raw: string): boolean {
+  try {
+    normalizeCalDavUrl(raw);
+    return true;
+  } catch (error) {
+    if (error instanceof ValidationError) return false;
+    throw error;
+  }
+}
+
 function validatePort(raw: unknown, field: string): number {
   if (typeof raw !== "number" || !(MAIL_SERVER_PORTS as readonly number[]).includes(raw)) {
     throw new ValidationError(`${field} must be one of ${MAIL_SERVER_PORTS.join(", ")}`, { field });
@@ -191,6 +202,28 @@ export async function upsertMailServerSettings(
   const row = rows[0];
   if (!row) throw new Error(`Upserting mail server settings for ${mailboxItemId} returned no row`);
   return toSettings(row);
+}
+
+/**
+ * Stores the CalDAV server discovery resolved for an account that has none (its domain's well-known address delegated
+ * it elsewhere), so every later discovery starts there. The Mailboxes item is read `FOR SHARE` first, so a password
+ * replacement, which rewrites the row under the item's `FOR UPDATE` lock, reads the stored address or runs first.
+ * Returns whether it was stored: `false` for an account that is gone, trashed, has no settings row or has a CalDAV
+ * address already.
+ */
+export async function recordResolvedCalDavUrl(db: Queryable, mailboxItemId: string, raw: string): Promise<boolean> {
+  const caldavUrl = normalizeCalDavUrl(raw);
+  const { rows } = await db.query<{ id: string }>(
+    "SELECT id FROM items WHERE id = $1 AND deleted_at IS NULL FOR SHARE",
+    [mailboxItemId],
+  );
+  if (rows[0] === undefined) return false;
+  const result = await db.query(
+    `UPDATE mail_account_server_settings SET caldav_url = $2, updated_at = now()
+      WHERE mailbox_item_id = $1 AND caldav_url IS NULL`,
+    [mailboxItemId, caldavUrl],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Returns whether a row existed. */

@@ -276,6 +276,16 @@ const KEYS: ItemKey[] = [
       ),
   },
   {
+    table: "mail_sent_copies",
+    column: "mailbox_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO mail_sent_copies (mailbox_item_id, message_id, raw) VALUES ($1, $2, '\\x00')", [
+        id,
+        `<${randomUUID()}@example.com>`,
+      ]),
+  },
+  {
     table: "mcp_server_connection_state",
     column: "mcp_server_item_id",
     behaviour: "cascade",

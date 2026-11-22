@@ -11,6 +11,8 @@ import { getItemById } from "../chokePoint/itemsStore.js";
 import { claimMailSyncPass, getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { enqueueMailAccountSync, handleSyncMailAccountTask, mailAccountSyncJobKey } from "../mail/mailSyncJob.js";
+import { listMailThreads } from "../mail/mailThreadListQuery.js";
+import { createMailThreadArchiveRouteHandler } from "../mail/mailThreadRoutes.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FakeImapAccount, type FakeImapCall } from "../testSupport/fakeImapAccount.js";
@@ -186,7 +188,7 @@ describe("one mail sync pass per mailbox", () => {
     return jobs.length === 1 && jobs[0]!.locked;
   };
 
-  it("runs one pass at a time under a concurrency-4 worker and coalesces every trigger during a pass into one follow-up", async () => {
+  it("runs one pass at a time under a concurrency-4 worker, serves the triggers during it in up to three rounds on its connection and leaves later ones to one follow-up", async () => {
     const { account, mailbox } = await inTenant(() => syncedAccount());
     const trigger = () => inTenant(() => enqueueMailAccountSync(runtime, mailbox.mailboxId));
     const lease = () => inTenant(() => leaseOf(mailbox.mailboxId));
@@ -204,24 +206,33 @@ describe("one mail sync pass per mailbox", () => {
     expect(observed.started).toBe(1);
     expect(await lease()).toEqual({ rerun: true, leased: true });
 
+    // The five triggers are one more round of the running pass, over its connection.
     holds[0]!.resolve();
-    await waitFor(() => holds.length === 2, "the one follow-up pass");
-    expect(observed.started).toBe(2);
+    await waitFor(() => holds.length === 2, "the pass's second round");
+    expect(observed.started).toBe(1);
+    expect(await lease()).toEqual({ rerun: false, leased: true });
 
-    // A trigger after the follow-up started gives exactly one more pass.
     await trigger();
-    await waitFor(triggersDrained, "the trigger during the follow-up");
+    await waitFor(triggersDrained, "the trigger during the second round");
     holds[1]!.resolve();
-    await waitFor(() => holds.length === 3, "the pass the last trigger asked for");
+    await waitFor(() => holds.length === 3, "the pass's third and last round");
+    expect(observed.started).toBe(1);
+
+    // A trigger during the last round is left to the release, which enqueues the one follow-up pass.
+    await trigger();
+    await waitFor(triggersDrained, "the trigger during the last round");
     holds[2]!.resolve();
+    await waitFor(() => holds.length === 4, "the follow-up pass");
+    expect(observed.started).toBe(2);
+    holds[3]!.resolve();
     await waitFor(async () => (await syncJobs()).length === 0 && observed.active === 0, "the passes to end");
 
-    expect(observed).toEqual({ started: 3, active: 0, maxActive: 1 });
+    expect(observed).toEqual({ started: 2, active: 0, maxActive: 1 });
     expect(await lease()).toEqual({ rerun: false, leased: false });
   }, 30_000);
 
   tenantIt(
-    "answers a trigger during a pass without a provider call and lets the release enqueue exactly one keyed job",
+    "answers a trigger during a pass without a provider call, serves it in the pass's next round and enqueues one keyed job only after the last round",
     async () => {
       const { account, mailbox } = await syncedAccount();
       const holds = holdListings(account);
@@ -239,13 +250,46 @@ describe("one mail sync pass per mailbox", () => {
       expect(await leaseOf(mailbox.mailboxId)).toEqual({ rerun: true, leased: true });
       expect(await syncJobs()).toEqual([]);
 
-      holds[0]!.resolve();
+      for (const round of [1, 2]) {
+        holds[round - 1]!.resolve();
+        await waitFor(() => holds.length === round + 1, `round ${round + 1} at its folder listing`);
+        expect(await leaseOf(mailbox.mailboxId)).toEqual({ rerun: false, leased: true });
+        await mailbox.sync(createImapClient);
+      }
+      holds[2]!.resolve();
       await running;
 
+      expect(observed).toEqual({ started: 1, active: 0, maxActive: 1 });
       expect(await syncJobs()).toEqual([{ key: mailAccountSyncJobKey(mailbox.mailboxId), locked: false }]);
       expect(await leaseOf(mailbox.mailboxId)).toEqual({ rerun: false, leased: false });
     },
   );
+
+  tenantIt("executes a move asked for during a pass in that pass's next round", async () => {
+    const { account, mailbox } = await syncedAccount();
+    const [thread] = await withTransaction(runtime, (client) =>
+      listMailThreads(client, 50, null, { box: "inbox", folderId: null, mailboxId: null, unread: false }),
+    );
+    if (!thread) throw new Error("The synced INBOX message is not listed");
+    const holds = holdListings(account);
+    const { observed, createImapClient } = observedAccount(account);
+
+    const running = mailbox.sync(createImapClient);
+    await waitFor(() => holds.length === 1, "the pass at its folder listing");
+    const archived = await createMailThreadArchiveRouteHandler(runtime)({ params: { threadId: thread.threadId } });
+    expect(archived).toEqual({ status: 200, body: { threadId: thread.threadId, moved: 1 } });
+    // The trigger the archive's write-back gives while the pass runs.
+    await mailbox.sync(createImapClient);
+    holds[0]!.resolve();
+    await waitFor(() => holds.length === 2, "the pass's second round");
+    holds[1]!.resolve();
+    await running;
+
+    expect([account.countIn("INBOX"), account.countIn("Archive")]).toEqual([0, 2]);
+    // The first round's connection moves the message and is closed; the second round reconnects. Never two at once.
+    expect(observed).toEqual({ started: 2, active: 0, maxActive: 1 });
+    expect(await leaseOf(mailbox.mailboxId)).toEqual({ rerun: false, leased: false });
+  });
 
   tenantIt("claims the lease of a holder that died once it expired", async () => {
     const { account, mailbox } = await syncedAccount();
@@ -298,8 +342,10 @@ describe("one mail sync pass per mailbox", () => {
     expect(rows).toEqual([{ token: other }]);
   });
 
-  it("imports a message signalled through IDLE while a pass runs right after that pass, selecting only INBOX", async () => {
+  it("imports a message signalled through IDLE while a pass runs in that pass's next round, on its connection and selecting only INBOX", async () => {
     const LATENCY_MS = 80;
+    // Connect, TLS and login of a provider about 100 ms away, as Purelymail measured.
+    const CONNECT_MS = 500;
     const { account, mailbox } = await inTenant(() => syncedAccount(LATENCY_MS));
     const trigger = () => inTenant(() => enqueueMailAccountSync(runtime, mailbox.mailboxId));
     const subjects = () => inTenant(() => emailSubjects());
@@ -314,7 +360,10 @@ describe("one mail sync pass per mailbox", () => {
       await archiveHeld.promise;
     };
     const { observed, createImapClient } = observedAccount(account);
-    await startWorker(createImapClient);
+    await startWorker(async () => {
+      await new Promise((resolve) => setTimeout(resolve, CONNECT_MS));
+      return createImapClient();
+    });
     await trigger();
     await archiveReached.promise;
 
@@ -330,17 +379,19 @@ describe("one mail sync pass per mailbox", () => {
     const visibleAfterMs = performance.now() - signalledAt;
     await waitFor(async () => (await syncJobs()).length === 0 && observed.active === 0, "the passes to end");
 
-    expect(observed).toEqual({ started: 2, active: 0, maxActive: 1 });
+    // No second connection and no follow-up job: the pass that was running serves the signal itself.
+    expect(observed).toEqual({ started: 1, active: 0, maxActive: 1 });
     const folderCalls = account
       .callsSince(followUpCalls)
       .filter((call) => call.startsWith("selectFolder") || call.startsWith("fetch"));
-    // The rest of the running pass (Archive), then the follow-up, which only looks at INBOX.
+    // The rest of the running round (Archive), then the next round, which only looks at INBOX.
     expect(folderCalls.filter((call) => !call.endsWith("Archive"))).toEqual([
       "selectFolder INBOX",
       "fetchMessagesSince INBOX",
       "fetchFlagsChangedSince INBOX",
     ]);
-    // Eight client calls of 80 ms (three to finish the running pass, five of the follow-up) plus database work.
+    // Eight client calls of 80 ms (three to finish the running round, five of the next) plus database work. The bound
+    // only keeps the latency in view; the single connection above is what shows the next round did not reconnect.
     expect(visibleAfterMs).toBeLessThan(2_000);
   }, 30_000);
   /** What a failed pass records on the account: its error, the failure kind and the Mailboxes item's status. */

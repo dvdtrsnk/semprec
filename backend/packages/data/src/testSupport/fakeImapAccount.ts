@@ -1,5 +1,6 @@
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
 import type { ImapFetchedMessage, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
+import type { SentCopyImapClient } from "../mail/mailSentCopies.js";
 import type { MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
 import type { WritableImapFlag } from "../mail/messageFlags.js";
 
@@ -123,7 +124,7 @@ export class FakeImapAccount {
       .map((call) => (call.path === undefined ? call.method : `${call.method} ${call.path}`));
   }
 
-  client(): ImapMailClient {
+  client(): ImapMailClient & SentCopyImapClient {
     const answer = async (method: string, path?: string) => {
       const call = path === undefined ? { method } : { method, path };
       this.calls.push(call);
@@ -165,6 +166,8 @@ export class FakeImapAccount {
       appendMessage: async (path, raw, flags) => {
         this.deliver(path, raw, flags);
       },
+      hasMessageWithId: async (path, messageId) =>
+        this.folder(path).messages.some((message) => messageIdHeaderOf(message.raw) === messageId),
       prepareMove: async (path, uid) => {
         const folder = this.folder(path);
         return {
@@ -187,7 +190,7 @@ export class FakeImapAccount {
           targetUidValidity: String(this.folder(targetPath).uidValidity),
         };
       },
-    } satisfies Omit<Required<ImapMailClient>, "close">;
+    } satisfies Omit<Required<ImapMailClient & SentCopyImapClient>, "close">;
     // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not.
     const logged =
       <A extends unknown[], R>(method: string, fn: (...args: A) => Promise<R>) =>
@@ -205,6 +208,7 @@ export class FakeImapAccount {
       fetchFlagsChangedSince: logged("fetchFlagsChangedSince", methods.fetchFlagsChangedSince),
       setMessageFlag: logged("setMessageFlag", methods.setMessageFlag),
       appendMessage: logged("appendMessage", methods.appendMessage),
+      hasMessageWithId: logged("hasMessageWithId", methods.hasMessageWithId),
       prepareMove: logged("prepareMove", methods.prepareMove),
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
       close: async () => {},
@@ -225,6 +229,12 @@ export class FakeImapAccount {
     if (!folder) throw new Error(`No folder ${path}`);
     return folder;
   }
+}
+
+/** The Message-ID header of a raw message, as a server's `SEARCH HEADER Message-ID` matches it. */
+function messageIdHeaderOf(raw: Buffer): string | undefined {
+  const header = raw.toString("utf8").split(/\r?\n\r?\n/, 1)[0] ?? "";
+  return /^message-id:\s*(.+?)\s*$/im.exec(header)?.[1];
 }
 
 async function parsed(message: FakeImapMessage): Promise<ImapFetchedMessage["message"]> {

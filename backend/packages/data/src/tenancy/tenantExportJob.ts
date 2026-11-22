@@ -23,7 +23,8 @@ import {
 
 /**
  * Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, card-action responses
- * (transient, 24 h) and the calendar push channels, whose rows hold the secret their webhooks are checked against.
+ * (transient, 24 h), the calendar push channels, whose rows hold the secret their webhooks are checked against, and
+ * the Sent copies waiting for their APPEND (transient; the message itself is exported as its Emails item).
  */
 export const EXPORT_EXCLUDED_TABLES = [
   "external_credentials",
@@ -32,6 +33,7 @@ export const EXPORT_EXCLUDED_TABLES = [
   "mail_oauth_states",
   "idempotent_responses",
   "calendar_push_channels",
+  "mail_sent_copies",
 ] as const;
 
 /** Written to `manifest.json`. */

@@ -6,15 +6,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import {
-  CORE_TASK_NAMES,
-  enqueueJob,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
-  registerTask,
-  runOnce,
-  type TaskList,
-} from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce, type TaskList } from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { runInTenant } from "@semprec/shared";
 import {
@@ -32,6 +24,7 @@ import {
   tenantBlobStorageKey,
   withTransaction,
   type InboxAttachmentRow,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -96,8 +89,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDatabase(adminPool);
-  await ensureQueueSchema(adminPool);
-  await grantQueueSchemaPrivileges(adminPool);
+  await installQueueSchema(adminPool);
   blobDir = await mkdtemp(join(tmpdir(), "semprec-inbox-attachment-metadata-"));
   storage = new ObservedStorage(blobDir);
   tenantA = await createTestTenant(adminPool);

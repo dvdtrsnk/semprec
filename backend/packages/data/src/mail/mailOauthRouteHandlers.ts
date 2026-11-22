@@ -580,7 +580,7 @@ const completeBodySchema = z
  * 4. Write the mailbox with the granted scopes and those folders; a duplicate provider address is decided by the unique
  *    index and answered 409 with the other mailbox's id. For a reauthorization state, `replaceMailboxCredential` runs
  *    instead of 3 and 4, and after the commit the live-sync root restarts the hosted lifecycle so it reads the new
- *    token.
+ *    token. A failed restart is logged and the route still answers 200.
  * No token, code or verifier is logged or returned.
  */
 export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
@@ -655,7 +655,16 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
         if (error instanceof ProviderAccountAlreadyConnectedError) throw wrongAccountError();
         throw error;
       }
-      await liveSync.restartAccount(mailboxItemId);
+      // The new token is committed and the queued pass reads it; a restart that fails leaves the hosted lifecycle on
+      // the old token until its next reconnect, so the sign-in still succeeded.
+      try {
+        await liveSync.restartAccount(mailboxItemId);
+      } catch (error) {
+        logger.error(
+          { mailboxItemId, errorName: error instanceof Error ? error.name : typeof error },
+          "Restarting the mail live sync after a reauthorization failed",
+        );
+      }
       return { status: 200, body: { mailboxId: mailboxItemId } };
     }
 

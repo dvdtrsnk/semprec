@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { Pool } from "pg";
 import "../domainWriteHooks.js";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { withTransaction } from "../db/pool.js";
 import { createDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -117,8 +118,7 @@ describe("mail sweeps run per tenant (issue #989)", () => {
     await seedSystem(adminPool);
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
-    await ensureQueueSchema(adminPool);
-    await grantQueueSchemaPrivileges(adminPool);
+    await installQueueSchema(adminPool);
     vi.spyOn(tenancyLogger, "error").mockImplementation(() => {});
   });
 

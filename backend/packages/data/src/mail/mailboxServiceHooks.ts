@@ -22,6 +22,7 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { enqueueMailboxMailOff } from "./mailboxRemovalJob.js";
 import { lockMailboxSync, MAILBOX_REMOVAL_SYNC_WAIT_MS } from "./mailboxSyncGuard.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
+import { dropSentCopiesOfMailbox } from "./mailSentCopies.js";
 
 /** What a connect flow writes on a new account. */
 export const NEW_MAILBOX_SERVICE_SWITCHES = { mailEnabled: true, calendarsEnabled: false } as const;
@@ -93,8 +94,9 @@ const calendarsSwitchHook: ItemUpdateHook = async ({ client, item, propertiesPat
  * Mail decides by the locked sync state row, not by the previous value, so a repeated write changes nothing.
  *
  * Off: pauses the sync state (seeding a row for a never-connected mailbox), deletes the folder sync states, resolves
- * the mailbox's sync problem, queues the mail-off removal of the account's Emails, Folders and emptied threads, and
- * after the commit stops its live sync. The item, credential, server settings and sync mode stay.
+ * the mailbox's sync problem, drops its pending Sent copies and resolves their problem, queues the mail-off removal
+ * of the account's Emails, Folders and emptied threads, and after the commit stops its live sync. The item,
+ * credential, server settings and sync mode stay.
  *
  * On: clears the pause and queues `mailAccountSync`; discovery hosts the live sync again on its next pass.
  *
@@ -114,6 +116,7 @@ export const mailboxServiceItemUpdateHook: ItemUpdateHook = async (context) => {
   const { foldersDatabaseId } = await resolveMailModuleIds(client);
   await deleteMailFolderSyncStatesOfMailbox(client, { foldersDatabaseId, mailboxItemId: item.id });
   await resolveProblem(client, { dedupeKey: mailProblemKey(item.id), resolutionKind: "sourceDeleted" });
+  await dropSentCopiesOfMailbox(client, item.id);
   await enqueueMailboxMailOff(client, item.id);
   // The tenant of the scope the write runs in; the pre-lock hook's sync guard already required a tenant scope.
   const scope = currentTenantScope();

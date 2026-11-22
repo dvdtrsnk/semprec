@@ -18,9 +18,9 @@ import kotlinx.coroutines.flow.emptyFlow
  * a gesture means is decided by the scheduling rules of the domain; this class only sequences them.
  *
  * Opening the calendar and each [CalendarAction.Navigation.Refresh] (the app coming back to the front) also ask for
- * the internet accounts' calendars to be synced ([syncAccounts], which lets one request through a minute). A change
- * the server reports ([dataChanges]) only reads the window again, so a sync that changes something does not ask for
- * the next one.
+ * the internet accounts' calendars to be synced ([syncAccounts]; the server coalesces requests close together). A
+ * change the server reports ([dataChanges]) only reads the window again, so a sync that changes something does not ask
+ * for the next one.
  */
 class CalendarViewModel internal constructor(
     initialDay: String,

@@ -15,8 +15,9 @@ Issue #243. Two roles, created by the baseline migration `0001_baseline.sql`
 - **`semprec_side`** — read-only (`SELECT`) on the choke-point tables above, full DML on
   every module side table except the ones listed under "Identity tables" below, and full access to
   graphile-worker's own `graphile_worker` schema
-  (granted by `grantQueueSchemaPrivileges` in `backend/packages/queue/src/index.ts`, called
-  once right after `ensureQueueSchema`, since that schema doesn't exist yet at migration time).
+  (granted by `grantQueueSchemaPrivileges` in `backend/packages/queue/src/index.ts`, which
+  `installQueueSchema` runs right after `ensureQueueSchema`, since that schema doesn't exist yet at
+  migration time).
   `INSERT`/`UPDATE`/`DELETE` against a choke-point table under this role fails outright — a
   bug that tries to bypass the choke-point from a `semprec_side`-only process is caught by
   Postgres itself.

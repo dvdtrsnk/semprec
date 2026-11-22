@@ -1,8 +1,9 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import pg, { type Pool } from "pg";
 import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createItemWithClient, seedSystem, withTransaction } from "@semprec/data";
+import { createClientIpThrottle } from "../clientIpThrottle.js";
 import { createGraphWebhookRequestListener } from "../graphWebhookHandler.js";
 
 let pool: Pool;
@@ -53,7 +54,7 @@ describe("createGraphWebhookRequestListener (issue #198)", () => {
     await resetDatabase(pool);
     await seedSystem(pool);
 
-    server = createServer(createGraphWebhookRequestListener(pool));
+    server = createServer(createGraphWebhookRequestListener(pool, { trustProxy: false }));
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
@@ -79,9 +80,24 @@ describe("createGraphWebhookRequestListener (issue #198)", () => {
     const elapsedMs = Date.now() - start;
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/plain");
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("a-validation-token");
     expect(elapsedMs).toBeLessThan(3000);
+  });
+
+  it("refuses a validation token over 1024 characters with 400 and echoes one of exactly 1024", async () => {
+    const tooLong = await fetch(`${baseUrl}/api/mail/graph/webhook?validationToken=${"v".repeat(1025)}`, {
+      method: "POST",
+    });
+    expect(tooLong.status).toBe(400);
+    expect(await tooLong.text()).not.toContain("v".repeat(1025));
+
+    const longest = await fetch(`${baseUrl}/api/mail/graph/webhook?validationToken=${"v".repeat(1024)}`, {
+      method: "POST",
+    });
+    expect(longest.status).toBe(200);
+    expect(await longest.text()).toBe("v".repeat(1024));
   });
 
   it("never treats a validation POST's body as a notification batch", async () => {
@@ -183,5 +199,57 @@ describe("createGraphWebhookRequestListener (issue #198)", () => {
   it("returns 404 for a non-POST request", async () => {
     const res = await fetch(`${baseUrl}/api/mail/graph/webhook`, { method: "GET" });
     expect(res.status).toBe(404);
+  });
+
+  it("looks a repeated subscription up once per batch and at most 20 distinct subscriptions", async () => {
+    const mailboxItemId = await createMailboxItem("D");
+    await registerSubscription(mailboxItemId, "sub-4", "secret-state");
+    const repeated = Array.from({ length: 60 }, () => ({ subscriptionId: "sub-4", clientState: "secret-state" }));
+    const distinct = Array.from({ length: 30 }, (_, index) => ({
+      subscriptionId: `unknown-${index}`,
+      clientState: "secret-state",
+    }));
+    const queries = vi.spyOn(pg.Client.prototype, "query");
+    try {
+      const res = await fetch(`${baseUrl}/api/mail/graph/webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: [...repeated, ...distinct] }),
+      });
+      expect(res.status).toBe(202);
+      const lookups = queries.mock.calls
+        .map(([query]) => query)
+        .filter((query) => typeof query === "string" && query.includes("route_graph_subscription"));
+      expect(lookups).toHaveLength(20);
+    } finally {
+      queries.mockRestore();
+    }
+    expect(await pendingMailSyncJobCount(mailboxItemId)).toBe(1);
+  });
+
+  it("answers an empty 429 with Retry-After before any database read once an address is over its budget, the handshake included", async () => {
+    const throttle = createClientIpThrottle({ limits: { mailWebhook: { maxEvents: 1, windowSeconds: 60 } } });
+    // Nothing listens on port 1: a request that reaches the database fails with a 500.
+    const unreachable = new pg.Pool({ connectionString: "postgres://semprec:none@127.0.0.1:1/none" });
+    const throttled = createServer(
+      createGraphWebhookRequestListener(unreachable, { trustProxy: false, clientIpThrottle: throttle }),
+    );
+    await new Promise<void>((resolve) => throttled.listen(0, resolve));
+    const address = throttled.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    const url = `http://127.0.0.1:${address.port}/api/mail/graph/webhook`;
+    const batch = JSON.stringify({ value: [{ subscriptionId: "sub-5", clientState: "secret-state" }] });
+    try {
+      expect((await fetch(url, { method: "POST", body: batch })).status).toBe(500);
+
+      const refused = await fetch(url, { method: "POST", body: batch });
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+      expect(await refused.text()).toBe("");
+      expect((await fetch(`${url}?validationToken=token`, { method: "POST" })).status).toBe(429);
+    } finally {
+      await new Promise<void>((resolve) => throttled.close(() => resolve()));
+      await unreachable.end();
+    }
   });
 });

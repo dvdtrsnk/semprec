@@ -1,27 +1,14 @@
-import type { Pool, PoolClient } from "pg";
-import { getItemById } from "../chokePoint/itemsStore.js";
-import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
-import { withTransaction } from "../db/pool.js";
+import type { Pool } from "pg";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { ValidationError } from "../errors.js";
-import {
-  imapConnectionLimitForProvider,
-  sharedImapConnectionLimiter,
-  type ImapConnectionLimiter,
-} from "./imapConnectionLimiter.js";
-import type { ImapMailClient } from "./imapReconcile.js";
 import type { SyncMode } from "./mailAccountSyncStateStore.js";
 import {
   createSmtpTransporter,
-  openImapConnection,
   type MailServerConnectionSettings,
   type MailServerCredential,
   type MailSmtpTransporter,
 } from "./mailServerConnections.js";
 import { getMailServerSettings } from "./mailServerSettingsStore.js";
-import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
-import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
-import { IMAP_SEEN_FLAG } from "./messageFlags.js";
 import { logger } from "./logger.js";
 import { createGmailMailTransport } from "./gmailTransport.js";
 import { createGraphMailTransport } from "./graphTransport.js";
@@ -47,6 +34,11 @@ export interface MailTransportMessage {
 export interface MailTransportResult {
   /** SMTP reports none. */
   providerMessageId?: string;
+  /**
+   * `true` when the provider files no Sent copy itself (SMTP): the caller records the message with
+   * `recordPendingSentCopy` in the transaction that records the send, and a queue job appends it.
+   */
+  needsSentCopy?: true;
 }
 
 export interface MailTransport {
@@ -92,32 +84,18 @@ export type SmtpTransporterOpener = (
   credential: MailServerCredential,
 ) => MailSmtpTransporter;
 
-export type ImapConnectionOpener = (
-  settings: MailServerConnectionSettings,
-  credential: MailServerCredential,
-) => Promise<ImapMailClient>;
-
-/**
- * Called once per send as the SMTP submission starts, so its IMAP connection opens while SMTP submits. `accepted`
- * settles `true` once the server took the message and `false` otherwise (it never rejects); the copy is appended only
- * on `true`. It settles only after its connection is closed. Its failure never fails the send.
- */
-export type SentCopySaver = (raw: Buffer, accepted: Promise<boolean>) => Promise<void>;
-
 /**
  * Each send opens its own policy-checked transporter and closes it on every path out. Exported for
  * protocol tests that need a loopback endpoint the stored settings (standard ports only) cannot name.
  *
- * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy. It starts with the
- * submission and the send waits for it on every path, so its connection is closed before the send settles; its
- * failure after an accepted submission is logged and does not fail the send, because the message has been delivered.
+ * IMAP servers do not file sent mail themselves, so an accepted send answers `needsSentCopy`: the caller records the
+ * copy durably and a queue job appends it. The send never waits for an IMAP connection.
  */
 export function createSmtpMailTransport(
   mailboxItemId: string,
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
   open: SmtpTransporterOpener = createSmtpTransporter,
-  saveSentCopy?: SentCopySaver,
 ): MailTransport {
   return {
     async send(message) {
@@ -125,21 +103,13 @@ export function createSmtpMailTransport(
       let primary: { value: unknown } | undefined;
       let sendOutcome: Promise<{ ok: true } | { ok: false; value: unknown }> | undefined;
       const secondary: unknown[] = [];
-      const diagnostic = (stage: "send" | "close" | "sent_copy") => {
+      const diagnostic = (stage: "send" | "close") => {
         try {
           logger.warn({ mailboxItemId, stage }, "SMTP operation reported a failure");
         } catch (error) {
           secondary.push(error);
         }
       };
-      let decide!: (accepted: boolean) => void;
-      const accepted = new Promise<boolean>((resolve) => {
-        decide = resolve;
-      });
-      const copy = saveSentCopy?.(message.raw, accepted).then(
-        () => undefined,
-        (error: unknown) => ({ error }),
-      );
       try {
         transporter = open(settings, credential);
         const owned = transporter;
@@ -168,9 +138,6 @@ export function createSmtpMailTransport(
         const settled = await sendOutcome;
         if (!settled.ok && (!primary || settled.value !== primary.value)) secondary.push(settled.value);
       }
-      decide(primary === undefined);
-      const copyFailure = await copy;
-      if (copyFailure) secondary.push(copyFailure.error);
       if (primary) {
         let mapped: Error;
         try {
@@ -184,89 +151,9 @@ export function createSmtpMailTransport(
         void secondary;
         throw mapped;
       }
-      if (copyFailure) diagnostic("sent_copy");
       void secondary;
-      return {};
+      return { needsSentCopy: true };
     },
-  };
-}
-
-/** `null` when no sync has discovered a Sent folder for this mailbox yet. */
-async function sentFolderPathOf(
-  client: PoolClient,
-  moduleIds: MailModuleIds,
-  mailboxItemId: string,
-): Promise<string | null> {
-  const mailboxRelation = await getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox");
-  if (!mailboxRelation) throw new Error("Email module schema is missing the Folders.mailbox relation property");
-  const folderId = await findFolderBySpecialPurpose(client, {
-    foldersDatabaseId: moduleIds.foldersDatabaseId,
-    mailboxRelationPropertyId: mailboxRelation.id,
-    mailboxItemId,
-    specialPurpose: "sent",
-  });
-  if (folderId === null) return null;
-  const folder = await getItemById(client, moduleIds.foldersDatabaseId, folderId);
-  const providerId = folder?.properties.providerId;
-  if (typeof providerId !== "string") throw new Error("The Sent folder has no provider path");
-  return providerId;
-}
-
-/**
- * Gmail and Graph file sent mail themselves; an IMAP server does not, so the raw message is appended
- * with `\Seen`. The connection goes through the outbound address policy and holds the account's IMAP
- * connection slot at the sync worker's limit. It opens while the submission runs; the APPEND waits for
- * `accepted` and is skipped, the connection closed, when the server refused the message. No Sent folder
- * yet logs `no_sent_folder` for an accepted message and keeps no copy.
- */
-export function createSentCopySaver(
-  pool: Pool,
-  mailboxItemId: string,
-  credential: MailServerCredential,
-  openImap: ImapConnectionOpener = openImapConnection,
-  limiter: ImapConnectionLimiter = sharedImapConnectionLimiter,
-): SentCopySaver {
-  return async (raw, accepted) => {
-    let decision: boolean | undefined;
-    const decided = accepted.then((value) => {
-      decision = value;
-      return value;
-    });
-    const stored = await getMailServerSettings(pool, mailboxItemId);
-    if (!stored?.imap) {
-      throw new ValidationError(`Mailbox ${mailboxItemId} has no IMAP server settings`, { field: "imap" });
-    }
-    const imapSettings: MailServerConnectionSettings = { endpoint: stored.imap, username: stored.username };
-
-    const { sentPath, connectionLimit } = await withTransaction(pool, async (client) => {
-      const moduleIds = await resolveMailModuleIds(client);
-      const mailbox = await getItemById(client, moduleIds.mailboxesDatabaseId, mailboxItemId);
-      const provider = typeof mailbox?.properties.provider === "string" ? mailbox.properties.provider : undefined;
-      return {
-        sentPath: await sentFolderPathOf(client, moduleIds, mailboxItemId),
-        connectionLimit: imapConnectionLimitForProvider(provider, mailbox?.properties.connectionLimit),
-      };
-    });
-    if (sentPath === null) {
-      if (await decided)
-        logger.warn(
-          { mailboxItemId, reason: "no_sent_folder" },
-          "The mailbox has no Sent folder yet; no copy was kept",
-        );
-      return;
-    }
-
-    await limiter.run(mailboxItemId, connectionLimit, async () => {
-      // A submission refused before the slot was free needs no connection.
-      if (decision === false) return;
-      const imap = await openImap(imapSettings, credential);
-      try {
-        if (await decided) await imap.appendMessage(sentPath, raw, [IMAP_SEEN_FLAG]);
-      } finally {
-        // close() never rejects, so the append's own outcome is the one the saver reports.
-        await imap.close();
-      }
-    });
   };
 }
 
@@ -274,7 +161,6 @@ export interface MailTransportFactoryOptions {
   gmailOAuthClient?: { clientId: string; clientSecret: string };
   graphOAuthClient?: { clientId: string; clientSecret: string };
   fetchImpl?: typeof fetch;
-  openImapConnection?: ImapConnectionOpener;
 }
 
 /**
@@ -337,7 +223,6 @@ export function createMailTransportFactory(
         { endpoint: stored.smtp, username: stored.username },
         { password },
         createSmtpTransporter,
-        createSentCopySaver(pool, mailboxItemId, { password }, options.openImapConnection),
       );
     },
   };

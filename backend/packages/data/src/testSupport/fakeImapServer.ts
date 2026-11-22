@@ -26,6 +26,8 @@ interface Session {
   idleTag: string | undefined;
   /** Queues `text` behind the responses already queued on this connection. */
   push(text: string): void;
+  /** Queues an untagged BYE and the end of the stream behind the responses already queued. */
+  end(): void;
 }
 
 export interface FakeImapServerOptions {
@@ -285,6 +287,11 @@ export class FakeImapServer {
     message.modseq = ++folder.highestModSeq;
   }
 
+  /** Closes every open connection as a server going away would: an untagged BYE, then the end of the stream. */
+  disconnectAll(): void {
+    for (const session of this.sessions) session.end();
+  }
+
   /** Whether a connection is in IDLE with `path` selected. */
   isIdling(path: string): boolean {
     return [...this.sessions].some((session) => session.idleTag !== undefined && session.selected === path);
@@ -337,6 +344,14 @@ export class FakeImapServer {
         queue = queue.then(async () => {
           await this.delay();
           if (!socket.destroyed) socket.write(text);
+        });
+      },
+      end: () => {
+        queue = queue.then(async () => {
+          await this.delay();
+          if (socket.destroyed) return;
+          socket.write("* BYE fake IMAP closing\r\n");
+          socket.end();
         });
       },
     };

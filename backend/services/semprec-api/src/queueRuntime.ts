@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { replayApprovedGenericOperation } from "@semprec/application";
-import { ensureQueueSchema, grantQueueSchemaPrivileges, runWorker } from "@semprec/queue";
+import { runWorker } from "@semprec/queue";
 import {
   CORE_CRONTAB,
   createLibraryMetadataFetcher,
@@ -16,6 +16,7 @@ import {
   setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
+  installQueueSchema,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
@@ -59,8 +60,7 @@ export async function createApiQueueRuntime(
   moduleRegistry: ModuleRegistry,
   options: ApiQueueRuntimeOptions = {},
 ): Promise<ApiQueueRuntime> {
-  await ensureQueueSchema(pool);
-  await grantQueueSchemaPrivileges(pool);
+  await installQueueSchema(pool);
 
   const gmail = readOAuthClient(process.env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
   const graph = readOAuthClient(process.env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");

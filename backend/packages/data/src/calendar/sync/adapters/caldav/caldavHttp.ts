@@ -4,8 +4,10 @@
 // credential's scope, bounds each request by a timeout and its body by a size cap, and turns transport failures into
 // the sync's provider errors.
 import { logger } from "../../../logger.js";
+import { isStorableCalDavUrl } from "../../../../mail/mailServerSettingsStore.js";
 import {
   createOutboundHttp,
+  currentOutboundAddressPolicy,
   isOutboundAddressNotAllowed,
   type OutboundAddressPolicy,
   type OutboundHttp,
@@ -44,7 +46,8 @@ const ICLOUD_CALDAV_ORIGIN = "https://caldav.icloud.com";
  * Where the account's Basic credential may be sent: the origin discovery starts at (the account's CalDAV address, the
  * well-known address of its domain, or iCloud's root) and, for iCloud only, the other hosts under `icloud.com` that
  * Apple's discovery delegates to, over https on the default port. A redirect or an address a server names outside it
- * is refused, so a server never takes the login to a host the account was not set up with.
+ * is refused, so a server never takes the login to a host the account was not set up with. The one exception is the
+ * well-known delegation of a session that resolves the account's server (`withCalDavSession`).
  */
 export interface CalDavCredentialScope {
   allows(url: URL): boolean;
@@ -72,6 +75,22 @@ function outsideScope(): CalendarSyncProviderError {
   return new CalendarSyncProviderError("invalidResponse", "The CalDAV server named an address outside its own");
 }
 
+const WELL_KNOWN_PATHS = new Set(["/.well-known/caldav", "/.well-known/caldav/"]);
+
+function isWellKnownAddress(url: URL): boolean {
+  return WELL_KNOWN_PATHS.has(url.pathname) && url.search === "";
+}
+
+/**
+ * Whether a well-known address may delegate the account to `target` (RFC 6764): an address the account could have
+ * been set up with (`isStorableCalDavUrl`: https, a DNS name that is no local name, the default port, no userinfo).
+ * Under the test policy any address without userinfo; the outbound policy still vets every request.
+ */
+export function allowsWellKnownDelegation(target: URL, policy: OutboundAddressPolicy): boolean {
+  if (policy.isTestPolicy) return target.username === "" && target.password === "";
+  return isStorableCalDavUrl(target.href);
+}
+
 export interface CalDavSession {
   /** Handed to every `tsdav` call. */
   readonly fetch: typeof fetch;
@@ -79,12 +98,43 @@ export interface CalDavSession {
   lastResponseUrl(): URL | null;
   /** Whether an address may be requested with the account's login; every request and redirect is held to it. */
   inScope(url: URL): boolean;
+  /**
+   * Where the account's well-known address delegated it in this session, the CalDAV server the account has from then
+   * on; `null` when it did not.
+   */
+  delegatedServer(): URL | null;
+}
+
+/** The session's scope, which a well-known delegation moves once. */
+interface SessionScope {
+  current: CalDavCredentialScope;
+  /** The well-known start, while the session's first request has not been made; only that request may delegate. */
+  delegationFrom: URL | null;
+  delegatedTo: URL | null;
 }
 
 interface SessionOptions {
   authorization: string;
   signal: AbortSignal;
-  scope: CalDavCredentialScope;
+  scope: SessionScope;
+  policy: OutboundAddressPolicy;
+}
+
+/**
+ * Checks a redirect to `to` against the scope; returns whether it was the delegation. Redirects inside the scope are
+ * followed (up to the redirect cap). Outside it only one hop may go, when `mayDelegate` (the session's first request,
+ * made to its well-known start, and no delegation yet): its first redirect off the start's origin, to a server
+ * `allowsWellKnownDelegation`, which then becomes the scope. Any later hop off that server is refused, so a second
+ * cross-origin hop (`www.` of the domain, then the provider) never carries the login.
+ */
+function followRedirect(scope: SessionScope, mayDelegate: boolean, to: URL, policy: OutboundAddressPolicy): boolean {
+  if (scope.current.allows(to)) return false;
+  if (!mayDelegate || !allowsWellKnownDelegation(to, policy)) throw outsideScope();
+  const server = new URL(to);
+  server.hash = "";
+  scope.current = caldavCredentialScope(server);
+  scope.delegatedTo = server;
+  return true;
 }
 
 async function readCappedBody(response: Response, signal: AbortSignal, timeout: AbortSignal): Promise<Uint8Array> {
@@ -148,14 +198,17 @@ function createSessionFetch(http: OutboundHttp, options: SessionOptions, record:
   return async (input, init) => {
     let url = requestUrl(input);
     const headers = new Headers(init?.headers);
-    // Sent to every hop, each of which is inside the scope: iCloud's root delegates to the account's own host.
+    // Sent to every hop, each of which is inside the scope: iCloud's root and a well-known delegation hand the
+    // account to its own server.
     headers.set("Authorization", options.authorization);
     const body = requestBody(init?.body);
     const method = init?.method ?? "GET";
     const timeout = AbortSignal.timeout(CALDAV_REQUEST_TIMEOUT_MS);
     const signal = AbortSignal.any([options.signal, timeout]);
+    let mayDelegate = options.scope.delegationFrom !== null && options.scope.delegationFrom.href === url.href;
+    options.scope.delegationFrom = null;
     for (let hop = 0; ; hop += 1) {
-      if (!options.scope.allows(url)) throw outsideScope();
+      if (!options.scope.current.allows(url)) throw outsideScope();
       let response: Response;
       try {
         response = await http.fetch(url.href, {
@@ -179,7 +232,9 @@ function createSessionFetch(http: OutboundHttp, options: SessionOptions, record:
           throw new CalendarSyncProviderError("invalidResponse", "The CalDAV server redirected too often");
         }
         // The next request is vetted by the outbound policy like the first: protocol, address literal, lookup.
-        url = new URL(location, url);
+        const next = new URL(location, url);
+        if (followRedirect(options.scope, mayDelegate, next, options.policy)) mayDelegate = false;
+        url = next;
         continue;
       }
       const bytes = await readCappedBody(response, options.signal, timeout);
@@ -204,27 +259,35 @@ export interface CalDavLogin {
 
 /**
  * Runs `fn` with a session whose HTTP clients are closed when it settles. `start` is where the account's discovery
- * starts, which sets the credential's scope (`caldavCredentialScope`). `policy` defaults to the process's outbound
- * policy.
+ * starts, which sets the credential's scope (`caldavCredentialScope`). With `resolveServer`, for an account that has
+ * no CalDAV server stored yet, the first redirect off `start`'s origin of the session's first request (made to a
+ * well-known `start`, after any redirects within that origin) to a server that `allowsWellKnownDelegation` moves the
+ * scope there (`delegatedServer`); every later redirect and address is held to that scope. `policy` defaults to the process's outbound policy.
  */
 export async function withCalDavSession<T>(
   login: CalDavLogin,
-  options: { signal: AbortSignal; start: URL; policy?: OutboundAddressPolicy },
+  options: { signal: AbortSignal; start: URL; resolveServer?: boolean; policy?: OutboundAddressPolicy },
   fn: (session: CalDavSession) => Promise<T>,
 ): Promise<T> {
-  const http = createOutboundHttp(options.policy);
-  const scope = caldavCredentialScope(options.start);
+  const policy = options.policy ?? currentOutboundAddressPolicy();
+  const http = createOutboundHttp(policy);
+  const scope: SessionScope = {
+    current: caldavCredentialScope(options.start),
+    delegationFrom: options.resolveServer === true && isWellKnownAddress(options.start) ? options.start : null,
+    delegatedTo: null,
+  };
   let last: URL | null = null;
   const session: CalDavSession = {
     fetch: createSessionFetch(
       http,
-      { authorization: basicAuthorization(login.username, login.password), signal: options.signal, scope },
+      { authorization: basicAuthorization(login.username, login.password), signal: options.signal, scope, policy },
       (url) => {
         last = url;
       },
     ),
     lastResponseUrl: () => last,
-    inScope: (url) => scope.allows(url),
+    inScope: (url) => scope.current.allows(url),
+    delegatedServer: () => scope.delegatedTo,
   };
   try {
     return await fn(session);
