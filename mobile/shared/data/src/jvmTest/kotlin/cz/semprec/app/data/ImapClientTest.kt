@@ -23,6 +23,16 @@ private fun ImapReply.signIn(command: ImapCommand, capabilities: String = "IMAP4
     return true
 }
 
+/** A stream that keeps every array the client writes, as it wrote it, and the array itself to look at afterwards. */
+private class RecordingStream(private val inner: ImapByteStream) : ImapByteStream by inner {
+    val written = mutableListOf<Pair<ByteArray, ByteArray>>()
+
+    override suspend fun write(bytes: ByteArray) {
+        written += bytes.copyOf() to bytes
+        inner.write(bytes)
+    }
+}
+
 class ImapClientTest {
     private val servers = mutableListOf<FakeImapServer>()
 
@@ -109,6 +119,38 @@ class ImapClientTest {
         challenged.client().logout()
         assertEquals(listOf(plain), answers)
         assertTrue(challenged.commands.none { it.text.startsWith("LOGIN") })
+    }
+
+    @Test
+    fun noBytesOfASignInStayInMemoryOnceTheyAreWritten() = runBlocking {
+        // A password that goes out as a literal, inline with SASL-IR, and after the challenge.
+        val password = "heslo žluť"
+        val handlers = listOf<ImapReply.(ImapCommand) -> Unit>(
+            { signIn(it) },
+            { signIn(it, "IMAP4rev1 SASL-IR AUTH=PLAIN") },
+            { command ->
+                if (command.text == "AUTHENTICATE PLAIN") {
+                    line("+ ")
+                    readClientLine()
+                    ok(command)
+                } else {
+                    signIn(command, "IMAP4rev1 AUTH=PLAIN")
+                }
+            },
+        )
+        for (handler in handlers) {
+            val server = server(handler = handler)
+            val streams = mutableListOf<RecordingStream>()
+            val recording = ImapTransport { host ->
+                RecordingStream(server.transport.connect(host)).also { streams += it }
+            }
+
+            ImapClient.signIn(recording, "imap.example.com", USER, password).logout()
+
+            val written = streams.single().written
+            assertTrue(written.any { (sent, _) -> sent.any { it != 0.toByte() } }, "the commands went out")
+            assertTrue(written.all { (_, kept) -> kept.all { it == 0.toByte() } }, "every written array is zeroed")
+        }
     }
 
     @Test

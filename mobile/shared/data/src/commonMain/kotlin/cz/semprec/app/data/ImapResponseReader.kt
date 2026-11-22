@@ -21,16 +21,31 @@ internal class ByteSink(private val limit: Int) {
     fun append(source: ByteArray, from: Int = 0, to: Int = source.size) {
         val count = to - from
         if (count > limit - size) throw ImapException(ImapFailure.PROTOCOL)
-        if (size + count > bytes.size) bytes = bytes.copyOf(maxOf(size + count, minOf(bytes.size * 2, limit)))
+        if (size + count > bytes.size) {
+            val grown = bytes.copyOf(maxOf(size + count, minOf(bytes.size * 2, limit)))
+            // The bytes may be a command with a password in it; no copy of them is left behind.
+            bytes.fill(0)
+            bytes = grown
+        }
         source.copyInto(bytes, size, from, to)
         size += count
     }
 
-    fun append(text: String) = append(text.encodeToByteArray())
+    fun append(text: String) {
+        val encoded = text.encodeToByteArray()
+        append(encoded)
+        encoded.fill(0)
+    }
 
     operator fun get(index: Int): Byte = bytes[index]
 
     fun toByteArray(): ByteArray = bytes.copyOf(size)
+
+    /** The bytes appended so far, which this sink then forgets and zeroes. */
+    fun takeBytes(): ByteArray = toByteArray().also {
+        bytes.fill(0)
+        size = 0
+    }
 
     private companion object {
         const val INITIAL_CAPACITY = 256
