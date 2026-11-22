@@ -410,6 +410,7 @@ export { GmailRestClient } from "./mail/gmailRestClient.js";
 export { GraphRestClient } from "./mail/graphRestClient.js";
 export type { MailSyncAdapterFactory } from "./mail/mailSyncJob.js";
 export type { MailContentProviders } from "./mail/mailMessageContent.js";
+export { bindMailAgentRemoteSearch } from "./mail/mailRemoteSearch.js";
 export type { MailSendAdapterFactory } from "./mail/send.js";
 export {
   createImapMailFlagWritebackAdapter,

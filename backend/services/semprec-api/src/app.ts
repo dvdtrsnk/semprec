@@ -1,5 +1,6 @@
 import { createRecordingsRequestListener } from "./recordingsHandler.js";
 import {
+  bindMailAgentRemoteSearch,
   createCollectionMetadataResolver,
   createMailTransportFactory,
   resolveModuleRuleKinds,
@@ -165,6 +166,9 @@ export async function createDispatcher(
       },
     },
   };
+  // The `mail.search` tool of a run (an `/mcp` run credential's call) is built without this container, so it reaches
+  // the same provider clients and per-user throttle through this binding; the last dispatcher created binds it.
+  bindMailAgentRemoteSearch({ mailContent: routeDependencies.mailContent, throttle: routeDependencies.throttle });
   const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, routeDependencies);
   // The one `GenericApplicationPort` per pool, shared by every generic resource route so there is
   // no second write path.

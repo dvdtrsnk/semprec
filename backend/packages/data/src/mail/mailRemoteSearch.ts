@@ -640,3 +640,17 @@ export function createMailSearchRouteHandler(
     return { status: 200, body };
   };
 }
+
+let boundAgentSearch: MailSearchRouteDependencies | undefined;
+
+/**
+ * The provider clients and throttle the `mail.search` tool of an agent run uses, whose handler is built without the
+ * custom routes' container. A process that binds none searches the local index only.
+ */
+export function bindMailAgentRemoteSearch(dependencies: MailSearchRouteDependencies | undefined): void {
+  boundAgentSearch = dependencies;
+}
+
+export function boundMailAgentRemoteSearch(): MailSearchRouteDependencies | undefined {
+  return boundAgentSearch;
+}

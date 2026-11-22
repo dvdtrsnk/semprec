@@ -8,18 +8,22 @@ import {
   createMailDraftSendUserTool,
   createMailDraftUpdateTool,
   createMailDraftUpdateUserTool,
+  createMailSearchTool,
+  createMailSearchUserTool,
   createMailThreadGetTool,
   createMailThreadGetUserTool,
   createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
   mailDraftUpdateArgsSchema,
+  mailSearchArgsSchema,
   mailThreadGetArgsSchema,
   mailThreadProposeTaskArgsSchema,
 } from "../mailAgentTools.js";
 
 const MAIL_TOOLS = [
   "mail.thread.get",
+  "mail.search",
   "mail.draft.create",
   "mail.draft.update",
   "mail.draft.send",
@@ -45,7 +49,10 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
         .map((tool) => [tool.name, tool.handlerExport]);
 
     expect(await mailTools([])).toEqual([]);
-    expect(await mailTools(["mail.read"])).toEqual([["mail.thread.get", "createMailThreadGetTool"]]);
+    expect(await mailTools(["mail.read"])).toEqual([
+      ["mail.thread.get", "createMailThreadGetTool"],
+      ["mail.search", "createMailSearchTool"],
+    ]);
     expect(await mailTools(["mail.draft"])).toEqual([
       ["mail.draft.create", "createMailDraftCreateTool"],
       ["mail.draft.update", "createMailDraftUpdateTool"],
@@ -54,13 +61,13 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
     expect(await mailTools(["mail.taskProposal"])).toEqual([
       ["mail.thread.proposeTask", "createMailThreadProposeTaskTool"],
     ]);
-    expect(await mailTools(["mail.read", "mail.draft"])).toHaveLength(3);
+    expect(await mailTools(["mail.read", "mail.draft"])).toHaveLength(4);
     expect(
       (await mailTools(["mail.read", "mail.draft", "mail.send", "mail.taskProposal"])).map(([name]) => name),
     ).toEqual(MAIL_TOOLS);
   });
 
-  it("resolves the five tools to their exported handler factories and strict schemas, none of them deferred by the session", async () => {
+  it("resolves the six tools to their exported handler factories and strict schemas, none of them deferred by the session", async () => {
     const registry = await loadFullModuleRegistry();
 
     const definitions = (
@@ -69,6 +76,7 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
 
     expect(definitions.map((tool) => [tool.name, tool.handler, tool.riskClass, tool.requiresApproval])).toEqual([
       ["mail.thread.get", createMailThreadGetTool, "read", undefined],
+      ["mail.search", createMailSearchTool, "read", undefined],
       ["mail.draft.create", createMailDraftCreateTool, "write", undefined],
       ["mail.draft.update", createMailDraftUpdateTool, "write", undefined],
       // The send tool files the request of its own kind itself.
@@ -78,6 +86,7 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
     ]);
     expect(definitions.map((tool) => tool.argumentSchema)).toEqual([
       z.toJSONSchema(mailThreadGetArgsSchema),
+      z.toJSONSchema(mailSearchArgsSchema),
       z.toJSONSchema(mailDraftCreateArgsSchema),
       z.toJSONSchema(mailDraftUpdateArgsSchema),
       z.toJSONSchema(mailDraftSendArgsSchema),
@@ -86,7 +95,7 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
     expect(definitions.every((tool) => tool.argumentSchema.additionalProperties === false)).toBe(true);
   });
 
-  it("declares the four tools of issue gh-1956 for MCP with the handler a human session runs, and mail.thread.proposeTask for none (issue gh-1956)", async () => {
+  it("declares the read and draft tools for MCP with the handler a human session runs, and mail.thread.proposeTask for none", async () => {
     const registry = await loadFullModuleRegistry();
 
     const definitions = (
@@ -95,6 +104,7 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
 
     expect(definitions.map((tool) => [tool.name, tool.capability, tool.mcp?.humanHandler])).toEqual([
       ["mail.thread.get", "mail.read", createMailThreadGetUserTool],
+      ["mail.search", "mail.read", createMailSearchUserTool],
       ["mail.draft.create", "mail.draft", createMailDraftCreateUserTool],
       ["mail.draft.update", "mail.draft", createMailDraftUpdateUserTool],
       ["mail.draft.send", "mail.send", createMailDraftSendUserTool],

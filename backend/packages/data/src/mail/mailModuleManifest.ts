@@ -23,12 +23,15 @@ export {
   createMailDraftSendUserTool,
   createMailDraftUpdateTool,
   createMailDraftUpdateUserTool,
+  createMailSearchTool,
+  createMailSearchUserTool,
   createMailThreadGetTool,
   createMailThreadGetUserTool,
   createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
   mailDraftUpdateArgsSchema,
+  mailSearchArgsSchema,
   mailThreadGetArgsSchema,
   mailThreadProposeTaskArgsSchema,
 } from "./mailAgentTools.js";
@@ -120,6 +123,16 @@ export const manifest: ModuleManifest = {
       approval: "none",
       riskClass: "read",
       mcp: { humanHandlerExport: "createMailThreadGetUserTool" },
+    },
+    // Read-only like `mail.thread.get`, with its capability and exposure; it may ask the mail providers to search.
+    {
+      name: "mail.search",
+      handlerExport: "createMailSearchTool",
+      argumentSchemaExport: "mailSearchArgsSchema",
+      capability: "mail.read",
+      approval: "none",
+      riskClass: "read",
+      mcp: { humanHandlerExport: "createMailSearchUserTool" },
     },
     // A draft stays in Semprec and nothing sends it, so creating and updating one needs no approval.
     {

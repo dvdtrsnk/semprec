@@ -68,6 +68,7 @@
   "mail.draft.forward.to": "Komu",
   "mail.draft.forward.cc": "Kopie",
   "agentTool.mail.thread.get.label": "Zobrazit e-mailové vlákno",
+  "agentTool.mail.search.label": "Hledat v poště",
   "agentTool.mail.draft.create.label": "Vytvořit koncept e-mailu",
   "agentTool.mail.draft.update.label": "Upravit koncept e-mailu",
   "agentTool.mail.draft.send.label": "Odeslat koncept e-mailu",

@@ -4,7 +4,10 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createAgentRun } from "../agentRuns/agentRunsStore.js";
+import { resolveModuleAgentToolsForRun } from "../agentTools/moduleAgentTools.js";
 import { createUser } from "../auth/usersStore.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -13,13 +16,16 @@ import { GraphRestClient } from "../mail/graphRestClient.js";
 import { createImapSessionPool, type ImapSessionPool } from "../mail/imapSessionPool.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN } from "../mail/mailAgentTools.js";
 import type { MailContentProviders } from "../mail/mailMessageContent.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import {
+  bindMailAgentRemoteSearch,
   createMailSearchRouteHandler,
   type MailRemoteSearchOptions,
   type MailSearchRouteDependencies,
 } from "../mail/mailRemoteSearch.js";
+import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FakeImapServer } from "../testSupport/fakeImapServer.js";
 import {
@@ -265,6 +271,7 @@ describe("two-layer mail search", () => {
   });
 
   afterEach(async () => {
+    bindMailAgentRemoteSearch(undefined);
     for (const sessions of sessionPools.splice(0)) await sessions.close();
     for (const server of servers.splice(0)) await server.close();
   });
@@ -549,6 +556,106 @@ describe("two-layer mail search", () => {
       // The owner searches it, so the refusals above are not a broken route.
       const owned = await runInTenant(tenant, () => search(dependencies, `q=zanzibar&mailboxId=${account.mailboxId}`));
       expect(owned.threads).toHaveLength(1);
+    });
+  });
+
+  describe("the mail.search agent tool", () => {
+    async function mailRun(projectItemId?: string) {
+      const mailboxes = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "mailboxes"));
+      const project = projectItemId ?? mailboxes?.ownerProjectItemId;
+      if (!project) throw new Error("The mail databases have no owner project");
+      const run = await createAgentRun(runtime, { projectItemId: project, userId, triggeredBy: "user", task: "mail" });
+      return { runId: run.id, projectItemId: project };
+    }
+
+    async function searchTool(runId: string, projectItemId: string, capabilities?: ReadonlySet<string>) {
+      const registry = await loadFullModuleRegistry();
+      return (await resolveModuleAgentToolsForRun(runtime, registry, runId, projectItemId, capabilities)).find(
+        (tool) => tool.name === "mail.search",
+      );
+    }
+
+    const toolAnswer = z.object({
+      threads: z.array(
+        z.strictObject({
+          threadId: z.uuid(),
+          subject: z.string(),
+          lastMessageAt: z.string(),
+          lastSender: z.strictObject({ name: z.string(), address: z.string() }),
+          snippet: z.string().nullable(),
+        }),
+      ),
+      localCount: z.number(),
+      remoteSearch: z.string(),
+      remote: searchAnswer.shape.remote,
+    });
+
+    tenantIt("returns compact thread rows the providers found, up to its provider searches per run", async () => {
+      const account = await imapAccount();
+      const messageId = account.deliver("INBOX", "Old offer", "the zanzibar clause");
+      await account.pass();
+      const { thread_id: threadId } = await messageByMessageId(messageId);
+      const { asked, throttle } = countingThrottle();
+      bindMailAgentRemoteSearch({ mailContent: account.providers, throttle });
+      const { runId, projectItemId } = await mailRun();
+      const tool = await searchTool(runId, projectItemId);
+      if (!tool) throw new Error("The run has no mail.search");
+
+      const answers = [];
+      for (let call = 0; call <= MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN; call++) {
+        const result = await tool.invoke({ query: "zanzibar" });
+        expect(result.error, result.result).toBe(false);
+        answers.push(toolAnswer.parse(JSON.parse(result.result)));
+      }
+
+      expect(answers[0]).toEqual({
+        threads: [
+          {
+            threadId,
+            subject: "Old offer",
+            lastMessageAt: expect.any(String),
+            lastSender: { name: "Sender", address: "sender@sender.example.test" },
+            snippet: expect.stringContaining("Lorem ipsum"),
+          },
+        ],
+        localCount: 0,
+        remoteSearch: "searched",
+        remote: { searched: [account.mailboxId], failed: [], unindexed: 0 },
+      });
+      expect(answers.map((answer) => answer.remoteSearch)).toEqual([
+        ...Array<string>(MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN).fill("searched"),
+        "runBudgetSpent",
+      ]);
+      expect(answers.at(-1)?.threads).toEqual([]);
+      // The run's user is counted by the throttle, the stored password is read as the agent of the run.
+      expect(asked).toHaveLength(MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN);
+      const { rows } = await runtime.query<{ actor_type: string; actor_id: string; purpose: string }>(
+        "SELECT DISTINCT actor_type, actor_id, purpose FROM credential_access_log WHERE purpose = 'imap_search'",
+      );
+      expect(rows).toEqual([{ actor_type: "ai_agent", actor_id: runId, purpose: "imap_search" }]);
+    });
+
+    tenantIt("searches the local index only in a process that binds no provider clients", async () => {
+      const subject = await restMessage("gmail_api", "gm-1", "Zanzibar terms");
+      const { runId, projectItemId } = await mailRun();
+      const tool = await searchTool(runId, projectItemId);
+      if (!tool) throw new Error("The run has no mail.search");
+
+      const answer = toolAnswer.parse(JSON.parse((await tool.invoke({ query: "zanzibar" })).result));
+
+      expect(answer.threads.map((thread) => thread.threadId)).toEqual([subject.threadId]);
+      expect(answer.remoteSearch).toBe("unavailable");
+    });
+
+    tenantIt("is offered to a run whose project holds mail.read and to no other", async () => {
+      const { runId, projectItemId } = await mailRun();
+      expect(await searchTool(runId, projectItemId)).toBeDefined();
+      expect(await searchTool(runId, projectItemId, new Set(["mail.draft"]))).toBeUndefined();
+
+      const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing the Semprec project");
+      const elsewhere = await mailRun(inbox.ownerProjectItemId);
+      expect(await searchTool(elsewhere.runId, elsewhere.projectItemId)).toBeUndefined();
     });
   });
 });

@@ -486,15 +486,15 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     `Emails.attachments` and `Threads.attachments` edges, as the full ingest does (no attachment text is indexed).
     Concurrent saves queue on the guard and the row, so a second save finds what the first wrote; bytes nothing
     references (a duplicate blob, or a save that lost) are deleted after the transaction.
-- Agent reads never fetch: `mail.thread.get` gives a `remote` message's preview as `bodyText` with a `contentNote`
-  saying its content is not downloaded, and the answer-expected gate shows it as a preview marked so; a `cached`
-  message is read like a stored one.
+- Agent reads never fetch a body (`mail.search` asks the providers to search only): `mail.thread.get` gives a
+  `remote` message's preview as `bodyText` with a `contentNote` saying its content is not downloaded, and the
+  answer-expected gate shows it as a preview marked so; a `cached` message is read like a stored one.
 
 ### Search
 
 - Two layers: the local index (`item_search_index`, the thread list's `matchesSearch`) knows an `index` message only by
   subject, addresses, snippet and attachment names, so a word only an older body holds is found at the provider.
-  `GET /api/mail/threads?q=` and global search stay local; `GET /api/mail/search` asks both
+  `GET /api/mail/threads?q=` and global search stay local; `GET /api/mail/search` and the `mail.search` tool ask both
   (`mail/mailRemoteSearch.ts`).
 - `GET /api/mail/search?q=&mailboxId=&limit=` answers
   `{ threads, localCount, remote: { searched, failed: [{ mailboxId, reason }], unindexed } }`. `q` (trimmed, 1–1000
@@ -514,13 +514,13 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   name with local ids and is `providerUnreachable`, an account that has not answered by the deadline is `timeout` (its
   Gmail or Graph request is aborted, its IMAP search stops at the next folder, what it finds later is dropped). A
   database failure keeps its identity. A hit no local Emails item records is counted in `unindexed`.
-  - IMAP: the stored password (access logged as the user, purpose `imap_search`), the client from the content reads'
-    factory (kept session or a new connection under the limiter). Folders: Inbox, Archive and Sent, in that order; an
-    account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk, Drafts and the user's own
-    folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for an excluded one), 30 s
-    each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that refuses it is asked again
-    with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the folder's UIDVALIDITY equals
-    the stored one; otherwise, or without an edge, it is unindexed.
+  - IMAP: the stored password (access logged as the user, or `ai_agent` with the run id, purpose `imap_search`), the
+    client from the content reads' factory (kept session or a new connection under the limiter). Folders: Inbox, Archive
+    and Sent, in that order; an account with an All Mail folder (Gmail over IMAP) is searched there alone. Trash, Junk,
+    Drafts and the user's own folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
+    an excluded one), 30 s each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that
+    refuses it is asked again with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the
+    folder's UIDVALIDITY equals the stored one; otherwise, or without an edge, it is unindexed.
   - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
     Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
     `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
@@ -528,6 +528,16 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     s per request, ended earlier by the deadline.
 - Only a search that asks a provider is counted by the throttle: action `mailRemoteSearch`, 30 per 15 minutes **per user
   id** (the `throttle` member), refusal 429 `rate_limited` with `Retry-After`, before any provider call.
+- `mail.search` (capability `mail.read`, approval none, risk `read`, declared for MCP like `mail.thread.get`) takes
+  `{ query, mailboxId?, limit? (1–50, default 20) }` and answers compact rows (`threadId`, `subject`, `lastMessageAt`,
+  `lastSender`, `snippet`), `localCount`, `remote` and `remoteSearch` (`searched`, `notNeeded`, `unavailable`,
+  `runBudgetSpent`, `rateLimited`). A refusal of the provider part makes the call local-only, never a failure. A run
+  makes at most 5 provider searches (`MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN`), counted in the process that runs it (no
+  per-run budget exists elsewhere); the run's user is counted by `mailRemoteSearch` as well. A human `/mcp` session's
+  handler gets the providers and throttle from the custom routes' container; a run's handler is built without it and
+  reads them from `bindMailAgentRemoteSearch`, which `semprec-api`'s `createDispatcher` binds. A process that binds
+  nothing (`semprec-agents` today, which composes no provider clients) answers local matches with
+  `remoteSearch: "unavailable"`.
 
 ### IMAP connection limits and kept sync sessions
 
@@ -754,7 +764,7 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   retried. At most once.
 - Tool `mail.draft.send` is declared `approval: "none"` but its handler only files the request; the request
   is the gate.
-- MCP: tools opt in with `mcp: { humanHandlerExport }` (`mail.thread.get`, `mail.draft.create`,
+- MCP: tools opt in with `mcp: { humanHandlerExport }` (`mail.thread.get`, `mail.search`, `mail.draft.create`,
   `mail.draft.update`, `mail.draft.send`). A run credential sees a tool only if it lists the module
   capability and the run's project holds it. A human session runs the human handler as the user, writing as
   `writerKind: "agent"` on behalf of the user with the external-client marker; its `mail.draft.send` sends

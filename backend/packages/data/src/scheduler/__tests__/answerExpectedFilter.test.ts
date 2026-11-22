@@ -450,7 +450,7 @@ describe("the answer-expected gate and the run project of core.agentRun (issue g
       expect(agentCalls.map((call) => call.projectItemId)).toEqual([projectId]);
     });
 
-    it("offers the run of a thread in an ordinary project no mail tool, while the run of the Email project has all five (the limit of issue gh-1941)", async () => {
+    it("offers the run of a thread in an ordinary project no mail tool, while the run of the Email project has all six (the limit of issue gh-1941)", async () => {
       const itemId = await receive(tenant);
       const thread = await threadOf(tenant, itemId);
       const projectId = await inTenant(tenant, () => createTestProjectItem(runtime));
@@ -480,6 +480,7 @@ describe("the answer-expected gate and the run project of core.agentRun (issue g
         "mail.draft.create",
         "mail.draft.send",
         "mail.draft.update",
+        "mail.search",
         "mail.thread.get",
         "mail.thread.proposeTask",
       ]);

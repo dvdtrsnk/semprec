@@ -285,11 +285,12 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
   });
 
   describe("resolveModuleAgentToolsForUser on the full registry", () => {
-    it("offers the four mail tools and the four calendar tools that declare mcp, and no other module tool, whatever their capability", async () => {
+    it("offers the five mail tools and the four calendar tools that declare mcp, and no other module tool, whatever their capability", async () => {
       const tools = await resolveModuleAgentToolsForUser(runtime, registry, tenant.userId, {});
 
       expect(tools.map((tool) => tool.name)).toEqual([
         "mail.thread.get",
+        "mail.search",
         "mail.draft.create",
         "mail.draft.update",
         "mail.draft.send",
@@ -325,12 +326,16 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
 
       expect(await mailNames(tenant, runId, tenant.mailProjectId, all)).toEqual([
         "mail.thread.get",
+        "mail.search",
         "mail.draft.create",
         "mail.draft.update",
         "mail.draft.send",
       ]);
       expect(await mailNames(tenant, runId, tenant.mailProjectId, ["core.item.read"])).toEqual([]);
-      expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.read"])).toEqual(["mail.thread.get"]);
+      expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.read"])).toEqual([
+        "mail.thread.get",
+        "mail.search",
+      ]);
       expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.send"])).toEqual(["mail.draft.send"]);
     });
 
