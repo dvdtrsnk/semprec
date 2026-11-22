@@ -90,6 +90,16 @@ export interface AdapterRequestListenerOptions {
  * other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with a generic 500,
  * never leaking details.
  */
+/**
+ * Node's own error for a request whose client hung up before the request was read (`ECONNRESET`, "aborted"), once the
+ * request is destroyed: nothing is wrong on the server and no answer can reach the client.
+ */
+function isClientAbort(req: IncomingMessage, err: unknown): boolean {
+  return (
+    req.destroyed && err instanceof Error && err.message === "aborted" && "code" in err && err.code === "ECONNRESET"
+  );
+}
+
 export function createAdapterRequestListener(
   pool: Pool,
   handler: AdapterHandler,
@@ -144,6 +154,10 @@ export function createAdapterRequestListener(
           sendJson(res, mapped.status, mapped.body, mapped.headers);
           return;
         }
+      }
+      if (isClientAbort(req, err)) {
+        logger.info({ method: req.method, path: pathname }, "The client closed the request before it was answered");
+        return;
       }
       logger.error({ err, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
