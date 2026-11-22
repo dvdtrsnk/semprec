@@ -170,6 +170,10 @@ export function createGmailWatchHosting(pool: Pool, pubSub: GmailPubSubConfig, c
     getPubSubAccessToken: () => pubSub.getPubSubAccessToken(),
     topicName: pubSub.topicName,
     subscriptionName: pubSub.subscriptionName,
+    // The entry itself may carry an address, so only the error's name is logged.
+    onMalformedNotification: (_raw, err) => {
+      logger.warn({ errorName: errorName(err) }, "Gmail Pub/Sub notification skipped as malformed");
+    },
   });
   const lifecycle = createGmailWatchLifecycleFactory(pool, transport, {
     getCredential: (mailboxItemId) => requireCredential(pool, mailboxItemId, "gmail_watch"),
