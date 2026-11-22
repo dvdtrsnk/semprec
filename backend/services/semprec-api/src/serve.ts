@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import {
   assertRuntimeRole,
   bindMailboxServiceLiveSyncStop,
+  createDetachedSentCopies,
   createMailLiveSyncRoot,
   createPool,
   LocalFsBlobStorageWriter,
@@ -155,6 +156,8 @@ startProcessHeartbeat(
 );
 
 const moduleRegistry = await loadFullModuleRegistry();
+// The Sent copies of the send route's accepted SMTP sends, which run on after the response; drained at shutdown.
+const detachedSentCopies = createDetachedSentCopies();
 const dispatch = await createDispatcher(pool, {
   passwordResetMailer,
   inviteMailer,
@@ -167,6 +170,7 @@ const dispatch = await createDispatcher(pool, {
   maxFileSizeBytes,
   trustProxy,
   customRouteDependencies,
+  detachedSentCopies,
 });
 const syncServer = await createSyncUpgradeHandler(pool);
 const voiceServer = createVoiceChannel(pool, {
@@ -234,6 +238,7 @@ const shutdown = createGracefulShutdown({
   queueRuntime,
   gmailPubSubDispatcher,
   mailLiveSync,
+  detachedSentCopies,
   pool,
   logger,
 });

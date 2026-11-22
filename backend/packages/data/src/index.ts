@@ -375,7 +375,9 @@ export {
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
 export {
+  createDetachedSentCopies,
   createMailTransportFactory,
+  type DetachedSentCopies,
   type MailTransport,
   type MailTransportFactory,
   type MailTransportMessage,

@@ -308,7 +308,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   notification with `route_gmail_address`, enqueues `mailAccountSync` per target tenant, and acknowledges only
   after every hand-off.
 - `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
-  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` → `pool.end()`.
+  HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → detached Sent copies drained (at most
+  `SENT_COPY_DRAIN_TIMEOUT_MS`) → `queueRuntime.stop()` → `pool.end()`.
   A future long-lived outbound loop that enqueues work stops after the drain, before what it would race.
 
 ### Provider moves
@@ -457,9 +458,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
   No automatic send retry.
 - Transports: SMTP (`createSmtpMailTransport`), Gmail and Graph REST clients. Once the provider accepted the
-  message, close/Sent-copy/response-cleanup failures keep the accepted result. The send stays synchronous: the
-  IMAP connection for an SMTP account's Sent copy opens while SMTP submits, the APPEND runs only after acceptance,
-  and a refused submission closes that connection unused before the refusal is answered. A Graph failure before
+  message, close/Sent-copy/response-cleanup failures keep the accepted result. The submission stays synchronous:
+  the request answers only after the provider accepted or refused the message, so a refusal is the answer and the
+  claim decides exactly-once. The IMAP connection for an SMTP account's Sent copy opens while SMTP submits (inside
+  the account's IMAP connection slot), the APPEND runs only after acceptance, and a refused submission closes that
+  connection unused before the refusal is answered. In `semprec-api` the transports of the send route get
+  `detachedSentCopies`: an accepted SMTP send answers without waiting for its Sent copy, which may wait for a slot a
+  sync pass holds; the copy runs on in the process, logs a failure with stage `sent_copy`, and shutdown drains it.
+  The Semprec item is in Sent from the finalization either way. Queue jobs that send (invitations) wait for the copy. A Graph failure before
   acceptance best-effort deletes the owned draft.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.

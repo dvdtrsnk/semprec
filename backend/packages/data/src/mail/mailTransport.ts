@@ -105,12 +105,48 @@ export type ImapConnectionOpener = (
 export type SentCopySaver = (raw: Buffer, accepted: Promise<boolean>) => Promise<void>;
 
 /**
+ * Sent copies that run on after their send answered. Shutdown drains them once no request can add one, before the
+ * connections and the pool they use go away.
+ */
+export interface DetachedSentCopies {
+  /** Takes over a copy that never rejects; it is held until it settles. */
+  add(copy: Promise<void>): void;
+  /** `true` once every copy added so far has settled, `false` when `timeoutMs` passed first. */
+  drain(timeoutMs: number): Promise<boolean>;
+}
+
+export function createDetachedSentCopies(): DetachedSentCopies {
+  const running = new Set<Promise<void>>();
+  return {
+    add(copy) {
+      const held = copy.finally(() => running.delete(held));
+      running.add(held);
+    },
+    async drain(timeoutMs) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          Promise.all(running).then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/**
  * Each send opens its own policy-checked transporter and closes it on every path out. Exported for
  * protocol tests that need a loopback endpoint the stored settings (standard ports only) cannot name.
  *
  * IMAP servers do not file sent mail themselves, so `saveSentCopy` appends a Sent copy. It starts with the
- * submission and the send waits for it on every path, so its connection is closed before the send settles; its
- * failure after an accepted submission is logged and does not fail the send, because the message has been delivered.
+ * submission. A refused submission waits for it, so its connection is closed before the refusal is answered. An
+ * accepted one waits for it too unless `detached` is given: then the copy goes to `detached` and the send answers at
+ * once, since the copy may wait for a connection slot the account's sync pass holds. Its failure after an accepted
+ * submission is logged and does not fail the send, because the message has been delivered.
  */
 export function createSmtpMailTransport(
   mailboxItemId: string,
@@ -118,6 +154,7 @@ export function createSmtpMailTransport(
   credential: MailServerCredential,
   open: SmtpTransporterOpener = createSmtpTransporter,
   saveSentCopy?: SentCopySaver,
+  detached?: DetachedSentCopies,
 ): MailTransport {
   return {
     async send(message) {
@@ -169,6 +206,15 @@ export function createSmtpMailTransport(
         if (!settled.ok && (!primary || settled.value !== primary.value)) secondary.push(settled.value);
       }
       decide(primary === undefined);
+      if (primary === undefined && copy && detached) {
+        detached.add(
+          copy.then((copyFailure) => {
+            if (copyFailure) diagnostic("sent_copy");
+          }),
+        );
+        void secondary;
+        return {};
+      }
       const copyFailure = await copy;
       if (copyFailure) secondary.push(copyFailure.error);
       if (primary) {
@@ -275,6 +321,8 @@ export interface MailTransportFactoryOptions {
   graphOAuthClient?: { clientId: string; clientSecret: string };
   fetchImpl?: typeof fetch;
   openImapConnection?: ImapConnectionOpener;
+  /** Given, an accepted SMTP send answers before its Sent copy, which this owns (`createSmtpMailTransport`). */
+  detachedSentCopies?: DetachedSentCopies;
 }
 
 /**
@@ -338,6 +386,7 @@ export function createMailTransportFactory(
         { password },
         createSmtpTransporter,
         createSentCopySaver(pool, mailboxItemId, { password }, options.openImapConnection),
+        options.detachedSentCopies,
       );
     },
   };

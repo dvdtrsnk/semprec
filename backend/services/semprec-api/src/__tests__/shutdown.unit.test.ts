@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import type { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "@semprec/shared";
-import { createGracefulShutdown, LISTENER_CLOSE_TIMEOUT_MS } from "../shutdown.js";
+import { createGracefulShutdown, LISTENER_CLOSE_TIMEOUT_MS, SENT_COPY_DRAIN_TIMEOUT_MS } from "../shutdown.js";
 
 interface CapturedLine {
   level: "info" | "error";
@@ -14,6 +14,7 @@ interface CapturedLine {
 function createFakes(
   options: {
     mailLiveSyncStop?: () => Promise<void>;
+    sentCopiesDrain?: (timeoutMs: number) => Promise<boolean>;
     listenerClose?: () => Promise<void>;
     voiceClose?: () => Promise<void>;
   } = {},
@@ -55,6 +56,12 @@ function createFakes(
       await options.mailLiveSyncStop?.();
     },
   };
+  const detachedSentCopies = {
+    drain: async (timeoutMs: number) => {
+      calls.push("detachedSentCopies.drain");
+      return (await options.sentCopiesDrain?.(timeoutMs)) ?? true;
+    },
+  };
   const queueRuntime = {
     stop: async () => {
       calls.push("queueRuntime.stop");
@@ -76,7 +83,17 @@ function createFakes(
   return {
     calls,
     lines,
-    deps: { server, tenantDeactivationListener, syncServer, voiceServer, mailLiveSync, queueRuntime, pool, logger },
+    deps: {
+      server,
+      tenantDeactivationListener,
+      syncServer,
+      voiceServer,
+      mailLiveSync,
+      detachedSentCopies,
+      queueRuntime,
+      pool,
+      logger,
+    },
   };
 }
 
@@ -93,6 +110,7 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
       "server.close",
       "drained",
       "mailLiveSync.stop",
+      "detachedSentCopies.drain",
       "queueRuntime.stop",
       "pool.end",
     ]);
@@ -132,6 +150,7 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
 
     expect(calls.slice(calls.indexOf("mailLiveSync.stop"))).toEqual([
       "mailLiveSync.stop",
+      "detachedSentCopies.drain",
       "queueRuntime.stop",
       "pool.end",
     ]);
@@ -139,6 +158,48 @@ describe("semprec-api graceful shutdown stops the mail live-sync root (issue #65
       { level: "error", obj: { err: stopError, signal: "SIGTERM" }, msg: "mailLiveSync.stop() failed" },
     ]);
     expect(lines.at(-1)).toMatchObject({ level: "info", obj: { signal: "SIGTERM", timedOut: false } });
+  });
+});
+
+describe("semprec-api graceful shutdown drains the Sent copies of answered sends", () => {
+  it("waits for them after the live-sync stop and before the queue runtime, at most SENT_COPY_DRAIN_TIMEOUT_MS", async () => {
+    const bounds: number[] = [];
+    const { calls, lines, deps } = createFakes({
+      sentCopiesDrain: async (timeoutMs) => {
+        bounds.push(timeoutMs);
+        return true;
+      },
+    });
+
+    await createGracefulShutdown(deps)("SIGTERM");
+
+    expect(calls.slice(calls.indexOf("mailLiveSync.stop"))).toEqual([
+      "mailLiveSync.stop",
+      "detachedSentCopies.drain",
+      "queueRuntime.stop",
+      "pool.end",
+    ]);
+    expect(bounds).toEqual([SENT_COPY_DRAIN_TIMEOUT_MS]);
+    expect(lines.filter((line) => line.level === "error")).toEqual([]);
+  });
+
+  it("logs copies still running at the bound and still stops the queue runtime and ends the pool", async () => {
+    const { calls, lines, deps } = createFakes({ sentCopiesDrain: async () => false });
+
+    await createGracefulShutdown(deps)("SIGTERM");
+
+    expect(calls.slice(calls.indexOf("detachedSentCopies.drain"))).toEqual([
+      "detachedSentCopies.drain",
+      "queueRuntime.stop",
+      "pool.end",
+    ]);
+    expect(lines.filter((line) => line.level === "error")).toEqual([
+      {
+        level: "error",
+        obj: { signal: "SIGTERM" },
+        msg: "Sent copies were still running after SENT_COPY_DRAIN_TIMEOUT_MS",
+      },
+    ]);
   });
 });
 
@@ -172,6 +233,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       "server.close",
       "drained",
       "mailLiveSync.stop",
+      "detachedSentCopies.drain",
       "queueRuntime.stop",
       "pool.end",
     ]);
@@ -201,6 +263,7 @@ describe("semprec-api graceful shutdown closes the tenant deactivation listener 
       "server.close",
       "drained",
       "mailLiveSync.stop",
+      "detachedSentCopies.drain",
       "queueRuntime.stop",
       "pool.end",
     ]);

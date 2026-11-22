@@ -17,6 +17,7 @@ import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import {
+  createDetachedSentCopies,
   createMailTransportFactory,
   createSentCopySaver,
   createSmtpMailTransport,
@@ -24,7 +25,7 @@ import {
   type SmtpTransporterOpener,
 } from "../mail/mailTransport.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
-import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import { createImapConnectionLimiter, type ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import type { SyncMode } from "../mail/mailAccountSyncStateStore.js";
@@ -1218,6 +1219,87 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
       expect(events.at(-1)).toBe("imap-close");
       // In sequence the two setups took 2 × LATENCY_MS; overlapped, the send takes about one.
       expect(elapsed).toBeLessThan(2 * LATENCY_MS);
+    });
+
+    it("answers an accepted send while the account's connection slots are taken, then appends the copy once one frees", async () => {
+      await addSentFolder(pool, mailboxId, "Sent Items");
+      const events: string[] = [];
+      const limiter = createImapConnectionLimiter();
+      let freeSlots!: () => void;
+      const slotsTaken = new Promise<void>((resolve) => {
+        freeSlots = resolve;
+      });
+      // The account's IDLE connection and a running sync pass take both slots of a provider without its own limit.
+      const holders = [limiter.run(mailboxId, 2, () => slotsTaken), limiter.run(mailboxId, 2, () => slotsTaken)];
+      const detached = createDetachedSentCopies();
+      const transport = createSmtpMailTransport(
+        mailboxId,
+        settingsFor("mail.test", 465),
+        credential,
+        slowSmtp(events, "accepted"),
+        createSentCopySaver(pool, mailboxId, credential, slowImap(events), limiter),
+        detached,
+      );
+
+      const started = performance.now();
+      await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+      const elapsed = performance.now() - started;
+
+      // The submission alone: the copy waits for a slot after the send answered.
+      expect(elapsed).toBeLessThan(2 * LATENCY_MS);
+      expect(events).toEqual(["smtp-start", "smtp-accepted"]);
+      expect(await detached.drain(LATENCY_MS)).toBe(false);
+
+      freeSlots();
+      await Promise.all(holders);
+      expect(await detached.drain(10_000)).toBe(true);
+      expect(events.slice(2)).toEqual(["imap-connect", "imap-open", "imap-append", "imap-close"]);
+    });
+
+    it("keeps a detached copy's failure off the send and logs it with the fixed stage", async () => {
+      await addSentFolder(pool, mailboxId, "Sent Items");
+      const warn = vi.spyOn(logger, "warn");
+      const events: string[] = [];
+      const imap = recordingImap(events, new Error("[NO] Subject: quarterly numbers for bob@mail.test"));
+      const detached = createDetachedSentCopies();
+      const transport = createSmtpMailTransport(
+        mailboxId,
+        settingsFor("mail.test", 465),
+        credential,
+        slowSmtp(events, "accepted"),
+        createSentCopySaver(pool, mailboxId, credential, imap.open),
+        detached,
+      );
+
+      await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+      expect(await detached.drain(10_000)).toBe(true);
+
+      expect(events.slice(-2)).toEqual(["imap-append", "imap-close"]);
+      expect(warn).toHaveBeenCalledWith(
+        { mailboxItemId: mailboxId, stage: "sent_copy" },
+        "SMTP operation reported a failure",
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("quarterly numbers");
+    });
+
+    it("closes the overlapped connection of a refused submission before answering, even with detached copies", async () => {
+      await addSentFolder(pool, mailboxId, "Sent Items");
+      const events: string[] = [];
+      const detached = createDetachedSentCopies();
+      const transport = createSmtpMailTransport(
+        mailboxId,
+        settingsFor("mail.test", 465),
+        credential,
+        slowSmtp(events, "refused"),
+        createSentCopySaver(pool, mailboxId, credential, slowImap(events)),
+        detached,
+      );
+
+      const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
+
+      expect(error).toBeInstanceOf(MailSendAuthFailedError);
+      expect(events).not.toContain("imap-append");
+      expect(events.at(-1)).toBe("imap-close");
     });
 
     it("closes the overlapped connection without an APPEND when the server refuses, before answering", async () => {

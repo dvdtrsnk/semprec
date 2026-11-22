@@ -384,8 +384,8 @@ The project set on a mail thread never takes part in a send decision.
 - Gateway shutdown (`backend/services/semprec-ai-gateway/src/shutdown.ts`): stop accepting, poll
   `closeIdleConnections` until drained or 60 s, `closeAllConnections` on timeout, close streams, stop the process
   heartbeat, `pool.end()` bounded to 5 s. Idempotent, never rejects, signals registered with `on`.
-- API shutdown: close the sync server and voice channel first (close 1012), then HTTP drain, then queue runtime stop,
-  then `pool.end()`. Any new long-lived upgraded protocol is closed before the HTTP drain.
+- API shutdown: close the sync server and voice channel first (close 1012), then HTTP drain, then the mail live-sync
+  root and the detached Sent copies, then queue runtime stop, then `pool.end()`. Any new long-lived upgraded protocol is closed before the HTTP drain.
 - `semprec-agents` assumes one owning instance per database with its predecessor quiesced before startup repair
   (`TimeoutStopSec=120` in `deploy/systemd/semprec-agents.service`; Semp turn grace 90 s, 30 s cleanup margin). Startup
   never force-unlocks graphile-worker locks or infers worker death; a dead chat owner holds its lane until Graphile's

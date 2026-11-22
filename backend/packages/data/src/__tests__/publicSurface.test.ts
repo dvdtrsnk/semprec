@@ -330,6 +330,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createChokePoint",
   "createCollectionMetadataResolver",
   "createCoreTaskList",
+  "createDetachedSentCopies",
   "createDocStore",
   "createDriftCheckAction",
   "createDuplicateCalendarItemRouteHandler",
