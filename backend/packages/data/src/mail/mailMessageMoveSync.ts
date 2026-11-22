@@ -313,13 +313,23 @@ export async function drainImapMoves(
     }
   } catch (error) {
     // The move's own failure is the one reported; a failed close of the connection it leaves open does not replace it.
-    await closeConnection().catch(() => {});
+    await closeConnection().catch((closeError: unknown) => {
+      logger.warn(
+        {
+          mailboxItemId,
+          stage: "imap_move_close",
+          errorName: closeError instanceof Error ? closeError.name : typeof closeError,
+        },
+        "Closing the IMAP move connection failed after a move failure",
+      );
+    });
     throw error;
   }
   try {
     await closeConnection();
-  } catch {
-    throw new Error("IMAP move provider cleanup failed unexpectedly");
+  } catch (closeError) {
+    // The client's close already reports a provider-safe error.
+    throw new Error("IMAP move provider cleanup failed unexpectedly", { cause: closeError });
   }
 
   async function drainImapMove(row: Awaited<ReturnType<typeof listPendingMoves>>[number]): Promise<void> {
