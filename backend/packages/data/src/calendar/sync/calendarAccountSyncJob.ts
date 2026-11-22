@@ -7,7 +7,7 @@ import { z } from "zod";
 import { getTenantUserId } from "../../auth/usersStore.js";
 import { getItemById } from "../../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../../credentials/externalCredentialsStore.js";
-import { getMailServerSettings } from "../../mail/mailServerSettingsStore.js";
+import { getMailServerSettings, recordResolvedCalDavUrl } from "../../mail/mailServerSettingsStore.js";
 import { requireSingleRow, withSavepoint, withTransaction } from "../../db/pool.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 import type { CustomRouteResult, RouteParams } from "../../customRoute.js";
@@ -148,7 +148,13 @@ export async function handleCalendarAccountSyncTask(
     const adapter = await openCalendarSyncAdapter(pool, prologue.account, adapters);
     const cursors = new Map(prologue.tracked.map((calendar) => [calendar.remoteId, calendar]));
     const fetched: FetchedCalendar[] = [];
-    for (const calendar of parseRemoteCalendars(await adapter.listCalendars(signal))) {
+    const calendars = parseRemoteCalendars(await adapter.listCalendars(signal));
+    const delegatedServerUrl = adapter.delegatedServerUrl?.() ?? null;
+    if (delegatedServerUrl !== null) {
+      // Stored before the Events, whose addresses are on that server: every later pass and push starts there.
+      await withTransaction(pool, (client) => recordResolvedCalDavUrl(client, accountItemId, delegatedServerUrl));
+    }
+    for (const calendar of calendars) {
       const stored = cursors.get(calendar.remoteId);
       const cursor = stored ? { syncToken: stored.syncToken, ctag: stored.ctag } : null;
       const known = stored ? (prologue.known.get(stored.calendarItemId) ?? []) : [];

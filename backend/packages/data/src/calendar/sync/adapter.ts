@@ -141,6 +141,11 @@ export interface PutRemoteEventInput {
 export interface CalendarSyncAdapter {
   listCalendars(signal: AbortSignal): Promise<RemoteCalendar[]>;
   /**
+   * The CalDAV server `listCalendars` was delegated to by the well-known address of an account with none stored, which
+   * the pass stores as the account's CalDAV address; `null` otherwise. Other providers leave it out.
+   */
+  delegatedServerUrl?(): string | null;
+  /**
    * A `null` cursor asks for a full fetch of `window`. `known` is the calendar's Events as `event_remote_state` holds
    * them (remote id, href, ETag), for a provider that compares its resources' ETags against them.
    */
@@ -197,7 +202,10 @@ export interface CalendarSyncAccount {
   syncMode: SyncMode;
   primaryAddress: string | null;
   credential: string;
-  /** The login name and CalDAV address of a password account (`mail_account_server_settings`); `null` without a row. */
+  /**
+   * The login name and CalDAV address of a password account (`mail_account_server_settings`), the address `null` until
+   * discovery from the domain's well-known address resolved one; `null` without a row.
+   */
   serverSettings: { username: string; caldavUrl: string | null } | null;
   /** The tenant's IANA zone, the zone of an Event without one of its own. */
   tenantTimeZone: string;

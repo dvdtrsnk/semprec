@@ -25,7 +25,12 @@ import {
   CalDavServerInvalidError,
   CalDavServerUnreachableError,
 } from "../calendar/sync/adapters/caldav/caldavErrors.js";
-import { caldavCredentialScope } from "../calendar/sync/adapters/caldav/caldavHttp.js";
+import { discoverCalendarHome } from "../calendar/sync/adapters/caldav/caldavClient.js";
+import {
+  allowsWellKnownDelegation,
+  caldavCredentialScope,
+  withCalDavSession,
+} from "../calendar/sync/adapters/caldav/caldavHttp.js";
 import { handleCalendarAccountSyncTask } from "../calendar/sync/calendarAccountSyncJob.js";
 import {
   listEventRemoteStates,
@@ -39,7 +44,7 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
-import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
+import { getMailServerSettings, upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import type { OutboundAddressPolicy } from "../net/outboundAddressPolicy.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FakeCalDavServer } from "../testSupport/fakeCalDavServer.js";
@@ -722,7 +727,12 @@ describe("CalDAV adapter against a fake server", () => {
     await expect(caldav.listCalendars(signal())).rejects.toBeInstanceOf(CalendarSyncReauthorizationRequiredError);
     await expect(
       verifyCalDavServer(
-        { caldavUrl: `${server.origin}/.well-known/caldav`, username: LOGIN.username, password: "wrong" },
+        {
+          caldavUrl: `${server.origin}/.well-known/caldav`,
+          username: LOGIN.username,
+          password: "wrong",
+          resolveServer: true,
+        },
         { policy: LOOPBACK_LITERAL_POLICY },
       ),
     ).rejects.toBeInstanceOf(CalDavAuthFailedError);
@@ -740,7 +750,7 @@ describe("CalDAV adapter against a fake server", () => {
             (error: unknown) => error,
           );
         const connect = await verifyCalDavServer(
-          { caldavUrl: url, ...LOGIN },
+          { caldavUrl: url, ...LOGIN, resolveServer: true },
           { policy: LOOPBACK_LITERAL_POLICY },
         ).then(
           () => null,
@@ -808,7 +818,10 @@ describe("CalDAV adapter against a fake server", () => {
         code: "invalidResponse",
       });
       await expect(
-        verifyCalDavServer({ caldavUrl: `${server.origin}/start/`, ...LOGIN }, { policy: LOOPBACK_LITERAL_POLICY }),
+        verifyCalDavServer(
+          { caldavUrl: `${server.origin}/start/`, ...LOGIN, resolveServer: true },
+          { policy: LOOPBACK_LITERAL_POLICY },
+        ),
       ).rejects.toBeInstanceOf(CalDavServerInvalidError);
       expect(other.requests).toEqual([]);
     });
@@ -817,6 +830,66 @@ describe("CalDAV adapter against a fake server", () => {
       server.calendarHomeOrigin = other.origin;
       await expect(adapter().listCalendars(signal())).rejects.toMatchObject({ code: "invalidResponse" });
       expect(other.requests).toEqual([]);
+    });
+
+    describe("a well-known address that delegates the account to another server", () => {
+      const wellKnown = () => `${server.origin}/.well-known/caldav`;
+
+      beforeEach(() => {
+        server.redirects.set("/.well-known/caldav", `${other.origin}/`);
+      });
+
+      it("is followed at connect, which reports the server, and the login goes only there", async () => {
+        await expect(
+          verifyCalDavServer(
+            { caldavUrl: wellKnown(), ...LOGIN, resolveServer: true },
+            { policy: LOOPBACK_LITERAL_POLICY },
+          ),
+        ).resolves.toEqual({ delegatedServerUrl: `${other.origin}/` });
+        expect(other.requests.map((request) => request.path)).toEqual(["/", "/principals/owner/"]);
+        expect(other.requests.filter((request) => !request.withAuthorization)).toEqual([]);
+        expect(server.requests.map((request) => request.path)).toEqual(["/.well-known/caldav"]);
+      });
+
+      it("is refused once the account has a server, at connect and in the sync", async () => {
+        await expect(
+          verifyCalDavServer(
+            { caldavUrl: wellKnown(), ...LOGIN, resolveServer: false },
+            { policy: LOOPBACK_LITERAL_POLICY },
+          ),
+        ).rejects.toBeInstanceOf(CalDavServerInvalidError);
+        await expect(adapter({}, wellKnown()).listCalendars(signal())).rejects.toMatchObject({
+          code: "invalidResponse",
+        });
+        expect(other.requests).toEqual([]);
+      });
+
+      it("holds the rest of the session to the delegated server", async () => {
+        const discover = () =>
+          withCalDavSession(
+            LOGIN,
+            { signal: signal(), start: new URL(wellKnown()), resolveServer: true, policy: LOOPBACK_LITERAL_POLICY },
+            (session) => discoverCalendarHome(session, new URL(wellKnown())),
+          );
+        // A calendar home back on the well-known address's origin is outside the delegated server.
+        other.calendarHomeOrigin = server.origin;
+        await expect(discover()).rejects.toMatchObject({ code: "invalidResponse" });
+        // So is a second redirect of the delegated request.
+        other.calendarHomeOrigin = null;
+        other.redirects.set("/", `${server.origin}/back/`);
+        await expect(discover()).rejects.toMatchObject({ code: "invalidResponse" });
+        expect(server.requests.map((request) => request.path)).toEqual(["/.well-known/caldav", "/.well-known/caldav"]);
+      });
+
+      it("is refused to an address the outbound policy refuses, before anything reaches it", async () => {
+        server.redirects.set("/.well-known/caldav", "http://10.0.0.1/");
+        await expect(
+          verifyCalDavServer(
+            { caldavUrl: wellKnown(), ...LOGIN, resolveServer: true },
+            { policy: LOOPBACK_LITERAL_POLICY },
+          ),
+        ).rejects.toBeInstanceOf(CalDavServerUnreachableError);
+      });
     });
 
     it("sends the login on every request to its own server", async () => {
@@ -842,6 +915,24 @@ describe("CalDAV adapter against a fake server", () => {
     ["an iCloud host from a generic start", "https://dav.example.test/", "https://p42-caldav.icloud.com/", false],
   ])("scopes the login: %s", (_case, start, target, allowed) => {
     expect(caldavCredentialScope(new URL(start)).allows(new URL(target))).toBe(allowed);
+  });
+
+  it.each<[string, string, boolean]>([
+    ["an https server on a DNS name", "https://caldav.provider.test/dav/", true],
+    ["plain http", "http://caldav.provider.test/dav/", false],
+    ["a private address literal", "https://10.0.0.1/dav/", false],
+    ["a loopback address literal", "https://127.0.0.1/dav/", false],
+    ["a local name", "https://caldav.local/dav/", false],
+    ["another port", "https://caldav.provider.test:8443/dav/", false],
+    ["an address with userinfo", "https://user:secret@caldav.provider.test/dav/", false],
+  ])("lets a well-known address delegate to %s: %s", (_case, target, allowed) => {
+    const production: OutboundAddressPolicy = {
+      isTestPolicy: false,
+      protocols: ["https:"],
+      allowsResolvedAddress: () => true,
+      allowsIpLiteral: () => false,
+    };
+    expect(allowsWellKnownDelegation(new URL(target), production)).toBe(allowed);
   });
 });
 
@@ -880,8 +971,12 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
     return ids;
   }
 
-  /** A generic password account with Calendars on, whose stored CalDAV address is `storedCaldavUrl`. */
-  async function createPasswordAccount(ids: CalendarSyncIds, name: string): Promise<string> {
+  /** A generic password account with Calendars on, whose stored CalDAV address is `caldavUrl`. */
+  async function createPasswordAccount(
+    ids: CalendarSyncIds,
+    name: string,
+    caldavUrl: string | null = storedCaldavUrl,
+  ): Promise<string> {
     return inTenant(async (client) => {
       const mailbox = await createChokePoint(runtime).createItem({
         databaseId: ids.mailboxesDatabaseId,
@@ -898,7 +993,7 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
         imap: { host: "imap.example.test", port: 993, security: "tls" },
         smtp: { host: "smtp.example.test", port: 465, security: "tls" },
         username: LOGIN.username,
-        caldavUrl: storedCaldavUrl,
+        caldavUrl,
       });
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
       return mailbox.id;
@@ -968,6 +1063,54 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
       { name: null, remote_name: "Holidays", rule: null, zone: null },
       { name: null, remote_name: "Work", rule: null, zone: null },
     ]);
+  });
+
+  describe("an account whose well-known address delegated it to another server", () => {
+    const delegated = "https://caldav.provider.test/dav/";
+
+    /** The loopback adapter, reporting the delegation for an account without a stored CalDAV address. */
+    function delegatingCalDav(seen: Array<string | null>) {
+      return (given: CalendarSyncAccount): CalendarSyncAdapter => {
+        const caldavUrl = given.serverSettings?.caldavUrl ?? null;
+        seen.push(caldavUrl);
+        const real = loopbackCalDav(given);
+        return caldavUrl === null ? { ...real, delegatedServerUrl: () => delegated } : real;
+      };
+    }
+
+    const storedAddress = (accountId: string) =>
+      inTenant(async (client) => (await getMailServerSettings(client, accountId))?.caldavUrl ?? null);
+
+    it("stores that server, and every later pass starts there", async () => {
+      const ids = await calendarSyncIds();
+      const accountId = await createPasswordAccount(ids, "Custom domain", null);
+      const seen: Array<string | null> = [];
+      const pass = () =>
+        runInTenant(tenant, () =>
+          handleCalendarAccountSyncTask(
+            runtime,
+            { accountItemId: accountId },
+            { adapters: { imap: delegatingCalDav(seen) } },
+          ),
+        );
+
+      await expect(pass()).resolves.toMatchObject({ kind: "applied" });
+      expect(await storedAddress(accountId)).toBe(delegated);
+      await expect(pass()).resolves.toMatchObject({ kind: "applied" });
+      expect(seen).toEqual([null, delegated]);
+    });
+
+    it("keeps a CalDAV address the account already has", async () => {
+      const ids = await calendarSyncIds();
+      const accountId = await createPasswordAccount(ids, "Set up with its address");
+      const adapters = {
+        imap: (given: CalendarSyncAccount) => ({ ...loopbackCalDav(given), delegatedServerUrl: () => delegated }),
+      };
+      await expect(
+        runInTenant(tenant, () => handleCalendarAccountSyncTask(runtime, { accountItemId: accountId }, { adapters })),
+      ).resolves.toMatchObject({ kind: "applied" });
+      expect(await storedAddress(accountId)).toBe(storedCaldavUrl);
+    });
   });
 
   it("applies Events created and deleted on a server like Purelymail, and reads nothing again when none changed", async () => {

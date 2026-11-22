@@ -232,9 +232,19 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `providerUnavailable` with one message. The credential is scoped (`caldavCredentialScope`) to the origin discovery
   starts at and, for iCloud only, to https hosts under `icloud.com` on the default port, where Apple's discovery
   delegates; a request, a redirect or an address in an answer (principal, calendar home, resource) outside it is
-  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. A server
-  whose well-known address redirects to another host is set up with its CalDAV address instead. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
-  account's `caldav_url` (`mail_account_server_settings`) or `https://<address domain>/.well-known/caldav`:
+  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. The one
+  exception is resolving the account's server (RFC 6764), only while it has none stored: at connect, for a body's
+  well-known `caldavUrl`, and in a pass of an account without `caldav_url`, whose discovery starts at its domain's
+  well-known address. There the first hop of the session's first request may redirect from the well-known address to
+  another server whose address the account could have been set up with (`allowsWellKnownDelegation`: https, a DNS
+  name that is no local name, the default port, no userinfo; the outbound policy still refuses a private address).
+  The scope moves to that server for the rest of the session, and the server becomes the account's `caldav_url`: the
+  connect stores it instead of the body's address, the pass (`delegatedServerUrl`) right after the calendar listing
+  through mail's `recordResolvedCalDavUrl` (the Mailboxes item `FOR SHARE`, written only while `caldav_url` is
+  `null`). From then on every discovery starts there and a redirect off it is refused like any other; a password
+  replacement verifies the stored address without resolving. Discovery starts at `https://caldav.icloud.com/` for
+  iCloud, else at the account's `caldav_url` (`mail_account_server_settings`) or
+  `https://<address domain>/.well-known/caldav`:
   `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
   the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
   A fetch with a sync token uses sync-collection; a deletion or a changed series in the delta, an expired token or a

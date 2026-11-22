@@ -120,7 +120,8 @@ interface AcceptingVerifier {
   calDavCalls: VerifyCalDavServerInput[];
 }
 
-function acceptingVerifier(): AcceptingVerifier {
+/** `delegatedServerUrl` is where the CalDAV verification reports a well-known address delegated the account. */
+function acceptingVerifier(delegatedServerUrl: string | null = null): AcceptingVerifier {
   const calls: VerifyMailCredentialsInput[] = [];
   const calDavCalls: VerifyCalDavServerInput[] = [];
   return {
@@ -130,6 +131,7 @@ function acceptingVerifier(): AcceptingVerifier {
       mailServerClients: {
         verifyCalDav: async (input) => {
           calDavCalls.push(input);
+          return { delegatedServerUrl };
         },
         verifyPassword: async (input) => {
           calls.push(input);
@@ -193,6 +195,7 @@ function overlappingVerifier(refusals: { mail?: Error; calDav?: Error } = {}) {
           await afterStart(mailRunning);
           await new Promise((resolve) => setTimeout(resolve, 50));
           if (refusals.calDav) throw refusals.calDav;
+          return { delegatedServerUrl: null };
         } finally {
           settled.push("calDav");
         }
@@ -642,8 +645,26 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
 
       expect(answer.status).toBe(201);
       expect(verifier.calls).toHaveLength(1);
-      expect(verifier.calDavCalls).toEqual([{ caldavUrl: CALDAV_URL, username: "login-name", password: PASSWORD }]);
+      expect(verifier.calDavCalls).toEqual([
+        { caldavUrl: CALDAV_URL, username: "login-name", password: PASSWORD, resolveServer: true },
+      ]);
       expect((await storedMailbox(answer.item.id)).settings?.caldavUrl).toBe(CALDAV_URL);
+    });
+
+    it("stores the server a well-known CalDAV address delegated the account to as its CalDAV address", async () => {
+      const delegated = "https://caldav.provider.test/dav/";
+      const verifier = acceptingVerifier(delegated);
+
+      const answer = await connect(
+        { ...GENERIC_BODY, caldavUrl: "https://example.test/.well-known/caldav" },
+        { dependencies: verifier.dependencies },
+      );
+
+      expect(answer.status).toBe(201);
+      expect(verifier.calDavCalls).toMatchObject([
+        { caldavUrl: "https://example.test/.well-known/caldav", resolveServer: true },
+      ]);
+      expect((await storedMailbox(answer.item.id)).settings?.caldavUrl).toBe(delegated);
     });
 
     it("does not contact a CalDAV server for a body without a CalDAV address", async () => {
@@ -1440,7 +1461,7 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
           },
         ]);
         expect(verifier.calDavCalls).toEqual([
-          { caldavUrl: CALDAV_URL, username: "new-login", password: NEW_PASSWORD },
+          { caldavUrl: CALDAV_URL, username: "new-login", password: NEW_PASSWORD, resolveServer: false },
         ]);
         expect(await accountState(mailboxId)).toEqual({
           password: NEW_PASSWORD,
@@ -1495,7 +1516,12 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
         { provider: "icloud", address: ADDRESS, username: STORED_LOGIN, password: NEW_PASSWORD },
       ]);
       expect(verifier.calDavCalls).toEqual([
-        { caldavUrl: "https://caldav.icloud.com/", username: STORED_LOGIN, password: NEW_PASSWORD },
+        {
+          caldavUrl: "https://caldav.icloud.com/",
+          username: STORED_LOGIN,
+          password: NEW_PASSWORD,
+          resolveServer: false,
+        },
       ]);
       expect(await accountState(mailboxId)).toMatchObject({
         password: NEW_PASSWORD,

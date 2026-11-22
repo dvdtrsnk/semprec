@@ -150,7 +150,7 @@ async function startAccount(passwords: Passwords = { imap: PASSWORD, smtp: PASSW
         const span: ConnectionSpan = { openedAt: performance.now(), closedAt: null };
         caldavSpans.push(span);
         try {
-          await verifyCalDavServer({ ...input, caldavUrl: `${caldav.origin}/` });
+          return await verifyCalDavServer({ ...input, caldavUrl: `${caldav.origin}/` });
         } finally {
           span.closedAt = performance.now();
         }
