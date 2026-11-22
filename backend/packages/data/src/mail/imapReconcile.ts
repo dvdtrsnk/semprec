@@ -9,6 +9,11 @@ import { ValidationError } from "../errors.js";
 import { ingestEmailMessage, type IngestedMailContent } from "./ingest.js";
 import type { FetchedMessage } from "./providerTypes.js";
 import { selectListedFolder } from "./imapListedFolder.js";
+import {
+  detachUnlistedImapFolders,
+  retireUnlistedImapFolders,
+  type UnlistedImapFoldersInput,
+} from "./imapUnlistedFolders.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { ClassifiedAttachment, IndexedAttachment } from "./attachments.js";
 import {
@@ -1063,7 +1068,14 @@ export async function reconcileImapAccount(
     for (const write of confirmed) {
       await recordConfirmedMailMessageFlag(client, write.messageItemId, write.propertyKey, write.desiredState);
     }
+    // Only a full listing names every folder (Gmail over IMAP lists All Mail alone).
+    const unlisted: UnlistedImapFoldersInput | null =
+      complete && !params.folderPaths
+        ? { ...params, folderRelationDefinitionId, listedPaths: new Set(allFolders.map((folder) => folder.path)) }
+        : null;
+    if (unlisted) for (const id of await detachUnlistedImapFolders(client, unlisted)) copiesRemovedFrom.add(id);
     await removeEmailsWithoutFolderCopy(client, copiesRemovedFrom, params, folderRelationDefinitionId);
+    if (unlisted) await retireUnlistedImapFolders(client, unlisted);
     // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
     // once, so the sweep resumes it even if the follow-up job is lost; one a native client holds is not.
     await recordImapActivity(client, {

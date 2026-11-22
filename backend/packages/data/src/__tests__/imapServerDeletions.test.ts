@@ -221,6 +221,44 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     expect(rows).toEqual([{ last_error: null, failing_since: null }]);
   });
 
+  /** Whether the mailbox's Folder of `path` is live, trashed, or gone. */
+  async function folderOf(path: string): Promise<"live" | "trashed" | "none"> {
+    const ids = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+    const { rows } = await runtime.query<{ trashed: boolean }>(
+      `SELECT deleted_at IS NOT NULL AS trashed FROM items
+        WHERE tenant_id = app_tenant_default() AND database_id = $1 AND properties->>'providerId' = $2`,
+      [ids.foldersDatabaseId, path],
+    );
+    if (rows.length === 0) return "none";
+    return rows.every((row) => row.trashed) ? "trashed" : "live";
+  }
+
+  tenantIt("trashes a folder deleted by another client, with the messages it alone held", async () => {
+    const mailbox = await synced(QRESYNC);
+    const [archived] = await emailsNamed("Archive 1");
+    expect(archived).toMatchObject({ trashed: false, folders: ["Archive"] });
+
+    mailbox.server.deleteFolder("Archive");
+    await mailbox.mailbox.sync(mailbox.overWire);
+
+    expect(await emailsNamed("Archive 1")).toEqual([{ ...archived!, trashed: true, folders: [] }]);
+    expect(await folderOf("Archive")).toBe("trashed");
+    expect(await emailsNamed("INBOX 1")).toMatchObject([{ trashed: false, folders: ["INBOX"] }]);
+  });
+
+  tenantIt("keeps the item of a message whose folder another client renamed", async () => {
+    const mailbox = await synced(QRESYNC);
+    const [archived] = await emailsNamed("Archive 1");
+
+    // A rename as the client sees it: the folder's messages under another path, the old path gone.
+    mailbox.server.move("Archive", mailbox.uidOf("Archive", "Archive 1"), "Junk");
+    mailbox.server.deleteFolder("Archive");
+    await mailbox.mailbox.sync(mailbox.overWire);
+
+    expect(await emailsNamed("Archive 1")).toEqual([{ ...archived!, folders: ["Junk"] }]);
+    expect(await folderOf("Archive")).toBe("trashed");
+  });
+
   tenantIt("shows a message another client moved from INBOX to Archive as moved, on the same item", async () => {
     const mailbox = await synced(QRESYNC);
     const [before] = await emailsNamed("INBOX 3");

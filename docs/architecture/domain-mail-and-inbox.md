@@ -401,8 +401,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
   minutes, when an expired or released lease has given the folder back to the server.
 - A folder the server no longer holds when the pass selects it (deleted or renamed by another client since the
-  pass's LIST, answered `NO`) is skipped by both steps and logged; the other folders sync as usual and the next
-  pass's listing retires its Folder.
+  pass's LIST, answered `NO`) is skipped by both steps and logged; the other folders sync as usual.
+- A Folder the server no longer lists (deleted or renamed by another client) is retired by the first pass that ends
+  with no backfill left (`mail/imapUnlistedFolders.ts`, a full listing only, so not Gmail over IMAP), in its final
+  transaction: its Email edges are removed, every Email that lost one is kept or trashed by its other copies as a
+  removed copy is, and the emptied Folder is trashed. Waiting for the backfill lets a renamed folder's messages reach
+  their new folder first, on the same items by Message-ID.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
   before its backfill is simply not found by it.
