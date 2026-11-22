@@ -9,7 +9,7 @@ import { withTransaction } from "../db/pool.js";
 import { ConflictError, NotFoundError, RateLimitedError, ValidationError } from "../errors.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
-import { IMAP_LIGHT_FETCH_HEADERS, lightFetchedMessageOf } from "./imapFlowClient.js";
+import { IMAP_LIGHT_FETCH_HEADERS, lightFetchedMessageOf } from "./imapLightFetch.js";
 import {
   MalformedImapFetchResponseError,
   parseImapFetchResponse,

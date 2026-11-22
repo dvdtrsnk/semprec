@@ -597,13 +597,13 @@ internals proven against the real library by its unit test; an upgrade must re-p
     `[rangeLow, rangeHigh)`, at most `MAIL_HISTORY_MAX_MESSAGES` (500); `messages` at most 500, exactly one per listed
     UID; each `fetch` strict base64 of at most `MAIL_HISTORY_MAX_FETCH_BYTES` (64 KiB) holding exactly one untagged
     FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section.
-  - Each response is read as the light fetch reads its own (`lightFetchedMessageOf`: envelope, flags, threading,
-    delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and sizes). The snippet comes from
-    the part the light fetch reads it from (the text part, else the HTML part): a single-part message's TEXT section
-    itself, else that part found in the cut TEXT section by the boundaries BODYSTRUCTURE names, its header block
-    skipped (`bodyPartPrefixInText`); a part whose content starts beyond the cut, or one inside an attached message,
-    gives no snippet. Of a multipart message less than 2 KiB of the part is read, so its search text can be shorter
-    than the server's; the 200-character preview is the same.
+  - Each response is read as the light fetch reads its own (`lightFetchedMessageOf` in `mail/imapLightFetch.ts`:
+    envelope, flags, threading, delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and
+    sizes). The snippet comes from the part the light fetch reads it from (the text part, else the HTML part): a
+    single-part message's TEXT section itself, else that part found in the cut TEXT section by the boundaries
+    BODYSTRUCTURE names, its header block skipped (`bodyPartPrefixInText`); a part whose content starts beyond the
+    cut, or one inside an attached message, gives no snippet. Of a multipart message less than 2 KiB of the part is
+    read, so its search text can be shorter than the server's; the 200-character preview is the same.
   - Written in READ COMMITTED transactions of at most `IMAP_MESSAGES_PER_BATCH` (50) messages, newest first: mailbox
     sync guard → the mailbox and its sync state re-read → mail-thread guard → the folder's sync state row
     `FOR UPDATE`, which must still hold the uploaded UIDVALIDITY (else 409 `mail_history_uidvalidity_changed`), an

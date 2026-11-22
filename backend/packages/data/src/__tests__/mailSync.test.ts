@@ -96,13 +96,8 @@ import {
   MailReauthorizationRequiredError,
 } from "../mail/providerTypes.js";
 import { logger } from "../mail/logger.js";
-import {
-  walkBodyStructure,
-  parseHeaderBlock,
-  headerValues,
-  ImapFlowMailClient,
-  isImapConnectionLimitError,
-} from "../mail/imapFlowClient.js";
+import { ImapFlowMailClient, isImapConnectionLimitError } from "../mail/imapFlowClient.js";
+import { headerValues, parseHeaderBlock, walkBodyStructure } from "../mail/imapLightFetch.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { createImapSessionPool } from "../mail/imapSessionPool.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";

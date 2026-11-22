@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { ImapFlow, type FetchMessageObject } from "imapflow";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MalformedImapFetchResponseError, parseImapFetchResponse } from "../imapFetchResponseParser.js";
-import { IMAP_LIGHT_FETCH_HEADERS, lightFetchedMessageOf } from "../imapFlowClient.js";
+import { IMAP_LIGHT_FETCH_HEADERS, lightFetchedMessageOf } from "../imapLightFetch.js";
 import { IMAP_SNIPPET_BYTES } from "../imapSnippet.js";
 import { MAIL_HISTORY_FETCH_ITEMS } from "../mailHistoryUpload.js";
 import { FakeImapServer } from "../../testSupport/fakeImapServer.js";
