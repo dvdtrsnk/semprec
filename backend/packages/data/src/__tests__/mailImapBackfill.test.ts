@@ -10,6 +10,7 @@ import {
   IMAP_INDEX_MESSAGES_PER_PASS,
   IMAP_MESSAGES_PER_BATCH,
 } from "../mail/imapReconcile.js";
+import { MAIL_HEADER_VALUE_MAX_BYTES } from "../mail/imapLightFetch.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { getMailThreadDetail } from "../mail/mailThreadDetail.js";
@@ -486,6 +487,32 @@ describe("IMAP history as an index, backfilled newest first", () => {
       ]),
     );
   });
+
+  it.each(["1.5", "-7", "1e20"])(
+    "ingests a message whose server gives an attachment size of %s and an overlong Message-ID, the size as unknown",
+    (size) =>
+      runInTenant(tenant, async () => {
+        const { server: fake, pass } = await account();
+        const messageId = `<${randomUUID()}@sender.example.test>`;
+        fake.deliver("INBOX", [], messageWithAttachment("Broken", 200, messageId));
+        const overlong = `<${"x".repeat(3 * MAIL_HEADER_VALUE_MAX_BYTES)}@sender.example.test>`;
+        fake.rewriteResponse = (text) =>
+          text.replace(/("BASE64" )\d+/, `$1${size}`).replace(`"${messageId}"`, `"${overlong}"`);
+
+        await pass();
+
+        const broken = (await messages()).get("Broken");
+        expect(broken).toMatchObject({ content_state: "index", uids: ["INBOX:1"] });
+        const [attachment] = await attachmentsOf(broken!.id);
+        expect(attachment).toMatchObject({ filename: "report.pdf", byte_size: "0" });
+        const { rows } = await runtime.query<{ message_id: string }>(
+          "SELECT message_id FROM mail_message_meta WHERE item_id = $1",
+          [broken!.id],
+        );
+        expect(rows).toEqual([{ message_id: "<no-message-id-uid-1@generated>" }]);
+      }),
+    60_000,
+  );
 
   tenantIt(
     "takes no UID of a replaced UIDVALIDITY for another message's: flags, vanished copies and edges follow the new UIDs",

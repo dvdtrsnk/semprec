@@ -347,7 +347,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
   as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
   is two steps: a light `UID FETCH` (UID, flags, ENVELOPE, BODYSTRUCTURE, the threading and delivery headers,
-  Gmail labels) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
+  Gmail labels; a Message-ID, In-Reply-To, reference, address or provider id over `MAIL_HEADER_VALUE_MAX_BYTES` is left
+  out as if the message had none, so no server can make a message fail every pass) of the batch, then, outside any transaction, a read of which Message-IDs the mailbox already holds
   (`listKnownMailMessageIds`); only after that a full message's body parts are downloaded and its attachments
   spooled, and every index message's snippet part is read in one partial `UID FETCH … BODY.PEEK[<part>]<0.2048>` per
   distinct part (`fetchSnippets`, decoded by `mail/imapSnippet.ts`). A known message downloads nothing; a known one
@@ -448,7 +449,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - `index`: `Emails.body` stays empty; envelope, flags, threading headers and folder edges as for `full`;
   `preview_text` from the snippet (IMAP: the first 2 KiB of the text part, else HTML part; Gmail: `snippet`, its
   HTML entities decoded; Graph: `bodyPreview`); for IMAP each attachment as a `mail_attachments` row with `blob_id`
-  NULL, its `provider_part` and the size BODYSTRUCTURE gives, and no Files item and no edge; the search text is
+  NULL, its `provider_part` and the size BODYSTRUCTURE gives (0 when the server gives no count of octets), and no Files
+  item and no edge; the search text is
   subject, sender, snippet and attachment filenames. A Gmail or Graph index message records no attachment: a
   `format=metadata` fetch lists no parts, and a Graph attachment list per message would cost a request per
   message of the backfill. A row has a blob or a provider
@@ -630,7 +632,10 @@ internals proven against the real library by its unit test; an upgrade must re-p
     (`messages.3.fetch`): integers in the IMAP number range, `rangeLow < rangeHigh`; `uids` unique, inside
     `[rangeLow, rangeHigh)`, at most `MAIL_HISTORY_MAX_MESSAGES` (500); `messages` at most 500, exactly one per listed
     UID; each `fetch` strict base64 of at most `MAIL_HISTORY_MAX_FETCH_BYTES` (64 KiB) holding exactly one untagged
-    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section.
+    FETCH response of that UID with FLAGS, ENVELOPE, BODYSTRUCTURE, the header fields and the TEXT section, whose
+    BODYSTRUCTURE sizes are integers from 0 to `Number.MAX_SAFE_INTEGER` and whose Message-ID, In-Reply-To, addresses
+    and `EMAILID` hold at most `MAIL_HEADER_VALUE_MAX_BYTES` (998) bytes of UTF-8, a header line, inside the row a
+    btree index takes.
   - Each response is read as the light fetch reads its own (`lightFetchedMessageOf` in `mail/imapLightFetch.ts`:
     envelope, flags, threading, delivery and bulk headers, attachments from BODYSTRUCTURE with their part ids and
     sizes). The snippet comes from the part the light fetch reads it from (the text part, else the HTML part): a

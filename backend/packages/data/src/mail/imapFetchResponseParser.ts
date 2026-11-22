@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { Transform } from "node:stream";
 import type { FetchMessageObject, MessageAddressObject, MessageStructureObject } from "imapflow";
 import { z } from "zod";
+import { MAIL_HEADER_VALUE_MAX_BYTES } from "./imapLightFetch.js";
 
 /** The bytes are not one well-formed untagged FETCH response; names nothing of their content. */
 export class MalformedImapFetchResponseError extends Error {
@@ -147,6 +148,9 @@ const untaggedFetch = z.object({
 
 const parameters = z.record(z.string(), z.string());
 
+/** A Message-ID, provider id or address the sync stores: at most `MAIL_HEADER_VALUE_MAX_BYTES` of UTF-8. */
+const headerValue = z.string().refine((value) => Buffer.byteLength(value, "utf8") <= MAIL_HEADER_VALUE_MAX_BYTES);
+
 const structureNode: z.ZodType<MessageStructureObject> = z.lazy(() =>
   z.object({
     part: z.string().optional(),
@@ -154,7 +158,8 @@ const structureNode: z.ZodType<MessageStructureObject> = z.lazy(() =>
     parameters: parameters.optional(),
     id: z.string().optional(),
     encoding: z.string().optional(),
-    size: z.number().optional(),
+    // A count of octets, stored as the attachment's size.
+    size: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     disposition: z.string().optional(),
     dispositionParameters: parameters.optional(),
     childNodes: z.array(structureNode).optional(),
@@ -163,7 +168,7 @@ const structureNode: z.ZodType<MessageStructureObject> = z.lazy(() =>
 
 const address: z.ZodType<MessageAddressObject> = z.object({
   name: z.string().optional(),
-  address: z.string().optional(),
+  address: headerValue.optional(),
 });
 
 const formattedFetch = z.object({
@@ -178,8 +183,8 @@ const formattedFetch = z.object({
         .optional()
         .transform((value) => (value instanceof Date ? value : undefined)),
       subject: z.string().optional(),
-      messageId: z.string().optional(),
-      inReplyTo: z.string().optional(),
+      messageId: headerValue.optional(),
+      inReplyTo: headerValue.optional(),
       from: z.array(address).optional(),
       sender: z.array(address).optional(),
       replyTo: z.array(address).optional(),
@@ -191,7 +196,7 @@ const formattedFetch = z.object({
   bodyStructure: structureNode.optional(),
   headers: z.instanceof(Buffer).optional(),
   bodyParts: z.map(z.string(), z.instanceof(Buffer).optional()).optional(),
-  emailId: z.string().optional(),
+  emailId: headerValue.optional(),
 });
 
 /** Which of the requested data items a response carried; a NIL or empty item still counts as carried. */

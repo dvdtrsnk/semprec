@@ -293,6 +293,8 @@ export class FakeImapServer {
    * between two commands of one client call, as another client would.
    */
   beforeCommand: ((verb: string) => void) | undefined;
+  /** Rewrites each response before it is sent, as a broken or hostile server would answer. */
+  rewriteResponse: ((text: string) => string) | undefined;
   /** The criteria atoms of every SEARCH, in order (a quoted or literal string as its octets). */
   readonly searches: string[][] = [];
   private readonly folders = new Map<string, ServerFolder>();
@@ -473,7 +475,7 @@ export class FakeImapServer {
           const response = this.respond(line, session);
           await this.delay();
           if (socket.destroyed) return;
-          socket.write(response.text);
+          socket.write(this.rewriteResponse?.(response.text) ?? response.text);
           if (response.end) socket.end();
         });
       }

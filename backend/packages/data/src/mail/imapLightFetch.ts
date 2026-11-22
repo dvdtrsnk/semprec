@@ -4,8 +4,25 @@ import { isDeliveryStatusReport } from "./dsn.js";
 import type { ImapFetchedMessage } from "./imapReconcile.js";
 import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
+/**
+ * The longest Message-ID, In-Reply-To, reference, provider message id or address stored, in UTF-8 bytes: a header line's
+ * limit (RFC 5322), well inside the row a btree index takes (Message-IDs and provider ids are indexed, addresses are
+ * lookup keys). The server's own sync leaves a longer value out, as if the message had none; a native client's upload
+ * of one is refused (`parseImapFetchResponse`).
+ */
+export const MAIL_HEADER_VALUE_MAX_BYTES = 998;
+
+function fits(value: string): boolean {
+  return Buffer.byteLength(value, "utf8") <= MAIL_HEADER_VALUE_MAX_BYTES;
+}
+
+function bounded(value: string | undefined): string | undefined {
+  return value !== undefined && fits(value) ? value : undefined;
+}
+
 function toEnvelopeAddress(value: MessageAddressObject | undefined): MailEnvelopeAddress | undefined {
-  return value?.address ? { name: value.name || undefined, address: value.address } : undefined;
+  const address = bounded(value?.address);
+  return address ? { name: value?.name || undefined, address } : undefined;
 }
 
 function optionalReplyTo(replyTo: MailEnvelopeAddress[]): { replyTo?: MailEnvelopeAddress[] } {
@@ -41,9 +58,11 @@ export function headerValues(headers: Array<{ name: string; value: string }>, na
   return headers.filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value.trim());
 }
 
-/** Every `<...>` token across all `References:` headers, in order. */
+/** Every `<...>` token across all `References:` headers, in order, but one too long to store. */
 function parseReferences(headers: Array<{ name: string; value: string }>): string[] {
-  return headerValues(headers, "references").flatMap((value) => value.match(/<[^<>]+>/g) ?? []);
+  return headerValues(headers, "references")
+    .flatMap((value) => value.match(/<[^<>]+>/g) ?? [])
+    .filter(fits);
 }
 
 /** What BODYSTRUCTURE tells of an attachment part. */
@@ -56,9 +75,12 @@ export function attachmentPartOf(node: MessageStructureObject): MailAttachmentPa
   };
 }
 
-/** A part's decoded size from its encoded one: base64 carries 3 bytes in 4 characters, with a CRLF after every 76. */
+/**
+ * A part's decoded size from its encoded one: base64 carries 3 bytes in 4 characters, with a CRLF after every 76. A size
+ * that is no count of octets (a fraction, a negative or an unsafe number from a broken server) is unknown, 0.
+ */
 function decodedSizeOf(node: MessageStructureObject): number {
-  const size = node.size ?? 0;
+  const size = node.size !== undefined && Number.isSafeInteger(node.size) && node.size >= 0 ? node.size : 0;
   return node.encoding?.toLowerCase() === "base64" ? Math.floor(((size * 76) / 78) * 0.75) : size;
 }
 
@@ -121,8 +143,8 @@ export function lightFetchedMessageOf(raw: FetchMessageObject): Omit<ImapFetched
   return {
     uid: raw.uid,
     message: {
-      messageId: envelope?.messageId ?? `<no-message-id-uid-${raw.uid}@generated>`,
-      inReplyTo: envelope?.inReplyTo ?? null,
+      messageId: bounded(envelope?.messageId) ?? `<no-message-id-uid-${raw.uid}@generated>`,
+      inReplyTo: bounded(envelope?.inReplyTo) ?? null,
       references: parseReferences(headerList),
       subject: envelope?.subject,
       envelope: {
@@ -133,7 +155,7 @@ export function lightFetchedMessageOf(raw: FetchMessageObject): Omit<ImapFetched
         ...optionalReplyTo(toEnvelopeAddressList(envelope?.replyTo)),
       },
       date: envelope?.date,
-      providerMessageId: raw.emailId ?? null,
+      providerMessageId: bounded(raw.emailId) ?? null,
       gmailLabels: raw.labels ? [...raw.labels] : undefined,
       deliveredToHeaders: headerValues(headerList, "delivered-to"),
       xOriginalTo: headerValues(headerList, "x-original-to")[0] ?? null,

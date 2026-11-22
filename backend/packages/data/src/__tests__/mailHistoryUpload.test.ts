@@ -6,6 +6,7 @@ import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
+import { MAIL_HEADER_VALUE_MAX_BYTES } from "../mail/imapLightFetch.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import {
   createMailHistoryClaimRouteHandler,
@@ -201,6 +202,20 @@ function upload(mailboxId: string, body: unknown, dependencies = unlimited) {
 }
 
 type LeasedFolder = MailHistoryClaim["folders"][number];
+
+/** The slice with its first FETCH response rewritten by `rewrite`, which must change it. */
+function withFirstFetch(body: SliceBody, rewrite: (text: string) => string): SliceBody {
+  return {
+    ...body,
+    messages: body.messages.map((message, index) => {
+      if (index > 0) return message;
+      const text = Buffer.from(message.fetch, "base64").toString("latin1");
+      const rewritten = rewrite(text);
+      if (rewritten === text) throw new Error("The rewrite matched nothing of the FETCH response");
+      return { ...message, fetch: Buffer.from(rewritten, "latin1").toString("base64") };
+    }),
+  };
+}
 
 /** What the client sends for `[rangeLow, folder.backfillBelowUid)`, read from the server as the contract says. */
 async function sliceBody(account: Account, leaseToken: string, folder: LeasedFolder, rangeLow = 1) {
@@ -539,7 +554,7 @@ describe("IMAP history uploaded by a native client", () => {
       return { imap, answer, body, expectNothingWritten };
     }
 
-    it.each([
+    it.each<{ name: string; alter: (body: SliceBody) => SliceBody; status: number; code: string; field?: string }>([
       {
         name: "a slice that does not continue at the cursor",
         alter: (body: SliceBody) => ({ ...body, rangeHigh: body.rangeHigh + 1 }),
@@ -618,6 +633,24 @@ describe("IMAP history uploaded by a native client", () => {
             index === 0 ? { ...message, fetch: "*not base64*" } : message,
           ),
         }),
+        status: 400,
+        code: "validation_failed",
+        field: "messages.0.fetch",
+      },
+      ...["1.5", "-7", "1e20"].map((size) => ({
+        name: `a body part size of ${size}`,
+        alter: (body: SliceBody) =>
+          withFirstFetch(body, (text) => text.replace(/(BODYSTRUCTURE \(.*?"7BIT" )\d+/, `$1${size}`)),
+        status: 400,
+        code: "validation_failed",
+        field: "messages.0.fetch",
+      })),
+      {
+        name: "a Message-ID longer than a header line",
+        alter: (body: SliceBody) =>
+          withFirstFetch(body, (text) =>
+            text.replace(messageIdOf("Old newsletter"), `<${"x".repeat(3 * MAIL_HEADER_VALUE_MAX_BYTES)}@long.test>`),
+          ),
         status: 400,
         code: "validation_failed",
         field: "messages.0.fetch",
