@@ -65,8 +65,8 @@ shared layer to one UI.
 Pin every new library in `mobile/gradle/libs.versions.toml` and check that its
 artifact supports all five targets before you use it in commonMain.
 
-There is no networking and no persistence yet. Every backend call of a mobile
-app will be Kotlin code in `:shared:data` implementing a port that
+Every backend call of a mobile
+app is Kotlin code in `:shared:data` implementing a port that
 `:shared:domain` declares, reached only through use cases and shared
 ViewModels. No other mobile code talks to the backend, with `URLSession`,
 OkHttp, `HttpURLConnection`, Ktor or anything else: not an Android module, a
@@ -75,6 +75,14 @@ module. The issue that adds the first call chooses the HTTP client and the wire
 format, and adds the Android `INTERNET` permission and the macOS
 `com.apple.security.network.client` entitlement
 (`docs/adr/2026-10-24-mobile-backend-calls-through-shared-data-layer.md`).
+
+The one persistence of the shared layer is the mail thread list cache:
+`FileMailThreadListCache` in `:shared:data` behind the `MailThreadListCache`
+port, JSON files under the directory `HomeSDK(cacheDirectory:)` names, written
+through the `expect` file functions of `CacheFiles.kt`
+(`docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md`).
+Other kept data adds its own port on those functions, never a file access in
+native code.
 
 ## 3. The exported framework stays narrow
 

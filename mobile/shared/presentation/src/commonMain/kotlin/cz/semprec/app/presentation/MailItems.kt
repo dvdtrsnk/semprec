@@ -4,6 +4,7 @@ import cz.semprec.app.domain.MailAccount
 import cz.semprec.app.domain.MailBox
 import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.MailThreadList
 import cz.semprec.app.domain.MailThreadQuery
 import cz.semprec.app.domain.MailThreadSummary
 import cz.semprec.app.domain.RepositoryResult
@@ -68,3 +69,14 @@ internal fun MailAccount.toNotice() = MailAccountNotice(id, name, failingSince)
 /** The mailboxes [this] names, each with the name of its chip, or an empty one for a mailbox the list does not know. */
 internal fun List<String>.named(chips: List<MailMailboxChip>): List<MailMailboxChip> =
     map { id -> chips.firstOrNull { it.id == id } ?: MailMailboxChip(id, "") }
+
+/** The kept rows, shown until the server answers; a refresh of them is under way. */
+internal fun MailThreadsState.withCached(kept: MailThreadList) = copy(
+    phase = MailThreadsPhase.CONTENT,
+    failure = null,
+    refreshing = true,
+    hasMore = kept.nextCursor != null,
+    threads = kept.threads.map { it.toItem() },
+    remoteSearch = null,
+    fromCache = true,
+)

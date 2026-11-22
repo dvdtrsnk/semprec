@@ -15,6 +15,9 @@ internal sealed interface SyncFrame {
 
     /** A `notification` frame: a notification of [kind] was created or read for this person. */
     data class Notified(val kind: String) : SyncFrame
+
+    /** An `invalidate` frame of scope `mailThread`: the list row of the thread [threadId] changed. */
+    data class MailThreadChanged(val threadId: String) : SyncFrame
 }
 
 /** The databases, by canonical key, whose changes each topic follows. */
@@ -54,6 +57,7 @@ internal fun SyncFrame.topics(databaseKeys: Map<String, String>?): Set<SyncTopic
             databaseKeys[databaseId]?.let { TOPICS_BY_DATABASE_KEY[it] }.orEmpty()
         }
     is SyncFrame.Notified -> TOPICS_BY_NOTIFICATION_KIND[kind].orEmpty()
+    is SyncFrame.MailThreadChanged -> setOf(SyncTopic.MAIL_THREADS)
 }
 
 /**
@@ -74,6 +78,7 @@ private fun frameOf(root: JsonObject): SyncFrame? =
         "invalidate" -> when (root.text("scope")) {
             "item" -> itemFrame(root)
             "relation" -> relationFrame(root)
+            "mailThread" -> root.text("threadId")?.let(SyncFrame::MailThreadChanged)
             else -> null
         }
         "notification" -> (root["notification"] as? JsonObject)?.let(::notificationFrame)

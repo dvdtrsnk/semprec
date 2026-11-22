@@ -30,6 +30,12 @@ interface MailRepository {
     suspend fun createTask(threadId: String): RepositoryResult<MailNamedRef>
 }
 
+/** What changed in a thread list view since a changes cursor ([MailThreadPage.changesCursor]). */
+interface MailThreadChangesRepository {
+    /** The changes of the list view [query] names (its search and cursor are not used) since the changes cursor [since]. */
+    suspend fun threadChanges(query: MailThreadQuery, since: String): RepositoryResult<MailThreadChanges>
+}
+
 /**
  * The mail calls the server may answer by asking the mail provider, which can be slow: the body of a message the
  * server holds only as an index entry, an attachment saved into Files, and the search. A body or an attachment the

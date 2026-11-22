@@ -376,13 +376,15 @@ jittered) and raises every topic once after each successful connect. `item` and
 `relation` frames raise the `SyncTopic` of their database's canonical key (from
 `GET /api/schema`, read on each connect): `calendars`, `events` and `tasks` raise
 `CALENDAR`, `invitations` raises `INVITATIONS`, `mailboxes`, `folders` and `emails`
-raise `MAIL_ACCOUNTS`. `notification` frames raise by kind: `calendar_invitation`
+raise `MAIL_ACCOUNTS`; `mailThread` invalidation frames raise `MAIL_THREADS`. `notification` frames raise by kind: `calendar_invitation`
 raises `INVITATIONS`, `mail_sync_error` and `mail_sync_stalled` raise `MAIL_ACCOUNTS`.
 Frames within 300 ms of each other raise once. The topics are revisions of
 `SyncChanges` (`shared/domain`), which `HomeSDK` shares with `CalendarSDK` and
 `MailSDK`: the calendar reloads on `CALENDAR` and `INVITATIONS`, the calendars sheet on
 `CALENDAR`, the invitations on `INVITATIONS`, and the mailboxes, the internet accounts
-and an internet account on `MAIL_ACCOUNTS`, each quietly and not while its own read or write runs.
+and an internet account on `MAIL_ACCOUNTS`, each quietly and not while its own read or write runs. The mail thread
+list asks for its changes on `MAIL_THREADS` and `MAIL_ACCOUNTS` once they have been quiet for 500 ms, unless it shows
+a search.
 
 `HomeSDK.sync` starts and stops the socket. On Apple the app's `LiveUpdates` modifier
 on the signed-in tabs of each scene calls `ScreenModelFactory.startLiveUpdates()`
@@ -593,6 +595,19 @@ it holds the steps. Following the Settings feature, a new feature touches:
 - The feature's Gradle module, Apple targets and copy keys in
   `scripts/architecture-policy.json`.
 
+## Kept data
+
+The shared layer keeps one kind of server data on the device: the mail thread lists, so the list opens at once and
+offline. `FileMailThreadListCache` (`shared/data`) writes them as JSON files under `mail-threads/` of the directory
+`HomeSDK(cacheDirectory:)` names (Apple: the caches directory for the Keychain session store, none for the in-memory
+one; Android: `Context.cacheDir` from Koin), through the `expect` file functions of `CacheFiles.kt`. One directory per
+account (a SHA-1 of the server and the session token), one file per view with the rows and the cursors, at most 20
+views (least recently used out) and 500 rows per view; a longer list is not written, signing out deletes everything,
+and a file it cannot decode reads as nothing. `SyncMailThreadList` (`shared/domain`) shows the kept rows, then asks
+`GET /api/mail/threads/changes` for the changes since their cursor and merges them, or reads the first page when there
+is no cursor or the server answers a reset. `MailThreadsState.fromCache` is `true` until the server answered; a
+failed refresh keeps the kept rows and raises `actionFailed`. Searches are not kept, and writes stay server calls.
+
 ## Decisions
 
 - [`docs/adr/2026-10-24-monorepo-holds-backend-web-and-mobile.md`](../../docs/adr/2026-10-24-monorepo-holds-backend-web-and-mobile.md)
@@ -602,4 +617,5 @@ it holds the steps. Following the Settings feature, a new feature touches:
 - [`docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md`](../../docs/adr/2026-10-24-app-owned-mobile-navigation-through-feature-routers.md)
 - [`docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md`](../../docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md)
 - [`docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md`](../../docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md)
+- [`docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md`](../../docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md)
 - [`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`](../../docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md)

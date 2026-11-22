@@ -20,15 +20,21 @@ class SyncChangesTest {
             }
         }
         runCurrent()
-        assertEquals(mapOf(SyncTopic.CALENDAR to 0, SyncTopic.INVITATIONS to 0, SyncTopic.MAIL_ACCOUNTS to 0), received)
+        assertEquals(SyncTopic.entries.associateWith { 0 }, received)
 
         changes.raise(setOf(SyncTopic.CALENDAR, SyncTopic.INVITATIONS))
         changes.raise(setOf(SyncTopic.MAIL_ACCOUNTS))
         runCurrent()
-        assertEquals(mapOf(SyncTopic.CALENDAR to 1, SyncTopic.INVITATIONS to 1, SyncTopic.MAIL_ACCOUNTS to 1), received)
+        val raised = mapOf(
+            SyncTopic.CALENDAR to 1,
+            SyncTopic.INVITATIONS to 1,
+            SyncTopic.MAIL_ACCOUNTS to 1,
+            SyncTopic.MAIL_THREADS to 0,
+        )
+        assertEquals(raised, received)
         changes.raise(emptySet())
         runCurrent()
-        assertEquals(mapOf(SyncTopic.CALENDAR to 1, SyncTopic.INVITATIONS to 1, SyncTopic.MAIL_ACCOUNTS to 1), received)
+        assertEquals(raised, received)
     }
 
     @Test fun `raises faster than the collector reads arrive as one`() = runTest {

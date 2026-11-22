@@ -5,6 +5,7 @@ import cz.semprec.app.data.HttpMailContentRepository
 import cz.semprec.app.data.HttpMailDraftRepository
 import cz.semprec.app.data.HttpMailRepository
 import cz.semprec.app.data.HttpMailboxRepository
+import cz.semprec.app.domain.MailThreadListCache
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.InternetAccountViewModel
 import cz.semprec.app.presentation.InternetAccountViewModelFactory
@@ -22,16 +23,28 @@ class MailSDK internal constructor(
     private val factory: MailViewModelFactory,
     private val accounts: InternetAccountViewModelFactory,
 ) {
-    internal constructor(api: AuthenticatedApi, sync: SyncChanges) : this(HttpMailboxRepository(api), api, sync)
+    internal constructor(
+        api: AuthenticatedApi,
+        sync: SyncChanges,
+        threadLists: MailThreadListCache,
+    ) : this(HttpMailboxRepository(api), HttpMailRepository(api), api, sync, threadLists)
 
-    private constructor(mailboxes: HttpMailboxRepository, api: AuthenticatedApi, sync: SyncChanges) : this(
+    private constructor(
+        mailboxes: HttpMailboxRepository,
+        mail: HttpMailRepository,
+        api: AuthenticatedApi,
+        sync: SyncChanges,
+        threadLists: MailThreadListCache,
+    ) : this(
         MailViewModelFactory(
-            HttpMailRepository(api),
+            mail,
+            mail,
             HttpMailDraftRepository(api),
             mailboxes,
             HttpMailContentRepository(api),
             api.changes.events,
             sync,
+            threadLists,
         ),
         InternetAccountViewModelFactory(mailboxes, mailboxes, sync),
     )

@@ -25,7 +25,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
         start: MailListStart = MailListStart(),
-    ) = MailViewModelFactory(mail, ScriptedMailDraftRepository(), mailboxes, mail).threadsViewModel(start)
+    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail).threadsViewModel(start)
 
     @Test fun `starts loading and publishes the rows the server listed`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedMailRepository(threads = MailCall(mailContent(mailPage(next = "c1")))))
@@ -483,7 +483,8 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         val mail = ScriptedMailRepository(
             threads = MailCall(mailContent(mailPage()), mailContent(mailPage(mailThread(id = "t2")))),
         )
-        val vm = MailViewModelFactory(mail, ScriptedMailDraftRepository(), ScriptedMailboxRepository(), mail, changes)
+        val drafts = ScriptedMailDraftRepository()
+        val vm = MailViewModelFactory(mail, mail, drafts, ScriptedMailboxRepository(), mail, changes)
             .threadsViewModel(MailListStart())
         runCurrent()
         changes.emit(Unit)

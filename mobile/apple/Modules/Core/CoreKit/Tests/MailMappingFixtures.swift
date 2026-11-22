@@ -40,6 +40,7 @@ extension XCTestCase {
             reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],
             facets: facets,
             remoteSearch: remoteSearch,
+            fromCache: false,
             actionFailed: true,
             actionRefusal: actionRefusal
         )

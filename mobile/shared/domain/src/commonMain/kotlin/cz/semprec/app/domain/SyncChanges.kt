@@ -6,8 +6,11 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 
-/** Data a screen shows that the server reports as changed when it changes outside this window. */
-enum class SyncTopic { CALENDAR, INVITATIONS, MAIL_ACCOUNTS }
+/**
+ * Data a screen shows that the server reports as changed when it changes outside this window. [MAIL_THREADS] is a
+ * change of a mail thread's row in the thread lists.
+ */
+enum class SyncTopic { CALENDAR, INVITATIONS, MAIL_ACCOUNTS, MAIL_THREADS }
 
 /**
  * The change bus of the sync socket: one revision per [SyncTopic], raised when the server reports a change of that

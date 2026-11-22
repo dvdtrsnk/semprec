@@ -6,12 +6,15 @@ import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSearchResult
-import cz.semprec.app.domain.MailThreadPage
+import cz.semprec.app.domain.MailThreadList
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SyncMailThreadList
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
@@ -21,13 +24,21 @@ import kotlinx.coroutines.launch
  * search the list is the answer of the mail search, which also asks each mailbox's provider
  * (see [MailThreadsState.remoteSearch]). Expected failures are state, cancellation is not. The facets of the filter
  * sheet and the mailboxes of the chips are secondary reads: a failure leaves the list as it is.
+ *
+ * A list that is not a search shows the rows the device kept for its view first ([MailThreadsState.fromCache]), then
+ * the server's: only the changes since the kept rows when it can tell them, else the first page ([lists]). A write of
+ * this window ([changes]) refreshes everything; a change the server reports ([remoteChanges], a mail thread's row or
+ * the mail accounts) refreshes the list once it has been quiet for [REMOTE_REFRESH_DELAY_MILLIS].
  */
+@OptIn(FlowPreview::class)
 class MailThreadsViewModel internal constructor(
     private val mail: MailRepository,
     private val mailboxes: MailboxRepository,
     private val content: MailContentRepository,
+    private val lists: SyncMailThreadList,
     start: MailListStart,
     changes: Flow<Unit> = emptyFlow(),
+    remoteChanges: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<MailThreadsState, MailThreadsAction, MailThreadsEffect>(
     MailThreadsState(
         box = start.box,
@@ -40,10 +51,16 @@ class MailThreadsViewModel internal constructor(
     private var loadJob: Job? = null
     private var facetsJob: Job? = null
     private var mailboxesJob: Job? = null
-    private var nextCursor: String? = null
+
+    /** The rows of the shown view with its cursors; `null` while a search is shown or before the first answer. */
+    private var list: MailThreadList? = null
 
     init {
         reloadOnChanges(changes) { onAction(MailThreadsAction.Refresh) }
+        reloadOnChanges(remoteChanges.debounce(REMOTE_REFRESH_DELAY_MILLIS)) {
+            val shown = state.value
+            if (!isClosed && shown.search.isEmpty()) load(showWait = shown.phase != MailThreadsPhase.CONTENT)
+        }
         load(showWait = true)
         loadFacets()
         loadMailboxes()
@@ -84,7 +101,7 @@ class MailThreadsViewModel internal constructor(
 
     private fun load(showWait: Boolean) {
         loadJob?.cancel()
-        nextCursor = null
+        if (showWait) list = null
         update {
             if (showWait) {
                 it.copy(
@@ -95,6 +112,7 @@ class MailThreadsViewModel internal constructor(
                     hasMore = false,
                     threads = emptyList(),
                     remoteSearch = null,
+                    fromCache = false,
                     actionFailed = false,
                     actionRefusal = null,
                 )
@@ -113,23 +131,35 @@ class MailThreadsViewModel internal constructor(
         }
         val query = shown.toQuery(cursor = null)
         loadJob = viewModelScope.launch {
-            val result = mailAttempt { mail.threads(query) }
+            if (list == null) {
+                val cached = mailAttempt { RepositoryResult.Content(lists.cached(query)) }
+                ensureActive()
+                val kept = (cached as? RepositoryResult.Content)?.value
+                if (kept != null) {
+                    list = kept
+                    update { it.withCached(kept) }
+                }
+            }
+            val result = mailAttempt { lists.refresh(query, list) }
             ensureActive()
-            nextCursor = (result as? RepositoryResult.Content)?.value?.nextCursor
+            if (result is RepositoryResult.Content) list = result.value
             update { it.afterLoad(result) }
         }
     }
 
     private fun loadMore() {
-        val cursor = nextCursor
-        if (cursor == null || loadJob?.isActive == true) return
+        val shown = list
+        val cursor = shown?.nextCursor
+        if (shown == null || cursor == null || loadJob?.isActive == true) return
         update { it.copy(loadingMore = true) }
         val query = state.value.toQuery(cursor)
         loadJob = viewModelScope.launch {
             val result = mailAttempt { mail.threads(query) }
             ensureActive()
-            if (result is RepositoryResult.Content) nextCursor = result.value.nextCursor
-            update { it.afterMore(result) }
+            val next = (result as? RepositoryResult.Content)?.let { lists.appended(query, shown, it.value) }
+            ensureActive()
+            if (next != null) list = next
+            update { it.afterMore(next) }
         }
     }
 
@@ -182,10 +212,13 @@ class MailThreadsViewModel internal constructor(
     }
 }
 
+/** How long the server's change reports must pause before the list asks for the changes. */
+internal const val REMOTE_REFRESH_DELAY_MILLIS = 500L
+
 private fun MailThreadsState.withUnread(threadId: String, unread: Boolean) =
     copy(threads = threads.map { if (it.threadId == threadId) it.copy(unread = unread) else it })
 
-private fun MailThreadsState.afterLoad(result: RepositoryResult<MailThreadPage>?): MailThreadsState =
+private fun MailThreadsState.afterLoad(result: RepositoryResult<MailThreadList>?): MailThreadsState =
     when (result) {
         is RepositoryResult.Content -> copy(
             phase = MailThreadsPhase.CONTENT,
@@ -194,6 +227,7 @@ private fun MailThreadsState.afterLoad(result: RepositoryResult<MailThreadPage>?
             hasMore = result.value.nextCursor != null,
             threads = result.value.threads.map { it.toItem() },
             remoteSearch = null,
+            fromCache = false,
         )
         is RepositoryResult.Failure -> failed(result.kind)
         null -> failed(null)
@@ -207,6 +241,7 @@ private fun MailThreadsState.afterSearch(result: RepositoryResult<MailSearchResu
             refreshing = false,
             hasMore = false,
             threads = result.value.threads.map { it.toItem() },
+            fromCache = false,
             remoteSearch = MailRemoteSearchSummary(
                 unindexed = result.value.remote.unindexed,
                 failedAccounts = result.value.remote.failed.named(mailboxes),
@@ -216,7 +251,10 @@ private fun MailThreadsState.afterSearch(result: RepositoryResult<MailSearchResu
         null -> failed(null)
     }
 
-/** A failed first load is an error; a failed refresh leaves the list that is shown as it was. */
+/**
+ * A failed first load is an error; a failed refresh leaves the list that is shown as it was, the kept rows included,
+ * and raises [MailThreadsState.actionFailed].
+ */
 private fun MailThreadsState.failed(kind: FailureKind?): MailThreadsState =
     if (phase == MailThreadsPhase.CONTENT) {
         copy(refreshing = false, loadingMore = false, actionFailed = true, actionRefusal = null)
@@ -224,17 +262,11 @@ private fun MailThreadsState.failed(kind: FailureKind?): MailThreadsState =
         copy(phase = MailThreadsPhase.ERROR, failure = kind)
     }
 
-private fun MailThreadsState.afterMore(result: RepositoryResult<MailThreadPage>?): MailThreadsState =
-    when (result) {
-        is RepositoryResult.Content -> {
-            val known = threads.mapTo(HashSet()) { it.threadId }
-            copy(
-                loadingMore = false,
-                hasMore = result.value.nextCursor != null,
-                threads = threads + result.value.threads.filter { it.threadId !in known }.map { it.toItem() },
-            )
-        }
-        is RepositoryResult.Failure, null -> copy(loadingMore = false, actionFailed = true, actionRefusal = null)
+private fun MailThreadsState.afterMore(next: MailThreadList?): MailThreadsState =
+    if (next == null) {
+        copy(loadingMore = false, actionFailed = true, actionRefusal = null)
+    } else {
+        copy(loadingMore = false, hasMore = next.nextCursor != null, threads = next.threads.map { it.toItem() })
     }
 
 private fun MailThreadsState.afterFacets(result: RepositoryResult<MailFacets>?): MailThreadsState = when (result) {
