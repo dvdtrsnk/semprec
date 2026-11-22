@@ -2445,6 +2445,35 @@ ALTER TABLE ONLY public.project_kept_dates
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_kept_dates TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
+-- project_mail_signals
+-- ----------------------------------------------------------------------------------------------------
+
+-- What marks a mail thread as a project's, besides the project's people: written only by the mail module
+-- (`mail/projectMailSignalsStore.ts`), read by the signal match of the preview, the assignment and live triage.
+CREATE TABLE public.project_mail_signals (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    project_item_id uuid NOT NULL,
+    domains text[] DEFAULT '{}'::text[] NOT NULL,
+    addresses text[] DEFAULT '{}'::text[] NOT NULL,
+    keywords text[] DEFAULT '{}'::text[] NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_mail_signals_counts_check CHECK (((cardinality(domains) <= 50) AND (cardinality(addresses) <= 100) AND (cardinality(keywords) <= 50)))
+);
+
+COMMENT ON TABLE public.project_mail_signals IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.project_mail_signals.domains IS 'Lower-case hosts without www.; a sender or recipient at the host or a subdomain of it matches. A freemail host is kept but never matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.addresses IS 'Lower-case, trimmed e-mail addresses; a sender or recipient with one of them matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.keywords IS 'Trimmed words or phrases matched against the message search text with the Czech ending rule of mail/mailSignalKeywords.ts.';
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_pkey PRIMARY KEY (tenant_id, project_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_mail_signals TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- project_mcp_grants
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3553,6 +3582,9 @@ ALTER TABLE ONLY public.project_mcp_grants
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_mcp_tool_registration_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_tool_registration_id) REFERENCES public.mcp_tool_registrations(tenant_id, id);
 
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3825,6 +3857,9 @@ ALTER TABLE ONLY public.person_email_index
 
 ALTER TABLE ONLY public.project_kept_dates
     ADD CONSTRAINT project_kept_dates_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.recording_requests
     ADD CONSTRAINT recording_requests_file_item_id_tenant_fkey FOREIGN KEY (tenant_id, file_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -4220,6 +4255,12 @@ ALTER TABLE public.project_kept_dates ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.project_kept_dates AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.project_kept_dates USING (true) WITH CHECK (true);
+
+ALTER TABLE public.project_mail_signals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.project_mail_signals AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.project_mail_signals USING (true) WITH CHECK (true);
 
 ALTER TABLE public.project_mcp_grants ENABLE ROW LEVEL SECURITY;
 

@@ -506,7 +506,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
 - It is taken first, before membership reads, thread resolution, metadata or item locks, by: the resolver,
   ingest (before its existing-message read and savepoint), the IMAP/Gmail/Graph reconcilers (Gmail before its
   folder-state guard), SMTP failed-claim cleanup, merges, thread actions, thread-task writes, the
-  `mail.thread.proposeTask` tool, the attachment save (it writes a `Threads.attachments` edge) and the mail purge hook.
+  `mail.thread.proposeTask` tool, the attachment save (it writes a `Threads.attachments` edge), the project signal apply,
+  thread project triage and the mail purge hook.
 - It serializes all thread decisions of a tenant across mailboxes and inherits the reconcile transaction's
   lifetime, provider calls included.
 - Only writers that hold several Emails items in one transaction take it. Single-item writers (generic item
@@ -575,6 +576,31 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   and companies links when its last Event source is detached; it must stay registered **directly before**
   `linkRuleEdgeHook` in `domainWriteHooks.ts`.
 - No inherited value is backfilled.
+
+### Project signals
+
+- `project_mail_signals` (one row per project, `mail/projectMailSignalsStore.ts` its only writer; the row goes with
+  the project's item) holds a project's own `domains`, `addresses` and `keywords`. The addresses of the project's live
+  `people` (from `person_email_index`) count as signals too and are not copied. Routes (session user): `GET`/`PUT
+  /api/mail/projects/:projectId/signals` (replace, last write wins), `POST …/signals/preview` (optional
+  `{ draft }` matched instead of the saved set; answers `{ total, alreadyAssigned, threads }`, at most 50 thread list
+  rows, newest first) and `POST …/signals/apply` (`{ threadIds }`, at most 200; answers `{ assigned, skipped }`). An
+  unknown, trashed or foreign project is 404.
+- Normalized at the boundary (`parseMailSignalSet`): a domain is the lower-case host `webHost` gives (URL or bare host,
+  no `www.`, needs a dot), an address trimmed and lower-cased, a keyword trimmed with its whitespace collapsed; at most
+  50 domains, 100 addresses and 50 keywords of 100 characters, duplicates dropped.
+- Matching (`mail/projectMailSignals.ts`, over the local index only): a thread matches when one of its counted messages
+  (not a draft, not only in Junk or Trash) has a sender, `to` or `cc` address among the addresses, or at a domain or a
+  subdomain of it, or when its `item_search_index` vector matches a keyword. A freemail domain (`FREEMAIL_DOMAINS`) is
+  no domain signal and the tenant's own mailbox addresses never match. A keyword's words are folded (lower case, no
+  diacritics), lose one Czech case or number ending if at least four letters remain (`mail/mailSignalKeywords.ts`) and
+  match as `czech_simple` prefixes (`faktur:*`), in order and adjacent; a word under four letters or holding a digit
+  matches exactly.
+- Open thread: a live Threads item with no `Threads.project` edge and no project value link in any state. The preview
+  lists open matches and counts the others as `alreadyAssigned`. The apply writes, in one transaction: mail-thread
+  guard → project `FOR SHARE` → its signals row `FOR SHARE` → each matching listed Threads item in id order (locked,
+  rechecked open) → the edge through `createRelationWithClient` as the session's user, the write of a user's own
+  project edit. Only the saved signals count there, and only the preview and the apply ever look at history.
 
 ### Thread refs
 
@@ -815,6 +841,8 @@ on-demand content and attachment reads.
 - Inbox: source item → attachment row; source → blob; card holders never wait for the source and source
   holders never wait for a card.
 - Value-link evaluation: target item row → its link row.
+- Project signal apply: mail-thread guard → project item (share) → `project_mail_signals` row (share) → Threads items
+  (id order) → relation definition.
 
 ## Related rules
 

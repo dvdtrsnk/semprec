@@ -17,6 +17,12 @@ export {
 export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHandlers.js";
 export { threadCompanyLinkResolver, threadProjectLinkResolver } from "./threadLinkRules.js";
 export {
+  createProjectMailSignalsApplyRouteHandler,
+  createProjectMailSignalsPreviewRouteHandler,
+  createProjectMailSignalsReadRouteHandler,
+  createProjectMailSignalsReplaceRouteHandler,
+} from "./projectMailSignalsRoutes.js";
+export {
   createMailDraftCreateTool,
   createMailDraftCreateUserTool,
   createMailDraftSendTool,
@@ -439,6 +445,38 @@ export const manifest: ModuleManifest = {
       handlerExport: "createMailAttachmentSaveRouteHandler",
       // Records the fetched bytes on the attachment row and creates the Files item with its Email and Thread edges in
       // one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "projectMailSignalsRead",
+      method: "GET",
+      path: "/api/mail/projects/:projectId/signals",
+      handlerExport: "createProjectMailSignalsReadRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "projectMailSignalsReplace",
+      method: "PUT",
+      path: "/api/mail/projects/:projectId/signals",
+      handlerExport: "createProjectMailSignalsReplaceRouteHandler",
+      // Writes a row of the module's own table and no item.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "projectMailSignalsPreview",
+      method: "POST",
+      path: "/api/mail/projects/:projectId/signals/preview",
+      handlerExport: "createProjectMailSignalsPreviewRouteHandler",
+      // A POST because it carries the draft signals to match; it reads one snapshot and writes nothing.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "projectMailSignalsApply",
+      method: "POST",
+      path: "/api/mail/projects/:projectId/signals/apply",
+      handlerExport: "createProjectMailSignalsApplyRouteHandler",
+      // Rechecks each listed thread against the signals under the mail thread guard and writes its `Threads.project`
+      // edge as the user, all in one transaction.
       justification: "transactional-semantics",
     },
     {

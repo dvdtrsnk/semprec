@@ -141,7 +141,7 @@ function cutText(text: string, max: number): string {
  * Open means live, no `Threads.project` edge and no `project` link row in any state. With `lock` the
  * Threads item is locked, so the answer holds against every writer that takes the item lock.
  */
-async function projectPropertyIdIfOpen(
+export async function projectPropertyIdIfOpen(
   client: PoolClient,
   threadItemId: string,
   lock: boolean,

@@ -305,6 +305,12 @@ const KEYS: ItemKey[] = [
     insert: (c, id) => c.query("INSERT INTO project_kept_dates (item_id, kept_date) VALUES ($1, '{}')", [id]),
   },
   {
+    table: "project_mail_signals",
+    column: "project_item_id",
+    behaviour: "cascade",
+    insert: (c, id) => c.query("INSERT INTO project_mail_signals (project_item_id) VALUES ($1)", [id]),
+  },
+  {
     table: "recording_requests",
     column: "file_item_id",
     behaviour: "cascade",
