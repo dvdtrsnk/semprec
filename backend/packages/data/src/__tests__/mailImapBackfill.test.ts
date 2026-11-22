@@ -332,6 +332,49 @@ describe("IMAP history as an index, backfilled newest first", () => {
   );
 
   tenantIt(
+    "yields its backfill to a trigger that arrives during it, so the next pass takes the new mail first",
+    async () => {
+      const fake = new FakeImapServer({ folders: FOLDERS, capabilities: QRESYNC, latencyMs: 0 });
+      server = fake;
+      const port = await fake.listen();
+      const mailbox = await createImapMailboxFixture(runtime);
+      const history = 3 * IMAP_MESSAGES_PER_BATCH;
+      for (let uid = 1; uid <= history; uid++)
+        fake.deliver("INBOX", [], plainMessage(`History ${uid}`, { date: new Date(Date.now() - 200 * DAY_MS) }));
+      // New mail arrives once the backfill has started, and the account is triggered as an IDLE signal triggers it.
+      let triggered = false;
+      const triggeringClient = async () => {
+        const client = await connectLoopbackImapClient(port);
+        return Object.assign(Object.create(client) as typeof client, {
+          fetchMessagesBefore: async (...args: Parameters<typeof client.fetchMessagesBefore>) => {
+            const range = await client.fetchMessagesBefore(...args);
+            if (!triggered) {
+              triggered = true;
+              fake.deliver("INBOX", [], plainMessage("New during the backfill"));
+              await admin.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [
+                mailbox.mailboxId,
+              ]);
+            }
+            return range;
+          },
+        });
+      };
+
+      await mailbox.sync(triggeringClient, recordingStorage());
+
+      // The pass stopped after the batch it was writing.
+      expect((await messages()).size).toBe(IMAP_MESSAGES_PER_BATCH);
+      expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(false);
+
+      await mailbox.sync(triggeringClient, recordingStorage());
+
+      const after = await messages();
+      expect(after.get("New during the backfill")).toMatchObject({ arrival: "live", content_state: "full" });
+      expect(after.size).toBeGreaterThan(IMAP_MESSAGES_PER_BATCH + 1);
+    },
+  );
+
+  tenantIt(
     "ingests a delivery made during the backfill as live mail before the older history, from one budget",
     async () => {
       const { server: fake, pass } = await account();

@@ -178,6 +178,8 @@ interface ImapPassContext {
   spool: AttachmentSpool;
   /** Message-IDs taken into a batch earlier in the pass; a later copy is ingested as a known message. */
   takenMessageIds: Set<string>;
+  /** Whether the account was triggered (new mail, a write-back) during the pass: the backfill then yields to it. */
+  triggered(): Promise<boolean>;
   /** One write transaction; `null` when the pass ended. A failed batch deletes the attachment bytes it wrote. */
   write<T>(fn: (client: PoolClient, storage: BlobStorageWriter) => Promise<T>): Promise<{ value: T } | null>;
 }
@@ -703,6 +705,7 @@ async function backfillImapFolder(
   let ingested = 0;
   const copiesRemovedFrom: string[] = [];
   for (let offset = 0; ;) {
+    if (offset > 0 && (await ctx.triggered())) break;
     const { prepared, exhausted } = await prepareImapBatch(
       ctx,
       folderPath,
@@ -814,6 +817,7 @@ export async function reconcileImapFolder(
       budget: newPassBudget(),
       spool,
       takenMessageIds: new Set(),
+      triggered: async () => false,
       write: (fn) =>
         withBatchStorage(params.storage, (storage) =>
           withTransaction(pool, async (client) => {
@@ -860,6 +864,11 @@ export interface ReconcileImapAccountParams {
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
   pass: MailSyncPass;
+  /**
+   * Whether a trigger for the account arrived while the pass runs. The backfill then stops between batches and the
+   * pass ends unfinished, so the follow-up pass takes the new mail first instead of after the rest of this backfill.
+   */
+  triggered?: () => Promise<boolean>;
 }
 
 /** The inbox first, so a new account shows its current mail before the backfill of other folders. */
@@ -955,6 +964,7 @@ export async function reconcileImapAccount(
       budget,
       spool,
       takenMessageIds,
+      triggered: params.triggered ?? (async () => false),
       write: (fn) =>
         withBatchStorage(params.storage, (storage) =>
           inPassTransaction(pool, params.pass, (client) => fn(client, storage)),
@@ -985,6 +995,10 @@ export async function reconcileImapAccount(
       for (const { folder, folderItemId } of prepared.value.folders) {
         const snapshot = states.get(folderItemId);
         if (!snapshot || snapshot.backfillBelowUid === null) continue;
+        if (params.triggered && (await params.triggered())) {
+          complete = false;
+          break;
+        }
         const step = await backfillImapFolder(contextOf(folder, folderItemId), folder.path, snapshot);
         if (step.kind === "ended") return ended;
         if (step.kind === "overtaken") {

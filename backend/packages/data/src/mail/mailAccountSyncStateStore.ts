@@ -938,6 +938,15 @@ export async function requestMailSyncRerun(client: Queryable, itemId: string, to
   requireAffectedRows(result, `mail sync pass lease of ${itemId}`);
 }
 
+/** Whether a trigger asked the pass holding `token`'s lease for one more run; `false` once the lease is not its. */
+export async function isMailSyncRerunRequested(client: Queryable, itemId: string, token: string): Promise<boolean> {
+  const { rows } = await client.query<{ requested: boolean }>(
+    "SELECT pass_rerun_requested AS requested FROM mail_account_sync_state WHERE item_id = $1 AND pass_lease_token = $2",
+    [itemId, token],
+  );
+  return rows[0]?.requested === true;
+}
+
 /**
  * Clears a rerun request made while `token` holds the lease and returns whether there was one; the holder then runs
  * once more itself. `false` with nothing changed when none was made or the lease is no longer `token`'s.

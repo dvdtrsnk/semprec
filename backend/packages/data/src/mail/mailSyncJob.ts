@@ -20,6 +20,7 @@ import {
   isMailSyncBackingOff,
   releaseMailSyncPass,
   renewMailSyncPass,
+  isMailSyncRerunRequested,
   requestMailSyncRerun,
   takeMailSyncRerunRequest,
   listAccountsDueForSync,
@@ -379,6 +380,8 @@ export async function handleSyncMailAccountTask(
           const result = await reconcileImapAccount(pool, imap, {
             ...shared,
             moveBaseline: moves.moveBaseline,
+            triggered: () =>
+              withTransaction(pool, (client) => isMailSyncRerunRequested(client, payload.mailboxItemId, passToken)),
             pass: {
               enter: enterSyncPass,
               finish: async (client, outcome) => {
