@@ -60,6 +60,15 @@ class AuthenticatedApiChangesTest {
         assertEquals(0, announcements { api.send(HttpMethod.Put, "/api/items/i1/page.md", body = "# x") })
     }
 
+    @Test fun `the history upload of a mailbox is not announced`() = runTest {
+        val api = api()
+        val history = "/api/mail/mailboxes/m1/history-index"
+        assertEquals(0, announcements { api.send(HttpMethod.Post, "$history/claim", body = "{}") })
+        assertEquals(0, announcements { api.send(HttpMethod.Post, history, body = "{}") })
+        assertEquals(0, announcements { api.send(HttpMethod.Post, "$history/release", body = "{}") })
+        assertEquals(1, announcements { api.send(HttpMethod.Post, "/api/mail/mailboxes", body = "{}") })
+    }
+
     @Test fun `a failed write is not announced`() = runTest {
         val api = api(HttpStatusCode.Conflict)
         assertEquals(0, announcements { api.send(HttpMethod.Patch, "/api/items/i1", body = "{}") })

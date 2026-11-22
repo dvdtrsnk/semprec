@@ -81,8 +81,10 @@ class AuthenticatedApi(
         /**
          * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the
          * `POST`s that only read (a query, a count, a search), the raw staging of a blob (the item it belongs to is
-         * created by a later request) and the saving of a page's own text (the diary's day page, which its load
-         * ensures with a `PUT`, and an item's `page.md`), which no list shows.
+         * created by a later request), the saving of a page's own text (the diary's day page, which its load
+         * ensures with a `PUT`, and an item's `page.md`), which no list shows, and the history upload of a mailbox
+         * (`history-index`), whose leases change nothing shown and whose slices, every few seconds while it runs,
+         * add only history older than the 90 days the server imports itself.
          */
         fun announces(method: HttpMethod, path: String): Boolean {
             if (method == HttpMethod.Get || method == HttpMethod.Head) return false
@@ -93,7 +95,8 @@ class AuthenticatedApi(
                     route.startsWith("/api/search") ||
                     route == "/api/blobs" ||
                     route.endsWith("/doc") ||
-                    route.endsWith("/page.md")
+                    route.endsWith("/page.md") ||
+                    route.contains("/history-index")
                 )
         }
     }
