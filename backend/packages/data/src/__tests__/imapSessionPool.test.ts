@@ -8,6 +8,7 @@ import type { MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { FakeImapServer } from "../testSupport/fakeImapServer.js";
 import {
   connectLoopbackImapClient,
@@ -108,6 +109,8 @@ describe("IMAP sync sessions kept between passes", () => {
     await vi.waitFor(() => expect(count("LOGOUT")).toBe(1));
     server.refusedVerbs.delete("LIST");
 
+    // The next pass runs once the failure's backoff ran out, as the sweep queues it.
+    await withTransaction(runtime, (client) => elapseMailSyncBackoff(client, fixture.mailboxId));
     await fixture.sync(pooledImapClient(pool));
     expect(count("LOGIN")).toBe(2);
   });

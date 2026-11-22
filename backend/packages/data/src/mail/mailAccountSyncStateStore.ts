@@ -748,6 +748,19 @@ async function recordFailureWithBackoff(
   return result.rows[0]?.failing_since ?? null;
 }
 
+/**
+ * The account's last pass failed and its backed-off `next_expected_activity_at` is still to come, by the database
+ * clock. `false` for an account without a row.
+ */
+export async function isMailSyncBackingOff(client: Queryable, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ backing_off: boolean }>(
+    `SELECT failing_since IS NOT NULL AND COALESCE(next_expected_activity_at > now(), false) AS backing_off
+       FROM mail_account_sync_state WHERE item_id = $1`,
+    [itemId],
+  );
+  return rows[0]?.backing_off ?? false;
+}
+
 /** Pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */
 export function recordSyncError(
   client: Queryable,

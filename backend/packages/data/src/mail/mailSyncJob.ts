@@ -16,6 +16,7 @@ import {
   claimMailSyncPass,
   getMailAccountSyncState,
   classifyUnclassifiedMailSyncErrors,
+  isMailSyncBackingOff,
   releaseMailSyncPass,
   renewMailSyncPass,
   requestMailSyncRerun,
@@ -147,6 +148,8 @@ export async function handleSyncMailAccountTask(
   // This run's pass lease (`claimMailSyncPass`); `leased` once it holds it, so every way out releases it.
   const passToken = randomUUID();
   let leased = false;
+  // Set once this pass's failure is recorded: its release then queues no follow-up, which would only log in again.
+  let failed = false;
   // Read in the prologue so the catch block can compute a provider-aware backoff after that transaction rolled back.
   let mailboxProvider: string | undefined;
   // A pass writes the Mailboxes item only when its outcome differs, so identical passes cause no item update.
@@ -202,7 +205,10 @@ export async function handleSyncMailAccountTask(
     previousSyncStatus = mailboxItem.properties.syncStatus;
     mailboxProvider = typeof mailboxItem.properties.provider === "string" ? mailboxItem.properties.provider : undefined;
 
-    const state = await withTransaction(pool, (client) => getMailAccountSyncState(client, payload.mailboxItemId));
+    const { state, backingOff } = await withTransaction(pool, async (client) => ({
+      state: await getMailAccountSyncState(client, payload.mailboxItemId),
+      backingOff: await isMailSyncBackingOff(client, payload.mailboxItemId),
+    }));
     if (!state)
       throw new Error(`Mailbox ${payload.mailboxItemId} has no mail_account_sync_state row — never connected`);
     // Mail is switched off: nothing is read from the provider and nothing is recorded.
@@ -217,6 +223,13 @@ export async function handleSyncMailAccountTask(
         { mailboxItemId: payload.mailboxItemId },
         "Mail sync skipped: the account waits for the user to sign in again",
       );
+      return;
+    }
+    // The last pass failed and its backoff has not run out: a pass any trigger queues now (IDLE, push, a flag
+    // write-back) would log in to a failing server again, so it ends here; the sweep queues the account once it is
+    // due. A sign-in again and the Mail switch clear the failure record before they queue a pass.
+    if (backingOff) {
+      logger.info({ mailboxItemId: payload.mailboxItemId }, "Mail sync skipped: the account backs off a failure");
       return;
     }
 
@@ -382,6 +395,7 @@ export async function handleSyncMailAccountTask(
     // The failure must be recorded in a new transaction; the one that failed is aborted or never existed.
     const message = err instanceof Error ? err.message : String(err);
     logger.error(failure, "Mail sync failed");
+    failed = true;
 
     if (err instanceof MailConnectionLimitError) {
       // Too many IMAP sessions for this account is contention, not an account failure, but mail is not syncing, so
@@ -448,19 +462,25 @@ export async function handleSyncMailAccountTask(
     if (reauthorizationRequired) return;
     throw err;
   } finally {
-    if (leased) await releasePassLease(pool, payload.mailboxItemId, passToken);
+    if (leased) await releasePassLease(pool, payload.mailboxItemId, passToken, { followUp: !failed });
   }
 }
 
 /**
- * Releases the lease and, when a trigger arrived while it was held, enqueues the one follow-up pass in the same
- * transaction. A failure here is logged, not thrown, so it never replaces the pass's own outcome: the lease then
+ * Releases the lease and, when a trigger arrived while it was held and `followUp` allows it, enqueues the one follow-up
+ * pass in the same transaction. After a failed pass the request is dropped: the account backs off, and the sweep queues
+ * it once it is due. A failure here is logged, not thrown, so it never replaces the pass's own outcome: the lease then
  * expires after `MAIL_SYNC_PASS_LEASE_MS`, and a requested rerun waits for the next trigger or the sweep.
  */
-async function releasePassLease(pool: Pool, mailboxItemId: string, passToken: string): Promise<void> {
+async function releasePassLease(
+  pool: Pool,
+  mailboxItemId: string,
+  passToken: string,
+  options: { followUp: boolean },
+): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {
-      if (await releaseMailSyncPass(client, mailboxItemId, passToken))
+      if ((await releaseMailSyncPass(client, mailboxItemId, passToken)) && options.followUp)
         await enqueueMailAccountSync(client, mailboxItemId);
     });
   } catch (error) {

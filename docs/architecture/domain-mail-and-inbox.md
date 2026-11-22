@@ -231,7 +231,7 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
   ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
-  rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  rerun was requested and the pass did not fail, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
@@ -407,9 +407,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   at 6 hours. The base is 5 minutes, or for `MailConnectionLimitError` the provider's connection-limit backoff
   (`connectionLimitBackoffSecondsForProvider`, 5 or 10 minutes). The previous delay is read from the row
   (`next_expected_activity_at − last_activity_at` while `failing_since` is set); a successful pass ends the streak.
-  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1): the
-  sweep queues the next pass once the backed-off `next_expected_activity_at` is due, so a failing server never sees
-  a burst of logins.
+  A connection-limit failure is not rethrown; other failures are, and the job is not retried (`maxAttempts` 1). While
+  `failing_since` is set and the backed-off `next_expected_activity_at` lies ahead (`isMailSyncBackingOff`, by the
+  database clock), the job's prologue ends after the sync state read, before the pass lease, the credential read or
+  any provider call, whoever queued it (IDLE, a push, a flag or move write-back); and the release of a failed pass
+  queues no follow-up for a trigger that asked for one while it ran (`pass_rerun_requested` is dropped). The sweep
+  queues the next pass once the account is due, so a failing server sees one login per backoff delay. A sign-in
+  again (`clearMailSyncFailure`) and the Mail switch (`pauseMailAccountSync`) clear the failure record before they
+  queue a pass, so theirs runs at once.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
   `needsReauthorization` only, in the transaction that deletes the credential).
 

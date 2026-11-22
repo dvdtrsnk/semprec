@@ -86,6 +86,7 @@ import {
   recordGmailActivity,
   recordGraphActivity,
   recordSyncError,
+  claimMailSyncPass,
   clearMailSyncFailure,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -108,6 +109,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 import {
   backfillOfFetchedSince,
@@ -410,6 +412,11 @@ async function runSync(
 
 function syncState(mailboxItemId: string) {
   return withTransaction(pool, (client) => getMailAccountSyncState(client, mailboxItemId));
+}
+
+/** The time the sweep waits after a failed pass: the account is due again. */
+function backoffElapsed(mailboxItemId: string): Promise<void> {
+  return withTransaction(pool, (client) => elapseMailSyncBackoff(client, mailboxItemId));
 }
 
 async function syncStatusOf(mailboxItemId: string): Promise<unknown> {
@@ -3141,12 +3148,14 @@ describe("mail sync job error handling", () => {
         lastFailureKind: "other",
       });
 
+      await backoffElapsed(mailbox);
       await runSync(mailbox, failing(new MailConnectionLimitError("Too many simultaneous connections.")));
       expect(await syncState(mailbox)).toMatchObject({
         failingSince: afterFirstFailure?.failingSince,
         lastFailureKind: "connectionLimit",
       });
 
+      await backoffElapsed(mailbox);
       await runSync(mailbox, failing(new MailReauthorizationRequiredError("revoked")));
       const refused = await syncState(mailbox);
       expect(refused).toMatchObject({
@@ -3198,10 +3207,13 @@ describe("mail sync job error handling", () => {
   it("writes a mail_sync_error notification on failure, deduped by job id but not across distinct failing jobs", async () => {
     const user = await createOwner();
     const mailbox = await createSyncMailbox();
-    const failWith = (jobId: string) =>
-      expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: jobId } })).rejects.toThrow(
+    // Each job runs once the backoff of the one before it ran out, as the sweep queues it.
+    const failWith = async (jobId: string) => {
+      await backoffElapsed(mailbox);
+      await expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: jobId } })).rejects.toThrow(
         UNEXPECTED_FAILURE,
       );
+    };
 
     await failWith("job-1");
     const { rows: afterFirst } = await pool.query(
@@ -3508,8 +3520,10 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
     // Each pass fails at the provider with an ordinary error, so the default severity. The last job-3 is a
     // redelivery of the same report.
-    for (const jobId of ["job-1", "job-2", "job-3", "job-3"])
+    for (const jobId of ["job-1", "job-2", "job-3", "job-3"]) {
+      await backoffElapsed(mailboxId);
       await expect(syncPass(mailboxId, unexpectedlyFailing, jobId)).rejects.toThrow(UNEXPECTED_FAILURE);
+    }
 
     const problems = await mailProblems(mailboxId);
     expect(problems).toMatchObject([
@@ -3549,6 +3563,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
       () =>
         inTenantZero(async () => {
           for (const jobId of ["job-a", "job-b", "job-a"]) {
+            await withTransaction(runtime, (client) => elapseMailSyncBackoff(client, mailboxId));
             await expect(
               handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, unexpectedlyFailing, ids, noopStorage, {
                 job: { id: jobId },
@@ -3600,6 +3615,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
     await expect(syncPass(mailboxId, refusing, "job-1")).rejects.toThrow("connection refused");
     expect(await mailProblems(mailboxId)).toMatchObject([{ resolved_at: null, occurrence_count: 1 }]);
 
+    await backoffElapsed(mailboxId);
     await syncPass(mailboxId, completing, "job-2");
     expect(await mailProblems(mailboxId)).toMatchObject([
       { resolved_at: expect.any(Date), resolution_kind: "recovered" },
@@ -4332,6 +4348,7 @@ describe("mail sync failure backoff", () => {
         const mailbox = await createSyncMailbox();
         const recorded: number[] = [];
         for (let failure = 0; failure < expectedMinutes.length; failure++) {
+          await backoffElapsed(mailbox);
           await expect(
             runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, random),
           ).rejects.toThrow("boom");
@@ -4346,12 +4363,57 @@ describe("mail sync failure backoff", () => {
       const mailbox = await createSyncMailbox();
       const high = () => 1;
       for (let failure = 0; failure < 2; failure++) {
+        await backoffElapsed(mailbox);
         await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
       }
       expect(await recordedDelayMinutes(mailbox)).toBe(45);
+      await backoffElapsed(mailbox);
       await runSync(mailbox, { createImapClient: async () => fakeImap() });
       await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
       expect(await recordedDelayMinutes(mailbox)).toBe(15);
+    }));
+
+  it("ends a pass queued while the account backs off a failure without a provider call, and runs once it is due", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      await expect(runSync(mailbox, failingWith(new Error("boom")))).rejects.toThrow("boom");
+      const failed = await syncState(mailbox);
+      const credentialReads = await countRows("credential_access_log WHERE item_id = $1", [mailbox]);
+      const createImapClient = vi.fn(async () => fakeImap());
+
+      // What IDLE, a push or a flag write-back queues right after the failure.
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).not.toHaveBeenCalled();
+      expect(await countRows("credential_access_log WHERE item_id = $1", [mailbox])).toBe(credentialReads);
+      expect(await syncState(mailbox)).toEqual(failed);
+
+      await backoffElapsed(mailbox);
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).toHaveBeenCalledTimes(1);
+      expect((await syncState(mailbox))?.failingSince).toBeNull();
+    }));
+
+  it("queues no follow-up pass after a failed pass, though a trigger asked for one while it ran", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      const jobs = () => countRows("graphile_worker._private_jobs");
+      const before = await jobs();
+      const failingAfterTrigger: MailSyncAdapterFactory = {
+        createImapClient: async () => {
+          // A trigger finds the pass running and asks it for one more run.
+          const claim = await withTransaction(pool, (client) =>
+            claimMailSyncPass(client, mailbox, randomUUID(), 60_000),
+          );
+          expect(claim).toBe("busy");
+          throw new Error("boom");
+        },
+      };
+
+      await expect(runSync(mailbox, failingAfterTrigger)).rejects.toThrow("boom");
+
+      expect(await jobs()).toBe(before);
     }));
 
   it("jitters a connection-limit backoff over the provider's base and grows it over the streak", () =>
@@ -4360,6 +4422,7 @@ describe("mail sync failure backoff", () => {
       const limited = failingWith(new MailConnectionLimitError("Too many simultaneous connections."));
       const recorded: number[] = [];
       for (let failure = 0; failure < 3; failure++) {
+        await backoffElapsed(mailbox);
         await runSync(mailbox, limited, noopStorage, undefined, () => 0.5);
         recorded.push(await recordedDelayMinutes(mailbox));
       }
