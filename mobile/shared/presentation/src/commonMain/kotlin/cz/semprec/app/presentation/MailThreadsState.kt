@@ -69,6 +69,9 @@ data class MailFacetsState(
  * While [search] is not empty the list is the answer of the mail search, one page over every box, folder, area and
  * project, narrowed only to the chosen mailbox, and [remoteSearch] says what the provider search added; it is `null`
  * for a list that is not a search.
+ *
+ * [fromCache] is `true` while the rows are the ones the device kept for this view and the server has not answered
+ * yet; a refresh that fails then keeps them and raises [actionFailed].
  */
 data class MailThreadsState(
     val phase: MailThreadsPhase = MailThreadsPhase.LOADING,
@@ -90,6 +93,7 @@ data class MailThreadsState(
     val reauthorization: List<MailAccountNotice> = emptyList(),
     val facets: MailFacetsState = MailFacetsState(),
     val remoteSearch: MailRemoteSearchSummary? = null,
+    val fromCache: Boolean = false,
     val actionFailed: Boolean = false,
     val actionRefusal: MailRefusal? = null,
 )

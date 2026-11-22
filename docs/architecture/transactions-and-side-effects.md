@@ -73,6 +73,11 @@ concurrent writers are ordered. What may be written, and by whom, is in
   page-title-mirror jobs are enqueued this way.
 - Search-index jobs are registered with `registerSearchJob(client, job)` and added at the pre-commit
   flush, grouped by job key in deterministic order under the tenant's search-flush advisory lock.
+- `runBeforeCommitOnce(client, key, flush)` registers one pre-commit flush per key for the active managed
+  transaction; the flushes run in registration order after the search-lane flush and right before `COMMIT`, a
+  failing one rolls the transaction back, and a savepoint rollback does not withdraw one. Registration closes when
+  the body returns. A flush takes its locks last, after every lock of the body. The mail thread change stamp is the
+  one flush (`mail/mailThreadChanges.ts`, see `domain-mail-and-inbox.md`, Thread list changes).
 - Blob bytes are deleted after commit, best-effort, for the storage keys the committed transaction
   returned; a failure leaves unreachable bytes but never undoes the commit.
 
@@ -210,6 +215,9 @@ A change to any of these paths must keep the order:
 - **Page documents:** `loadDocWithClient` and `mutateDocWithClient` lock the document's stored rows
   `FOR UPDATE`; a document is locked after the rows that precede it above.
 - **Trash cascade:** root row (`lockItemById`) → cascade rows → per-row hooks.
+- **Pre-commit:** every lock of the transaction body → the search-flush advisory lock → the tenant's
+  `mail_thread_change_counters` row → its `mail_thread_changes` rows. The counter row is held from the flush to
+  `COMMIT` and only ever waited for by a transaction that already finished its body, so it closes no cycle.
 - **Permanent purge:** tenant purge advisory lock → item row (`lockTrashedItemBefore`) → its
   dependents.
 - **Archived database purge:** `FOR NO KEY UPDATE` on the database row first in every deleting

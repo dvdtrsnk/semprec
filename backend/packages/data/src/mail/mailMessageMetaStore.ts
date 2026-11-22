@@ -20,6 +20,7 @@ import { propagateThreadAttachmentLinks, repointThreadAttachmentLinks } from "./
 import { assertKnownValue } from "../dbRowValidation.js";
 import { MAIL_ARRIVALS, type MailArrival } from "./mailArrival.js";
 import { MAIL_CONTENT_STATES, type MailContentState } from "./mailContentState.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -322,6 +323,7 @@ export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, ite
   if (deleted.rowCount === 0) return;
   const threadId = deleted.rows[0]?.thread_id;
   if (!threadId) return;
+  touchMailThreads(client, [threadId]);
   const emptied = await client.query<{ item_id: string | null }>(
     `SELECT item_id FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id) FOR UPDATE`,
     [threadId],
@@ -390,6 +392,7 @@ export async function reassignThread(client: PoolClient, fromThreadId: string, t
   try {
     await lockMailThreadMutation(client);
     if (fromThreadId === toThreadId) return;
+    touchMailThreads(client, [fromThreadId, toThreadId]);
     const database = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
     if (!database?.system) throw new Error("Threads database is missing");
     const bindings = await client.query<{ id: string; item_id: string | null }>(

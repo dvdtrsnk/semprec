@@ -212,6 +212,14 @@ export const MAIL_ROUTES: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "mail thread changes",
+    method: "GET",
+    path: "/api/mail/threads/changes?since=eyJlIjpudWxsLCJzIjowfQ",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "mail thread facets",
     method: "GET",
     path: "/api/mail/threads/facets",

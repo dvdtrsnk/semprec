@@ -32,7 +32,9 @@ in its `src/commonTest` and run on the JVM and natively. The modules:
   `LoadPlaceholderItems` and `LoadPlaceholderItem`, which make the decisions
   (identity checks, ordering). Depends on core.
 - `:shared:data` (`cz.semprec.app.data`) — `InMemoryPlaceholderRepository`, the
-  only implementation of the port. There is no networking and no persistence.
+  only implementation of the port. Its one persistence is the mail thread list
+  file cache (`FileMailThreadListCache`, `CacheFiles.kt`), kept in the app's
+  cache directory.
   Depends on domain.
 - `:shared:presentation` (`cz.semprec.app.presentation`) — `ScreenViewModel`,
   the screen ViewModels `HomeViewModel`, `DetailViewModel` and

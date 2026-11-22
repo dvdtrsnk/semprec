@@ -66,6 +66,8 @@ const TENANT_TABLES = [
   "mail_folder_sync_state",
   "mail_threads",
   "mail_thread_aliases",
+  "mail_thread_change_counters",
+  "mail_thread_changes",
   "mail_message_meta",
   "mail_attachments",
   "mail_message_content_cache",

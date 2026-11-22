@@ -4,8 +4,6 @@ import { createRelationWithClient, deleteRelationWithClient } from "../chokePoin
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ConflictError, NotFoundError } from "../errors.js";
-import { runAfterCommit } from "../db/pool.js";
-import { notifyInvalidation } from "../realtimeHook.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
 import { getMailAccountSyncState } from "./mailAccountSyncStateStore.js";
@@ -17,6 +15,7 @@ import {
   type MailMovePurpose,
   type MailMoveSource,
 } from "./mailMessageMoveSyncStore.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
@@ -115,9 +114,9 @@ export async function readMailThreadFlagged(client: PoolClient, threadId: string
   return rows[0]?.flagged === true;
 }
 
-/** After the commit, one thin `mailThread` invalidation to every socket of the tenant. */
+/** Stamps the thread's list row; after the commit, one thin `mailThread` invalidation to every socket of the tenant. */
 export function announceMailThreadChanged(client: PoolClient, threadId: string): void {
-  runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
+  touchMailThreads(client, [threadId]);
 }
 
 const moveCopyRow = z.object({

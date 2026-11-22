@@ -7,6 +7,8 @@ import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSummary
+import cz.semprec.app.domain.MailThreadChanges
+import cz.semprec.app.domain.MailThreadChangesRepository
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
@@ -22,31 +24,33 @@ private const val AREAS_KEY = "areas"
 private const val PROJECTS_KEY = "projects"
 
 /**
- * The mail reads and thread actions of `/api/mail/threads*`, `/api/mail/summary` and `/api/mail/contacts`. The names
+ * The mail reads and thread actions of `/api/mail/threads*` (the list's changes since a cursor included), `/api/mail/summary` and `/api/mail/contacts`. The names
  * and colors of the areas and projects in the filter are read as items, because the counts carry only their ids. A
  * read mark, flag or move refused with a known code is [MailOutcome.Refused].
  */
 class HttpMailRepository internal constructor(
     private val api: AuthenticatedApi,
     private val items: ItemsApi,
-) : MailRepository {
+) : MailRepository, MailThreadChangesRepository {
     constructor(api: AuthenticatedApi) : this(api, ItemsApi(api))
 
     override suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage> {
         val parameters = buildList {
-            add("box" to query.box.wire())
+            addAll(query.viewParameters())
             add("limit" to PAGE_LIMIT)
-            query.mailboxId?.let { add("mailboxId" to it) }
-            query.folderId?.let { add("folderId" to it) }
-            query.areaId?.let { add("areaId" to it) }
-            query.projectId?.let { add("projectId" to it) }
-            if (query.unreadOnly) add("unread" to "true")
             query.search.trim().takeIf(String::isNotEmpty)?.let { add("q" to it) }
             query.cursor?.let { add("cursor" to it) }
         }
         return api.send(HttpMethod.Get, "/api/mail/threads", parameters).decode<MailThreadPageDto>()
-            .map { page -> MailThreadPage(page.threads.map { it.toDomain() }, page.nextCursor) }
+            .map { page -> MailThreadPage(page.threads.map { it.toDomain() }, page.nextCursor, page.changesCursor) }
     }
+
+    override suspend fun threadChanges(query: MailThreadQuery, since: String): RepositoryResult<MailThreadChanges> =
+        api.send(HttpMethod.Get, "/api/mail/threads/changes", query.viewParameters() + ("since" to since))
+            .decode<MailThreadChangesDto>()
+            .map { changes ->
+                MailThreadChanges(changes.cursor, changes.threads.map { it.toDomain() }, changes.removed, changes.reset)
+            }
 
     override suspend fun facets(areaId: String?, projectId: String?): RepositoryResult<MailFacets> {
         val parameters = listOfNotNull(areaId?.let { "areaId" to it }, projectId?.let { "projectId" to it })
@@ -96,6 +100,16 @@ class HttpMailRepository internal constructor(
 }
 
 private data class MailNameAndColor(val name: String?, val color: String?)
+
+/** The filters that name the list view, as the list and its changes take them. */
+private fun MailThreadQuery.viewParameters(): List<Pair<String, String>> = buildList {
+    add("box" to box.wire())
+    mailboxId?.let { add("mailboxId" to it) }
+    folderId?.let { add("folderId" to it) }
+    areaId?.let { add("areaId" to it) }
+    projectId?.let { add("projectId" to it) }
+    if (unreadOnly) add("unread" to "true")
+}
 
 private fun threadPath(threadId: String) = "/api/mail/threads/${threadId.encodeURLPathPart()}"
 

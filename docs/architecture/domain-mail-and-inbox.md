@@ -736,7 +736,8 @@ internals proven against the real library by its unit test; an upgrade must re-p
 - The Threads domain hook (`mail/threadValueEdges.ts`) reserves every Threads endpoint of any relation mutation
   (UUID order, `FOR UPDATE` or the value-link NOWAIT wrapper), rechecks liveness, and enforces at most one
   project/company per thread. All production writes incident on Threads go through these owners.
-- Edges of `Threads.company`/`project` publish a `mailThread` invalidation after commit.
+- Edges of `Threads.company`/`project` stamp the thread's list row, which publishes its `mailThread` invalidation
+  after commit (Thread list changes).
 - Failed-SMTP-claim cleanup removes an emptied thread by soft-deleting its Threads item, then the row.
 
 ### Thread actions
@@ -762,6 +763,42 @@ internals proven against the real library by its unit test; an upgrade must re-p
 - An archive or trash desire records in `mail_message_move_sync_state.restore_purpose` whether the copy left an Inbox
   or a Sent folder (an earlier record stays when it left neither); restore returns the copy there, and only a copy
   without a record goes by received (Inbox) or own (Sent).
+
+### Thread list changes
+
+The server index stays the only source of truth; a client keeps the rows of a list view and asks only for what
+changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks.ts`).
+
+- `GET /api/mail/threads` answers `changesCursor` beside each page, read in the page's own `repeatable_read`
+  snapshot. `GET /api/mail/threads/changes?since=<cursor>` takes the list's view filters (`box`, `folderId`,
+  `mailboxId`, `projectId`, `areaId`, `personId`, `unread`; no `q`, a search is not a view) and answers
+  `{ cursor, threads, removed, reset }` in one `repeatable_read` snapshot: `threads` are the stamped threads still in
+  the view, shaped as the list shapes them, `removed` the stamped ids that are not (moved out, merged away,
+  deleted). A malformed or missing `since` is 400. `reset: true` (no rows) when the cursor names another counter
+  epoch, a step the tenant never reached, a step before the last change of every row, or more than
+  `MAIL_THREAD_CHANGES_LIMIT` (500) changed threads; the client then reads the first page again.
+- The cursor is `{ epoch, step }` of the tenant's `mail_thread_change_counters` row. A transaction that changes a
+  list row records the thread (`touchMailThreads`, or `touchAllMailThreads` for a change of every row) in a
+  transaction-local set; its pre-commit flush (`runBeforeCommitOnce`) increments the counter row by one step and
+  upserts `mail_thread_changes (thread_id, seq)` with that step, then registers one tenant-wide `mailThread`
+  invalidation per thread after commit. `touchAllMailThreads` sets `reset_seq` to the step instead.
+- Why the order is the commit order: the counter row's lock is taken in the flush and held until `COMMIT`, so a
+  second transaction gets its step only after the first committed. A reader whose snapshot shows step `n` therefore
+  sees every transaction of steps `≤ n` and none above, and the rows it reads reflect exactly those. A later delta
+  from `n` lists every thread stamped `> n`; a transaction that recorded its change before another but committed
+  after it still gets the higher step. A timestamp or a sequence drawn mid-transaction would not hold this.
+  `mail_thread_changes` has no foreign key, so a thread deleted or merged away keeps its row and reads as removed.
+- Who stamps: ingest of a new message; the meta deletes of a removed item (purge, Mail off) and merges (both
+  threads); thread actions and every other `announceMailThreadChanged` caller (send, draft retirement, draft
+  writes); an update of an Emails item's `read`, `flagged`, `name` or `date` (flag observations of a sync included),
+  and its trash or restore; an edge of an Emails item's `folder` or `senderPeople`/`recipientsPeople`, of a Threads
+  item's `project` or `company`, or a project's `area`, created or deleted (a metadata update or a repeated create
+  only on a Sent folder edge, whose UID decides `received`); a project's or company's `name`, trash or restore (its
+  threads); a person's `name`, `relationship`, trash or restore and a released or claimed `person_email_index`
+  address (threads with mail from those addresses). A mailbox's `name`, `provider` or `addresses`, a folder's
+  `specialPurpose`, and the trash or restore of either change every row: `touchAllMailThreads`.
+- Not stamped: the `links` value-link states of a row change without an edge change only (the mobile list does not
+  read them). `mail_thread_changes` keeps one row per thread ever stamped, deleted ones included.
 
 ### Inherited values
 

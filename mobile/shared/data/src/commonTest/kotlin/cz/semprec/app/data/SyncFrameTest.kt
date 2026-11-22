@@ -12,7 +12,7 @@ class SyncFrameTest {
     private val item = """{"type":"invalidate","scope":"item","databaseId":"$DB","itemId":"$ITEM","op":"update",""" +
         """"updatedAt":"2026-11-20T10:00:00.000Z"}"""
 
-    @Test fun `the item and relation and notification frames are kept`() {
+    @Test fun `the item and relation and notification and mail thread frames are kept`() {
         val relation = """{"type":"invalidate","scope":"relation","databaseId":"$DB","itemId":"$ITEM",""" +
             """"propertyKey":null,"op":"put"}"""
         val keyedRelation = relation.replace("\"propertyKey\":null", "\"propertyKey\":\"attendees\"")
@@ -22,6 +22,10 @@ class SyncFrameTest {
         assertEquals(SyncFrame.DatabaseChanged(DB), parseSyncFrame(relation))
         assertEquals(SyncFrame.DatabaseChanged(DB), parseSyncFrame(keyedRelation))
         assertEquals(SyncFrame.Notified("calendar_invitation"), parseSyncFrame(notification))
+        assertEquals(
+            SyncFrame.MailThreadChanged(ITEM),
+            parseSyncFrame("""{"type":"invalidate","scope":"mailThread","threadId":"$ITEM"}"""),
+        )
         assertEquals(
             SyncFrame.Notified("calendar_event_changed"),
             parseSyncFrame(notification.replace("calendar_invitation", "calendar_event_changed")),
@@ -43,6 +47,8 @@ class SyncFrameTest {
             """{"type":"invalidate","scope":"relation","databaseId":"$DB","itemId":"$ITEM","op":"merge"}""",
             """{"type":"notification","notification":{"id":"n1","kind":"calendar_invitation"}}""",
             """{"type":"notification","notification":"calendar_invitation"}""",
+            """{"type":"invalidate","scope":"mailThread"}""",
+            """{"type":"invalidate","scope":"mailThread","threadId":42}""",
         ).forEach { raw -> assertNull(parseSyncFrame(raw), raw) }
     }
 
@@ -71,6 +77,7 @@ class SyncFrameTest {
             SyncFrame.Notified("mail_sync_error") to mail,
             SyncFrame.Notified("mail_sync_stalled") to mail,
             SyncFrame.Notified("approval_pending") to emptySet(),
+            SyncFrame.MailThreadChanged(ITEM) to setOf(SyncTopic.MAIL_THREADS),
         ).forEach { (frame, topics) -> assertEquals(topics, frame.topics(keys), frame.toString()) }
     }
 

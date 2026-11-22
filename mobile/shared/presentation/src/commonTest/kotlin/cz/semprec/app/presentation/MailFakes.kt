@@ -35,6 +35,8 @@ import cz.semprec.app.domain.MailSearchResult
 import cz.semprec.app.domain.MailSentDraft
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.MailThreadChanges
+import cz.semprec.app.domain.MailThreadChangesRepository
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
@@ -84,6 +86,8 @@ internal class MailCall<A, T>(vararg steps: ScriptedStep<T>) {
 /** The mail reads and writes, and the calls that may ask the mail provider, each answered by its own script. */
 internal class ScriptedMailRepository(
     val threads: MailCall<MailThreadQuery, MailThreadPage> = MailCall(mailContent(mailPage())),
+    val changes: MailCall<Pair<MailThreadQuery, String>, MailThreadChanges> =
+        MailCall(mailContent(MailThreadChanges("c-next", emptyList(), emptyList(), reset = false))),
     val facets: MailCall<Pair<String?, String?>, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
@@ -95,10 +99,12 @@ internal class ScriptedMailRepository(
         MailCall(mailFetched(MailMessageContent("e3", "Celý text"))),
     val saves: MailCall<Pair<String, String>, MailContentOutcome<String>> = MailCall(mailFetched("f9")),
     val searches: MailCall<Pair<String, String?>, MailSearchResult> = MailCall(mailContent(mailSearch())),
-) : MailRepository, MailContentRepository {
+) : MailRepository, MailThreadChangesRepository, MailContentRepository {
     val moved = mutableListOf<String>()
 
     override suspend fun threads(query: MailThreadQuery) = threads.answer(query)
+
+    override suspend fun threadChanges(query: MailThreadQuery, since: String) = changes.answer(query to since)
 
     override suspend fun facets(areaId: String?, projectId: String?) = facets.answer(areaId to projectId)
 
@@ -265,8 +271,8 @@ internal fun mailThread(
     hasSempDraft = true,
 )
 
-internal fun mailPage(vararg threads: MailThreadSummary, next: String? = null) =
-    MailThreadPage(threads.toList().ifEmpty { listOf(mailThread()) }, next)
+internal fun mailPage(vararg threads: MailThreadSummary, next: String? = null, changesCursor: String? = null) =
+    MailThreadPage(threads.toList().ifEmpty { listOf(mailThread()) }, next, changesCursor)
 
 internal fun mailSearch(
     vararg threads: MailThreadSummary,

@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class MailThreadContentTest : MainDispatcherTest() {
     private fun viewModel(mail: ScriptedMailRepository) =
-        MailViewModelFactory(mail, ScriptedMailDraftRepository(), ScriptedMailboxRepository(), mail)
+        MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), ScriptedMailboxRepository(), mail)
             .threadViewModel("t1")
 
     /** An older remote message, a cached one, and the newest one, remote, which the thread opens with. */

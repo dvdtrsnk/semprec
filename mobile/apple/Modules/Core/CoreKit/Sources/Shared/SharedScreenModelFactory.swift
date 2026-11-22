@@ -1,3 +1,4 @@
+import Foundation
 @preconcurrency internal import SharedSDK
 
 /// Creates the screen models from one Kotlin `HomeSDK`, which owns the data of one app scene.
@@ -5,13 +6,14 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Types
-    /// Where the session of the signed-in person and the id of this device's push subscription are kept.
+    /// Where the session of the signed-in person, the id of this device's push subscription and the kept mail thread
+    /// lists are kept.
     public enum SessionStore: Sendable {
         /// The Keychain of the device, so the person stays signed in across launches; the subscription id lives in the
-        /// user defaults.
+        /// user defaults and the mail thread lists in the app's caches directory.
         case keychain
-        /// The memory of this process only. Tests use it, so that a session another build stored on the same device
-        /// never reaches them.
+        /// The memory of this process only, with no mail thread lists kept. Tests use it, so that a session or a list
+        /// another build stored on the same device never reaches them.
         case memory
     }
 
@@ -28,12 +30,17 @@ public final class SharedScreenModelFactory {
         case .keychain: DefaultsPushSubscriptionStorage()
         case .memory: SharedSDK.InMemoryPushSubscriptionStorage()
         }
+        let cacheDirectory: String? = switch sessionStore {
+        case .keychain: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.path
+        case .memory: nil
+        }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
             recorder: DeviceAudioRecorder(),
             player: DeviceAudioPlayer(),
-            pushSubscriptions: subscriptions
+            pushSubscriptions: subscriptions,
+            cacheDirectory: cacheDirectory
         )
     }
 }

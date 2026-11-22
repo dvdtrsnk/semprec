@@ -10,6 +10,7 @@ import cz.semprec.app.domain.MailLinkKind
 import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailSummary
+import cz.semprec.app.domain.MailThreadChanges
 import cz.semprec.app.domain.MailThreadDetail
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailThreadQuery
@@ -132,6 +133,68 @@ class HttpMailRepositoryTest {
         assertEquals(MailNamedRef("pr1", "Web"), thread.project)
         assertEquals("Novák Web", thread.company?.name)
         assertTrue(thread.unread && thread.hasAttachment && thread.hasSempDraft && !thread.flagged)
+    }
+
+    @Test
+    fun theListReadsTheChangesCursorOfItsPage() = runTest {
+        val server =
+            server { ok(THREADS.replace("\"nextCursor\":\"abc\"", "\"nextCursor\":null,\"changesCursor\":\"k1\"")) }
+
+        val page = assertIs<RepositoryResult.Content<MailThreadPage>>(server.mail().threads(MailThreadQuery())).value
+
+        assertEquals("k1", page.changesCursor)
+        assertNull(page.nextCursor)
+    }
+
+    @Test
+    fun theChangesSendTheViewAndTheCursorAndMapTheRowsAndTheRemovedIds() = runTest {
+        val server = server { request ->
+            if (request.url.encodedPath != "/api/mail/threads/changes") return@server null
+            ok(
+                THREADS.replace("\"nextCursor\":\"abc\"", "\"cursor\":\"k2\",\"removed\":[\"gone\"],\"reset\":false"),
+            )
+        }
+        val query = MailThreadQuery(
+            box = MailBox.SEMP_DRAFTS,
+            mailboxId = "m1",
+            folderId = "f1",
+            areaId = "ar1",
+            projectId = "pr1",
+            unreadOnly = true,
+            search = "ignored",
+            cursor = "ignored",
+        )
+
+        val answer = server.mail().threadChanges(query, "k1")
+
+        val changes = assertIs<RepositoryResult.Content<MailThreadChanges>>(answer).value
+        val sent = server.requests.single()
+        assertEquals(HttpMethod.Get, sent.method)
+        val expected = mapOf(
+            "box" to "sempDrafts", "mailboxId" to "m1", "folderId" to "f1", "areaId" to "ar1", "projectId" to "pr1",
+            "unread" to "true", "since" to "k1",
+        )
+        assertEquals(expected, sent.url.parameters.names().associateWith { sent.query(it).orEmpty() })
+        assertEquals(MailThreadChanges("k2", changes.threads, listOf("gone"), reset = false), changes)
+        assertEquals(THREAD, changes.threads.single().threadId)
+    }
+
+    @Test
+    fun aResetOfTheChangesCarriesOnlyTheNewCursor() = runTest {
+        val server = server { ok("""{"cursor":"k3","threads":[],"removed":[],"reset":true}""") }
+
+        val answer = server.mail().threadChanges(MailThreadQuery(), "old")
+
+        assertEquals(
+            RepositoryResult.Content(MailThreadChanges("k3", emptyList(), emptyList(), reset = true)),
+            answer,
+        )
+        assertEquals(
+            mapOf("box" to "inbox", "since" to "old"),
+            server.requests.single().let { sent ->
+                sent.url.parameters.names().associateWith { sent.query(it).orEmpty() }
+            }
+        )
     }
 
     @Test

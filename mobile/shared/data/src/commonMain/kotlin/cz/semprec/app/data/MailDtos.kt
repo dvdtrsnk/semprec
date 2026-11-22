@@ -39,7 +39,19 @@ internal data class MailThreadDto(
 )
 
 @Serializable
-internal data class MailThreadPageDto(val threads: List<MailThreadDto> = emptyList(), val nextCursor: String? = null)
+internal data class MailThreadPageDto(
+    val threads: List<MailThreadDto> = emptyList(),
+    val nextCursor: String? = null,
+    val changesCursor: String? = null,
+)
+
+@Serializable
+internal data class MailThreadChangesDto(
+    val cursor: String,
+    val threads: List<MailThreadDto> = emptyList(),
+    val removed: List<String> = emptyList(),
+    val reset: Boolean,
+)
 
 @Serializable
 internal data class MailFacetItemDto(val id: String, val count: Int = 0, val areaId: String? = null)

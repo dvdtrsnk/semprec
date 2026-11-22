@@ -49,7 +49,27 @@ data class MailThreadSummary(
     val hasSempDraft: Boolean,
 )
 
-data class MailThreadPage(val threads: List<MailThreadSummary>, val nextCursor: String?)
+/**
+ * One page of a thread list, newest first. [changesCursor] names the server's state the page was read in; the changes
+ * of the view since then are asked for with it ([MailRepository.threadChanges]). A search answers none.
+ */
+data class MailThreadPage(
+    val threads: List<MailThreadSummary>,
+    val nextCursor: String?,
+    val changesCursor: String? = null,
+)
+
+/**
+ * What changed in one list view since a changes cursor: [threads] are the changed rows that are in the view, [removed]
+ * the ids of changed threads that are not (any more), and [cursor] asks for the changes after these. [reset] says the
+ * server cannot tell the changes since that cursor; the view is then read again from its first page.
+ */
+data class MailThreadChanges(
+    val cursor: String,
+    val threads: List<MailThreadSummary>,
+    val removed: List<String>,
+    val reset: Boolean,
+)
 
 /** An area or a project of the filter with the number of threads it holds; [areaId] is a project's area. */
 data class MailFacetOption(

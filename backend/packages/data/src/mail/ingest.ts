@@ -1,8 +1,7 @@
 import { hasUnsettledMailMove } from "./mailMessageMoveSyncStore.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 import type { PoolClient } from "pg";
-import { runAfterCommit } from "../db/pool.js";
-import { notifyInvalidation } from "../realtimeHook.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -250,8 +249,9 @@ export async function ingestEmailMessage(
       }
 
       await client.query("RELEASE SAVEPOINT ingest_provider_msg_conflict");
-      // Tenant-wide (no `userId`); a converged provider-id conflict never reaches here.
-      runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
+      // Publishes the thread's tenant-wide `mailThread` invalidation after commit; a converged provider-id conflict
+      // never reaches here.
+      touchMailThreads(client, [threadId]);
       newMessageThreadId = threadId;
     } catch (err) {
       if (!isProviderMessageIdConflict(err)) throw err;
