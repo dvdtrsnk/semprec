@@ -123,7 +123,8 @@ private extension ProjectMailSignalsScreen {
     }
 
     func removeLabel(_ value: String) -> Text {
-        Text(verbatim: String(format: String(localized: "mail.signals.remove", bundle: .module), value))
+        let format = String(localized: "mail.signals.remove", bundle: .module)
+        return Text(verbatim: String(format: format, locale: .current, value))
     }
 
     func invalidMessage(_ field: MailSignalField) -> LocalizedStringKey {

@@ -99,7 +99,7 @@ class InternetAccountsHistoryIndexingTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `closing the screen ends the indexing and releases the lease and every held password`() =
+    @Test fun `closing the screen ends the indexing and releases the lease and every password but leaves its state`() =
         runTest(dispatcher) {
             val history = ScriptedMailHistory()
             val imap = ScriptedHistoryImap()
@@ -117,12 +117,15 @@ class InternetAccountsHistoryIndexingTest : MainDispatcherTest() {
             vm.onAction(icloud("two@icloud.com"))
             runCurrent()
             assertTrue(vm.holdsHistoryLogins)
+            val shown = vm.state.value
+            assertEquals("first", shown.historyIndexing?.accountId)
 
             vm.close()
             runCurrent()
 
             assertFalse(vm.holdsHistoryLogins)
-            assertNull(vm.state.value.historyIndexing)
+            // The cleanup ran after the close and touched nothing of the closed screen.
+            assertEquals(shown, vm.state.value)
             assertEquals(listOf("lease-first"), history.released)
             assertEquals(0, imap.open)
             assertEquals(listOf("one@icloud.com"), imap.logins.map { it.username })

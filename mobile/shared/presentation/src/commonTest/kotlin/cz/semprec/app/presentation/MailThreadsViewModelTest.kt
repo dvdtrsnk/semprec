@@ -307,6 +307,41 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a read mark stays when the next page comes and so does one set while it loaded`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mail = ScriptedMailRepository(
+            threads = MailCall(
+                mailContent(mailPage(mailThread("a", unread = true), mailThread("b", unread = true), next = "c1")),
+                mailContent(mailPage(mailThread("c", unread = true), next = "c2")),
+                answersLate(gate, RepositoryResult.Content(mailPage(mailThread("d", unread = true)))),
+            ),
+            read = MailCall(mailDone(false), mailDone(false)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("a"))
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(
+            listOf("a" to false, "b" to true, "c" to true),
+            vm.state.value.threads.map { it.threadId to it.unread },
+        )
+
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("b"))
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(
+            listOf("a" to false, "b" to false, "c" to true, "d" to true),
+            vm.state.value.threads.map { it.threadId to it.unread },
+        )
+        vm.close()
+    }
+
     @Test fun `marking unread asks for read false and a refused write puts the dot back`() = runTest(dispatcher) {
         val mail = ScriptedMailRepository(
             threads = MailCall(mailContent(mailPage(mailThread("a", unread = false)))),

@@ -65,7 +65,8 @@ import kotlinx.coroutines.SupervisorJob
  * [sessionStorage] is where the signed-in session survives a restart (the Keychain on Apple); the default forgets
  * it with the process. [cacheDirectory] is a directory the system may empty (the app's cache directory), where the
  * mail thread lists of the signed-in account are kept so they open at once and without a connection; `null` keeps
- * none. Signing out empties it. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
+ * none. Every end of the session empties it: signing out, the server refusing the session, and a restore of a session
+ * the server no longer knows. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
  *
@@ -82,10 +83,13 @@ class HomeSDK(
     cacheDirectory: String? = null,
 ) {
     private val repository = InMemoryPlaceholderRepository()
-    private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device) { ending ->
-        threadLists.clear()
-        RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)()
-    }
+    private val auth = HttpAuthRepository(
+        ApiClient(),
+        sessionStorage,
+        device,
+        sessionEnded = { threadLists.clear() },
+        endingSession = { ending -> RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)() },
+    )
     private val threadLists: MailThreadListCache =
         cacheDirectory?.let { FileMailThreadListCache(it, auth.api) } ?: NoMailThreadListCache()
     private val viewModels =

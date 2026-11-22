@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.MailSignalField
 import cz.semprec.app.domain.MailSignalAssignment
 import cz.semprec.app.domain.MailSignalPerson
+import cz.semprec.app.domain.MailSignalPreview
 import cz.semprec.app.domain.MailSignalSet
 import cz.semprec.app.domain.MailSignalsOutcome
 import cz.semprec.app.domain.ProjectMailSignals
@@ -13,6 +14,7 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 private const val SIGNALS = """{"projectId":"p1","domains":["novak.cz"],"addresses":["petr@pekarna.cz"],""" +
     """"keywords":["Faktura"],"updatedAt":"2026-11-20T10:00:00.000Z","peopleAddresses":""" +
@@ -114,7 +116,9 @@ class HttpProjectMailSignalsRepositoryTest {
 
         val result = HttpProjectMailSignalsRepository(server.api()).preview("p1", draft)
 
-        val preview = ((result as RepositoryResult.Content).value as MailSignalsOutcome.Done).value
+        val preview = assertIs<MailSignalsOutcome.Done<MailSignalPreview>>(
+            assertIs<RepositoryResult.Content<MailSignalsOutcome<MailSignalPreview>>>(result).value,
+        ).value
         assertEquals(3, preview.total)
         assertEquals(1, preview.alreadyAssigned)
         val thread = preview.threads.single()
@@ -132,7 +136,9 @@ class HttpProjectMailSignalsRepositoryTest {
 
         val result = HttpProjectMailSignalsRepository(server.api()).preview("p1", null)
 
-        val preview = ((result as RepositoryResult.Content).value as MailSignalsOutcome.Done).value
+        val preview = assertIs<MailSignalsOutcome.Done<MailSignalPreview>>(
+            assertIs<RepositoryResult.Content<MailSignalsOutcome<MailSignalPreview>>>(result).value,
+        ).value
         assertEquals(0, preview.total)
         assertEquals(emptyList(), preview.threads)
         assertEquals("{}", server.bodies.single())

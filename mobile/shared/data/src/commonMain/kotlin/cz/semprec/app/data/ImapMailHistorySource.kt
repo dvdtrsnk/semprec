@@ -5,6 +5,7 @@ import cz.semprec.app.domain.MailHistoryImap
 import cz.semprec.app.domain.MailHistoryImapSession
 import cz.semprec.app.domain.MailHistoryLogin
 import cz.semprec.app.domain.RepositoryResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -18,8 +19,19 @@ class ImapMailHistorySource internal constructor(
 ) : MailHistoryImap {
     constructor() : this(tlsImapTransport(), ImapTimeouts())
 
-    override suspend fun open(login: MailHistoryLogin): RepositoryResult<MailHistoryImapSession> = attempt {
-        ImapHistorySession(ImapClient.signIn(transport, login.host, login.username, login.password, timeouts))
+    override suspend fun open(login: MailHistoryLogin): RepositoryResult<MailHistoryImapSession> {
+        var signedIn: ImapClient? = null
+        return try {
+            attempt {
+                val client = ImapClient.signIn(transport, login.host, login.username, login.password, timeouts)
+                signedIn = client
+                ImapHistorySession(client)
+            }
+        } catch (cancelled: CancellationException) {
+            // Cancelled once the sign-in had finished: the session never reached the caller, so nobody else closes it.
+            signedIn?.close()
+            throw cancelled
+        }
     }
 }
 

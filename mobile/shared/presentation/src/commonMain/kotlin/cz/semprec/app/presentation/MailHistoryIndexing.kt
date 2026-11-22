@@ -5,6 +5,7 @@ import cz.semprec.app.domain.MailHistoryLogin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -12,6 +13,9 @@ import kotlinx.coroutines.launch
  * connection: [start] queues a mailbox with its login, and [show] hears what the running one does, `null` once none
  * runs. Everything runs in [scope] on the main thread. The logins live only in the queue and in the running call;
  * both are dropped when the queue is done or [scope] is cancelled.
+ *
+ * Once [scope] is cancelled (its screen closed), [show] is not called again: the run's cleanup (the release of the
+ * lease and the logout, each bounded) still finishes after that, and must not change the state of a closed screen.
  */
 internal class MailHistoryIndexing(
     private val scope: CoroutineScope,
@@ -33,19 +37,23 @@ internal class MailHistoryIndexing(
         try {
             while (waiting.isNotEmpty()) {
                 val (mailboxId, login) = waiting.removeFirst()
-                show(InternetHistoryIndexing(mailboxId, foldersDone = 0, foldersTotal = 0, messagesUploaded = 0))
+                publish(InternetHistoryIndexing(mailboxId, foldersDone = 0, foldersTotal = 0, messagesUploaded = 0))
                 indexOne(mailboxId, login)
             }
         } finally {
             waiting.clear()
-            show(null)
+            publish(null)
         }
+    }
+
+    private fun publish(indexing: InternetHistoryIndexing?) {
+        if (scope.isActive) show(indexing)
     }
 
     private suspend fun indexOne(mailboxId: String, login: MailHistoryLogin) {
         try {
             index(mailboxId, login) { progress ->
-                show(
+                publish(
                     InternetHistoryIndexing(
                         mailboxId,
                         progress.foldersDone,

@@ -138,6 +138,6 @@ private extension ProjectMailSignalsPreviewSection {
     }
 
     func format(_ key: String.LocalizationValue, _ count: Int) -> String {
-        String(format: String(localized: key, bundle: .module), count)
+        String(format: String(localized: key, bundle: .module), locale: .current, count)
     }
 }

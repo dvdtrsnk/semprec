@@ -80,6 +80,9 @@ internal class ImapClient private constructor(private val stream: ImapByteStream
         stream.close()
     }
 
+    /** Closes the connection at once, without logging out; for a client its caller can no longer hand on. */
+    fun close() = stream.close()
+
     private suspend fun greetAndSignIn(username: String, password: String) {
         val greeting = reader.next()
         val failure = when {
@@ -101,16 +104,23 @@ internal class ImapClient private constructor(private val stream: ImapByteStream
             .flatMap { imapWords(it, 2) }
             .map { it.uppercase() }
             .toSet()
-        val plain = Base64.Default.encode("\u0000$username\u0000$password".encodeToByteArray())
+        val credentials = "\u0000$username\u0000$password".encodeToByteArray()
+        val plain = Base64.Default.encode(credentials)
+        credentials.fill(0)
         val signedIn = when {
             "AUTH=PLAIN" in capabilities && "SASL-IR" in capabilities ->
                 command(listOf(ImapPart.Text("AUTHENTICATE PLAIN $plain")))
             "AUTH=PLAIN" in capabilities ->
                 command(listOf(ImapPart.Text("AUTHENTICATE PLAIN")), challengeAnswer = plain)
             "LOGINDISABLED" in capabilities -> null
-            else -> command(
-                listOf(ImapPart.Text("LOGIN "), imapString(username), ImapPart.Text(" "), imapString(password)),
-            )
+            else -> {
+                val secret = imapString(password)
+                try {
+                    command(listOf(ImapPart.Text("LOGIN "), imapString(username), ImapPart.Text(" "), secret))
+                } finally {
+                    if (secret is ImapPart.Literal) secret.bytes.fill(0)
+                }
+            }
         }
         return when (signedIn?.status) {
             ImapStatus.OK -> null
@@ -141,10 +151,16 @@ internal class ImapClient private constructor(private val stream: ImapByteStream
         val tag = "h${++tags}"
         val collected = Collected(tag)
         var completed: Completed? = null
-        for ((index, chunk) in chunks(tag, parts, challengeAnswer).withIndex()) {
-            if (index > 0) completed = collected.untilContinuation()
-            if (completed != null) break
-            stream.write(chunk)
+        val chunks = chunks(tag, parts, challengeAnswer)
+        try {
+            for ((index, chunk) in chunks.withIndex()) {
+                if (index > 0) completed = collected.untilContinuation()
+                if (completed != null) break
+                stream.write(chunk)
+            }
+        } finally {
+            // A sign-in's chunks carry the password; none stays in memory once the command is out or ended.
+            chunks.forEach { it.fill(0) }
         }
         return completed ?: collected.untilTagged()
     }
@@ -239,13 +255,13 @@ private fun chunks(tag: String, parts: List<ImapPart>, challengeAnswer: String?)
             is ImapPart.Text -> line.append(part.text)
             is ImapPart.Literal -> {
                 line.append("{${part.bytes.size}}\r\n")
-                chunks += line.toByteArray()
+                chunks += line.takeBytes()
                 line = ByteSink(Int.MAX_VALUE).apply { append(part.bytes) }
             }
         }
     }
     line.append("\r\n")
-    chunks += line.toByteArray()
+    chunks += line.takeBytes()
     if (challengeAnswer != null) chunks += "$challengeAnswer\r\n".encodeToByteArray()
     return chunks
 }

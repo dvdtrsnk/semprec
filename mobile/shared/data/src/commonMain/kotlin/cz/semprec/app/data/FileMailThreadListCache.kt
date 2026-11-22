@@ -37,7 +37,9 @@ private const val HEX_RADIX = 16
  * account, named by a SHA-1 of the server and the session token so that neither appears in a path, one file per view,
  * and an index of the views, most recently used first. Writing for one account removes the lists of every other.
  * Signed out, it keeps and finds nothing. A file it cannot decode, or one of another version, account or view, reads
- * as nothing and is deleted. A failed write leaves the file before it, which is still a list to go on from.
+ * as nothing and is deleted. A failed write leaves the file before it, which is still a list to go on from. Every
+ * cache of the process over the same directory (one per Apple window) takes the same lock, so their reads, writes
+ * and clears never interleave.
  */
 class FileMailThreadListCache internal constructor(
     private val directory: String,
@@ -47,7 +49,6 @@ class FileMailThreadListCache internal constructor(
     /** The account is the session [api] signs in with. */
     constructor(directory: String, api: AuthenticatedApi) : this(directory, { api.session()?.let(::accountKey) })
 
-    private val lock = Mutex()
     private val json = Json { encodeDefaults = true }
     private val root = "${directory.trimEnd('/')}/$ROOT"
 
@@ -77,7 +78,8 @@ class FileMailThreadListCache internal constructor(
 
     override suspend fun clear() = io { deleteCachePath(root) }
 
-    private suspend fun <T> io(block: () -> T): T = withContext(dispatcher) { lock.withLock { block() } }
+    private suspend fun <T> io(block: () -> T): T =
+        withContext(dispatcher) { CacheRootLocks.of(root).withLock { block() } }
 
     /** Moves [name] to the front of the account's index and deletes the views that fall off its end. */
     private fun remember(account: String, name: String) {
@@ -99,6 +101,14 @@ class FileMailThreadListCache internal constructor(
 
     private fun decodeIndex(text: String): CachedIndexFile? =
         decodeOrNull { json.decodeFromString(CachedIndexFile.serializer(), text) }
+}
+
+/** One lock per cache root for the whole process, created when a cache first uses that root. */
+private object CacheRootLocks {
+    private val guard = Mutex()
+    private val locks = HashMap<String, Mutex>()
+
+    suspend fun of(root: String): Mutex = guard.withLock { locks.getOrPut(root) { Mutex() } }
 }
 
 private fun CachedListFile.belongsTo(account: String, view: String) =

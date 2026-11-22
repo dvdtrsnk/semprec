@@ -20,7 +20,7 @@ class AuthenticatedApi(
     private val client: ApiClient,
     private val storage: SessionStorage,
     val changes: ItemChanges = ItemChanges(),
-    private val onSessionRejected: () -> Unit,
+    private val onSessionRejected: suspend () -> Unit,
 ) {
     /** The session the calls go out with, or `null` when nobody is signed in. */
     fun session(): StoredSession? = storage.load()
