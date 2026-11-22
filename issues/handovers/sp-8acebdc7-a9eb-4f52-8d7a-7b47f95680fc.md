@@ -14,4 +14,4 @@ Commit on `fix/followup-mail-edges`: `89cb9d902`. Nothing was run against a real
 - `__tests__/graphWebhookHandler.test.ts`: "looks a repeated subscription up once per batch and at most 20 distinct subscriptions" (90 lookups before the fix) and "answers an empty 429 with Retry-After before any database read once an address is over its budget, the handshake included" (500 before the fix).
 - `__tests__/clientIpThrottle.unit.test.ts`: the limits table.
 
-**Left.** The mail handshake still echoes an unbounded `validationToken` without `X-Content-Type-Options: nosniff`, which the calendar receiver sets; out of this issue's scope.
+**Left.** Nothing. The mail handshake's unbounded `validationToken` echo without `X-Content-Type-Options: nosniff` was recorded here and is fixed by sp-0a0980c4-523e-4164-807a-f0819ca0d476 (`925462841`).
