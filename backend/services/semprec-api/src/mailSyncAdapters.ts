@@ -131,8 +131,8 @@ export function createMailContentProviders(options: CreateMailContentProvidersOp
   const imapSessions = options.imapSessions ?? sharedImapSessionPool;
   const providers: MailContentProviders = {
     attachmentStorage: options.attachmentStorage,
-    createImapClient: (mailboxItemId, credential, accountLimit) =>
-      checkoutMailboxImapClient(pool, imapSessions, mailboxItemId, credential, accountLimit),
+    createImapClient: (mailboxItemId, credential, accountLimit, signal) =>
+      checkoutMailboxImapClient(pool, imapSessions, mailboxItemId, credential, accountLimit, signal),
   };
   const { gmail, msGraph } = oauth;
   if (gmail) {
@@ -178,6 +178,7 @@ async function checkoutMailboxImapClient(
   mailboxItemId: string,
   password: string,
   accountLimit: number,
+  signal?: AbortSignal,
 ): Promise<ImapMailClient> {
   const settings = await getMailServerSettings(pool, mailboxItemId);
   const endpoint = settings?.imap ?? null;
@@ -189,9 +190,10 @@ async function checkoutMailboxImapClient(
     accountLimit,
     host: endpoint.host,
     signIn: JSON.stringify([endpoint.host, endpoint.port, endpoint.security, settings.username, password]),
+    ...(signal ? { signal } : {}),
     async connect() {
       try {
-        return await openImapConnection({ endpoint, username: settings.username }, { password });
+        return await openImapConnection({ endpoint, username: settings.username }, { password }, { signal });
       } catch (error) {
         // The original remains owned through the completed connection cleanup.
         throw classifyImapConnectFailure(error);

@@ -134,6 +134,23 @@ function countingThrottle(limit = Number.MAX_SAFE_INTEGER) {
   };
 }
 
+/**
+ * `providers` whose IMAP connection waits until `ready()` holds (or a few seconds passed), so concurrent reads all
+ * reach the fetch in flight before it can end.
+ */
+function heldUntil(providers: MailContentProviders, ready: () => boolean): MailContentProviders {
+  const create = providers.createImapClient;
+  if (!create) throw new Error("The providers open no IMAP client");
+  return {
+    ...providers,
+    createImapClient: async (...args) => {
+      for (let waited = 0; !ready() && waited < 3_000; waited += 10)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      return create(...args);
+    },
+  };
+}
+
 interface ImapAccount {
   server: FakeImapServer;
   mailboxId: string;
@@ -578,10 +595,10 @@ describe("message content and attachments on demand", () => {
       expect(asked).toEqual([]);
     });
 
-    tenantIt("shares one provider fetch between concurrent reads of the message", async () => {
+    tenantIt("shares one provider fetch between concurrent reads of the message, each counted", async () => {
       const account = await indexedImapMessage();
       const { asked, throttle } = countingThrottle();
-      const dependencies = { mailContent: account.providers, throttle };
+      const dependencies = { mailContent: heldUntil(account.providers, () => asked.length === 3), throttle };
       const from = account.server.bodyFetches.length;
 
       const answers = await Promise.all([1, 2, 3].map(() => readContent(dependencies, account.emailId)));
@@ -589,8 +606,20 @@ describe("message content and attachments on demand", () => {
       expect(new Set(answers.map((answer) => answer.body.fetchedAt)).size).toBe(1);
       expect(account.reads(from)).toEqual(["1:1"]);
       expect(account.connects.count).toBe(1);
-      expect(asked).toHaveLength(1);
+      expect(asked).toEqual([1, 2, 3].map(() => `mailContentFetch:${USER_ID}`));
       expect(await cacheRows(account.emailId)).toHaveLength(1);
+    });
+
+    tenantIt("refuses a concurrent read over the user's throttle instead of letting it join the fetch", async () => {
+      const account = await indexedImapMessage();
+      const { asked, throttle } = countingThrottle(1);
+      const dependencies = { mailContent: heldUntil(account.providers, () => asked.length === 2), throttle };
+
+      const outcomes = await Promise.allSettled([1, 2].map(() => readContent(dependencies, account.emailId)));
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(["fulfilled", "rejected"]);
+      const [refused] = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []));
+      expect(refused).toMatchObject({ status: 429, code: "rate_limited" });
     });
 
     tenantIt("refuses a fetch over the user's throttle with 429 and asks the provider nothing", async () => {
@@ -737,6 +766,35 @@ describe("message content and attachments on demand", () => {
         ]);
       },
     );
+
+    tenantIt("hands back no session with a download left running when the storage write fails early", async () => {
+      const account = await indexedImapMessage();
+      const attachment = await attachmentOf(account.emailId);
+      const failingStorage = {
+        writeStream: async () => {
+          throw new Error("The attachment storage is full");
+        },
+        delete: async () => {},
+        readStream: () => {
+          throw new Error("not read");
+        },
+      };
+      const throttle = countingThrottle().throttle;
+
+      await expect(
+        saveAttachment(
+          { mailContent: { ...account.providers, attachmentStorage: failingStorage }, throttle },
+          account.emailId,
+          attachment.id,
+        ),
+      ).rejects.toThrow("The attachment storage is full");
+      const commands = account.server.commands.length;
+      await readContent({ mailContent: account.providers, throttle }, account.emailId);
+
+      // The session of the failed save was closed, not kept: the read opens a connection of its own.
+      expect(account.connects.count).toBe(2);
+      expect(account.server.commands.slice(commands)).not.toContain("NOOP");
+    });
 
     tenantIt("converges concurrent saves of one attachment on one blob and one Files item", async () => {
       const account = await indexedImapMessage();

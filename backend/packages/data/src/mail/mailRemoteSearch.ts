@@ -284,8 +284,9 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
   });
   if (credential === null) throw new ProviderSearchFailed("reauthorizationRequired");
   const accountLimit = imapConnectionLimitForProvider(mailbox.provider, mailbox.connectionLimit);
+  // The deadline also ends the wait for a connection slot, so a search nobody waits for opens no connection.
   const imap: ImapMailClient = await providerPhase(context, () =>
-    create(mailbox.mailboxItemId, credential, accountLimit),
+    create(mailbox.mailboxItemId, credential, accountLimit, context.signal),
   );
   try {
     const searchText = imap.searchText?.bind(imap);

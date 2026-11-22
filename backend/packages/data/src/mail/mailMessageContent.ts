@@ -71,7 +71,13 @@ export interface MailContentGraphClient extends Pick<GraphMailClient, "fetchMess
  * shared connection limiter.
  */
 export interface MailContentProviders {
-  createImapClient?: (mailboxItemId: string, credential: string, accountLimit: number) => Promise<ImapMailClient>;
+  /** `signal` abandons the wait for a connection slot and the login, as a provider search's deadline does. */
+  createImapClient?: (
+    mailboxItemId: string,
+    credential: string,
+    accountLimit: number,
+    signal?: AbortSignal,
+  ) => Promise<ImapMailClient>;
   createGmailClient?: (mailboxItemId: string) => MailContentGmailClient;
   createGraphClient?: (mailboxItemId: string) => MailContentGraphClient;
   /** Where a saved attachment's bytes are written: the mail attachment root. */
@@ -361,13 +367,16 @@ async function fetchProviderBody(
   return content === null ? null : { bodyText: content.bodyText, bodyHtml: content.bodyHtml };
 }
 
-/** In-process fetches of one message's body by tenant and Emails item id; concurrent readers share one. */
+/**
+ * In-process fetches of one message's body by tenant, user and Emails item id: concurrent reads of one user share one,
+ * so the provider sees one read and its credential access is logged as that user's.
+ */
 const inFlightFetches = new Map<string, Promise<MailContentCacheRow>>();
 
-function flightKey(emailId: string): string {
+function flightKey(emailId: string, userId: string): string {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("An on-demand mail content read runs in a tenant scope");
-  return `${scope.tenantId}:${emailId}`;
+  return `${scope.tenantId}:${userId}:${emailId}`;
 }
 
 /** Fetches the body from the provider outside any transaction, then stores it as the message's cache row. */
@@ -433,8 +442,9 @@ async function readContentSource(
 
 /**
  * A stored body as it is; for an `index` message an unexpired cache row, else a fetch from the provider whose result
- * becomes the cache row. The attachments are read with the body's source, before any provider call. Concurrent reads of one message in this process share one fetch, and a read that missed a
- * fetch that just ended finds its row; only a read that asks the provider is counted by the throttle.
+ * becomes the cache row. The attachments are read with the body's source, before any provider call. A read that missed
+ * a fetch that just ended finds its row. Every read that needs the provider is counted by the throttle for its own
+ * user before it starts a fetch or joins one of the same user in flight in this process.
  */
 export async function readMailMessageContent(
   pool: Pool,
@@ -457,17 +467,23 @@ export async function readMailMessageContent(
   if (source.kind === "cached") return present("cached", cachedBody(source.cache), source.cache);
 
   const providers = requireMailContentDependency(dependencies, "mailContent");
-  const key = flightKey(input.emailId);
+  // A fetch that ended after this read's snapshot left its row: read it again before asking the provider.
+  const fresh = await withTransaction(pool, (client) => readFreshMailContentCache(client, input.emailId));
+  if (fresh !== null) return present("cached", cachedBody(fresh), fresh);
+  // Counted and joined in one synchronous step, so no fetch of this user starts or ends in between.
+  acquireMailContentFetch(dependencies, input.userId);
+  const key = flightKey(input.emailId, input.userId);
   let flight = inFlightFetches.get(key);
   if (flight === undefined) {
-    const started = (async () => {
-      // A fetch that ended after this read's snapshot left its row: read it again before asking the provider.
-      const fresh = await withTransaction(pool, (client) => readFreshMailContentCache(client, input.emailId));
-      if (fresh !== null) return fresh;
-      acquireMailContentFetch(dependencies, input.userId);
-      return fetchAndCacheBody(pool, providers, source.locator, input.userId);
-    })();
-    flight = started.finally(() => inFlightFetches.delete(key));
+    const started: Promise<MailContentCacheRow> = fetchAndCacheBody(
+      pool,
+      providers,
+      source.locator,
+      input.userId,
+    ).finally(() => {
+      if (inFlightFetches.get(key) === started) inFlightFetches.delete(key);
+    });
+    flight = started;
     inFlightFetches.set(key, flight);
   }
   const cache = await flight;

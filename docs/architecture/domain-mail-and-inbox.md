@@ -501,10 +501,11 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     `messageNotFound`; any other provider failure (connect, limiter wait, timeout, refused command, HTTP status) is
     logged by error name with local ids and answered `providerUnreachable`. A database failure keeps its identity.
     Nothing is cached on a failure.
-  - Concurrent reads of one message in the process share one fetch (keyed by tenant and item id); a read that missed a
-    fetch which just ended re-reads the cache before asking the provider. Only a read that asks the provider is
-    counted by the throttle: action `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as
-    the password routes), refusal 429 `rate_limited` with `Retry-After`.
+  - A read that missed a fetch which just ended re-reads the cache before asking the provider. Every read that then needs
+    the provider is counted by the throttle for its own user, whether it starts the fetch or joins one: action
+    `mailContentFetch`, 120 per 15 minutes **per user id** (the `throttle` member, as the password routes), refusal 429
+    `rate_limited` with `Retry-After`. Concurrent reads of one message by one user in the process share one fetch (keyed
+    by tenant, user and item id), so the credential access it logs is that user's.
 - `POST /api/mail/messages/:emailId/attachments/:attachmentId/save` (`mail/mailAttachmentSave.ts`) answers
   `{ fileItemId }`. A user action; no agent tool calls it. An attachment of another message, an unknown, foreign or
   trashed id is the same 404. An attachment with stored bytes and a live Files item of the Email (same blob and name)
@@ -514,7 +515,9 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   id of that read (`attachments.get`), or from its inline data; Graph `/attachments/{id}/$value` with the immutable-id
   header). Only IMAP records attachments without bytes (a Gmail or Graph index message records none, and a full
   one stores every attachment's bytes). The bytes are counted by `mailContentFetch`, and written to the mail
-  attachment storage before the transaction; a stream that sends nothing for 60 s fails. An attachment the IMAP or
+  attachment storage before the transaction; a stream that sends nothing for 60 s fails, and a storage write that fails
+  before the end destroys the provider's stream, so an IMAP session with the download still running is closed instead
+  of kept. An attachment the IMAP or
   Gmail client reports over the cap is 409 `attachmentTooLarge` (Graph's stream fails as `providerUnreachable`), other
   failures are answered as for the content route, and the written bytes are removed.
   - The transaction (`saveMailAttachmentFile`, `mail/attachments.ts`) takes the mail-thread guard, locks the
@@ -549,7 +552,8 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   (`mailOff`) or whose last sync failure is `reauthorization` (`reauthorizationRequired`) is reported in `failed`
   without a provider call. A refused sign-in is `reauthorizationRequired`, any other provider failure is logged by error
   name with local ids and is `providerUnreachable`, an account that has not answered by the deadline is `timeout` (its
-  Gmail or Graph request is aborted, its IMAP search stops at the next folder, what it finds later is dropped). A
+  Gmail or Graph request is aborted, its IMAP search stops at the next folder, a wait for its IMAP connection slot or
+  login ends, what it finds later is dropped). A
   database failure keeps its identity. A hit no local Emails item records is counted in `unindexed`.
   - IMAP: the stored password (access logged as the user, or `ai_agent` with the run id, purpose `imap_search`), the
     client from the content reads' factory (kept session or a new connection under the limiter). Folders: Inbox, Archive

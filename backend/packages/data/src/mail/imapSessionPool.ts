@@ -28,6 +28,8 @@ export interface ImapSessionRequest {
   signIn: string;
   /** Opens and signs in a new connection; called only when no kept session can be used. */
   connect(): Promise<ImapMailClient>;
+  /** Abandons the wait for a connection slot (the caller's deadline); `connect` takes it from the request too. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -207,12 +209,15 @@ export function createImapSessionPool(
         }
         if (closed) throw new Error("The IMAP session pool is closed");
       }
-      const lease = await limiter.acquire({
-        accountId: request.mailboxItemId,
-        accountLimit: request.accountLimit,
-        host: request.host,
-        kind: "work",
-      });
+      const lease = await limiter.acquire(
+        {
+          accountId: request.mailboxItemId,
+          accountLimit: request.accountLimit,
+          host: request.host,
+          kind: "work",
+        },
+        request.signal,
+      );
       let client: ImapMailClient;
       try {
         client = await request.connect();

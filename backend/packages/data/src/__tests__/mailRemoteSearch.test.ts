@@ -124,12 +124,13 @@ async function imapAccount(options: { refuseSearchCharset?: boolean } = {}): Pro
     connects,
     providers: {
       // As the composition root's: the account's kept session, or a new connection under the connection limiter.
-      createImapClient: (mailboxItemId, credential, accountLimit) =>
+      createImapClient: (mailboxItemId, credential, accountLimit, signal) =>
         sessions.checkout({
           mailboxItemId,
           accountLimit,
           host: "127.0.0.1",
           signIn: credential,
+          ...(signal ? { signal } : {}),
           connect: async () => {
             connects.count++;
             return connectLoopbackImapClient(port);
@@ -356,6 +357,32 @@ describe("two-layer mail search", () => {
       expect(operatorsOnly.remote).toEqual({ searched: [], failed: [], unindexed: 0 });
       expect(account.server.searches.length).toBe(searchesBefore);
       expect(asked).toHaveLength(1);
+    });
+
+    tenantIt("ends the wait for a connection slot at the deadline, opening no connection after it", async () => {
+      const account = await imapAccount();
+      account.deliver("INBOX", "Old offer", "the zanzibar clause");
+      await account.pass();
+      const create = account.providers.createImapClient!;
+      // One connection for the account, taken while the search runs, so the search waits for its slot.
+      const providers: MailContentProviders = {
+        ...account.providers,
+        createImapClient: (mailboxItemId, credential, _accountLimit, signal) =>
+          create(mailboxItemId, credential, 1, signal),
+      };
+      const held = await providers.createImapClient!(account.mailboxId, "app-password", 1);
+      const connects = account.connects.count;
+      try {
+        const answer = await search({ mailContent: providers, throttle: countingThrottle().throttle }, "q=zanzibar", {
+          deadlineMs: 200,
+        });
+        expect(answer.remote.failed).toEqual([{ mailboxId: account.mailboxId, reason: "timeout" }]);
+      } finally {
+        await held.close();
+      }
+      // The slot is free now; a search still waiting for it would connect at once.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(account.connects.count).toBe(connects);
     });
 
     tenantIt("searches the other folders when the server no longer holds one of them", async () => {
