@@ -489,6 +489,40 @@ describe("IMAP history uploaded by a native client", () => {
       expect(messages.get(messageIdOf(`Older ${index}`))).toMatchObject({ content_state: "index" });
   });
 
+  tenantIt(
+    "removes, once an upload finishes a renumbered folder, the copy of a message the server expunged",
+    async () => {
+      const imap = await account();
+      const uploadAll = async () => {
+        const answer = await claim(imap.mailboxId);
+        await upload(imap.mailboxId, await sliceBody(imap, answer.body.leaseToken, leasedFolder(answer)));
+      };
+      await imap.pass();
+      await uploadAll();
+      expect(await folderState(imap.mailboxId, "INBOX")).toMatchObject({ backfill_below_uid: null });
+      const oldest = messageIdOf("Old newsletter");
+      const next = messageIdOf("Re Old offer");
+      expect((await messagesOf(imap.mailboxId)).get(oldest)?.folders).toEqual(["INBOX:1"]);
+      // New mail the next pass finds only after the renumbering, so its backfill reaches it newest first: an old message,
+      // which makes the folder index-only again, then more recent ones than its full budget takes.
+      for (let index = 1; index <= 26; index++)
+        imap.server.deliver("INBOX", [], raw({ subject: `Renumbered recent ${index}`, daysAgo: 2 }, Date.now()));
+      imap.server.deliver("INBOX", [], raw({ subject: "Renumbered old", daysAgo: 400 }, Date.now()));
+      // The oldest message leaves and the server renumbers the rest from 1.
+      imap.server.expunge("INBOX", 1);
+      imap.server.resetUidValidity("INBOX", 1);
+
+      await imap.pass();
+      expect(await folderState(imap.mailboxId, "INBOX")).toMatchObject({ backfill_index_only: true });
+      await uploadAll();
+      await imap.pass();
+
+      const messages = await messagesOf(imap.mailboxId);
+      expect(messages.has(oldest)).toBe(false);
+      expect(messages.get(next)?.folders).toEqual(["INBOX:1"]);
+    },
+  );
+
   describe("refusals, which write nothing", () => {
     async function leased() {
       const imap = await account();

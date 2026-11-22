@@ -310,9 +310,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   vanished check are one `UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE m VANISHED)` (`fetchChangesSince`), whose
   `VANISHED (EARLIER)` names the expunged UIDs. Whether those (or, without QRESYNC, none) are every UID that left is
   decided by the message count: the stored count, less the reported vanished UIDs below the stored UIDNEXT, plus the
-  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a UIDVALIDITY change, a
-  partial batch or with no stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the
-  known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
+  new UIDs at or above it, must equal the selected EXISTS. Only when it does not (or after a partial batch or with no
+  stored count) does the pass list every UID (`UID SEARCH ALL`) and diff it against the known ones. UIDs only grow, so the count never hides a removal; after a complete pass a delivery alone sends no full
   UID list on any server, and no periodic full rescan is run. The IDLE connection signals on EXPUNGE and VANISHED like on EXISTS.
 - A vanished UID removes that folder's Emails–Folders edge and, in the same batch transaction, marks the Email's meta
   row (`mail_message_meta.folder_copy_removed_at`, `markMailMessageFolderCopyRemoved`). In the pass's final
@@ -360,9 +359,18 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   minutes, when an expired or released lease has given the folder back to the server.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
-  before its backfill is simply not found by it. A UIDVALIDITY change removes every old-UID edge in the live step;
-  the backfill of the same pass re-adds each message it reaches under its new UID by Message-ID (without download),
-  and the final transaction trashes only an item left with no folder edge.
+  before its backfill is simply not found by it.
+- A UIDVALIDITY change. The live step that finds it fetches no flags and lists no UIDs: the known UIDs name other
+  messages under the new UIDVALIDITY, so neither their flags nor their absence tells anything. In the transaction
+  that resets the folder's state (`resetForUidvalidityChange`) every edge of the folder that carries a UID keeps its
+  Email but trades the UID for `staleUid` (`retireFolderUids`), so no reader ever pairs an old UID with the new
+  UIDVALIDITY: the vanished diff, the flag observation and write-back, the moves, the content and attachment reads
+  (which then search the folder by Message-ID) and the provider search see such an edge as one without a UID. The
+  folder's backfill then reaches every message the folder holds and ingests it by Message-ID (without download),
+  which gives its edge the new UID. The write that ends the folder's backfill (the server's, or the upload of a
+  native client) removes every edge still left with only a `staleUid`, a message the folder no longer holds, and
+  marks its Email as a vanished copy's (`removeStaleFolderCopies`); the next final transaction trashes it when it has
+  no folder edge left. An Email with a move in flight keeps its edge.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
@@ -546,7 +554,9 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
     Drafts and the user's own folders are not searched. Per folder `UID SEARCH` with one `TEXT` per term (`NOT TEXT` for
     an excluded one), 30 s each, newest UIDs first; a non-ASCII term goes with `CHARSET UTF-8`, and a server that
     refuses it is asked again with the terms folded to US-ASCII. A UID maps over the folder edge carrying it while the
-    folder's UIDVALIDITY equals the stored one; otherwise, or without an edge, it is unindexed.
+    folder's stored UIDVALIDITY equals the one the search selected, as the search began and again in the mapping's
+    transaction (a pass that established the folder anew meanwhile gave its edges other UIDs); otherwise, or without an
+    edge, it is unindexed.
   - Gmail: `messages.list` with the user's `q` as it is (Gmail's own operators, which `q` shares) and `maxResults=100`;
     Gmail leaves Trash and Spam out. Graph: `GET /me/messages` with `$search="<terms> NOT <excluded>"`, `$top=100` and
     `$select=id`, with the immutable-id header (messages need no `ConsistencyLevel`); Graph searches every folder and
@@ -628,8 +638,9 @@ internals proven against the real library by its unit test; an upgrade must re-p
     A folder that is not one of the mailbox's is 404 `not_found`. Each message is ingested as a server backfill
     batch ingests it, `arrival` `backfill` and `content_state` `index` (a message inside the window too; its body is
     read on demand), with the moves in flight protected; a known Message-ID converges as always. Then the cursor moves
-    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done), and
-    the lease is renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
+    to the lowest UID the batch wrote, the last batch's to `rangeLow` (`NULL` for 1, the folder's backfill done, which
+    removes the edges a UIDVALIDITY change left with only a `staleUid` as the server's backfill does), and the lease is
+    renewed. A refusal after a committed batch leaves that prefix written; the claim answers the cursor.
   - Answer: `{ accepted, backfillBelowUid: number | null, leaseExpiresAt }`.
 - The client. The mobile apps upload the history of an IMAP account right after the person connected it with a
   password, while that password is in memory; it is never stored on the device. One IMAP connection per accounts

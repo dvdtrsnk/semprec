@@ -100,6 +100,17 @@ async function messages(): Promise<Map<string, z.infer<typeof messageRow>>> {
   return new Map(rows.map((row) => messageRow.parse(row)).map((row) => [row.subject, row]));
 }
 
+/** Whether each Emails item named by its subject is flagged. */
+async function flaggedOf(subjects: readonly string[]): Promise<Record<string, boolean>> {
+  const ids = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+  const { rows } = await runtime.query<{ subject: string; flagged: boolean }>(
+    `SELECT properties->>'name' AS subject, COALESCE((properties->>'flagged')::boolean, false) AS flagged
+       FROM items WHERE tenant_id = app_tenant_default() AND database_id = $1 AND properties->>'name' = ANY($2::text[])`,
+    [ids.emailsDatabaseId, [...subjects]],
+  );
+  return Object.fromEntries(rows.map((row) => [row.subject, row.flagged]));
+}
+
 const attachmentRow = z.object({
   id: z.string(),
   filename: z.string(),
@@ -475,6 +486,28 @@ describe("IMAP history as an index, backfilled newest first", () => {
       ]),
     );
   });
+
+  tenantIt(
+    "takes no UID of a replaced UIDVALIDITY for another message's: flags, vanished copies and edges follow the new UIDs",
+    async () => {
+      const { server: fake, pass } = await account();
+      for (const subject of ["Expunged", "Kept", "Flagged"]) fake.deliver("INBOX", [], plainMessage(subject));
+      await pass();
+      // Renumbered from 1 without the expunged message: "Kept" takes its old UID 1, "Flagged" the old UID 2 of "Kept".
+      fake.expunge("INBOX", 1);
+      fake.resetUidValidity("INBOX", 1);
+      fake.setFlags("INBOX", 2, ["\\Flagged"]);
+
+      await pass();
+
+      const after = await messages();
+      expect([...after.keys()].sort()).toEqual(["Flagged", "Kept"]);
+      expect(after.get("Kept")?.uids).toEqual(["INBOX:1"]);
+      expect(after.get("Flagged")?.uids).toEqual(["INBOX:2"]);
+      expect(await flaggedOf(["Kept", "Flagged"])).toEqual({ Kept: false, Flagged: true });
+      expect(await folderState("INBOX")).toMatchObject({ uidvalidity: "2", backfill_below_uid: null });
+    },
+  );
 
   tenantIt(
     "establishes a folder anew after a UIDVALIDITY reset and backfills it again without downloading known mail",

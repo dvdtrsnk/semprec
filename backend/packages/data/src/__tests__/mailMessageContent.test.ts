@@ -452,6 +452,40 @@ describe("message content and attachments on demand", () => {
       }),
     );
 
+    tenantIt(
+      "never reads another message through a UID of a replaced UIDVALIDITY before the backfill finds it again",
+      async () => {
+        const account = await imapAccount();
+        const expungedId = `<${randomUUID()}@sender.example.test>`;
+        const keptId = `<${randomUUID()}@sender.example.test>`;
+        account.server.deliver("INBOX", [], oldMessage(expungedId, "Expunged offer"));
+        account.server.deliver("INBOX", [], oldMessage(keptId, "Kept offer"));
+        await account.pass();
+        const expunged = await messageByMessageId(expungedId);
+        const kept = await messageByMessageId(keptId);
+        // Renumbered from 1 without the first message: the kept one now has the expunged one's UID.
+        account.server.expunge("INBOX", 1);
+        account.server.resetUidValidity("INBOX", 1);
+        // The pass establishes the folder anew in its live step (the first SELECT), then fails at the search of its
+        // backfill (after the second), before finding any message again.
+        let selects = 0;
+        account.server.beforeCommand = (verb) => {
+          if (verb === "SELECT" && ++selects === 2) account.server.refusedVerbs.add("SEARCH");
+        };
+        await expect(account.pass()).rejects.toThrow();
+        account.server.beforeCommand = undefined;
+        account.server.refusedVerbs.delete("SEARCH");
+        const dependencies = { mailContent: account.providers, throttle: countingThrottle().throttle };
+
+        const gone = await refusal(readContent(dependencies, expunged.item_id));
+        const found = await readContent(dependencies, kept.item_id);
+
+        expect(gone).toMatchObject({ status: 409, details: { reason: "messageNotFound" } });
+        expect(await cacheRows(expunged.item_id)).toEqual([]);
+        expect(found.body).toMatchObject({ contentState: "cached", bodyText: "Dobrý den, old offer" });
+      },
+    );
+
     it.each([
       {
         name: "the server fails the fetch",

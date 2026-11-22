@@ -19,6 +19,7 @@ import {
   type MailFolderSyncStateRow,
 } from "./mailFolderSyncStateStore.js";
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
+import { removeStaleFolderCopies, retireFolderUids } from "./imapStaleFolderUids.js";
 import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
 import {
   anchorMailAccountConnection,
@@ -436,8 +437,10 @@ async function fetchImapFolder(
     complete,
     resumeUid,
   };
-  // Skipped on a folder's first sync, which ingests nothing yet: no known message can have changed or vanished.
-  if (!state.uidvalidity) {
+  // Skipped on a folder's first sync, which ingests nothing yet: no known message can have changed or vanished. Skipped
+  // after a UIDVALIDITY change too: the known UIDs name other messages under the new one, so neither their flags nor
+  // their absence tells anything; the backfill finds every message again by Message-ID.
+  if (!state.uidvalidity || uidvalidityChanged) {
     return { ...fetchedFolder, changedFlags: [], vanished: { kind: "uids", uids: [] } };
   }
 
@@ -559,6 +562,7 @@ async function applyImapFolder(
   );
   if (fetched.uidvalidityChanged) {
     await resetForUidvalidityChange(dbClient, params.folderItemId, String(fetched.selection.uidvalidity));
+    await retireFolderUids(dbClient, params);
   }
   const ingested = await ingestImapBatch(
     dbClient,
@@ -637,12 +641,15 @@ async function applyImapFolder(
         : null
       : current.backfillBelowUid,
   });
+  // A folder established empty has no backfill to find its messages again.
+  if (fetched.establishes && state.backfillBelowUid === null)
+    copiesRemovedFrom.push(...(await removeStaleFolderCopies(dbClient, params, protectedMoveMessageIds)));
   return { state, ingested, complete, copiesRemovedFrom };
 }
 
 /** How a backfill batch's write ended. */
 type AppliedImapBackfill =
-  | { kind: "written"; state: MailFolderSyncStateRow; ingested: number }
+  | { kind: "written"; state: MailFolderSyncStateRow; ingested: number; copiesRemovedFrom: string[] }
   /** Another pass or a native client's upload moved the folder on since the batch's fetch. */
   | { kind: "overtaken" }
   /** A native client took a lease on the folder's backfill since the batch's fetch. */
@@ -682,11 +689,10 @@ async function applyImapBackfill(
         ? String(lowestIngested.uid)
         : current.backfillBelowUid;
   const indexOnly = batch.slice(0, ingested).some((message) => message.olderThanWindow);
-  return {
-    kind: "written",
-    state: await recordBackfill(dbClient, params.folderItemId, backfillBelowUid, { indexOnly }),
-    ingested,
-  };
+  const state = await recordBackfill(dbClient, params.folderItemId, backfillBelowUid, { indexOnly });
+  const copiesRemovedFrom =
+    state.backfillBelowUid === null ? await removeStaleFolderCopies(dbClient, params, protectedMoveMessageIds) : [];
+  return { kind: "written", state, ingested, copiesRemovedFrom };
 }
 
 /**
@@ -752,6 +758,7 @@ async function backfillImapFolder(
 
   let state = snapshot;
   let ingested = 0;
+  const copiesRemovedFrom: string[] = [];
   for (let offset = 0; ;) {
     const { prepared, exhausted } = await prepareImapBatch(
       ctx,
@@ -769,10 +776,11 @@ async function backfillImapFolder(
     if (written.value.kind !== "written") return written.value;
     state = written.value.state;
     ingested += written.value.ingested;
+    copiesRemovedFrom.push(...written.value.copiesRemovedFrom);
     offset += prepared.length;
     if (rangeEnd || exhausted || written.value.ingested < prepared.length) break;
   }
-  return { kind: "written", state, ingested, complete: state.backfillBelowUid === null, copiesRemovedFrom: [] };
+  return { kind: "written", state, ingested, complete: state.backfillBelowUid === null, copiesRemovedFrom };
 }
 
 /**
@@ -874,9 +882,13 @@ export async function reconcileImapFolder(
     const live = await syncImapFolderLive(ctx, params.folderPath, snapshot);
     if (live.kind !== "written") return { ingested: 0, complete: false };
     const backfill = await backfillImapFolder(ctx, params.folderPath, live.state);
+    const copiesRemovedFrom = new Set([
+      ...live.copiesRemovedFrom,
+      ...(backfill.kind === "written" ? backfill.copiesRemovedFrom : []),
+    ]);
     await withTransaction(pool, async (client) => {
       await lockMailThreadMutation(client);
-      await removeEmailsWithoutFolderCopy(client, new Set(live.copiesRemovedFrom), params, relationDefinitionId);
+      await removeEmailsWithoutFolderCopy(client, copiesRemovedFrom, params, relationDefinitionId);
     });
     if (backfill.kind !== "written") return { ingested: live.ingested, complete: false };
     return {
@@ -1047,6 +1059,7 @@ export async function reconcileImapAccount(
           continue;
         }
         if (!step.complete) complete = false;
+        for (const emailItemId of step.copiesRemovedFrom) copiesRemovedFrom.add(emailItemId);
       }
     }
   } finally {

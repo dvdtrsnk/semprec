@@ -16,6 +16,7 @@ import {
   type ImapFetchResponse,
 } from "./imapFetchResponseParser.js";
 import { IMAP_MESSAGES_PER_BATCH, type ImapFetchedMessage } from "./imapReconcile.js";
+import { removeStaleFolderCopies } from "./imapStaleFolderUids.js";
 import { bodyPartPrefixInText, IMAP_SNIPPET_BYTES, imapSnippetText } from "./imapSnippet.js";
 import { ingestEmailMessage } from "./ingest.js";
 import { getMailAccountSyncState, recordImapInitialSyncCompleted } from "./mailAccountSyncStateStore.js";
@@ -406,6 +407,14 @@ async function writeUploadedBatch(
     token: body.leaseToken,
     leaseMs: MAIL_HISTORY_LEASE_MS,
   });
+  // The folder's history is all in: an edge still without the UIDVALIDITY's own UID names a message gone since. The
+  // next sync pass decides each Email this marks.
+  if (written.backfillBelowUid === null)
+    await removeStaleFolderCopies(
+      client,
+      { folderItemId: body.folderId, folderRelationPropertyId: folderProperty.id },
+      protectedMoveMessageIds,
+    );
   const backfillDone = (folder: MailboxFolderSyncState) =>
     folder.itemId === body.folderId
       ? written.backfillBelowUid === null

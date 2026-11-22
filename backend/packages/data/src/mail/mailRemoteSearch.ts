@@ -261,7 +261,9 @@ interface ImapFolderHits {
   folder: ImapSearchFolder;
   /** Newest first. */
   uids: number[];
-  /** The folder's UIDVALIDITY equals the stored one, so the stored edges' UIDs name these messages. */
+  /** The folder's UIDVALIDITY as the search selected it. */
+  uidvalidity: string;
+  /** It equals the stored one as the search began, so the stored edges' UIDs name these messages. */
   uidsComparable: boolean;
 }
 
@@ -297,7 +299,12 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
       });
       const newest = [...new Set(uids)].sort((a, b) => b - a).slice(0, remaining);
       remaining -= newest.length;
-      hits.push({ folder, uids: newest, uidsComparable: String(uidvalidity) === folder.uidValidity });
+      hits.push({
+        folder,
+        uids: newest,
+        uidvalidity: String(uidvalidity),
+        uidsComparable: String(uidvalidity) === folder.uidValidity,
+      });
     }
     return hits;
   } finally {
@@ -314,8 +321,10 @@ async function searchImapFolders(context: ProviderSearchContext): Promise<ImapFo
 }
 
 /**
- * The Emails items the found UIDs name over each folder's edges. A UID no edge carries (the message is not ingested
- * yet, or the folder's UIDVALIDITY changed since its last sync) counts as unindexed; a trashed item is no hit.
+ * The Emails items the found UIDs name over each folder's edges, while the folder's stored UIDVALIDITY is still the one
+ * the search selected (a pass that established the folder anew since gave its edges other UIDs). A UID no edge carries
+ * (the message is not ingested yet, or the folder's UIDVALIDITY changed since its last sync) counts as unindexed; a
+ * trashed item is no hit.
  */
 async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFolderHits[]) {
   const folderProperty = await getPropertyByKey(client, ids.emailsDatabaseId, "folder");
@@ -323,7 +332,7 @@ async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFol
   if (!definition) throw new Error("The Emails folder property has no relation definition");
   const emailIds: string[] = [];
   let unindexed = 0;
-  for (const { folder, uids, uidsComparable } of hits) {
+  for (const { folder, uids, uidvalidity, uidsComparable } of hits) {
     if (!uidsComparable) {
       unindexed += uids.length;
       continue;
@@ -334,9 +343,11 @@ async function mapImapHits(client: PoolClient, ids: MailModuleIds, hits: ImapFol
        FROM item_relations edge
        JOIN items email ON email.tenant_id = edge.tenant_id AND email.database_id = $3
          AND email.id = CASE WHEN edge.item_a = $1 THEN edge.item_b ELSE edge.item_a END
+       JOIN mail_folder_sync_state state ON state.tenant_id = edge.tenant_id AND state.item_id = $1
+         AND state.uidvalidity = $5::bigint
        WHERE edge.tenant_id = app_tenant_default() AND edge.relation_definition_id = $2
          AND (edge.item_a = $1 OR edge.item_b = $1) AND edge.metadata->>'uid' = ANY($4::text[])`,
-      [folder.folderItemId, definition.id, ids.emailsDatabaseId, uids.map(String)],
+      [folder.folderItemId, definition.id, ids.emailsDatabaseId, uids.map(String), uidvalidity],
     );
     const mapped = new Set(rows.map((row) => row.uid));
     unindexed += uids.filter((uid) => !mapped.has(String(uid))).length;

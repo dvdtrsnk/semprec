@@ -359,6 +359,44 @@ describe("two-layer mail search", () => {
     });
 
     tenantIt(
+      "maps no hit over edges a pass renumbered under a new UIDVALIDITY after the provider searched",
+      async () => {
+        const account = await imapAccount();
+        account.deliver("INBOX", "Old offer", "the zanzibar clause");
+        const otherId = account.deliver("INBOX", "Other offer", "another clause");
+        await account.pass();
+        const create = account.providers.createImapClient!;
+        let renumbered = false;
+        const providers: MailContentProviders = {
+          ...account.providers,
+          createImapClient: async (...args) => {
+            const client = await create(...args);
+            const searchText = client.searchText!.bind(client);
+            client.searchText = async (path, terms) => {
+              const uids = await searchText(path, terms);
+              if (path === "INBOX" && !renumbered) {
+                renumbered = true;
+                // The hit's message leaves and the server renumbers the rest: the other message takes its UID 1.
+                account.server.expunge("INBOX", 1);
+                account.server.resetUidValidity("INBOX", 1);
+                await account.pass();
+              }
+              return uids;
+            };
+            return client;
+          },
+        };
+
+        const answer = await search({ mailContent: providers, throttle: countingThrottle().throttle }, "q=zanzibar");
+
+        expect(renumbered).toBe(true);
+        const other = await messageByMessageId(otherId);
+        expect(answer.threads.map((thread) => thread.threadId)).not.toContain(other.thread_id);
+        expect(answer.remote).toEqual({ searched: [account.mailboxId], failed: [], unindexed: 1 });
+      },
+    );
+
+    tenantIt(
       "searches a non-ASCII word with CHARSET UTF-8, and again folded to ASCII where the server refuses it",
       async () => {
         const utf8 = await imapAccount();
