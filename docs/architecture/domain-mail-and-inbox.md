@@ -231,9 +231,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
   write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
   activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
-  batch locks its `mail_folder_sync_state` row and writes only while it is still the state its fetch started
-  from; if another pass moved the folder on meanwhile it writes nothing and ends the pass incomplete, so a
-  cursor never moves back. A failed batch deletes the attachment bytes it wrote; committed batches keep theirs.
+  batch locks its `mail_folder_sync_state` row and writes only while it still holds the cursors its fetch started
+  from: a live step compares the live cursors (UIDVALIDITY, `uidnext`, HIGHESTMODSEQ, message count, `live_from_uid`)
+  and keeps the stored backfill cursor, a backfill batch also compares `backfill_below_uid` and writes nothing while a
+  native client holds the folder's lease. If another pass (or a client's upload) moved the folder on meanwhile it
+  writes nothing and ends the pass incomplete, so a cursor never moves back. A failed batch deletes the attachment
+  bytes it wrote; committed batches keep theirs.
 - A Gmail pass (`reconcileGmailAccount` in `mail/gmailReconcile.ts`): the label list, then a prepare transaction
   (label Folders, the cursor read), then the live step, then the listing, then the flag write-back (pending writes
   read in one transaction, `messages.modify` outside it, confirmations in the final transaction) and the final
@@ -320,7 +323,11 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   the last ingested UID. Then every folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`,
   highest (newest) first, in write transactions of at most 50 messages, each moving `backfill_below_uid` down to the
   lowest UID it wrote; the batch that writes the folder's lowest UID sets it `NULL`. New mail is therefore ingested
-  before older history and never waits for a backfill.
+  before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
+  older history, stored as an index, which a native client may then upload (see
+  [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
+  under an unexpired lease is skipped by the backfill step (no SELECT); its live step runs as always.
 - Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
   `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
   as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch
@@ -332,7 +339,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   whose meta row is gone by the batch's write (removed meanwhile) ends the batch there, unwritten, for a later pass.
   A pass that leaves new messages or any folder's backfill behind requests a rerun of itself in its final
   transaction, leaves the account due at once and keeps `initial_sync_completed_at` unset; it is set by the first
-  pass that ends with every folder's backfill done.
+  pass that ends with every folder's backfill done. A backfill left to a
+  client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
+  minutes, when an expired or released lease has given the folder back to the server.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
   before its backfill is simply not found by it. A UIDVALIDITY change removes every old-UID edge in the live step;

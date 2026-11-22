@@ -143,6 +143,8 @@ interface PreparedImapMessage {
   arrival: MailArrival;
   /** `null`: the mailbox held its Message-ID when the batch was prepared, so none of its content was fetched. */
   content: IngestedMailContent | null;
+  /** Its Date lies before the full-content window, whatever the mailbox already held of it. */
+  olderThanWindow: boolean;
 }
 
 /** What every fetch and write of one pass shares. */
@@ -217,7 +219,10 @@ async function prepareImapBatch(
         attachments: candidate.attachments,
       };
     }
-    prepared.push({ uid: candidate.uid, message: candidate.message, arrival, content });
+    const { date } = candidate.message;
+    const olderThanWindow =
+      date !== undefined && mailContentStateOf({ arrival, date, connectedAt: ctx.connectedAt }) === "index";
+    prepared.push({ uid: candidate.uid, message: candidate.message, arrival, content, olderThanWindow });
   }
   return { prepared, exhausted };
 }
@@ -462,15 +467,23 @@ function countAccountsForFolder(
   return Number(snapshot.messageCount) - vanishedBelow + newUids === selection.messages;
 }
 
-function sameFolderState(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
+/**
+ * The cursors a live step reads and writes. The backfill cursor is not among them: the live step keeps the stored one
+ * (it sets it only when it establishes the state), so a backfill slice committed meanwhile, the server's or a native
+ * client's, does not overtake it.
+ */
+function sameLiveCursors(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
   return (
     a.uidvalidity === b.uidvalidity &&
     a.uidnext === b.uidnext &&
     a.highestmodseq === b.highestmodseq &&
     a.messageCount === b.messageCount &&
-    a.liveFromUid === b.liveFromUid &&
-    a.backfillBelowUid === b.backfillBelowUid
+    a.liveFromUid === b.liveFromUid
   );
+}
+
+function sameFolderState(a: MailFolderSyncStateRow, b: MailFolderSyncStateRow): boolean {
+  return sameLiveCursors(a, b) && a.backfillBelowUid === b.backfillBelowUid;
 }
 
 /**
@@ -499,8 +512,9 @@ interface AppliedImapFolder {
 
 /**
  * The write half of a folder's live reconcile, in the caller's transaction under the mail-thread guard. The folder's
- * sync state row is locked and must still be the snapshot the fetch was computed from; otherwise another pass has
- * moved the folder on since, nothing is written and `null` is returned, so a cursor never moves backwards.
+ * sync state row is locked and its live cursors must still be the snapshot's the fetch was computed from; otherwise
+ * another pass has moved the folder on since, nothing is written and `null` is returned, so a cursor never moves
+ * backwards.
  *
  * A folder whose state is first established, or reset by a UIDVALIDITY change, takes the selected UIDNEXT as its
  * `live_from_uid`, its live cursor and its `backfill_below_uid`: every message already in it is backfill, and only a
@@ -514,7 +528,7 @@ async function applyImapFolder(
 ): Promise<AppliedImapFolder | null> {
   await lockMailThreadMutation(dbClient);
   const current = await lockMailFolderSyncState(dbClient, params.folderItemId);
-  if (!current || !sameFolderState(current, fetched.snapshot)) return null;
+  if (!current || !sameLiveCursors(current, fetched.snapshot)) return null;
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
     params.mailboxItemId,
@@ -594,10 +608,20 @@ async function applyImapFolder(
   return { state, ingested, complete, copiesRemovedFrom };
 }
 
+/** How a backfill batch's write ended. */
+type AppliedImapBackfill =
+  | { kind: "written"; state: MailFolderSyncStateRow; ingested: number }
+  /** Another pass or a native client's upload moved the folder on since the batch's fetch. */
+  | { kind: "overtaken" }
+  /** A native client took a lease on the folder's backfill since the batch's fetch. */
+  | { kind: "leased" };
+
 /**
- * The write of one backfill batch, in the caller's transaction under the mail-thread guard, guarded like
- * `applyImapFolder`. `backfill_below_uid` moves down to the lowest UID written; after the folder's last batch
- * (`last`, every UID below the cursor written) it becomes `null`.
+ * The write of one backfill batch, in the caller's transaction under the mail-thread guard. The folder's sync state row
+ * is locked and must still hold the cursors the batch's fetch started from and no client lease; otherwise nothing is
+ * written. `backfill_below_uid` moves down to the lowest UID written; after the folder's last batch (`last`, every UID
+ * below the cursor written) it becomes `null`. A batch that writes a message dated before the full-content window marks
+ * the folder index-only.
  */
 async function applyImapBackfill(
   dbClient: PoolClient,
@@ -606,10 +630,11 @@ async function applyImapBackfill(
   last: boolean,
   params: ReconcileImapFolderParams,
   relationDefinitionId: string,
-): Promise<{ state: MailFolderSyncStateRow; ingested: number } | null> {
+): Promise<AppliedImapBackfill> {
   await lockMailThreadMutation(dbClient);
   const current = await lockMailFolderSyncState(dbClient, params.folderItemId);
-  if (!current || !sameFolderState(current, expected)) return null;
+  if (!current || !sameFolderState(current, expected)) return { kind: "overtaken" };
+  if (current.clientBackfillLease !== null) return { kind: "leased" };
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
     params.mailboxItemId,
@@ -620,13 +645,22 @@ async function applyImapBackfill(
   const lowestIngested = batch[ingested - 1];
   const backfillBelowUid =
     last && ingested === batch.length ? null : lowestIngested ? String(lowestIngested.uid) : current.backfillBelowUid;
-  return { state: await recordBackfill(dbClient, params.folderItemId, backfillBelowUid), ingested };
+  const indexOnly = batch.slice(0, ingested).some((message) => message.olderThanWindow);
+  return {
+    kind: "written",
+    state: await recordBackfill(dbClient, params.folderItemId, backfillBelowUid, { indexOnly }),
+    ingested,
+  };
 }
 
-/** How a folder's step of a pass ended: the pass ended, another pass overtook the folder, or the state it left. */
+/**
+ * How a folder's step of a pass ended: the pass ended, another pass overtook the folder, a native client holds the
+ * folder's backfill (backfill step only), or the state it left.
+ */
 type ImapFolderStep =
   | { kind: "ended" }
   | { kind: "overtaken" }
+  | { kind: "leased" }
   | {
       kind: "written";
       state: MailFolderSyncStateRow;
@@ -640,7 +674,7 @@ async function syncImapFolderLive(
   ctx: ImapPassContext,
   folderPath: string,
   snapshot: MailFolderSyncStateRow,
-): Promise<ImapFolderStep> {
+): Promise<Exclude<ImapFolderStep, { kind: "leased" }>> {
   const fetched = await fetchImapFolder(ctx, folderPath, snapshot);
   const written = await ctx.write((client, storage) =>
     applyImapFolder(client, fetched, { ...ctx.params, storage }, ctx.relationDefinitionId),
@@ -653,7 +687,8 @@ async function syncImapFolderLive(
 /**
  * The backfill step of one folder: from `backfill_below_uid` downwards (highest UIDs first) while the budget lasts,
  * in write transactions of at most `IMAP_MESSAGES_PER_BATCH` messages, each moving the cursor down once it commits.
- * A UIDVALIDITY changed since the live step leaves the folder to the next pass, which establishes it anew.
+ * A UIDVALIDITY changed since the live step leaves the folder to the next pass, which establishes it anew. A folder
+ * whose backfill a native client holds under a lease is left to it, without a SELECT.
  */
 async function backfillImapFolder(
   ctx: ImapPassContext,
@@ -669,6 +704,7 @@ async function backfillImapFolder(
   };
   const limit = ctx.budget.full + ctx.budget.index;
   if (snapshot.backfillBelowUid === null || snapshot.liveFromUid === null || limit === 0) return unchanged;
+  if (snapshot.clientBackfillLease !== null) return { kind: "leased" };
   const selection = await ctx.imap.selectFolder(folderPath);
   if (String(selection.uidvalidity) !== snapshot.uidvalidity) return unchanged;
   const liveFromUid = Number(snapshot.liveFromUid);
@@ -692,7 +728,7 @@ async function backfillImapFolder(
       applyImapBackfill(client, expected, prepared, last, { ...ctx.params, storage }, ctx.relationDefinitionId),
     );
     if (!written) return { kind: "ended" };
-    if (!written.value) return { kind: "overtaken" };
+    if (written.value.kind !== "written") return written.value;
     state = written.value.state;
     ingested += written.value.ingested;
     offset += prepared.length;
@@ -896,6 +932,8 @@ export async function reconcileImapAccount(
   const budget = newPassBudget();
   const takenMessageIds = new Set<string>();
   let complete = true;
+  // A folder whose backfill a native client holds leaves the history unfinished without asking for a rerun.
+  let backfillLeased = false;
   // Decided in the final transaction, once every folder's new copies are in: a moved message keeps its item.
   const copiesRemovedFrom = new Set<string>();
   const spool = createAttachmentSpool();
@@ -957,6 +995,10 @@ export async function reconcileImapAccount(
           complete = false;
           break;
         }
+        if (step.kind === "leased") {
+          backfillLeased = true;
+          continue;
+        }
         if (!step.complete) complete = false;
       }
     }
@@ -1006,11 +1048,11 @@ export async function reconcileImapAccount(
     }
     await removeEmailsWithoutFolderCopy(client, copiesRemovedFrom, params, folderRelationDefinitionId);
     // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
-    // once, so the sweep resumes it even if the follow-up job is lost.
+    // once, so the sweep resumes it even if the follow-up job is lost; one a native client holds is not.
     await recordImapActivity(client, {
       itemId: params.mailboxItemId,
       nextExpectedActivityAt: complete ? new Date(Date.now() + 30 * 60 * 1000) : new Date(),
-      completesInitialSync: complete,
+      completesInitialSync: complete && !backfillLeased,
     });
     await params.pass.finish(client, { complete });
   });
