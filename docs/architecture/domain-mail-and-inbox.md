@@ -488,7 +488,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   delete credential, sync state, folder sync states, server settings → enqueue `mailboxRemoval` → stop the
   calendar sync (`stopCalendarAccountSync`). Deletes matching no row are fine.
 - `mailboxRemoval` job (`mail/mailboxRemovalJob.ts`, lane `mailbox-removal:<tenant>`): chunks of ≤ 100 rows,
-  Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
+  Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`: the Emails in the mailbox's live Folders, and the Emails
+  whose meta row names the mailbox, is marked `folder_copy_removed_at` and has no edge to a live Folder, i.e. whose
+  last copy vanished before a pass decided them), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
 - The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
   account with Mail off: each chunk takes the paused sync state row `FOR SHARE`, the mail-thread guard and the live
