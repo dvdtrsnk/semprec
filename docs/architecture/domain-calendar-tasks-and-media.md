@@ -235,10 +235,12 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. The one
   exception is resolving the account's server (RFC 6764), only while it has none stored: at connect, for a body's
   well-known `caldavUrl`, and in a pass of an account without `caldav_url`, whose discovery starts at its domain's
-  well-known address. There the first hop of the session's first request may redirect from the well-known address to
-  another server whose address the account could have been set up with (`allowsWellKnownDelegation`: https, a DNS
+  well-known address. There the session's first request, made to the well-known address, may follow redirects within
+  that address's origin (up to the redirect cap) and then one redirect off it, the delegation, to another server whose
+  address the account could have been set up with (`allowsWellKnownDelegation`: https, a DNS
   name that is no local name, the default port, no userinfo; the outbound policy still refuses a private address).
-  The scope moves to that server for the rest of the session, and the server becomes the account's `caldav_url`: the
+  The scope moves to that server for the rest of the session, so a second cross-origin hop (a domain's `www.` host
+  delegating on to its provider) is refused like any other: the `www.` host was the delegation. The server becomes the account's `caldav_url`: the
   connect stores it instead of the body's address, the pass (`delegatedServerUrl`) right after the calendar listing
   through mail's `recordResolvedCalDavUrl` (the Mailboxes item `FOR SHARE`, written only while `caldav_url` is
   `null`). From then on every discovery starts there and a redirect off it is refused like any other; a password

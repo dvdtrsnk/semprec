@@ -202,7 +202,7 @@ feature can avoid taking a URL at all, it does.
   gets the 3xx back unfollowed and requests the target through the same client, so every hop passes
   the policy; only the CalDAV session (`calendar/sync/adapters/caldav/caldavHttp.ts`, at most three,
   each inside the account's credential scope, which only a well-known delegation of an account with no
-  CalDAV server stored may move, once) does.
+  CalDAV server stored may move, once, on the first redirect off the well-known address's origin) does.
 - MCP maps a refusal to `McpConnectionError("address_not_allowed")`. Web push treats it as a
   permanent failure and revokes the subscription.
 - `allowLoopbackOutboundForTests()` throws unless `NODE_ENV=test` and is exported only from test

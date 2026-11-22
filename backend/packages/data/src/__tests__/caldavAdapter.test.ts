@@ -851,6 +851,37 @@ describe("CalDAV adapter against a fake server", () => {
         expect(server.requests.map((request) => request.path)).toEqual(["/.well-known/caldav"]);
       });
 
+      it("is followed after redirects within the well-known address's origin", async () => {
+        server.redirects.set("/.well-known/caldav", "/.well-known/caldav/");
+        server.redirects.set("/.well-known/caldav/", `${other.origin}/`);
+        await expect(
+          verifyCalDavServer(
+            { caldavUrl: wellKnown(), ...LOGIN, resolveServer: true },
+            { policy: LOOPBACK_LITERAL_POLICY },
+          ),
+        ).resolves.toEqual({ delegatedServerUrl: `${other.origin}/` });
+        expect(server.requests.map((request) => request.path)).toEqual(["/.well-known/caldav", "/.well-known/caldav/"]);
+        expect(other.requests.map((request) => request.path)).toEqual(["/", "/principals/owner/"]);
+      });
+
+      it("refuses a second hop off the delegated server, as from www. of the domain to its provider", async () => {
+        const provider = new FakeCalDavServer(LOGIN);
+        await provider.start();
+        try {
+          other.redirects.set("/www/", `${provider.origin}/`);
+          server.redirects.set("/.well-known/caldav", `${other.origin}/www/`);
+          await expect(
+            verifyCalDavServer(
+              { caldavUrl: wellKnown(), ...LOGIN, resolveServer: true },
+              { policy: LOOPBACK_LITERAL_POLICY },
+            ),
+          ).rejects.toBeInstanceOf(CalDavServerInvalidError);
+          expect(provider.requests).toEqual([]);
+        } finally {
+          await provider.close();
+        }
+      });
+
       it("is refused once the account has a server, at connect and in the sync", async () => {
         await expect(
           verifyCalDavServer(

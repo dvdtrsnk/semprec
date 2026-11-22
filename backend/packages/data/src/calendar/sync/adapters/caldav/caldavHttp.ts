@@ -108,7 +108,7 @@ export interface CalDavSession {
 /** The session's scope, which a well-known delegation moves once. */
 interface SessionScope {
   current: CalDavCredentialScope;
-  /** The address whose redirect may move the scope; taken by the session's first request. */
+  /** The well-known start, while the session's first request has not been made; only that request may delegate. */
   delegationFrom: URL | null;
   delegatedTo: URL | null;
 }
@@ -121,24 +121,20 @@ interface SessionOptions {
 }
 
 /**
- * Checks a redirect from `from` to `to` against the scope. Outside it only the first hop of the session's first
- * request may go, from the well-known start (`delegationFrom`) to a server `allowsWellKnownDelegation`, which then
- * becomes the scope.
+ * Checks a redirect to `to` against the scope; returns whether it was the delegation. Redirects inside the scope are
+ * followed (up to the redirect cap). Outside it only one hop may go, when `mayDelegate` (the session's first request,
+ * made to its well-known start, and no delegation yet): its first redirect off the start's origin, to a server
+ * `allowsWellKnownDelegation`, which then becomes the scope. Any later hop off that server is refused, so a second
+ * cross-origin hop (`www.` of the domain, then the provider) never carries the login.
  */
-function followRedirect(
-  scope: SessionScope,
-  delegationFrom: URL | null,
-  hop: { from: URL; to: URL },
-  policy: OutboundAddressPolicy,
-): void {
-  if (scope.current.allows(hop.to)) return;
-  if (delegationFrom === null || hop.from.href !== delegationFrom.href || !allowsWellKnownDelegation(hop.to, policy)) {
-    throw outsideScope();
-  }
-  const server = new URL(hop.to);
+function followRedirect(scope: SessionScope, mayDelegate: boolean, to: URL, policy: OutboundAddressPolicy): boolean {
+  if (scope.current.allows(to)) return false;
+  if (!mayDelegate || !allowsWellKnownDelegation(to, policy)) throw outsideScope();
+  const server = new URL(to);
   server.hash = "";
   scope.current = caldavCredentialScope(server);
   scope.delegatedTo = server;
+  return true;
 }
 
 async function readCappedBody(response: Response, signal: AbortSignal, timeout: AbortSignal): Promise<Uint8Array> {
@@ -209,7 +205,7 @@ function createSessionFetch(http: OutboundHttp, options: SessionOptions, record:
     const method = init?.method ?? "GET";
     const timeout = AbortSignal.timeout(CALDAV_REQUEST_TIMEOUT_MS);
     const signal = AbortSignal.any([options.signal, timeout]);
-    let delegationFrom = options.scope.delegationFrom;
+    let mayDelegate = options.scope.delegationFrom !== null && options.scope.delegationFrom.href === url.href;
     options.scope.delegationFrom = null;
     for (let hop = 0; ; hop += 1) {
       if (!options.scope.current.allows(url)) throw outsideScope();
@@ -237,8 +233,7 @@ function createSessionFetch(http: OutboundHttp, options: SessionOptions, record:
         }
         // The next request is vetted by the outbound policy like the first: protocol, address literal, lookup.
         const next = new URL(location, url);
-        followRedirect(options.scope, delegationFrom, { from: url, to: next }, options.policy);
-        delegationFrom = null;
+        if (followRedirect(options.scope, mayDelegate, next, options.policy)) mayDelegate = false;
         url = next;
         continue;
       }
@@ -265,9 +260,9 @@ export interface CalDavLogin {
 /**
  * Runs `fn` with a session whose HTTP clients are closed when it settles. `start` is where the account's discovery
  * starts, which sets the credential's scope (`caldavCredentialScope`). With `resolveServer`, for an account that has
- * no CalDAV server stored yet, a redirect of the session's first request from a well-known `start` to another server
- * that `allowsWellKnownDelegation` moves the scope there (`delegatedServer`); every later redirect and address is held
- * to that scope. `policy` defaults to the process's outbound policy.
+ * no CalDAV server stored yet, the first redirect off `start`'s origin of the session's first request (made to a
+ * well-known `start`, after any redirects within that origin) to a server that `allowsWellKnownDelegation` moves the
+ * scope there (`delegatedServer`); every later redirect and address is held to that scope. `policy` defaults to the process's outbound policy.
  */
 export async function withCalDavSession<T>(
   login: CalDavLogin,
