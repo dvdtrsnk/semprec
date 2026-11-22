@@ -40,6 +40,9 @@ that opens a connection; this adds a second one, to a server that is not Semprec
   accounts it connected and runs them one at a time, so one IMAP connection at most per screen, in its
   `viewModelScope`. A login is dropped when its run ends or the screen's ViewModel is cleared; a closed screen ends the
   run, logs out and releases the lease.
+- The logout and the release are the only work that outlives a closed screen: they run past its cancellation
+  (`NonCancellable`), each bounded (5 s for the logout, 10 s for the release, which otherwise expires on its own
+  within the lease), and they change nothing the closed screen shows.
 - The history routes are not announced as writes of the window (`AuthenticatedApi.announces`): their leases change
   nothing a screen shows, and their slices, every few seconds, only add history older than the server's window.
 
