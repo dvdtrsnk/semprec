@@ -121,6 +121,20 @@ final class MailNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testTheSceneShowsTheMailSignalsOfAProjectOnTheStackOfItsTab() async throws {
+        let window = try SceneWindow()
+        let scene = AppComposition(models: SignedInModels())
+        try await window.show(AppScene(composition: scene))
+        try await eventually { scene.navigation.stack(for: .overview) != nil }
+
+        scene.collectionsRouter.showProjectMailSignals(projectId: "p1")
+        try await eventually { window.stackTitle == "Mail signals" }
+        XCTAssertEqual(window.stackTitle, "Mail signals")
+        XCTAssertFalse(window.presentsSheet)
+        window.close()
+    }
+
+    @MainActor
     func testTheSceneShowsTheEditorAsASheet() async throws {
         let window = try SceneWindow()
         let scene = AppComposition(models: SignedInModels())

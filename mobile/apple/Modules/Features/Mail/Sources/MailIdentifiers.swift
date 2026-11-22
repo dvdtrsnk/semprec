@@ -47,4 +47,23 @@ enum MailIdentifiers {
     static let smartPrefix = "mail.folders.smart."
     static let folderPrefix = "mail.folders.folder."
     static let accountTogglePrefix = "mail.folders.account."
+
+    static let signalsScreen = "mail.signals.screen"
+    static let signalsSave = "mail.signals.save"
+    /// Followed by the person's address.
+    static let signalsPersonPrefix = "mail.signals.person."
+    /// Followed by the list (`domains`, `addresses`, `keywords`).
+    static let signalsInputPrefix = "mail.signals.input."
+    /// Followed by the list.
+    static let signalsAddPrefix = "mail.signals.add."
+    /// Followed by the list, a dot and the value.
+    static let signalsRemovePrefix = "mail.signals.remove."
+    /// Followed by the list.
+    static let signalsInvalidPrefix = "mail.signals.invalid."
+    static let signalsPreviewCount = "mail.signals.preview.count"
+    static let signalsPreviewRetry = "mail.signals.preview.retry"
+    /// Followed by the thread id.
+    static let signalsThreadPrefix = "mail.signals.thread."
+    static let signalsAssign = "mail.signals.assign"
+    static let signalsAssignment = "mail.signals.assignment"
 }

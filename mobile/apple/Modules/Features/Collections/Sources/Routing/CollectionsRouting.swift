@@ -3,8 +3,9 @@ import Foundation
 
 /// Navigation the Collections feature requests. The app implements it on its own navigation stacks.
 ///
-/// The screens of the other features that a collection or an item reaches (the tasks, the mail, the notes and the
-/// agent of a project, the sheet of an event, an area) are not built here: the app maps these requests to them.
+/// The screens of the other features that a collection or an item reaches (the tasks, the mail, the mail signals, the
+/// notes and the agent of a project, the sheet of an event, an area) are not built here: the app maps these requests
+/// to them.
 @MainActor
 public protocol CollectionsRouting: AnyObject {
 
@@ -20,6 +21,8 @@ public protocol CollectionsRouting: AnyObject {
     func showArea(areaId: String)
     func showProjectTasks(projectId: String)
     func showProjectMail(projectId: String)
+    /// Which people, domains and keywords mark the project's mail, with the threads they match.
+    func showProjectMailSignals(projectId: String)
     func showProjectNotes(projectId: String)
     func showProjectAgent(projectId: String)
 }
@@ -35,6 +38,7 @@ final class PreviewCollectionsRouter: CollectionsRouting {
     func showArea(areaId: String) {}
     func showProjectTasks(projectId: String) {}
     func showProjectMail(projectId: String) {}
+    func showProjectMailSignals(projectId: String) {}
     func showProjectNotes(projectId: String) {}
     func showProjectAgent(projectId: String) {}
 }

@@ -32,4 +32,5 @@ enum CollectionsIdentifiers {
     /// Followed by the database id.
     static let relatedPrefix = "item.related."
     static let projectSettings = "project.settings"
+    static let projectMailSignals = "project.settings.mailSignals"
 }

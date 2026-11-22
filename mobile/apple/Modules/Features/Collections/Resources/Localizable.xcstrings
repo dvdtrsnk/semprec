@@ -1969,6 +1969,38 @@
         }
       }
     },
+    "project.settings.mailSignals" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní signály"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail signals"
+          }
+        }
+      }
+    },
+    "project.settings.mailSignals.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podle kterých lidí, domén a klíčových slov se pozná pošta tohoto projektu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Which people, domains and keywords mark the mail of this project."
+          }
+        }
+      }
+    },
     "project.tasks" : {
       "localizations" : {
         "cs" : {
