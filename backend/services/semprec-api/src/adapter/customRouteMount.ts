@@ -137,6 +137,7 @@ export function mountCustomRoutes(
     method: definition.method,
     path: definition.path,
     handler: (definition.handler as CustomRouteHandlerFactory)(pool, dependencies),
+    ...(definition.maxBodyBytes !== undefined ? { maxBodyBytes: definition.maxBodyBytes } : {}),
   }));
   return mountRoutes(pool, routes);
 }
