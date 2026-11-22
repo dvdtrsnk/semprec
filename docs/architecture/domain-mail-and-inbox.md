@@ -184,8 +184,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   account address is 400 `mail_reauth_wrong_account`. It replaces the token and the granted scopes,
   `clearCalendarSyncCredentialRefusal` (`needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
   and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
-- After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
-  restart is a 500 although the token was replaced.
+- After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`), so the hosted
+  lifecycle reads the new token before the answer when it can. A failed restart is logged (`mailboxItemId`,
+  `errorName`) and the route still answers 200, as the password sign-in again does: the token is committed and the
+  queued pass reads it.
 
 ### OAuth token refresh
 

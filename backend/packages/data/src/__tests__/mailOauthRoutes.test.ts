@@ -1900,24 +1900,27 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     expect(await storedMailbox(caller.tenantId, mailboxId)).toEqual(before);
   });
 
-  it("propagates a failed restart as an unexpected error, with the token already replaced and the sync queued", async () => {
+  it("answers 200 when the restart after the commit fails, with the token replaced, the sync queued and the failure logged without a secret", async () => {
     const mailboxId = await existingMailbox(caller.tenantId);
-    const failure = new Error("the lifecycle factory failed");
+    const logs = captureLogs();
     const liveSync = liveSyncSpy(async () => {
-      throw failure;
+      throw new Error(`the lifecycle factory failed for ${SECRETS.refreshToken}`);
     });
 
-    const error = await caught(
-      completeReauthorization(stateOf(await reauthorize(mailboxId)), fakeProvider(googleRoutes()), liveSync.control),
+    const answer = await completeReauthorization(
+      stateOf(await reauthorize(mailboxId)),
+      fakeProvider(googleRoutes()),
+      liveSync.control,
     );
 
-    expect(error).toBe(failure);
-    expect(error).not.toBeInstanceOf(ChokePointError);
+    expect(answer).toEqual({ status: 200, body: { mailboxId } });
     expect(await storedMailbox(caller.tenantId, mailboxId)).toMatchObject({
       refreshToken: SECRETS.refreshToken,
       jobs: [`mail-account-sync:${mailboxId}`],
     });
     expect(liveSync.restarted).toEqual([mailboxId]);
+    expect(logs()).toContain("Restarting the mail live sync after a reauthorization failed");
+    expectNoSecret(logs(), Object.values(SECRETS));
   });
 
   it("answers 400 validation_failed for a code the provider refuses, and leaves the mailbox as it was", async () => {
