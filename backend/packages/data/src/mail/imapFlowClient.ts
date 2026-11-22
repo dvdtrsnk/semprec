@@ -3,6 +3,7 @@ import type { ImapFlow, FetchMessageObject, MessageStructureObject, SearchObject
 import { Readable } from "node:stream";
 import type {
   ImapFetchedMessage,
+  ImapFetchedRange,
   ImapFolderRef,
   ImapFolderSelection,
   ImapMailClient,
@@ -600,28 +601,26 @@ export class ImapFlowMailClient implements ImapMailClient {
     return raws.map((raw) => this.parseFetchedMessage(path, raw));
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
+  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedRange> {
     await this.ensureSelected(path);
     // "*" in a range can include one message below sinceUid on an empty-range edge case.
     const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
+    const all = (found === false ? [] : found).filter((uid) => uid >= sinceUid).sort((a, b) => a - b);
     // A prefix of every UID from sinceUid up, so the range between its ends holds exactly these messages.
-    const uids = (found === false ? [] : found)
-      .filter((uid) => uid >= sinceUid)
-      .sort((a, b) => a - b)
-      .slice(0, limit);
-    return (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
+    const uids = all.slice(0, limit);
+    const messages = (await this.fetchLight(path, uids)).sort((a, b) => a.uid - b.uid);
+    return { uids, messages, more: all.length > uids.length };
   }
 
-  async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedMessage[]> {
-    if (beforeUid <= 1) return [];
+  async fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedRange> {
+    if (beforeUid <= 1) return { uids: [], messages: [], more: false };
     await this.ensureSelected(path);
     const found = await this.providerCall(() => this.client.search({ uid: `1:${beforeUid - 1}` }, { uid: true }));
+    const all = (found === false ? [] : found).filter((uid) => uid < beforeUid).sort((a, b) => b - a);
     // The highest UIDs below beforeUid; no UID between their ends is missing from them, and none is added later.
-    const uids = (found === false ? [] : found)
-      .filter((uid) => uid < beforeUid)
-      .sort((a, b) => b - a)
-      .slice(0, limit);
-    return (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
+    const uids = all.slice(0, limit);
+    const messages = (await this.fetchLight(path, uids)).sort((a, b) => b.uid - a.uid);
+    return { uids, messages, more: all.length > uids.length };
   }
 
   /** One partial FETCH per distinct section, of the first `IMAP_SNIPPET_BYTES` octets only. */

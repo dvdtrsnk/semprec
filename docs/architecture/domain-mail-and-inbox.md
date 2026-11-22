@@ -332,15 +332,18 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `NULL` with `live_from_uid` set means the folder's backfill is done. The two ranges never meet: the backfill only
   covers UIDs the folder held when its state was established.
 - Order of a pass. First every folder's live step, the inbox first: the UIDs from `uidnext` up, lowest first, in one
-  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` after
-  the last ingested UID. Then every folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`,
-  highest (newest) first, in write transactions of at most 50 messages, each moving `backfill_below_uid` down to the
-  lowest UID it wrote; the batch that writes the folder's lowest UID sets it `NULL`. New mail is therefore ingested
-  before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` above
+  the last UID the step's `UID SEARCH` took when it wrote them all, else after the last ingested UID. Then every
+  folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`, highest (newest) first, in write
+  transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
+  of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
+  left. New mail is therefore ingested before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
   the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
   older history, stored as an index, which a native client may then upload (see
   [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
   under an unexpired lease is skipped by the backfill step (no SELECT); its live step runs as always.
+  How far a step reached is decided by its `UID SEARCH`, never by how many messages the `UID FETCH` after it
+  returned: a message expunged between the two leaves a gap, not the end of the folder (`ImapFetchedRange`).
 - Budget of a pass, shared by all folders and both steps: `IMAP_FULL_MESSAGES_PER_PASS` (25) full messages and
   `IMAP_INDEX_MESSAGES_PER_PASS` (500) index messages, a message whose Message-ID the mailbox already holds counting
   as an index one. A step takes messages in its order until the budget of the next one's kind is spent. Each fetch

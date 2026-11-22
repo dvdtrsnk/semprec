@@ -80,6 +80,18 @@ export interface ImapFetchedMessage {
   fetchContent(): Promise<ImapMessageContent>;
 }
 
+/**
+ * A light fetch of a UID range: the UIDs its `UID SEARCH` found, at most the `limit` asked for and in the fetch's order,
+ * and the messages the `UID FETCH` of them returned. A message expunged between the two is among `uids` but not in
+ * `messages`, so how far the range reached is told by `uids` and `more`, never by how many messages came back.
+ */
+export interface ImapFetchedRange {
+  uids: number[];
+  messages: ImapFetchedMessage[];
+  /** The search found more UIDs than the `limit`, beyond the last of `uids`. */
+  more: boolean;
+}
+
 export interface ImapFolderSelection {
   uidvalidity: number;
   uidnext: number;
@@ -354,6 +366,8 @@ interface FetchedImapFolder {
   batch: PreparedImapMessage[];
   /** Every UID at or above `sinceUid` is in `batch`. */
   complete: boolean;
+  /** Where the live cursor goes once every message of `batch` is written; `null` when the budget cut the batch. */
+  resumeUid: number | null;
   changedFlags: Array<{ uid: number; flags: string[] }>;
   /** Vanished UIDs, or every UID the folder holds now, diffed against the known ones on write. */
   vanished: { kind: "uids"; uids: number[] } | { kind: "current"; uids: number[] };
@@ -385,15 +399,19 @@ async function fetchImapFolder(
   const noNewUids =
     establishes || (Number.isSafeInteger(selection.uidnext) && selection.uidnext > 0 && selection.uidnext <= sinceUid);
   const limit = Math.min(budget.full + budget.index, IMAP_MESSAGES_PER_BATCH);
-  // One more than the limit tells whether messages remain above this batch.
-  const fetched =
+  const range: ImapFetchedRange =
     noNewUids || limit === 0
-      ? []
-      : (await imap.fetchMessagesSince(folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
-  // How many UIDs the folder holds at or above sinceUid, when the fetch saw every one of them.
-  const newUids = noNewUids ? 0 : limit > 0 && fetched.length <= limit ? fetched.length : null;
-  const { prepared: batch, exhausted } = await prepareImapBatch(ctx, folderPath, liveFromUid, fetched.slice(0, limit));
+      ? { uids: [], messages: [], more: false }
+      : await imap.fetchMessagesSince(folderPath, sinceUid, limit);
+  const fetched = [...range.messages].sort((a, b) => a.uid - b.uid);
+  // How many UIDs the folder holds at or above sinceUid, when the search saw every one of them.
+  const newUids = noNewUids ? 0 : limit > 0 && !range.more ? range.uids.length : null;
+  const { prepared: batch, exhausted } = await prepareImapBatch(ctx, folderPath, liveFromUid, fetched);
   const complete = newUids !== null && !exhausted;
+  // The batch takes every UID the search took (any it did not fetch was expunged meanwhile), so the folder's next step
+  // starts above the highest of them.
+  const lastUid = range.uids.at(-1);
+  const resumeUid = !exhausted && lastUid !== undefined ? lastUid + 1 : null;
 
   // Under CONDSTORE every flag change raises HIGHESTMODSEQ, so with it as stored no known UID changed its flags.
   const flagsUnchanged =
@@ -416,6 +434,7 @@ async function fetchImapFolder(
     sinceUid,
     batch,
     complete,
+    resumeUid,
   };
   // Skipped on a folder's first sync, which ingests nothing yet: no known message can have changed or vanished.
   if (!state.uidvalidity) {
@@ -594,14 +613,21 @@ async function applyImapFolder(
     }
   }
 
-  // A partial batch resumes after its last ingested UID. The modseq read at selection still bounds the flag and
-  // vanish checks of the next pass: changes after it have a higher modseq.
+  // A partial batch resumes above the UIDs its search took when it wrote them all, else after its last ingested UID.
+  // The modseq read at selection still bounds the flag and vanish checks of the next pass: changes after it have a
+  // higher modseq.
   const lastIngested = fetched.batch[ingested - 1];
   const { selection } = fetched;
+  const resumeUid =
+    ingested === fetched.batch.length && fetched.resumeUid !== null
+      ? fetched.resumeUid
+      : lastIngested
+        ? lastIngested.uid + 1
+        : fetched.sinceUid;
   const state = await recordReconcile(dbClient, {
     itemId: params.folderItemId,
     uidvalidity: String(selection.uidvalidity),
-    uidnext: String(complete ? selection.uidnext : lastIngested ? lastIngested.uid + 1 : fetched.sinceUid),
+    uidnext: String(complete ? selection.uidnext : resumeUid),
     highestmodseq: selection.highestModSeq !== null ? String(selection.highestModSeq) : null,
     messageCount: String(selection.messages),
     liveFromUid: String(fetched.liveFromUid),
@@ -625,15 +651,15 @@ type AppliedImapBackfill =
 /**
  * The write of one backfill batch, in the caller's transaction under the mail-thread guard. The folder's sync state row
  * is locked and must still hold the cursors the batch's fetch started from and no client lease; otherwise nothing is
- * written. `backfill_below_uid` moves down to the lowest UID written; after the folder's last batch (`last`, every UID
- * below the cursor written) it becomes `null`. A batch that writes a message dated before the full-content window marks
- * the folder index-only.
+ * written. `backfill_below_uid` moves down to the lowest UID written; after the last batch of the fetched range
+ * (`rangeEnd`, every message of the range written) it becomes the range's lowest UID, or `null` when nothing is left
+ * below it. A batch that writes a message dated before the full-content window marks the folder index-only.
  */
 async function applyImapBackfill(
   dbClient: PoolClient,
   expected: MailFolderSyncStateRow,
   batch: readonly PreparedImapMessage[],
-  last: boolean,
+  rangeEnd: { belowUid: string | null } | null,
   params: ReconcileImapFolderParams,
   relationDefinitionId: string,
 ): Promise<AppliedImapBackfill> {
@@ -650,7 +676,11 @@ async function applyImapBackfill(
   const ingested = await ingestImapBatch(dbClient, params, relationDefinitionId, protectedMoveMessageIds, batch);
   const lowestIngested = batch[ingested - 1];
   const backfillBelowUid =
-    last && ingested === batch.length ? null : lowestIngested ? String(lowestIngested.uid) : current.backfillBelowUid;
+    rangeEnd && ingested === batch.length
+      ? rangeEnd.belowUid
+      : lowestIngested
+        ? String(lowestIngested.uid)
+        : current.backfillBelowUid;
   const indexOnly = batch.slice(0, ingested).some((message) => message.olderThanWindow);
   return {
     kind: "written",
@@ -714,9 +744,11 @@ async function backfillImapFolder(
   const selection = await ctx.imap.selectFolder(folderPath);
   if (String(selection.uidvalidity) !== snapshot.uidvalidity) return unchanged;
   const liveFromUid = Number(snapshot.liveFromUid);
-  const fetched = await ctx.imap.fetchMessagesBefore(folderPath, Number(snapshot.backfillBelowUid), limit + 1);
-  const candidates = fetched.slice(0, limit);
-  const more = fetched.length > limit;
+  const range = await ctx.imap.fetchMessagesBefore(folderPath, Number(snapshot.backfillBelowUid), limit);
+  const candidates = [...range.messages].sort((a, b) => b.uid - a.uid);
+  // Below the lowest UID the search took, unless it took every UID left (one expunged before its fetch included).
+  const lowestUid = range.uids.at(-1);
+  const rangeBelowUid = range.more && lowestUid !== undefined ? String(lowestUid) : null;
 
   let state = snapshot;
   let ingested = 0;
@@ -727,18 +759,18 @@ async function backfillImapFolder(
       liveFromUid,
       candidates.slice(offset, offset + IMAP_MESSAGES_PER_BATCH),
     );
-    const last = !more && !exhausted && offset + prepared.length === candidates.length;
-    if (prepared.length === 0 && !last) break;
+    const rangeEnd = !exhausted && offset + prepared.length === candidates.length ? { belowUid: rangeBelowUid } : null;
+    if (prepared.length === 0 && !rangeEnd) break;
     const expected = state;
     const written = await ctx.write((client, storage) =>
-      applyImapBackfill(client, expected, prepared, last, { ...ctx.params, storage }, ctx.relationDefinitionId),
+      applyImapBackfill(client, expected, prepared, rangeEnd, { ...ctx.params, storage }, ctx.relationDefinitionId),
     );
     if (!written) return { kind: "ended" };
     if (written.value.kind !== "written") return written.value;
     state = written.value.state;
     ingested += written.value.ingested;
     offset += prepared.length;
-    if (last || exhausted || written.value.ingested < prepared.length) break;
+    if (rangeEnd || exhausted || written.value.ingested < prepared.length) break;
   }
   return { kind: "written", state, ingested, complete: state.backfillBelowUid === null, copiesRemovedFrom: [] };
 }

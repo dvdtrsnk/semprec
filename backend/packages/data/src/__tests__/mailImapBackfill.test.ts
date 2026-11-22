@@ -5,7 +5,11 @@ import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/pool.js";
-import { IMAP_FULL_MESSAGES_PER_PASS } from "../mail/imapReconcile.js";
+import {
+  IMAP_FULL_MESSAGES_PER_PASS,
+  IMAP_INDEX_MESSAGES_PER_PASS,
+  IMAP_MESSAGES_PER_BATCH,
+} from "../mail/imapReconcile.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { getMailThreadDetail } from "../mail/mailThreadDetail.js";
@@ -170,6 +174,18 @@ function bodyReads(fake: FakeImapServer, path: string, from = 0): string[] {
     .sort();
 }
 
+/** Expunges `uid` from `path` once, right after the next `UID SEARCH` was answered and before the `UID FETCH` after it. */
+function expungeBetweenSearchAndFetch(fake: FakeImapServer, path: string, uid: number): void {
+  let searched = false;
+  fake.beforeCommand = (verb) => {
+    if (verb === "SEARCH") searched = true;
+    else if (verb === "FETCH" && searched) {
+      fake.beforeCommand = undefined;
+      fake.expunge(path, uid);
+    }
+  };
+}
+
 describe("IMAP history as an index, backfilled newest first", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -192,7 +208,8 @@ describe("IMAP history as an index, backfilled newest first", () => {
     await admin.end();
   });
 
-  const tenantIt = (name: string, fn: () => Promise<void>) => it(name, () => runInTenant(tenant, fn), 60_000);
+  const tenantIt = (name: string, fn: () => Promise<void>, timeoutMs = 60_000) =>
+    it(name, () => runInTenant(tenant, fn), timeoutMs);
 
   tenantIt(
     "stores recent history in full and older history as an index, newest first over passes, then completes",
@@ -377,6 +394,55 @@ describe("IMAP history as an index, backfilled newest first", () => {
         expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(true);
       }),
     60_000,
+  );
+
+  tenantIt(
+    "keeps the new UIDs after a batch for the next pass when one of them is expunged between its search and fetch",
+    async () => {
+      const { server: fake, pass } = await account();
+      await pass();
+      // Dated beyond the full-content window, so each costs the index budget and only the batch size cuts the step.
+      const old = new Date(Date.now() - 200 * DAY_MS);
+      const total = IMAP_MESSAGES_PER_BATCH + 10;
+      for (let index = 1; index <= total; index++)
+        fake.deliver("INBOX", [], plainMessage(`New ${index}`, { date: old }));
+      expungeBetweenSearchAndFetch(fake, "INBOX", 10);
+
+      await pass();
+      expect((await messages()).size).toBe(IMAP_MESSAGES_PER_BATCH - 1);
+      expect(await folderState("INBOX")).toMatchObject({ uidnext: String(IMAP_MESSAGES_PER_BATCH + 1) });
+
+      await pass();
+      expect((await messages()).size).toBe(total - 1);
+      expect(await folderState("INBOX")).toMatchObject({ uidnext: String(total + 1) });
+    },
+  );
+
+  tenantIt(
+    "keeps the backfill cursor above the UIDs left when one message of a range is expunged between its search and fetch",
+    async () => {
+      const { server: fake, pass } = await account();
+      const limit = IMAP_FULL_MESSAGES_PER_PASS + IMAP_INDEX_MESSAGES_PER_PASS;
+      // The newest messages fill the full budget and the older ones the index budget, so the range alone ends the step.
+      const total = limit + 2;
+      for (let uid = 1; uid <= total; uid++) {
+        const daysAgo = uid > total - IMAP_FULL_MESSAGES_PER_PASS ? 1 : 200;
+        fake.deliver("INBOX", [], plainMessage(`History ${uid}`, { date: new Date(Date.now() - daysAgo * DAY_MS) }));
+      }
+      expungeBetweenSearchAndFetch(fake, "INBOX", 300);
+
+      await pass();
+      // The search took the `limit` highest UIDs, down to UID 3; UIDs 2 and 1 are left for the next pass.
+      expect((await messages()).size).toBe(limit - 1);
+      expect(await folderState("INBOX")).toMatchObject({ backfill_below_uid: "3" });
+
+      await pass();
+      const all = await messages();
+      expect(all.size).toBe(total - 1);
+      expect(all.has("History 1")).toBe(true);
+      expect(await folderState("INBOX")).toMatchObject({ backfill_below_uid: null });
+    },
+    120_000,
   );
 
   tenantIt(

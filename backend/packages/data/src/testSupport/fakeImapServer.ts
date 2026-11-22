@@ -286,6 +286,11 @@ export class FakeImapServer {
   readonly bodyFetches: Array<{ path: string; uid: number; section: string; length?: number }> = [];
   /** Command verbs answered with `NO` instead of their result. */
   readonly refusedVerbs = new Set<string>();
+  /**
+   * Called with each command's verb (`UID FETCH` as `FETCH`) before it is answered, so a test can change the account
+   * between two commands of one client call, as another client would.
+   */
+  beforeCommand: ((verb: string) => void) | undefined;
   /** The criteria atoms of every SEARCH, in order (a quoted or literal string as its octets). */
   readonly searches: string[][] = [];
   private readonly folders = new Map<string, ServerFolder>();
@@ -488,6 +493,7 @@ export class FakeImapServer {
     }
     args = args.slice(1);
     this.commands.push(verb);
+    this.beforeCommand?.(verb);
     const ok = (text = "done") => `${String(tag)} OK ${text}\r\n`;
     const selected = session.selected !== undefined ? this.folder(session.selected) : undefined;
     if (this.refusedVerbs.has(verb)) return { text: `${String(tag)} NO ${verb} refused\r\n` };

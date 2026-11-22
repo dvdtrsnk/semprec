@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ImapFetchedMessage, ImapMailClient } from "./imapReconcile.js";
+import type { ImapFetchedRange, ImapMailClient } from "./imapReconcile.js";
 import {
   sharedImapConnectionLimiter,
   type ImapConnectionLease,
@@ -121,8 +121,13 @@ export function createImapSessionPool(
     };
     const { client } = session;
     // A full message's content is downloaded later over the same connection, so it goes through the same guard.
-    const guardContent = (messages: ImapFetchedMessage[]): ImapFetchedMessage[] =>
-      messages.map((message) => ({ ...message, fetchContent: () => use(() => message.fetchContent()) }));
+    const guardContent = (range: ImapFetchedRange): ImapFetchedRange => ({
+      ...range,
+      messages: range.messages.map((message) => ({
+        ...message,
+        fetchContent: () => use(() => message.fetchContent()),
+      })),
+    });
     const wrapped: ImapMailClient = {
       getCapabilities: () => use((c) => c.getCapabilities()),
       listFolders: () => use((c) => c.listFolders()),

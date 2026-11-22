@@ -41,7 +41,7 @@ import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { recordingTransport, sendAdapters, transportFor } from "../testSupport/mailSendFakes.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
+import { backfillOfFetchedSince, fakeFetchedMessage, fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 const OWN_ADDRESS = "me@example.test";
 const USER_ID = randomUUID();
@@ -77,17 +77,19 @@ function providerAccount(): ImapMailClient {
     listFolders: async () => PROVIDER_FOLDERS.map(({ path, specialUse }) => ({ path, specialUse })),
     selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (path, sinceUid, limit) =>
-      Array.from({ length: countOf(path) }, (_, index) => index + 1)
-        .filter((uid) => uid >= sinceUid)
-        .slice(0, limit)
-        .map((uid) =>
-          fakeFetchedMessage(uid, {
-            messageId: `<${path}-${uid}@example.test>`,
-            subject: `${path} ${uid}`,
-            envelope: { from: { address: "bob@example.test" }, to: [{ address: OWN_ADDRESS }] },
-            attachments: [],
-          }),
-        ),
+      fakeImapRange(
+        Array.from({ length: countOf(path) }, (_, index) => index + 1)
+          .filter((uid) => uid >= sinceUid)
+          .map((uid) =>
+            fakeFetchedMessage(uid, {
+              messageId: `<${path}-${uid}@example.test>`,
+              subject: `${path} ${uid}`,
+              envelope: { from: { address: "bob@example.test" }, to: [{ address: OWN_ADDRESS }] },
+              attachments: [],
+            }),
+          ),
+        limit,
+      ),
     fetchMessagesBefore: async (path, beforeUid, limit) => backfillOfFetchedSince(account)(path, beforeUid, limit),
     fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),

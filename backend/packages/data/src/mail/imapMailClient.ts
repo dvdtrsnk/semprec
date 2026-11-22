@@ -1,5 +1,5 @@
 import type { Readable } from "node:stream";
-import type { ImapFetchedMessage, ImapFolderRef, ImapFolderSelection, ImapSnippetPart } from "./imapReconcile.js";
+import type { ImapFetchedRange, ImapFolderRef, ImapFolderSelection, ImapSnippetPart } from "./imapReconcile.js";
 import type { SafeImapMoveStepResult } from "./mailMoveProviderAdapters.js";
 import type { MailSearchTerms } from "./mailSearchTerms.js";
 import type { WritableImapFlag } from "./messageFlags.js";
@@ -25,10 +25,10 @@ export interface ImapMailClient {
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
-  /** The light fetch of at most `limit` messages from `sinceUid` up, lowest UIDs first. */
-  fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]>;
-  /** The light fetch of at most `limit` messages below `beforeUid`, highest UIDs first. */
-  fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedMessage[]>;
+  /** The light fetch of the lowest `limit` UIDs from `sinceUid` up, lowest first. */
+  fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedRange>;
+  /** The light fetch of the highest `limit` UIDs below `beforeUid`, highest first. */
+  fetchMessagesBefore(path: string, beforeUid: number, limit: number): Promise<ImapFetchedRange>;
   /** The plain text of the first `IMAP_SNIPPET_BYTES` octets of each message's snippet part, by UID. */
   fetchSnippets(
     path: string,

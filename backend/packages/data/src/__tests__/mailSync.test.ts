@@ -109,7 +109,12 @@ import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
 import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 import { recentGmailListing } from "../testSupport/gmailListing.js";
-import { backfillOfFetchedSince, fakeFetchedMessage } from "../testSupport/fakeImapMessages.js";
+import {
+  backfillOfFetchedSince,
+  fakeFetchedMessage,
+  fakeImapRange,
+  fakeImapSince,
+} from "../testSupport/fakeImapMessages.js";
 import type { FetchedMessage } from "../mail/providerTypes.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 
@@ -433,8 +438,8 @@ function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
     getCapabilities: async () => new Set(),
     listFolders: async () => [],
     selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
-    fetchMessagesSince: async () => [],
-    fetchMessagesBefore: async () => [],
+    fetchMessagesSince: async () => fakeImapRange([]),
+    fetchMessagesBefore: async () => fakeImapRange([]),
     fetchSnippets: async () => new Map(),
     fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async () => [],
@@ -470,10 +475,12 @@ function fakeImapAccount(folders: Array<ImapFolderRef & { count: number }>): Ima
     listFolders: async () => folders.map(({ path, specialUse }) => ({ path, ...(specialUse ? { specialUse } : {}) })),
     selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
     fetchMessagesSince: async (path, sinceUid, limit) =>
-      Array.from({ length: countOf(path) }, (_, index) => index + 1)
-        .filter((uid) => uid >= sinceUid)
-        .slice(0, limit)
-        .map((uid) => fetched(uid, `<${path}-${uid}@x>`, { subject: `${path} ${uid}` })),
+      fakeImapRange(
+        Array.from({ length: countOf(path) }, (_, index) => index + 1)
+          .filter((uid) => uid >= sinceUid)
+          .map((uid) => fetched(uid, `<${path}-${uid}@x>`, { subject: `${path} ${uid}` })),
+        limit,
+      ),
     fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
   });
 }
@@ -1595,10 +1602,10 @@ describe("IMAP reconcile core", () => {
     getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
     listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
     selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5, messages: 2 }),
-    fetchMessagesSince: async () => [
+    fetchMessagesSince: fakeImapSince(() => [
       fetched(1, "<one@x>", { subject: "First" }),
       fetched(2, "<two@x>", { envelope: { from: { address: "b@x.com" } }, subject: "Second" }),
-    ],
+    ]),
     fetchAllUids: async () => [1, 2],
   });
   const reconcile = (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
@@ -1641,11 +1648,11 @@ describe("IMAP reconcile core", () => {
         selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 1 }),
         fetchMessagesSince: async (_path, sinceUid) => {
           sinceUids.push(sinceUid);
-          return [];
+          return fakeImapRange([]);
         },
         fetchMessagesBefore: async (_path, beforeUid) => {
           beforeUids.push(beforeUid);
-          return [];
+          return fakeImapRange([]);
         },
       }),
       params,
@@ -1664,13 +1671,13 @@ describe("IMAP reconcile core", () => {
     async () => {
       const params = await reconcileParams();
       const survivor = (uid: number) => fetched(uid, "<survivor@x>", { subject: "Survivor" });
-      await reconcile(fakeImap({ ...twoMessages, fetchMessagesSince: async () => [survivor(5)] }), params);
+      await reconcile(fakeImap({ ...twoMessages, fetchMessagesSince: fakeImapSince(() => [survivor(5)]) }), params);
       // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
       await reconcile(
         fakeImap({
           ...twoMessages,
           selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 0 }),
-          fetchMessagesSince: async () => [survivor(1)],
+          fetchMessagesSince: fakeImapSince(() => [survivor(1)]),
         }),
         params,
       );
@@ -1694,7 +1701,7 @@ describe("IMAP reconcile core", () => {
       fakeImap({
         ...twoMessages,
         selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 6, messages: 1 }),
-        fetchMessagesSince: async () => [],
+        fetchMessagesSince: async () => fakeImapRange([]),
         fetchChangesSince: async () => ({ flags: [], vanished: [1] }),
       }),
       params,
@@ -1758,7 +1765,7 @@ describe("IMAP reconcile core", () => {
           ...twoMessages,
           listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
           selectFolder: async () => ({ uidvalidity: 1, uidnext, highestModSeq: null, messages: 1 }),
-          fetchMessagesSince: async () => [fetched(1, "<labeled@x>", { subject: "Labeled", gmailLabels })],
+          fetchMessagesSince: fakeImapSince(() => [fetched(1, "<labeled@x>", { subject: "Labeled", gmailLabels })]),
           fetchAllUids: async () => [1],
         });
       await reconcile(labeled(["\\Inbox", "Work"]), params);
@@ -2104,8 +2111,9 @@ describe("message arrival: live and backfill", () => {
         fakeImap({
           listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
           selectFolder: async () => ({ uidvalidity, uidnext, highestModSeq: null, messages: messages.length }),
-          fetchMessagesSince: async (_path, sinceUid) =>
+          fetchMessagesSince: fakeImapSince((_path, sinceUid) =>
             messages.filter(([uid]) => uid >= sinceUid).map(([uid, messageId]) => fetched(uid, messageId)),
+          ),
           fetchAllUids: async () => messages.map(([uid]) => uid),
         });
 
@@ -2708,8 +2716,9 @@ describe("mail sync job error handling", () => {
                 highestModSeq: null,
                 messages: 0,
               }),
-              fetchMessagesSince: async (path) =>
+              fetchMessagesSince: fakeImapSince((path) =>
                 path === "Source" ? [fakeFetchedMessage(7, { ...observedMessage, date: new Date() })] : [],
+              ),
               fetchChangesSince: async () => null,
               fetchAllUids: async () => [7, 27],
               setMessageFlag: async () => {
@@ -2882,7 +2891,7 @@ describe("mail sync job error handling", () => {
     const failingAfterFetch = fakeImap({
       ...inbox,
       selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
-      fetchMessagesSince: async () => [withAttachment(1, "<orphan@x>", "f.txt")],
+      fetchMessagesSince: fakeImapSince(() => [withAttachment(1, "<orphan@x>", "f.txt")]),
       // No QRESYNC and a known uidvalidity: the non-CONDSTORE fallback, which diffs via fetchAllUids.
       fetchChangesSince: async () => null,
       fetchAllUids: async () => {
@@ -2915,10 +2924,11 @@ describe("mail sync job error handling", () => {
       const imap = fakeImap({
         listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Archive" }],
         selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
-        fetchMessagesSince: async (path) =>
+        fetchMessagesSince: fakeImapSince((path) =>
           path === "INBOX"
             ? [withAttachment(1, "<kept@x>", "kept.txt")]
             : [withAttachment(1, "<failed@x>", "fails.txt")],
+        ),
       });
 
       await expect(runSync(mailbox, { createImapClient: async () => imap }, failingStorage)).rejects.toThrow(
@@ -2968,7 +2978,7 @@ describe("mail sync job error handling", () => {
           ? client.listFolders()
           : stage === "select"
             ? client.selectFolder("INBOX")
-            : client.fetchMessagesSince("INBOX", 1, 10).then(([message]) => message?.fetchContent());
+            : client.fetchMessagesSince("INBOX", 1, 10).then(({ messages: [message] }) => message?.fetchContent());
       expectSafeImapFailure(await rejectionOf(work), secret);
     },
   );
@@ -3342,7 +3352,7 @@ describe("bounded IMAP sync passes", () => {
       try {
         await holding;
         // The folder list is fetched before the pass's first transaction; nothing after it runs.
-        const fetchedMessages = vi.fn(async () => []);
+        const fetchedMessages = vi.fn(async () => fakeImapRange([]));
         await runSync(mailbox, {
           createImapClient: async () =>
             fakeImap({
@@ -3396,7 +3406,7 @@ describe("bounded IMAP sync passes", () => {
       const imap = fakeImap({
         listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
         selectFolder: async () => ({ uidvalidity: 7, uidnext: 3, highestModSeq: null, messages: 0 }),
-        fetchMessagesSince: async () => {
+        fetchMessagesSince: fakeImapSince(async () => {
           await fetching.wait();
           return [
             fetched(1, "<slow-1@x>", {
@@ -3416,7 +3426,7 @@ describe("bounded IMAP sync passes", () => {
             }),
             fetched(2, "<slow-2@x>", { subject: "Slow 2" }),
           ];
-        },
+        }),
       });
       const pass = runSync(mailbox, { createImapClient: async () => imap }, blobStorage());
       try {
@@ -3933,7 +3943,7 @@ describe("ImapFlowMailClient", () => {
 
   it("never calls messageFlagsAdd while fetching message bodies in the background", async () => {
     const raw = fakeImapFlow();
-    const fetchedMessages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    const { messages: fetchedMessages } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
     const content = await fetchedMessages[0]!.fetchContent();
 
     // Proves the fetch reached a real message body (`download` was called), so no flag mutation is not
@@ -4043,7 +4053,9 @@ describe("ImapFlowMailClient", () => {
         })(),
     });
 
-    const [fetched] = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    const {
+      messages: [fetched],
+    } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
     const content = await fetched!.fetchContent();
     expect(content.bodyText).toBe("");
     const chunks: Buffer[] = [];
@@ -4053,7 +4065,7 @@ describe("ImapFlowMailClient", () => {
 
   describe("attachment download fallback", () => {
     const attachmentStream = async (raw: ImapFlow): Promise<Readable> => {
-      const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+      const { messages } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
       return await (await messages[0]!.fetchContent()).attachments[0]!.openStream();
     };
     function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
@@ -4434,7 +4446,7 @@ describe("mail flag write-back", () => {
           highestModSeq: null,
           messages: 1,
         }),
-        fetchMessagesSince: async (path) => [fetched(path === "INBOX" ? 1 : 2, message.messageId, message)],
+        fetchMessagesSince: fakeImapSince((path) => [fetched(path === "INBOX" ? 1 : 2, message.messageId, message)]),
         fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       });
       await reconcile(initial);
@@ -4452,7 +4464,7 @@ describe("mail flag write-back", () => {
       const writes: Array<{ path: string; flag: string; value: boolean }> = [];
       const writingClient: ImapMailClient = {
         ...initial,
-        fetchMessagesSince: async () => [],
+        fetchMessagesSince: async () => fakeImapRange([]),
         setMessageFlag: async (path, _uid, flag, value) => {
           writes.push({ path, flag, value });
         },
@@ -4470,7 +4482,7 @@ describe("mail flag write-back", () => {
       await patch({ read: true });
       await reconcile({
         ...initial,
-        fetchMessagesSince: async () => [],
+        fetchMessagesSince: async () => fakeImapRange([]),
         fetchFlagsChangedSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, flags: [IMAP_SEEN_FLAG] }],
         setMessageFlag: async () => {
           throw new Error("a provider observation matching desired state must not be echoed");
@@ -4558,7 +4570,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPass = knownUidPass({
-      fetchMessagesSince: async () => [fetched(1, "<obs@x>", { envelope: {}, flags: [] })],
+      fetchMessagesSince: fakeImapSince(() => [fetched(1, "<obs@x>", { envelope: {}, flags: [] })]),
       ...overrides,
     });
     await reconcileImapFolder(pool, firstPass, params);

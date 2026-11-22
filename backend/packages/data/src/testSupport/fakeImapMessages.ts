@@ -1,4 +1,4 @@
-import type { ImapFetchedMessage, ImapMailClient } from "../mail/imapReconcile.js";
+import type { ImapFetchedMessage, ImapFetchedRange, ImapMailClient } from "../mail/imapReconcile.js";
 import type { FetchedMessage } from "../mail/providerTypes.js";
 
 /**
@@ -34,6 +34,25 @@ export function fakeFetchedMessage(
 }
 
 /**
+ * A fake client's answer to `fetchMessagesSince` or `fetchMessagesBefore`: the first `limit` of `messages`, in their
+ * order, as a range whose search found exactly them and `more` when `messages` holds more.
+ */
+export function fakeImapRange(
+  messages: readonly ImapFetchedMessage[],
+  limit: number = Number.MAX_SAFE_INTEGER,
+): ImapFetchedRange {
+  const taken = messages.slice(0, limit);
+  return { uids: taken.map((message) => message.uid), messages: taken, more: messages.length > taken.length };
+}
+
+/** A fake `fetchMessagesSince` answering what `list` gives for the path and cursor, cut at the limit as a range. */
+export function fakeImapSince(
+  list: (path: string, sinceUid: number) => Promise<readonly ImapFetchedMessage[]> | readonly ImapFetchedMessage[],
+): ImapMailClient["fetchMessagesSince"] {
+  return async (path, sinceUid, limit) => fakeImapRange(await list(path, sinceUid), limit);
+}
+
+/**
  * A `fetchMessagesBefore` over the messages `client.fetchMessagesSince` reports from UID 1 (looked up at each call):
  * those below `beforeUid`, highest UIDs first.
  */
@@ -41,8 +60,10 @@ export function backfillOfFetchedSince(
   client: Pick<ImapMailClient, "fetchMessagesSince">,
 ): ImapMailClient["fetchMessagesBefore"] {
   return async (path, beforeUid, limit) =>
-    (await client.fetchMessagesSince(path, 1, Number.MAX_SAFE_INTEGER))
-      .filter((message) => message.uid < beforeUid)
-      .sort((a, b) => b.uid - a.uid)
-      .slice(0, limit);
+    fakeImapRange(
+      (await client.fetchMessagesSince(path, 1, Number.MAX_SAFE_INTEGER)).messages
+        .filter((message) => message.uid < beforeUid)
+        .sort((a, b) => b.uid - a.uid),
+      limit,
+    );
 }
