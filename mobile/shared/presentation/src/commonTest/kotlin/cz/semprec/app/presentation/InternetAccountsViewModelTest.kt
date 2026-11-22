@@ -17,6 +17,7 @@ import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -340,6 +341,7 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
             MailConnectRefusal.CALDAV_UNREACHABLE to InternetConnectFailure.CALDAV_UNREACHABLE,
             MailConnectRefusal.ALREADY_CONNECTED to InternetConnectFailure.ALREADY_CONNECTED,
             MailConnectRefusal.RATE_LIMITED to InternetConnectFailure.RATE_LIMITED,
+            MailConnectRefusal.WRONG_ACCOUNT to InternetConnectFailure.WRONG_ACCOUNT,
         )
         assertEquals(MailConnectRefusal.entries.toSet(), cases.keys)
         for ((refusal, failure) in cases) {
@@ -443,9 +445,18 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
     }
 
     @Test fun `a listed browser account that fails to sign in again says why`() = runTest(dispatcher) {
+        for ((outcome, failure) in listOf(
+            OAuthOutcome.Declined to InternetConnectFailure.DECLINED,
+            OAuthOutcome.Refused(MailConnectRefusal.WRONG_ACCOUNT) to InternetConnectFailure.WRONG_ACCOUNT,
+        )) {
+            signInAgainEndsWith(outcome, failure)
+        }
+    }
+
+    private fun TestScope.signInAgainEndsWith(outcome: OAuthOutcome, failure: InternetConnectFailure) {
         val accounts = ScriptedInternetAccountRepository(
             list = MailCall(mailContent(listOf(internetAccount("a", MailSyncStatus.NEEDS_REAUTHORIZATION)))),
-            finishes = MailCall(mailContent(OAuthOutcome.Declined)),
+            finishes = MailCall(mailContent(outcome)),
         )
         val vm = viewModel(accounts)
         runCurrent()
@@ -453,7 +464,7 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
         runCurrent()
         vm.onAction(InternetAccountsAction.SignIn.Returned(OAUTH_CALLBACK))
         runCurrent()
-        assertEquals(InternetConnectFailure.DECLINED, vm.state.value.signInFailure)
+        assertEquals(failure, vm.state.value.signInFailure)
         assertNull(vm.state.value.connectFailure)
         assertFalse(vm.state.value.signingIn)
         assertEquals(1, accounts.list.count)
@@ -587,6 +598,13 @@ class InternetAccountsViewModelTest : MainDispatcherTest() {
                 ScriptedInternetAccountRepository(finishes = MailCall(mailFailure(FailureKind.REJECTED))),
                 returned,
                 InternetConnectFailure.REFUSED,
+            ),
+            Triple(
+                ScriptedInternetAccountRepository(
+                    finishes = MailCall(mailContent(OAuthOutcome.Refused(MailConnectRefusal.ALREADY_CONNECTED))),
+                ),
+                returned,
+                InternetConnectFailure.ALREADY_CONNECTED,
             ),
             Triple(
                 ScriptedInternetAccountRepository(finishes = MailCall(mailFailure(FailureKind.INVALID_DATA))),

@@ -92,6 +92,8 @@ public enum InternetConnectFailure: Equatable, Sendable {
     case alreadyConnected
     /// Too many attempts; try again later.
     case rateLimited
+    /// Signing in again came back with another account than the mailbox's.
+    case wrongAccount
 }
 
 /// Signing a password account in again: `accountId` with its `address`, `icloud` for an iCloud account (which needs

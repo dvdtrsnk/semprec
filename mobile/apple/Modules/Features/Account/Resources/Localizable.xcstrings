@@ -1505,6 +1505,22 @@
         }
       }
     },
+    "internetAccounts.add.error.wrongAccount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přihlásili jste se jiným účtem, než ke kterému patří tahle schránka. Přihlaste se znovu správným účtem."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You signed in with another account than the one this mailbox belongs to. Sign in again with the right account."
+          }
+        }
+      }
+    },
     "internetAccounts.add.error.wrongCredentials" : {
       "localizations" : {
         "cs" : {

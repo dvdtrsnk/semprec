@@ -491,9 +491,26 @@ class HttpMailboxRepositoryTest {
     }
 
     @Test
-    fun aCodeTheServerRefusesIsARejection() = runTest {
+    fun aSignedInAccountTheServerRefusesNamesWhy() = runTest {
+        val refusals = listOf(
+            Triple(HttpStatusCode.BadRequest, "mail_reauth_wrong_account", MailConnectRefusal.WRONG_ACCOUNT),
+            Triple(HttpStatusCode.Conflict, "provider_account_already_connected", MailConnectRefusal.ALREADY_CONNECTED),
+        )
+        for ((status, code, refusal) in refusals) {
+            val server = MailTestServer { status to """{"error":{"code":"$code"}}""" }
+
+            assertEquals(
+                RepositoryResult.Content(OAuthOutcome.Refused(refusal)),
+                server.mailboxes().finishSignIn(OAuthSignIn(authorizeUrl, "s"), "semprec://oauth?state=s&code=c"),
+                code,
+            )
+        }
+    }
+
+    @Test
+    fun aCompletionRefusedForAnotherReasonIsARejection() = runTest {
         val server = MailTestServer {
-            HttpStatusCode.BadRequest to """{"error":{"code":"mail_reauth_wrong_account"}}"""
+            HttpStatusCode.BadRequest to """{"error":{"code":"validation_failed"}}"""
         }
 
         assertEquals(

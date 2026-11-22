@@ -925,6 +925,7 @@
         "internetAccounts.add.error.caldavUnreachable",
         "internetAccounts.add.error.alreadyConnected",
         "internetAccounts.add.error.rateLimited",
+        "internetAccounts.add.error.wrongAccount",
         "internetAccounts.add.openExisting",
         "internetAccount.name",
         "internetAccount.services",

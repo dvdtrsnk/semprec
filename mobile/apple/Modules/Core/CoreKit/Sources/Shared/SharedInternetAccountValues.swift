@@ -52,6 +52,7 @@ extension InternetConnectFailure {
         case .caldavUnreachable: self = .caldavUnreachable
         case .alreadyConnected: self = .alreadyConnected
         case .rateLimited: self = .rateLimited
+        case .wrongAccount: self = .wrongAccount
         }
     }
 }

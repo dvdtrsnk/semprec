@@ -20,6 +20,7 @@ extension InternetConnectFailure {
         case .caldavUnreachable: "internetAccounts.add.error.caldavUnreachable"
         case .alreadyConnected: "internetAccounts.add.error.alreadyConnected"
         case .rateLimited: "internetAccounts.add.error.rateLimited"
+        case .wrongAccount: "internetAccounts.add.error.wrongAccount"
         }
     }
 }
