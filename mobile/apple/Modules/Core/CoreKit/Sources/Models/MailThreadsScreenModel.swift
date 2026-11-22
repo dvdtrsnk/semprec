@@ -99,6 +99,20 @@ public struct MailFilterOption: Equatable, Sendable, Identifiable {
     }
 }
 
+/// What the provider search added to a search: `unindexed` hits the mail providers hold that the local index does not
+/// have yet, and the mailboxes whose provider search failed (a chip's `name` is empty for a mailbox the list does not
+/// know).
+public struct MailRemoteSearchSummary: Equatable, Sendable {
+
+    public let unindexed: Int
+    public let failedAccounts: [MailMailboxChip]
+
+    public init(unindexed: Int, failedAccounts: [MailMailboxChip] = []) {
+        self.unindexed = unindexed
+        self.failedAccounts = failedAccounts
+    }
+}
+
 public enum MailFacetsPhase: Equatable, Sendable {
 
     case idle
@@ -146,7 +160,8 @@ public enum MailThreadsPhase: Equatable, Sendable {
 }
 
 /// The thread list. `actionFailed` says a refresh, a page or a read mark did not go through; the list stays.
-/// `actionRefusal` names the reason the server gave for refusing a read mark.
+/// `actionRefusal` names the reason the server gave for refusing a read mark. While `search` is not empty the list is
+/// the answer of the mail search, and `remoteSearch` says what the provider search added; it is `nil` otherwise.
 public struct MailThreadsState: Equatable, Sendable {
 
     public var phase: MailThreadsPhase
@@ -166,6 +181,7 @@ public struct MailThreadsState: Equatable, Sendable {
     public var mailboxes: [MailMailboxChip]
     public var reauthorization: [MailAccountNotice]
     public var facets: MailFacetsState
+    public var remoteSearch: MailRemoteSearchSummary?
     public var actionFailed: Bool
     public var actionRefusal: MailRefusal?
 
@@ -187,6 +203,7 @@ public struct MailThreadsState: Equatable, Sendable {
         mailboxes: [MailMailboxChip] = [],
         reauthorization: [MailAccountNotice] = [],
         facets: MailFacetsState = MailFacetsState(),
+        remoteSearch: MailRemoteSearchSummary? = nil,
         actionFailed: Bool = false,
         actionRefusal: MailRefusal? = nil
     ) {
@@ -207,6 +224,7 @@ public struct MailThreadsState: Equatable, Sendable {
         self.mailboxes = mailboxes
         self.reauthorization = reauthorization
         self.facets = facets
+        self.remoteSearch = remoteSearch
         self.actionFailed = actionFailed
         self.actionRefusal = actionRefusal
     }

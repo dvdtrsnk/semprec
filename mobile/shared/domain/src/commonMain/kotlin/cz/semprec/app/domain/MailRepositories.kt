@@ -31,9 +31,9 @@ interface MailRepository {
 }
 
 /**
- * The mail calls the server may answer by asking the mail provider, which can be slow: the body of a message the server
- * holds only as an index entry, an attachment saved into Files, and the search. A body or an attachment the server could
- * not fetch from the provider is [MailContentOutcome.Unavailable].
+ * The mail calls the server may answer by asking the mail provider, which can be slow: the body of a message the
+ * server holds only as an index entry, an attachment saved into Files, and the search. A body or an attachment the
+ * server could not fetch from the provider is [MailContentOutcome.Unavailable].
  */
 interface MailContentRepository {
     /**

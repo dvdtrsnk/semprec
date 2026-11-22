@@ -1,7 +1,9 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.core.MailContentUnavailable
 import cz.semprec.app.core.MailRefusal
+import cz.semprec.app.domain.MailContentOutcome
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.RepositoryResult
 
@@ -31,4 +33,26 @@ internal suspend fun <T> mailWrite(call: suspend () -> RepositoryResult<MailOutc
             is MailOutcome.Refused -> MailWrite.Failed(FailureKind.REJECTED, outcome.refusal)
         }
         is MailWrite.Failed -> written
+    }
+
+/** A mail read or save that may ask the provider, as a screen keeps it: the value, or why it is not there. */
+internal sealed interface MailFetch<out T> {
+    data class Done<out T>(val value: T) : MailFetch<T>
+
+    /**
+     * [failure] is `null` for an exception nobody expects; [unavailable] names why the server could not reach the
+     * provider's copy, and then [failure] is [FailureKind.UNAVAILABLE].
+     */
+    data class Failed(val failure: FailureKind?, val unavailable: MailContentUnavailable? = null) : MailFetch<Nothing>
+}
+
+/** Runs a mail read or save that may ask the provider, through [mailAttempt]. */
+internal suspend fun <T> mailFetch(call: suspend () -> RepositoryResult<MailContentOutcome<T>>): MailFetch<T> =
+    when (val answer = mailAttempt(call)) {
+        is RepositoryResult.Content -> when (val outcome = answer.value) {
+            is MailContentOutcome.Done -> MailFetch.Done(outcome.value)
+            is MailContentOutcome.Unavailable -> MailFetch.Failed(FailureKind.UNAVAILABLE, outcome.reason)
+        }
+        is RepositoryResult.Failure -> MailFetch.Failed(answer.kind)
+        null -> MailFetch.Failed(null)
     }

@@ -12,7 +12,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
-private const val SEARCH = """{"threads":[{"threadId":"t1","subject":"Faktura","lastMessageAt":"2026-10-20T12:41:00.000Z",
+private const val SEARCH = """{"threads":[{"threadId":"t1","subject":"Faktura",
+    "lastMessageAt":"2026-10-20T12:41:00.000Z",
     "lastSender":{"name":"Petr Novák","address":"petr@novak.cz"},"messageCount":2,"preview":"Posílám",
     "hasAttachment":true,"unread":false,"flagged":true,"mailboxes":[{"id":"m1","name":"Gmail"}],"hasSempDraft":false}],
     "localCount":7,"remote":{"searched":["m1","m2"],"failed":[{"mailboxId":"m2","reason":"providerUnreachable"}],

@@ -22,14 +22,7 @@ final class MailThreadMappingTests: XCTestCase {
         let inherited = SharedSDK.MailLinkInfo(type: .inherited, sourceTitles: ["Petr"], brokenByAgent: false)
         let broken = SharedSDK.MailLinkInfo(type: .broken, sourceTitles: ["Web"], brokenByAgent: true)
         let derived = SharedSDK.MailLinkInfo(type: .derived, sourceTitles: [], brokenByAgent: false)
-        let file = SharedSDK.MailAttachmentItem(
-            filename: "a.pdf", contentType: "application/pdf", byteSize: 840,
-            project: SharedSDK.MailLinkedValue(text: "Web", link: derived)
-        )
-        let message = SharedSDK.MailMessageItem(
-            emailId: "e1", fromName: "Petr", fromAddress: "p@x.cz", own: true, toNames: ["David"],
-            date: "2026-10-20T12:41:00Z", bodyText: "Ahoj", attachments: [file], expanded: true
-        )
+        let message = messageItem(attachments: [attachmentItem(link: derived)])
         let task = SharedSDK.MailTaskItem(
             id: "k1", name: "Poslat", date: "2026-10-23", done: true,
             project: SharedSDK.MailLinkedValue(text: "Web", link: nil), peopleNames: ["Petr"], peopleLink: broken
@@ -64,6 +57,72 @@ final class MailThreadMappingTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadMapsEveryBodyPhaseWithItsPreviewAndWhyItFailed() {
+        let phases: [(SharedSDK.MailBodyPhase, CoreKit.MailBodyPhase)] = [
+            (.ready, .ready), (.remote, .remote), (.loading, .loading), (.failed, .failed)
+        ]
+        for (kotlin, swift) in phases {
+            let message = messageItem(bodyPhase: kotlin)
+            let state = SharedMailThreadScreenModel.state(threadState(.content, messages: [message]))
+            XCTAssertEqual(state.messages.first?.bodyPhase, swift)
+            XCTAssertEqual(state.messages.first?.preview, "Náhled")
+        }
+        let unfetched = messageItem(
+            bodyText: "", bodyPhase: .failed, bodyFailure: .unavailable, bodyUnavailable: .rateLimited
+        )
+        let failed = SharedMailThreadScreenModel.state(threadState(.content, messages: [unfetched])).messages.first
+        XCTAssertEqual(failed?.bodyFailure, .unavailable)
+        XCTAssertEqual(failed?.bodyUnavailable, .rateLimited)
+        XCTAssertEqual(failed?.bodyText, "")
+        let ready = SharedMailThreadScreenModel.state(threadState(.content, messages: [messageItem()])).messages.first
+        XCTAssertNil(ready?.bodyFailure)
+        XCTAssertNil(ready?.bodyUnavailable)
+    }
+
+    @MainActor
+    func testThreadMapsEverySavePhaseOfAnAttachmentWithItsFilesItemAndWhyItFailed() {
+        let phases: [(SharedSDK.MailAttachmentSavePhase, CoreKit.MailAttachmentSavePhase)] = [
+            (.idle, .idle), (.saving, .saving), (.saved, .saved), (.failed, .failed)
+        ]
+        for (kotlin, swift) in phases {
+            let message = messageItem(attachments: [attachmentItem(savePhase: kotlin)])
+            let state = SharedMailThreadScreenModel.state(threadState(.content, messages: [message]))
+            XCTAssertEqual(state.messages.first?.attachments.first?.savePhase, swift)
+        }
+        let saved = messageItem(attachments: [attachmentItem(fileItemId: "f1", savePhase: .saved)])
+        let file = SharedMailThreadScreenModel.state(threadState(.content, messages: [saved])).messages.first?
+            .attachments.first
+        XCTAssertEqual(file?.id, "a1")
+        XCTAssertEqual(file?.fileItemId, "f1")
+        XCTAssertNil(file?.saveFailure)
+        let failed = messageItem(
+            attachments: [
+                attachmentItem(savePhase: .failed, saveFailure: .notFound, saveUnavailable: .attachmentTooLarge)
+            ]
+        )
+        let refused = SharedMailThreadScreenModel.state(threadState(.content, messages: [failed])).messages.first?
+            .attachments.first
+        XCTAssertNil(refused?.fileItemId)
+        XCTAssertEqual(refused?.saveFailure, .notFound)
+        XCTAssertEqual(refused?.saveUnavailable, .attachmentTooLarge)
+    }
+
+    func testEveryReasonAProviderFetchFailsMapsToItsSwiftValue() {
+        let reasons: [(SharedSDK.MailContentUnavailable, CoreKit.MailContentUnavailable)] = [
+            (.reauthorizationRequired, .reauthorizationRequired),
+            (.providerUnreachable, .providerUnreachable),
+            (.messageNotFound, .messageNotFound),
+            (.mailboxUnavailable, .mailboxUnavailable),
+            (.attachmentTooLarge, .attachmentTooLarge),
+            (.rateLimited, .rateLimited)
+        ]
+        XCTAssertEqual(reasons.count, CoreKit.MailContentUnavailable.allCases.count)
+        for (kotlin, swift) in reasons {
+            XCTAssertEqual(kotlin.unavailable, swift)
+        }
+    }
+
+    @MainActor
     func testThreadMapsEverySendPhase() {
         let phases: [(SharedSDK.MailSendPhase, CoreKit.MailSendPhase)] = [
             (.idle, .idle), (.sending, .sending), (.sent, .sent), (.failed, .failed)
@@ -89,6 +148,16 @@ final class MailThreadMappingTests: XCTestCase {
             SharedMailThreadScreenModel.action(.sendDraft(body: "Text")) as? SharedSDK.MailThreadActionSendDraft
         )
         XCTAssertEqual(send.body, "Text")
+        let load = try XCTUnwrap(
+            SharedMailThreadScreenModel.action(.loadBody(emailId: "e2")) as? SharedSDK.MailThreadActionLoadBody
+        )
+        XCTAssertEqual(load.emailId, "e2")
+        let save = try XCTUnwrap(
+            SharedMailThreadScreenModel.action(.saveAttachment(emailId: "e3", attachmentId: "a1"))
+                as? SharedSDK.MailThreadActionSaveAttachment
+        )
+        XCTAssertEqual(save.emailId, "e3")
+        XCTAssertEqual(save.attachmentId, "a1")
         let moves: [(CoreKit.MailThreadMove, SharedSDK.MailThreadMove)] = [
             (.archive, .archive), (.trash, .trash), (.restore, .restore)
         ]
@@ -107,6 +176,10 @@ final class MailThreadMappingTests: XCTestCase {
             SharedMailThreadScreenModel.sharedTarget(.task(taskId: "k1")) as? SharedSDK.MailThreadTargetTask
         )
         XCTAssertEqual(task.taskId, "k1")
+        let file = try XCTUnwrap(
+            SharedMailThreadScreenModel.sharedTarget(.file(fileItemId: "f1")) as? SharedSDK.MailThreadTargetFile
+        )
+        XCTAssertEqual(file.fileItemId, "f1")
         let modes: [(CoreKit.MailReplyMode, SharedSDK.MailReplyMode)] = [
             (.reply, .reply), (.replyAll, .replyAll), (.forward, .forward)
         ]
@@ -127,6 +200,10 @@ final class MailThreadMappingTests: XCTestCase {
         XCTAssertEqual(
             SharedMailThreadScreenModel.effect(SharedSDK.MailThreadEffectOpenTask(taskId: "k1")),
             .openTask(taskId: "k1")
+        )
+        XCTAssertEqual(
+            SharedMailThreadScreenModel.effect(SharedSDK.MailThreadEffectOpenFile(fileItemId: "f1")),
+            .openFile(fileItemId: "f1")
         )
         let starts: [CoreKit.MailComposeStart] = [
             .new,

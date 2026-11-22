@@ -64,3 +64,7 @@ internal fun MailAccount.toChip() = MailMailboxChip(id, name)
 internal fun MailAccount.needsReauthorization() = syncStatus == MailSyncStatus.NEEDS_REAUTHORIZATION
 
 internal fun MailAccount.toNotice() = MailAccountNotice(id, name, failingSince)
+
+/** The mailboxes [this] names, each with the name of its chip, or an empty one for a mailbox the list does not know. */
+internal fun List<String>.named(chips: List<MailMailboxChip>): List<MailMailboxChip> =
+    map { id -> chips.firstOrNull { it.id == id } ?: MailMailboxChip(id, "") }

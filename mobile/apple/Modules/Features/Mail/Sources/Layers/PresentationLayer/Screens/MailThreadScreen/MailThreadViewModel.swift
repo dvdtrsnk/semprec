@@ -53,6 +53,7 @@ private extension MailThreadViewModel {
         case .close: closeRequests += 1
         case .compose(let start): router.showCompose(start)
         case .openTask(let taskId): router.showTask(taskId: taskId)
+        case .openFile(let fileItemId): router.showFile(fileItemId: fileItemId)
         }
     }
 }

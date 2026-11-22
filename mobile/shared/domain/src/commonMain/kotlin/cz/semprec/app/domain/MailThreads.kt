@@ -155,8 +155,8 @@ data class MailThreadDetail(
 
 /**
  * What a search found: the threads of the local index, and what the provider search of each mailbox added.
- * [MailRemoteSearch.searched] are the mailboxes whose provider was asked, [MailRemoteSearch.failed] those whose provider
- * search failed, and [MailRemoteSearch.unindexed] counts the provider hits the local index does not hold yet.
+ * [MailRemoteSearch.searched] are the mailboxes whose provider was asked, [MailRemoteSearch.failed] those whose
+ * provider search failed, and [MailRemoteSearch.unindexed] counts the provider hits the local index does not hold yet.
  */
 data class MailSearchResult(val threads: List<MailThreadSummary>, val remote: MailRemoteSearch)
 

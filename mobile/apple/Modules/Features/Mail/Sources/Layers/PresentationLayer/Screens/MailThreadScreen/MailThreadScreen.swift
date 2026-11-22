@@ -2,9 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One thread: who it is with and which company and project it belongs to, the messages (the last one open), the tasks
-/// made from it, the reply Semp prepared and the buttons to answer it. Flagging, archiving and deleting sit in the
-/// toolbar.
+/// One thread: who it is with and which company and project it belongs to, the messages (the last one open, a body the
+/// server holds only at the mail provider fetched when its message opens), the tasks made from it, the reply Semp
+/// prepared and the buttons to answer it. Flagging, archiving and deleting sit in the toolbar.
 struct MailThreadScreen: View {
 
     // MARK: - Dependencies
@@ -58,7 +58,8 @@ private extension MailThreadScreen {
                 MailThreadHeader(state: viewModel.state)
                 VStack(spacing: 0) {
                     ForEach(viewModel.state.messages) { message in
-                        MailMessageCard(message: message) { viewModel.send(.toggleMessage(emailId: message.emailId)) }
+                        MailMessageCard(message: message) { viewModel.send($0) }
+                            .accessibilityElement(children: .contain)
                             .accessibilityIdentifier(MailIdentifiers.messagePrefix + message.emailId)
                         if message.id != viewModel.state.messages.last?.id { Divider().padding(.leading, 62) }
                     }
@@ -146,6 +147,17 @@ private extension MailThreadScreen {
         MailThreadScreen(
             viewModel: MailThreadViewModel(
                 model: ScriptedMailThreadScreenModel(state: PreviewMail.thread),
+                router: PreviewMailRouter()
+            )
+        )
+    }
+}
+
+#Preview("Bodies at the mail provider") {
+    NavigationStack {
+        MailThreadScreen(
+            viewModel: MailThreadViewModel(
+                model: ScriptedMailThreadScreenModel(state: PreviewMail.remoteThread),
                 router: PreviewMailRouter()
             )
         )

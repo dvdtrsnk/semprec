@@ -24,6 +24,9 @@ public protocol MailRouting: AnyObject {
 
     /// The Podrobnosti sheet of a task made from a thread.
     func showTask(taskId: String)
+
+    /// The Files item of a saved attachment, which previews the file and hands it to other apps.
+    func showFile(fileItemId: String)
 }
 
 /// A router for previews: it goes nowhere.
@@ -44,4 +47,6 @@ final class PreviewMailRouter: MailRouting {
     func showAccount(mailboxId: String) {}
 
     func showTask(taskId: String) {}
+
+    func showFile(fileItemId: String) {}
 }

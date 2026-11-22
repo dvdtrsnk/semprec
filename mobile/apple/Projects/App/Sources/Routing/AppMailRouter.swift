@@ -3,7 +3,8 @@ import MailFeature
 
 /// Routes of the Mail feature, on the stack of the tab it was created for. The editor of a message is a sheet over that
 /// stack, and so is the Podrobnosti sheet of a task made from a thread. The accounts live in the settings: the profile
-/// sheet opens over that stack on the internet accounts, and on the account when one is asked for.
+/// sheet opens over that stack on the internet accounts, and on the account when one is asked for. The Files item of a
+/// saved attachment opens in its item sheet over the stack.
 @MainActor
 final class AppMailRouter {
 
@@ -50,6 +51,10 @@ extension AppMailRouter: MailRouting {
 
     func showTask(taskId: String) {
         context.showDetails(kind: .task, id: taskId, from: tab)
+    }
+
+    func showFile(fileItemId: String) {
+        context.showItem(itemId: fileItemId, databaseKey: "files", from: tab)
     }
 }
 

@@ -40,7 +40,7 @@ internal fun <T> ApiResponse.mailContentOutcome(
     }
 }
 
-/** The reason of a `mail_content_unavailable` answer, or `null` for another answer or a reason this app does not know. */
+/** The reason of a `mail_content_unavailable` answer; `null` for another answer or a reason this app does not know. */
 private fun ApiResponse.Failure.contentUnavailableReason(): MailContentUnavailable? {
     val text = body ?: return null
     val error = try {

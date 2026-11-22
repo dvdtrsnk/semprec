@@ -77,6 +77,9 @@ private extension MailThreadsScreen {
             Section {
                 filterBar
                 ForEach(viewModel.state.reauthorization) { notice in reauthorization(notice) }
+                if let summary = viewModel.state.remoteSearch, let line = remoteSearchLine(summary) {
+                    remoteSearch(line)
+                }
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets())
@@ -174,6 +177,15 @@ private extension MailThreadsScreen {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    func remoteSearch(_ line: String) -> some View {
+        Label { Text(verbatim: line) } icon: { Image(systemName: "server.rack") }
+            .font(.footnote)
+            .foregroundStyle(Theme.Colors.secondaryText)
+            .padding(.horizontal, Theme.Spacing.medium)
+            .padding(.bottom, Theme.Spacing.small)
+            .accessibilityIdentifier(MailIdentifiers.threadsRemoteSearch)
+    }
+
     func reauthorization(_ notice: MailAccountNotice) -> some View {
         HStack(spacing: Theme.Spacing.small) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -238,6 +250,23 @@ private extension MailThreadsScreen {
         return chips
     }
 
+    /// What the provider search added: the hits the index does not hold yet and the accounts it could not search, or
+    /// `nil` when it added nothing to say.
+    func remoteSearchLine(_ summary: MailRemoteSearchSummary) -> String? {
+        var parts: [String] = []
+        if summary.unindexed > 0 {
+            let format = String(localized: "mail.search.unindexed", bundle: .module)
+            parts.append(String(format: format, locale: .current, summary.unindexed))
+        }
+        if !summary.failedAccounts.isEmpty {
+            let unknown = String(localized: "mail.search.unknownAccount", bundle: .module)
+            let names = summary.failedAccounts.map { $0.name.isEmpty ? unknown : $0.name }
+            let format = String(localized: "mail.search.failed", bundle: .module)
+            parts.append(String(format: format, locale: .current, names.joined(separator: ", ")))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
     func reauthorizationTitle(_ notice: MailAccountNotice) -> String {
         guard let date = MailFormatting.date(notice.since) else {
             let format = String(localized: "mail.reauth.titleNoTime", bundle: .module)
@@ -294,6 +323,18 @@ private struct MailContextChip: View {
         MailThreadsScreen(
             viewModel: MailThreadsViewModel(
                 model: ScriptedMailThreadsScreenModel(state: PreviewMail.threads),
+                router: PreviewMailRouter()
+            ),
+            title: nil
+        )
+    }
+}
+
+#Preview("Search") {
+    NavigationStack {
+        MailThreadsScreen(
+            viewModel: MailThreadsViewModel(
+                model: ScriptedMailThreadsScreenModel(state: PreviewMail.search),
                 router: PreviewMailRouter()
             ),
             title: nil

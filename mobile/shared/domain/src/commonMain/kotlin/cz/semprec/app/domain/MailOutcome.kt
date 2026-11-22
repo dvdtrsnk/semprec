@@ -11,8 +11,8 @@ sealed interface MailOutcome<out T> {
 }
 
 /**
- * How a read or a save that may ask the mail provider ended: [Done] with its answer, or [Unavailable] for the reason the
- * server could not reach the provider's copy.
+ * How a read or a save that may ask the mail provider ended: [Done] with its answer, or [Unavailable] for the reason
+ * the server could not reach the provider's copy.
  */
 sealed interface MailContentOutcome<out T> {
     data class Done<out T>(val value: T) : MailContentOutcome<T>

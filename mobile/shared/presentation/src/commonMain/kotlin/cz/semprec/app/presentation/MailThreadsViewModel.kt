@@ -2,8 +2,10 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailRepository
+import cz.semprec.app.domain.MailSearchResult
 import cz.semprec.app.domain.MailThreadPage
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
@@ -15,13 +17,15 @@ import kotlinx.coroutines.launch
 
 /**
  * The thread list of the mail: all of it, or the threads of an area, a project, a folder or one mailbox. A change of
- * the filter, the search or the context loads the list again and supersedes the load before it. Expected failures are
- * state, cancellation is not. The facets of the filter sheet and the mailboxes of the chips are secondary reads: a
- * failure leaves the list as it is.
+ * the filter, the search or the context loads the list again and supersedes the load before it. While there is a
+ * search the list is the answer of the mail search, which also asks each mailbox's provider
+ * (see [MailThreadsState.remoteSearch]). Expected failures are state, cancellation is not. The facets of the filter
+ * sheet and the mailboxes of the chips are secondary reads: a failure leaves the list as it is.
  */
 class MailThreadsViewModel internal constructor(
     private val mail: MailRepository,
     private val mailboxes: MailboxRepository,
+    private val content: MailContentRepository,
     start: MailListStart,
     changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<MailThreadsState, MailThreadsAction, MailThreadsEffect>(
@@ -90,6 +94,7 @@ class MailThreadsViewModel internal constructor(
                     loadingMore = false,
                     hasMore = false,
                     threads = emptyList(),
+                    remoteSearch = null,
                     actionFailed = false,
                     actionRefusal = null,
                 )
@@ -97,7 +102,16 @@ class MailThreadsViewModel internal constructor(
                 it.copy(refreshing = true, loadingMore = false)
             }
         }
-        val query = state.value.toQuery(cursor = null)
+        val shown = state.value
+        if (shown.search.isNotEmpty()) {
+            loadJob = viewModelScope.launch {
+                val result = mailAttempt { content.search(shown.search, shown.mailboxId) }
+                ensureActive()
+                update { it.afterSearch(result) }
+            }
+            return
+        }
+        val query = shown.toQuery(cursor = null)
         loadJob = viewModelScope.launch {
             val result = mailAttempt { mail.threads(query) }
             ensureActive()
@@ -137,10 +151,14 @@ class MailThreadsViewModel internal constructor(
             ensureActive()
             if (result is RepositoryResult.Content) {
                 update {
+                    val chips = result.value.map { account -> account.toChip() }
                     it.copy(
-                        mailboxes = result.value.map { account -> account.toChip() },
+                        mailboxes = chips,
                         reauthorization = result.value.filter { account -> account.needsReauthorization() }
                             .map { account -> account.toNotice() },
+                        remoteSearch = it.remoteSearch?.let { summary ->
+                            summary.copy(failedAccounts = summary.failedAccounts.map { chip -> chip.id }.named(chips))
+                        },
                     )
                 }
             }
@@ -175,6 +193,24 @@ private fun MailThreadsState.afterLoad(result: RepositoryResult<MailThreadPage>?
             refreshing = false,
             hasMore = result.value.nextCursor != null,
             threads = result.value.threads.map { it.toItem() },
+            remoteSearch = null,
+        )
+        is RepositoryResult.Failure -> failed(result.kind)
+        null -> failed(null)
+    }
+
+private fun MailThreadsState.afterSearch(result: RepositoryResult<MailSearchResult>?): MailThreadsState =
+    when (result) {
+        is RepositoryResult.Content -> copy(
+            phase = MailThreadsPhase.CONTENT,
+            failure = null,
+            refreshing = false,
+            hasMore = false,
+            threads = result.value.threads.map { it.toItem() },
+            remoteSearch = MailRemoteSearchSummary(
+                unindexed = result.value.remote.unindexed,
+                failedAccounts = result.value.remote.failed.named(mailboxes),
+            ),
         )
         is RepositoryResult.Failure -> failed(result.kind)
         null -> failed(null)

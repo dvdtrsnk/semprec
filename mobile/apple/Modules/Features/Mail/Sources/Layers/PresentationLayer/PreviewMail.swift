@@ -87,6 +87,7 @@ enum PreviewMail {
                 bodyText: "Dobrý den, Davide,\n\ndíky, rozpočet nám sedí. Můžeme začít v listopadu?\n\nPetr",
                 attachments: [
                     MailAttachmentItem(
+                        attachmentId: "a1",
                         filename: "logo_zdroj.svg",
                         contentType: "image/svg+xml",
                         byteSize: 1_200_000,
@@ -97,7 +98,8 @@ enum PreviewMail {
                                 sourceTitles: ["Re: Nabídka na web"],
                                 brokenByAgent: false
                             )
-                        )
+                        ),
+                        fileItemId: "f1"
                     )
                 ],
                 expanded: true
@@ -120,6 +122,73 @@ enum PreviewMail {
         ),
         canReply: true
     )
+
+    /// A thread of older messages the server holds only at the mail provider: one whose body failed, the newest one
+    /// being fetched, with an attachment that was not saved and one being saved.
+    static let remoteThread = MailThreadState(
+        phase: .content,
+        subject: "Smlouva 2023",
+        senderName: "Karel Zlatý",
+        senderAddress: "karel@zlaty.cz",
+        mailboxNames: ["Outlook"],
+        messageCount: 2,
+        messages: [
+            MailMessageItem(
+                emailId: "e1",
+                fromName: "Karel Zlatý",
+                fromAddress: "karel@zlaty.cz",
+                toNames: ["David Třešňák"],
+                date: "2023-03-02T08:10:00.000000Z",
+                preview: "Dobrý den, posílám návrh smlouvy k připomínkám.",
+                bodyPhase: .failed,
+                bodyFailure: .unavailable,
+                bodyUnavailable: .providerUnreachable,
+                expanded: true
+            ),
+            MailMessageItem(
+                emailId: "e2",
+                fromName: "Karel Zlatý",
+                fromAddress: "karel@zlaty.cz",
+                toNames: ["David Třešňák"],
+                date: "2023-03-04T15:20:00.000000Z",
+                preview: "Upravená verze je v příloze.",
+                bodyPhase: .loading,
+                attachments: [
+                    MailAttachmentItem(
+                        attachmentId: "a2",
+                        filename: "smlouva_v2.pdf",
+                        contentType: "application/pdf",
+                        byteSize: 240_000,
+                        project: MailLinkedValue(text: nil, link: nil),
+                        savePhase: .failed,
+                        saveFailure: .unavailable,
+                        saveUnavailable: .attachmentTooLarge
+                    ),
+                    MailAttachmentItem(
+                        attachmentId: "a3",
+                        filename: "priloha.docx",
+                        contentType: "application/msword",
+                        byteSize: 52_000,
+                        project: MailLinkedValue(text: nil, link: nil),
+                        savePhase: .saving
+                    )
+                ],
+                expanded: true
+            )
+        ],
+        canReply: true
+    )
+
+    /// The thread list of a search, with what the provider search added.
+    static let search: MailThreadsState = {
+        var state = threads
+        state.search = "nabídka"
+        state.remoteSearch = MailRemoteSearchSummary(
+            unindexed: 12,
+            failedAccounts: [MailMailboxChip(id: "m2", name: "Outlook")]
+        )
+        return state
+    }()
 
     // MARK: - Compose
     static let compose = MailComposeState(

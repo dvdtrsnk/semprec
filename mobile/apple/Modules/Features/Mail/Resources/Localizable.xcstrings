@@ -113,6 +113,70 @@
         }
       }
     },
+    "mail.attachment.open" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open"
+          }
+        }
+      }
+    },
+    "mail.attachment.save" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit do Souborů"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Files"
+          }
+        }
+      }
+    },
+    "mail.attachment.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uloženo"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved"
+          }
+        }
+      }
+    },
+    "mail.attachment.saving" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukládám…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saving…"
+          }
+        }
+      }
+    },
     "mail.chip.area" : {
       "localizations" : {
         "cs" : {
@@ -365,6 +429,102 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remove %@"
+          }
+        }
+      }
+    },
+    "mail.content.attachmentTooLarge" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příloha je na uložení příliš velká."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment is too large to save."
+          }
+        }
+      }
+    },
+    "mail.content.mailboxUnavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet je odebraný nebo má vypnutou poštu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The account is removed or has Mail switched off."
+          }
+        }
+      }
+    },
+    "mail.content.messageNotFound" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server už tuto zprávu nemá."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server no longer has this message."
+          }
+        }
+      }
+    },
+    "mail.content.providerUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server teď není dostupný."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server cannot be reached right now."
+          }
+        }
+      }
+    },
+    "mail.content.rateLimited" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příliš mnoho požadavků na poštovní server. Zkuste to za chvíli znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Too many requests to the mail server. Try again in a moment."
+          }
+        }
+      }
+    },
+    "mail.content.reauthorizationRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pro načtení z poštovního serveru se k účtu znovu přihlaste."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to this account again to load it from the mail server."
           }
         }
       }
@@ -1009,6 +1169,38 @@
         }
       }
     },
+    "mail.message.loading" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načítám zprávu z poštovního serveru…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading the message from the mail server…"
+          }
+        }
+      }
+    },
+    "mail.message.retry" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načíst znovu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Load again"
+          }
+        }
+      }
+    },
     "mail.message.to" : {
       "localizations" : {
         "cs" : {
@@ -1473,6 +1665,22 @@
         }
       }
     },
+    "mail.search.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na poštovním serveru se nepodařilo hledat pro: %@."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server could not be searched for: %@."
+          }
+        }
+      }
+    },
     "mail.search.prompt" : {
       "localizations" : {
         "cs" : {
@@ -1485,6 +1693,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search (e.g. from:petr is:unread)"
+          }
+        }
+      }
+    },
+    "mail.search.unindexed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další výsledky na poštovním serveru zatím nejsou zaindexované: %lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More results on the mail server are not indexed yet: %lld."
+          }
+        }
+      }
+    },
+    "mail.search.unknownAccount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "účet"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "an account"
           }
         }
       }

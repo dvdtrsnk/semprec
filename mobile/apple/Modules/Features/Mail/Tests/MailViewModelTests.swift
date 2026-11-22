@@ -81,14 +81,24 @@ final class MailViewModelTests: XCTestCase {
         viewModel.send(.toggleFlag)
         viewModel.send(.move(.archive))
         viewModel.send(.sendDraft(body: "Text"))
-        XCTAssertEqual(model.actions, [.toggleFlag, .move(.archive), .sendDraft(body: "Text")])
+        viewModel.send(.loadBody(emailId: "e1"))
+        viewModel.send(.saveAttachment(emailId: "e1", attachmentId: "a1"))
+        viewModel.send(.open(.file(fileItemId: "f1")))
+        XCTAssertEqual(
+            model.actions,
+            [
+                .toggleFlag, .move(.archive), .sendDraft(body: "Text"), .loadBody(emailId: "e1"),
+                .saveAttachment(emailId: "e1", attachmentId: "a1"), .open(.file(fileItemId: "f1"))
+            ]
+        )
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
         model.emit(.compose(.reply(sourceEmailId: "e1", mailboxId: "m1", mode: .replyAll)))
         model.emit(.openTask(taskId: "k1"))
+        model.emit(.openFile(fileItemId: "f1"))
         model.emit(.close)
-        try await eventually { router.calls.count == 2 && viewModel.closeRequests == 1 }
-        XCTAssertEqual(router.calls, ["compose reply e1 m1", "task k1"])
+        try await eventually { router.calls.count == 3 && viewModel.closeRequests == 1 }
+        XCTAssertEqual(router.calls, ["compose reply e1 m1", "task k1", "file f1"])
     }
 
     // MARK: - Compose
@@ -204,5 +214,9 @@ final class MailRouterSpy: MailRouting {
 
     func showTask(taskId: String) {
         calls.append("task \(taskId)")
+    }
+
+    func showFile(fileItemId: String) {
+        calls.append("file \(fileItemId)")
     }
 }

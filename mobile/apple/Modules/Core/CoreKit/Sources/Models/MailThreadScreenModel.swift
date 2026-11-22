@@ -1,23 +1,66 @@
 import Foundation
 
+/// Saving an attachment into Files: not asked for, on its way, done on this screen, or failed and possible again.
+public enum MailAttachmentSavePhase: Equatable, Sendable {
+
+    case idle
+    case saving
+    case saved
+    case failed
+}
+
 /// A file attached to a message; the project it is stored under follows the thread's until somebody changes it.
+/// `fileItemId` is the Files item it is saved as, which opens it; without one it can be saved. `saveFailure` and
+/// `saveUnavailable` say why the last save failed.
 public struct MailAttachmentItem: Equatable, Sendable, Identifiable {
 
+    public let attachmentId: String
     public let filename: String
     public let contentType: String
     public let byteSize: Int64
     public let project: MailLinkedValue
+    public let fileItemId: String?
+    public let savePhase: MailAttachmentSavePhase
+    public let saveFailure: FailureKind?
+    public let saveUnavailable: MailContentUnavailable?
 
-    public var id: String { filename }
+    public var id: String { attachmentId }
 
-    public init(filename: String, contentType: String, byteSize: Int64, project: MailLinkedValue) {
+    public init(
+        attachmentId: String,
+        filename: String,
+        contentType: String,
+        byteSize: Int64,
+        project: MailLinkedValue,
+        fileItemId: String? = nil,
+        savePhase: MailAttachmentSavePhase = .idle,
+        saveFailure: FailureKind? = nil,
+        saveUnavailable: MailContentUnavailable? = nil
+    ) {
+        self.attachmentId = attachmentId
         self.filename = filename
         self.contentType = contentType
         self.byteSize = byteSize
         self.project = project
+        self.fileItemId = fileItemId
+        self.savePhase = savePhase
+        self.saveFailure = saveFailure
+        self.saveUnavailable = saveUnavailable
     }
 }
 
+/// Where the body of a message is: shown, only at the mail provider and not asked for yet, being fetched from it, or
+/// not fetched and possible to ask for again.
+public enum MailBodyPhase: Equatable, Sendable {
+
+    case ready
+    case remote
+    case loading
+    case failed
+}
+
+/// One message of the thread. `bodyText` is the body while `bodyPhase` is `.ready`, else empty; `preview` is the short
+/// snippet the server keeps for every message. `bodyFailure` and `bodyUnavailable` say why the body was not fetched.
 public struct MailMessageItem: Equatable, Sendable, Identifiable {
 
     public let emailId: String
@@ -27,6 +70,10 @@ public struct MailMessageItem: Equatable, Sendable, Identifiable {
     public let toNames: [String]
     public let date: String?
     public let bodyText: String
+    public let preview: String?
+    public let bodyPhase: MailBodyPhase
+    public let bodyFailure: FailureKind?
+    public let bodyUnavailable: MailContentUnavailable?
     public let attachments: [MailAttachmentItem]
     public let expanded: Bool
 
@@ -40,6 +87,10 @@ public struct MailMessageItem: Equatable, Sendable, Identifiable {
         toNames: [String] = [],
         date: String? = nil,
         bodyText: String = "",
+        preview: String? = nil,
+        bodyPhase: MailBodyPhase = .ready,
+        bodyFailure: FailureKind? = nil,
+        bodyUnavailable: MailContentUnavailable? = nil,
         attachments: [MailAttachmentItem] = [],
         expanded: Bool = false
     ) {
@@ -50,6 +101,10 @@ public struct MailMessageItem: Equatable, Sendable, Identifiable {
         self.toNames = toNames
         self.date = date
         self.bodyText = bodyText
+        self.preview = preview
+        self.bodyPhase = bodyPhase
+        self.bodyFailure = bodyFailure
+        self.bodyUnavailable = bodyUnavailable
         self.attachments = attachments
         self.expanded = expanded
     }
@@ -196,19 +251,26 @@ public enum MailThreadMove: Equatable, Sendable {
     case restore
 }
 
-/// What the thread screen asks the app to show: Semp's draft or a reply in the editor, or a task of the thread.
+/// What the thread screen asks the app to show: Semp's draft or a reply in the editor, a task of the thread, or the
+/// Files item of a saved attachment.
 public enum MailThreadTarget: Equatable, Sendable {
 
     case draft
     case reply(MailReplyMode)
     case task(taskId: String)
+    case file(fileItemId: String)
 }
 
 public enum MailThreadAction: Equatable, Sendable {
 
     case retry
     case refresh
+    /// Opens or closes a message; opening one whose body is only at the mail provider fetches it.
     case toggleMessage(emailId: String)
+    /// Fetches the body of a message that is only at the mail provider again, after it failed.
+    case loadBody(emailId: String)
+    /// Saves an attachment of a message into Files.
+    case saveAttachment(emailId: String, attachmentId: String)
     case toggleFlag
     case move(MailThreadMove)
     /// Sends Semp's draft with `body` as its text; a text other than the stored one is saved first.
@@ -224,6 +286,8 @@ public enum MailThreadEffect: Equatable, Sendable {
     case close
     case compose(MailComposeStart)
     case openTask(taskId: String)
+    /// Shows the Files item of a saved attachment, which previews the file and hands it to other apps.
+    case openFile(fileItemId: String)
 }
 
 public typealias MailThreadScreenModel = ScreenModel<MailThreadState, MailThreadAction, MailThreadEffect>
