@@ -90,6 +90,10 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeMailFolders() -> any MailFoldersScreenModel { real.makeMailFolders() }
 
+    func makeProjectMailSignals(projectId: String) -> any ProjectMailSignalsScreenModel {
+        real.makeProjectMailSignals(projectId: projectId)
+    }
+
     func makeSempThread(
         start: SempThreadStart,
         threadId: String?,

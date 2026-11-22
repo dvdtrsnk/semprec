@@ -138,6 +138,9 @@ class HomeSDK(
     /** The mail screens: the thread list, a thread, writing a message, the mailboxes and the accounts. */
     val mail: MailSDK = MailSDK(auth.api, syncChanges)
 
+    /** The mail signals of a project: which people, domains and keywords mark its threads. */
+    val mailSignals: MailSignalsSDK = MailSignalsSDK(auth.api)
+
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
 
     fun overviewViewModel(): OverviewViewModel = overviewViewModels.overviewViewModel()

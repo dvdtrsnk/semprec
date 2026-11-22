@@ -52,6 +52,14 @@ class AuthenticatedApiChangesTest {
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/items/count", body = "{}") })
         assertEquals(0, announcements { api.send(HttpMethod.Get, "/api/search", listOf("q" to "x")) })
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/search/recent", body = "{}") })
+        val preview = "/api/mail/projects/p1/signals/preview"
+        assertEquals(0, announcements { api.send(HttpMethod.Post, preview, body = "{}") })
+    }
+
+    @Test fun `saving and applying mail signals are announced`() = runTest {
+        val api = api()
+        assertEquals(1, announcements { api.send(HttpMethod.Put, "/api/mail/projects/p1/signals", body = "{}") })
+        assertEquals(1, announcements { api.send(HttpMethod.Post, "/api/mail/projects/p1/signals/apply", body = "{}") })
     }
 
     @Test fun `saving the text of a page is not announced`() = runTest {

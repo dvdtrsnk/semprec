@@ -80,7 +80,7 @@ class AuthenticatedApi(
 
         /**
          * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the
-         * `POST`s that only read (a query, a count, a search), the raw staging of a blob (the item it belongs to is
+         * `POST`s that only read (a query, a count, a search, the preview of a project's mail signals), the raw staging of a blob (the item it belongs to is
          * created by a later request) and the saving of a page's own text (the diary's day page, which its load
          * ensures with a `PUT`, and an item's `page.md`), which no list shows.
          */
@@ -90,6 +90,7 @@ class AuthenticatedApi(
             return !(
                 route.endsWith("/query") ||
                     route.endsWith("/count") ||
+                    route.endsWith("/signals/preview") ||
                     route.startsWith("/api/search") ||
                     route == "/api/blobs" ||
                     route.endsWith("/doc") ||

@@ -64,6 +64,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeMailThread(threadId: String) -> any MailThreadScreenModel
     func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel
     func makeMailFolders() -> any MailFoldersScreenModel
+    /// The mail signals of a project: which people, domains and keywords mark its threads, with the threads they match.
+    func makeProjectMailSignals(projectId: String) -> any ProjectMailSignalsScreenModel
 
     // Semp slice
     /// A conversation. `threadId` names the thread of `.existing`, `inboxItemId` the Inbox item of `.item`; `title`
