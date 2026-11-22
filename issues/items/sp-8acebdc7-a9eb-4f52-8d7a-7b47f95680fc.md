@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-8acebdc7-a9eb-4f52-8d7a-7b47f95680fc"
 title: "[internet-accounts] Throttle the Graph mail webhook per client address and look each subscription up once per batch"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-85e6cbc4-7de7-4385-81a9-a493c421b817"
 assignees: []
 milestone: null
 createdAt: "2026-11-22T06:52:47.527Z"
-updatedAt: "2026-11-22T06:52:48.432Z"
-closedAt: null
+updatedAt: "2026-11-22T07:01:31.328Z"
+closedAt: "2026-11-22T07:01:31.328Z"
 source: null
 approval: {"specSha256":"b99c4541555bbc31a249e00023cb817e0ea5c7d2a9e61be2efd6637f9e50d5b8","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-22T06:52:48.432Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"89cb9d902f607d95a4490c5f64278ec49c3ab01a","at":"2026-11-22T07:01:31.328Z"}
 ---
 **Blocked by:** none
 **Model tier:** medium
