@@ -13,8 +13,10 @@ import {
   handleMailSentCopyTask,
   MAIL_SENT_COPY_MAX_ATTEMPTS,
   mailSentCopyJobKey,
+  recordPendingSentCopyAfterSend,
   type MailSentCopyTaskOptions,
 } from "../mail/mailSentCopies.js";
+import { mailPostSendSyncJobKey } from "../mail/mailSyncEnqueue.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import type { MailTransportMessage } from "../mail/mailTransport.js";
 import { IMAP_SEEN_FLAG } from "../mail/messageFlags.js";
@@ -51,6 +53,10 @@ interface Account {
   accepted: MailTransportMessage[];
   /** Runs right after the SMTP server accepted a message, before the send's finalization. */
   afterAccept: (() => Promise<void>) | undefined;
+  /** The SMTP server refuses the next messages instead of accepting them. */
+  refuse: boolean;
+  /** The provider files the Sent copy itself, as Gmail and Graph do. */
+  filesOwnSentCopy: boolean;
   send(subject: string): Promise<void>;
   /** The draft send route's answer, or its rejection, for one new draft. */
   postSend(subject: string): Promise<{ status: number }>;
@@ -91,9 +97,10 @@ describe("the Sent copy of an SMTP send", () => {
     const adapters = sendAdapters(
       transportFor({
         async send(message) {
+          if (account.refuse) throw new Error("550 recipient refused");
           accepted.push(message);
           await account.afterAccept?.();
-          return { needsSentCopy: true };
+          return account.filesOwnSentCopy ? {} : { needsSentCopy: true };
         },
       }),
     );
@@ -124,6 +131,8 @@ describe("the Sent copy of an SMTP send", () => {
       mailbox,
       accepted,
       afterAccept: undefined,
+      refuse: false,
+      filesOwnSentCopy: false,
       postSend,
       send: async (subject) => {
         expect((await postSend(subject)).status).toBe(200);
@@ -147,6 +156,24 @@ describe("the Sent copy of an SMTP send", () => {
         WHERE j.task_identifier = 'mailSentCopy' ORDER BY j.id`,
     );
     return rows.map((row) => jobRowSchema.parse(row));
+  }
+
+  /** The mailbox's follow-up `mailAccountSync` jobs after a send, by slot, with their due time and enqueue count. */
+  async function postSendSyncJobs(mailboxId: string) {
+    const { rows } = await admin.query<{ key: string; run_at: Date; revision: number; payload: unknown }>(
+      `SELECT j.key, j.run_at, p.revision, p.payload FROM graphile_worker.jobs j
+         JOIN graphile_worker._private_jobs p ON p.id = j.id
+        WHERE j.task_identifier = 'mailAccountSync' AND j.key LIKE 'mail-account-sync-after-send:%' ORDER BY j.run_at`,
+    );
+    for (const row of rows) {
+      expect(row.payload).toEqual(expect.objectContaining({ tenantId: tenant, payload: { mailboxItemId: mailboxId } }));
+    }
+    return rows.map(({ key, run_at, revision }) => ({ key, runAt: run_at, revision }));
+  }
+
+  function expectDueAbout(runAt: Date, from: number, to: number, delayMs: number) {
+    expect(runAt.getTime()).toBeGreaterThanOrEqual(from + delayMs - 1_000);
+    expect(runAt.getTime()).toBeLessThanOrEqual(to + delayMs + 1_000);
   }
 
   async function openProblems() {
@@ -390,6 +417,68 @@ describe("the Sent copy of an SMTP send", () => {
       expect(others).toEqual([]);
       expect(copy?.raw).toEqual(account.accepted[0]?.raw);
       expect(await jobOf(copy!.id)).toEqual([{ attempts: 0, max_attempts: MAIL_SENT_COPY_MAX_ATTEMPTS }]);
+    },
+  );
+
+  tenantIt("schedules exactly the two follow-up syncs about 15 s and 60 s after an accepted send", async () => {
+    const account = await connectAccount();
+    const before = Date.now();
+    await account.send("Hello Bob");
+    const after = Date.now();
+
+    const jobs = await postSendSyncJobs(account.mailbox.mailboxId);
+    expect(jobs.map(({ key, revision }) => ({ key, revision }))).toEqual([
+      { key: mailPostSendSyncJobKey(account.mailbox.mailboxId, 15_000), revision: 0 },
+      { key: mailPostSendSyncJobKey(account.mailbox.mailboxId, 60_000), revision: 0 },
+    ]);
+    expectDueAbout(jobs[0]!.runAt, before, after, 15_000);
+    expectDueAbout(jobs[1]!.runAt, before, after, 60_000);
+  });
+
+  tenantIt("keeps one follow-up per slot, at its first due time, for sends while the slots are pending", async () => {
+    const account = await connectAccount();
+    await account.send("First");
+    const first = await postSendSyncJobs(account.mailbox.mailboxId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await account.send("Second");
+    await account.send("Third");
+
+    expect(account.accepted).toHaveLength(3);
+    const jobs = await postSendSyncJobs(account.mailbox.mailboxId);
+    expect(jobs.map(({ key, runAt }) => ({ key, runAt }))).toEqual(first.map(({ key, runAt }) => ({ key, runAt })));
+    expect(jobs.map(({ revision }) => revision)).toEqual([2, 2]);
+  });
+
+  tenantIt("schedules no follow-up for a send the server refuses", async () => {
+    const account = await connectAccount();
+    account.refuse = true;
+    await expect(account.postSend("Refused")).rejects.toThrow("550 recipient refused");
+    expect(account.accepted).toEqual([]);
+    expect(await postSendSyncJobs(account.mailbox.mailboxId)).toEqual([]);
+  });
+
+  tenantIt("schedules no follow-up for a send whose provider files its own Sent copy", async () => {
+    const account = await connectAccount();
+    account.filesOwnSentCopy = true;
+    await account.send("Filed by the provider");
+    expect(account.accepted).toHaveLength(1);
+    expect(await postSendSyncJobs(account.mailbox.mailboxId)).toEqual([]);
+  });
+
+  tenantIt(
+    "schedules the follow-ups with a copy recorded after the send, as an invitation job records it",
+    async () => {
+      const account = await connectAccount();
+      const recorded = await recordPendingSentCopyAfterSend(runtime, {
+        mailboxItemId: account.mailbox.mailboxId,
+        messageId: `<${randomUUID()}@example.test>`,
+        raw: Buffer.from("Subject: Invitation\r\n\r\nbody\r\n"),
+      });
+      expect(recorded).toBe(true);
+      expect((await postSendSyncJobs(account.mailbox.mailboxId)).map(({ key }) => key)).toEqual([
+        mailPostSendSyncJobKey(account.mailbox.mailboxId, 15_000),
+        mailPostSendSyncJobKey(account.mailbox.mailboxId, 60_000),
+      ]);
     },
   );
 });

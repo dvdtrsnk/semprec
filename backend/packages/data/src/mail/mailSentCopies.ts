@@ -18,6 +18,7 @@ import {
 } from "./imapConnectionLimiter.js";
 import { logger } from "./logger.js";
 import { getMailAccountSyncState } from "./mailAccountSyncStateStore.js";
+import { enqueuePostSendMailSyncs } from "./mailSyncEnqueue.js";
 import { resolveMailModuleIds, type MailModuleIds } from "./mailModuleIds.js";
 import {
   openImapConnection,
@@ -62,6 +63,8 @@ export interface PendingSentCopy {
 /**
  * Records the copy and enqueues its job, keyed per copy, on `client`, so both commit or roll back with the
  * transaction that records the send. A copy of the same message recorded again keeps the first row and its job.
+ * Every accepted IMAP/SMTP send records a copy here, so it also schedules the mailbox's follow-up passes
+ * (`enqueuePostSendMailSyncs`).
  */
 export async function recordPendingSentCopy(client: PoolClient, copy: PendingSentCopy): Promise<string> {
   const inserted = await client.query<{ id: string }>(
@@ -80,6 +83,7 @@ export async function recordPendingSentCopy(client: PoolClient, copy: PendingSen
     ).rows[0]?.id;
   if (id === undefined) throw new Error("The Sent copy was neither recorded nor found");
   await enqueueSentCopyJob(client, id);
+  await enqueuePostSendMailSyncs(client, copy.mailboxItemId);
   return id;
 }
 

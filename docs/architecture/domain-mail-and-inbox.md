@@ -69,6 +69,14 @@ described elsewhere and only referenced here:
   `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
   itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
   server reports a delivery unasked) starts at once instead of after imapflow's 15 s default.
+- Some servers do not push their own deliveries to an IDLE session: on Purelymail a message the account sent to itself
+  and the bounce (DSN) of a refused recipient land in INBOX seconds after the send with no IDLE signal, and other
+  providers treat DSNs alike. Every accepted IMAP/SMTP send therefore schedules two follow-up `mailAccountSync` jobs,
+  due 15 s and 60 s later (`enqueuePostSendMailSyncs`, `mail/mailSyncEnqueue.ts`), enqueued by `recordPendingSentCopy`
+  in the transaction that records the send and its Sent copy (draft and approved agent sends, invitations and their
+  replies). Each slot has its own job key per mailbox with `preserve_run_at`, so further sends while it is pending
+  keep its due time; the job is the normal pass, so one that starts during a pass only asks it for one more round.
+  Gmail and Graph file their own Sent copy and schedule none.
 - A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
   established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
   recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing
