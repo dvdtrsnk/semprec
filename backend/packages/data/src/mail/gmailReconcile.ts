@@ -7,7 +7,12 @@ import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { ValidationError } from "../errors.js";
-import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
+import {
+  ensureFolderItem,
+  renameFolderItem,
+  retireUnlistedFolderItems,
+  type ProviderFolder,
+} from "./folderDiscovery.js";
 import { ingestEmailMessage, type IngestedMailContent } from "./ingest.js";
 import { createGmailMailFlagWritebackAdapter, writeBackProviderFlags } from "./mailFlagWriteback.js";
 import { recordConfirmedMailMessageFlag } from "./mailMessageFlagSyncStore.js";
@@ -578,6 +583,9 @@ export async function reconcileGmailAccount(
         specialPurpose: specialPurposeForLabel(label),
       });
       folderItemIdByLabel.set(label.id, folderItemId);
+      // A label keeps its id when renamed in Gmail; a system label's name is shown translated, never Gmail's.
+      if (label.type === "user")
+        await renameFolderItem(client, { foldersDatabaseId: params.foldersDatabaseId, folderItemId, name: label.name });
     }
     const archiveFolderItemId = await ensureFolderItem(client, {
       foldersDatabaseId: params.foldersDatabaseId,
@@ -587,6 +595,14 @@ export async function reconcileGmailAccount(
       name: "Archive",
       behavior: "label",
       specialPurpose: "archive",
+    });
+    // A label deleted in Gmail leaves its messages first (as labelsRemoved history), then its now empty Folder goes.
+    await retireUnlistedFolderItems(client, {
+      foldersDatabaseId: params.foldersDatabaseId,
+      mailboxItemId: params.mailboxItemId,
+      mailboxRelationPropertyId: params.mailboxFolderRelationPropertyId,
+      folderRelationPropertyId: params.folderRelationPropertyId,
+      listedProviderIds: new Set([...folderItemIdByLabel.keys(), GMAIL_ARCHIVE_PROVIDER_ID]),
     });
     const cursor: GmailSyncCursor = {
       historyId: state.gmailHistoryId,
