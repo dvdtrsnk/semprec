@@ -340,7 +340,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   Date is judged by the provider alone.
 - Only `live` mail triggers model calls or notifications: the `newEmail` heartbeat (`core.agentRun` with the
   `liveMailFilter` gate, checked before the answer-expected gate's model call), thread project triage
-  (`mailThreadProject`, queued by ingest), and the `calendar_invitation` notification of an iMIP invitation
+  (`mailThreadProject`, queued by ingest, with the project signal match it runs first), and the
+  `calendar_invitation` notification of an iMIP invitation
   (`calendar/invitationIngestAction.ts` still writes the Invitations item of a backfilled message, unnotified, as a
   calendar's initial sync does). Person linking, thread link rules, invitation reply application and search indexing
   run for backfilled mail too.
@@ -601,6 +602,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   guard → project `FOR SHARE` → its signals row `FOR SHARE` → each matching listed Threads item in id order (locked,
   rechecked open) → the edge through `createRelationWithClient` as the session's user, the write of a user's own
   project edit. Only the saved signals count there, and only the preview and the apply ever look at history.
+- Live triage (`mailTriageThreadProject`, still 60 s after the first inbound live message) matches first, under the
+  mail-thread guard and the Threads item lock: exactly one matching `inProgress`/`longTerm` project is written by the
+  resolver link rule `threadProjectFromSignals` (no inputs, so nothing else queues it; source: the project, key
+  `mailSignals`) without a model call; several restrict the model's candidates to them; none leaves every active
+  project as before. A thread that inherited from its company before the task runs is left alone, and the company
+  rules leave a signal link alone.
 
 ### Thread refs
 
@@ -842,7 +849,7 @@ on-demand content and attachment reads.
   holders never wait for a card.
 - Value-link evaluation: target item row → its link row.
 - Project signal apply: mail-thread guard → project item (share) → `project_mail_signals` row (share) → Threads items
-  (id order) → relation definition.
+  (id order) → relation definition. Signal triage: mail-thread guard → Threads item → its link row.
 
 ## Related rules
 

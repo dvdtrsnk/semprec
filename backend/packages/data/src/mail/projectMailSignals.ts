@@ -10,19 +10,28 @@ import { getItemById, getItemsByIds, lockItemForShare } from "../chokePoint/item
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItems } from "../chokePoint/relationsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import type { LinkRuleResolution, LinkRuleResolver } from "../valueLinks/linkResolver.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { draftAddress } from "./mailDraftFields.js";
 import { keywordTerms, keywordTsQuery } from "./mailSignalKeywords.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
-import type { MailSignalSet } from "./projectMailSignalsStore.js";
-import { FREEMAIL_DOMAINS, webHost } from "./threadLinkRules.js";
+import { listProjectMailSignals, type MailSignalSet, type StoredMailSignals } from "./projectMailSignalsStore.js";
+import { FREEMAIL_DOMAINS, mailThreadIdOfItem, webHost } from "./threadLinkRules.js";
+
+export const THREAD_SIGNALS_PROJECT_LINK_RULE_KEY = "threadProjectFromSignals";
+
+/** The `sourcePropertyKey` of the project a signal link names as its source. */
+export const MAIL_SIGNALS_SOURCE_KEY = "mailSignals";
 
 export const MAX_SIGNAL_DOMAINS = 50;
 export const MAX_SIGNAL_ADDRESSES = 100;
 export const MAX_SIGNAL_KEYWORDS = 50;
 const MAX_DOMAIN_INPUT_LENGTH = 2048;
 const MAX_KEYWORD_LENGTH = 100;
+
+/** The statuses whose projects live triage considers, the same as the project link rule's. */
+const ACTIVE_PROJECT_STATUSES: readonly string[] = ["inProgress", "longTerm"];
 
 export const EMPTY_MAIL_SIGNALS: MailSignalSet = Object.freeze({ domains: [], addresses: [], keywords: [] });
 
@@ -293,3 +302,60 @@ SELECT thread_id, thread_item_id, open FROM matched_thread ORDER BY thread_item_
     return { threadId: row.thread_id, threadItemId: row.thread_item_id, open: row.open };
   });
 }
+
+/** The live `inProgress`/`longTerm` projects whose signals or people match the thread, in id order. */
+export async function activeProjectsMatchingMailThread(client: PoolClient, threadId: string): Promise<string[]> {
+  const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
+  if (!projects) throw new Error("The Projects database is not seeded");
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM items
+      WHERE tenant_id = app_tenant_default() AND database_id = $1 AND deleted_at IS NULL
+        AND properties->>'status' = ANY($2::text[])
+      ORDER BY id`,
+    [projects.id, ACTIVE_PROJECT_STATUSES],
+  );
+  const projectIds = z
+    .array(z.object({ id: z.uuid() }))
+    .parse(rows)
+    .map((row) => row.id);
+  const stored: Map<string, StoredMailSignals> = await listProjectMailSignals(client, projectIds);
+  const people = await listProjectPeopleAddresses(client, projectIds);
+  const criteria = projectIds.flatMap((projectId) => {
+    const entry = signalCriteria(projectId, stored.get(projectId) ?? EMPTY_MAIL_SIGNALS, people.get(projectId) ?? []);
+    return entry ? [entry] : [];
+  });
+  if (criteria.length === 0) return [];
+  const matched = await client.query<Record<string, unknown>>(
+    `${SIGNAL_MATCH_CTES}
+SELECT DISTINCT project_id FROM matched_thread ORDER BY project_id`,
+    [threadId, criteriaJson(criteria), null],
+  );
+  return z
+    .array(z.object({ project_id: z.uuid() }))
+    .parse(matched.rows)
+    .map((row) => row.project_id);
+}
+
+const NO_RESOLUTION: LinkRuleResolution = { values: [], sources: [] };
+
+/** The one active project whose signals match the thread; none when no project or several do. */
+async function resolveThreadProjectFromSignals(client: PoolClient, threadItemId: string): Promise<LinkRuleResolution> {
+  const threadId = await mailThreadIdOfItem(client, threadItemId);
+  const matches = threadId ? await activeProjectsMatchingMailThread(client, threadId) : [];
+  const [only] = matches;
+  return matches.length === 1 && only
+    ? { values: [only], sources: [{ kind: "item", sourceItemId: only, sourcePropertyKey: MAIL_SIGNALS_SOURCE_KEY }] }
+    : NO_RESOLUTION;
+}
+
+/**
+ * Declares no inputs, so no change queues it: live thread project triage evaluates it once for a new thread that
+ * inherited no project, and a relink evaluates it again. History is matched only by the user's preview and apply.
+ */
+export const threadProjectSignalsLinkResolver: LinkRuleResolver = {
+  inputs: { edges: [], properties: [] },
+  resolve: resolveThreadProjectFromSignals,
+  async affectedItemIds() {
+    return [];
+  },
+};

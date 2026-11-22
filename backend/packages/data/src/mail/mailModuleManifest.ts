@@ -16,6 +16,7 @@ export {
 } from "./mailThreadRoutes.js";
 export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHandlers.js";
 export { threadCompanyLinkResolver, threadProjectLinkResolver } from "./threadLinkRules.js";
+export { threadProjectSignalsLinkResolver } from "./projectMailSignals.js";
 export {
   createProjectMailSignalsApplyRouteHandler,
   createProjectMailSignalsPreviewRouteHandler,
@@ -75,6 +76,7 @@ import { FILES_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { THREAD_ATTACHMENT_PROJECT_RULE_KEY } from "./threadAttachmentLinks.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 import { THREAD_COMPANY_LINK_RULE_KEY, THREAD_PROJECT_LINK_RULE_KEY } from "./threadLinkRules.js";
+import { THREAD_SIGNALS_PROJECT_LINK_RULE_KEY } from "./projectMailSignals.js";
 import { MAIL_SYNC_THREAD_TASK_PEOPLE_TASK } from "./threadTaskPeople.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
@@ -191,6 +193,14 @@ export const manifest: ModuleManifest = {
       key: THREAD_PROJECT_LINK_RULE_KEY,
       target: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
       resolverExport: "threadProjectLinkResolver",
+    },
+    // A live thread that still has no project takes the one active project whose mail signals match it
+    // (`projectMailSignals.ts`). It declares no inputs: thread project triage evaluates it once per new live thread.
+    // Ownership handoff as for the two rules above.
+    {
+      key: THREAD_SIGNALS_PROJECT_LINK_RULE_KEY,
+      target: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
+      resolverExport: "threadProjectSignalsLinkResolver",
     },
     // A file a thread's message brought takes over the thread's project. Ownership handoff: `Files.projects` stays
     // `owner: user`; `valueLinks` writes it only while the file's link is `on`. Runs with the `Threads.attachments`

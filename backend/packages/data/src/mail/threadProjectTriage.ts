@@ -1,6 +1,8 @@
-// Semp chooses one of the tenant's active projects for a thread that inherited none, or leaves it empty.
-// The value is written as an agent writer through the choke point's relation write, so the property
-// stays user-owned and no `value_links` row is made.
+// A live thread that inherited no project gets one from the project mail signals first: when exactly one active
+// project's signals match, the signal link rule writes it as an inherited value. Otherwise Semp chooses one of the
+// matching projects, or of all active projects when none matches, or leaves it empty. Semp's choice is written as an
+// agent writer through the choke point's relation write, so the property stays user-owned and no `value_links` row
+// is made.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { enqueueJob } from "@semprec/queue";
@@ -11,6 +13,8 @@ import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem } from "../chokePoint/relationsStore.js";
 import { listValueLinksByItemIds } from "../chokePoint/valueLinksStore.js";
+import { loadResolverLinkRules } from "../valueLinks/linkResolver.js";
+import { evaluateResolverRule } from "../valueLinks/linkPropagation.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -19,6 +23,7 @@ import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
+import { activeProjectsMatchingMailThread, THREAD_SIGNALS_PROJECT_LINK_RULE_KEY } from "./projectMailSignals.js";
 import { firstInboundMessage, mailThreadIdOfItem } from "./threadLinkRules.js";
 
 export const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
@@ -114,8 +119,10 @@ export type ThreadProjectTriageOutcome =
   | "noCandidates"
   | "budgetExhausted"
   | "noAssignment"
-  /** The thread or the chosen project changed while the model was asked. */
+  /** The thread or the chosen project changed while the model was asked, or the signals while they were matched. */
   | "stale"
+  /** Exactly one active project's signals matched; no model call. */
+  | "assignedFromSignals"
   | "assigned";
 
 const messageRow = z.object({
@@ -160,17 +167,18 @@ export async function projectPropertyIdIfOpen(
   return links.some((link) => link.propertyKey === "project") ? null : property.id;
 }
 
-async function listCandidates(client: PoolClient): Promise<Candidate[]> {
+/** `among` restricts the candidates to the projects whose signals matched; `null` offers every active project. */
+async function listCandidates(client: PoolClient, among: readonly string[] | null): Promise<Candidate[]> {
   const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
   if (!projects) throw new Error("The Projects database is not seeded");
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT id, COALESCE(properties->>'name', '') AS name, properties->>'status' AS status
      FROM items
      WHERE tenant_id = app_tenant_default() AND database_id = $1 AND deleted_at IS NULL
-       AND properties->>'status' = ANY($2::text[])
+       AND properties->>'status' = ANY($2::text[]) AND ($4::uuid[] IS NULL OR id = ANY($4::uuid[]))
      ORDER BY updated_at DESC, id
      LIMIT $3`,
-    [projects.id, CANDIDATE_STATUSES, MAX_CANDIDATES],
+    [projects.id, CANDIDATE_STATUSES, MAX_CANDIDATES, among],
   );
   return rows.map((row) => candidateRow.parse(row));
 }
@@ -179,6 +187,7 @@ async function listCandidates(client: PoolClient): Promise<Candidate[]> {
 async function readTriageSnapshot(
   client: PoolClient,
   threadItemId: string,
+  among: readonly string[] | null,
 ): Promise<TriageSnapshot | "notEligible" | "noCandidates"> {
   if ((await projectPropertyIdIfOpen(client, threadItemId, false)) === null) return "notEligible";
   const threadId = await mailThreadIdOfItem(client, threadItemId);
@@ -197,7 +206,7 @@ async function readTriageSnapshot(
   );
   const message = rows[0] ? messageRow.parse(rows[0]) : null;
   if (!message) return "notEligible";
-  const candidates = await listCandidates(client);
+  const candidates = await listCandidates(client, among);
   if (candidates.length === 0) return "noCandidates";
   return {
     subject: message.subject,
@@ -287,18 +296,48 @@ async function writeProject(pool: Pool, threadItemId: string, projectId: string)
   }
 }
 
+type SignalDecision = "notEligible" | "assignedFromSignals" | "stale" | { among: string[] | null };
+
 /**
- * A read transaction checks eligibility and reads the snapshot; the gateway is asked outside any
- * transaction; `writeProject` writes when the thread still qualifies. The skip outcomes write nothing and
- * raise nothing; other gateway and database failures propagate.
+ * Under the mail thread guard and the Threads item lock, matches the open thread against the active projects'
+ * signals. One match is written by the signal link rule in this transaction (`evaluateResolverRule`, which matches
+ * again under the same locks); several restrict the model's candidates to them; none leaves every active project.
+ */
+async function decideBySignals(pool: Pool, threadItemId: string): Promise<SignalDecision> {
+  return withTransaction(pool, async (client) => {
+    await lockMailThreadMutation(client);
+    if ((await projectPropertyIdIfOpen(client, threadItemId, true)) === null) return "notEligible";
+    const threadId = await mailThreadIdOfItem(client, threadItemId);
+    if (threadId === null) return "notEligible";
+    const matches = await activeProjectsMatchingMailThread(client, threadId);
+    if (matches.length === 0) return { among: null };
+    if (matches.length > 1) return { among: matches };
+    const rule = (await loadResolverLinkRules()).find((entry) => entry.key === THREAD_SIGNALS_PROJECT_LINK_RULE_KEY);
+    if (!rule) throw new Error("The thread project signal link rule is not declared");
+    await evaluateResolverRule(client, rule, threadItemId, 1);
+    const links = await listValueLinksByItemIds(client, [threadItemId]);
+    return links.some((link) => link.propertyKey === "project" && link.ruleKey === THREAD_SIGNALS_PROJECT_LINK_RULE_KEY)
+      ? "assignedFromSignals"
+      : "stale";
+  });
+}
+
+/**
+ * The signals decide first (`decideBySignals`). Then a read transaction checks eligibility and reads the snapshot;
+ * the gateway is asked outside any transaction; `writeProject` writes when the thread still qualifies. The skip
+ * outcomes write nothing and raise nothing; other gateway and database failures propagate.
  */
 export async function triageThreadProject(
   bound: ThreadProjectTriageRuntime,
   threadItemId: string,
 ): Promise<ThreadProjectTriageOutcome> {
-  const snapshot = await withTransaction(bound.pool, (client) => readTriageSnapshot(client, threadItemId), {
-    isolation: "repeatable_read",
-  });
+  const decision = await decideBySignals(bound.pool, threadItemId);
+  if (typeof decision === "string") return decision;
+  const snapshot = await withTransaction(
+    bound.pool,
+    (client) => readTriageSnapshot(client, threadItemId, decision.among),
+    { isolation: "repeatable_read" },
+  );
   if (snapshot === "notEligible" || snapshot === "noCandidates") return snapshot;
   const answer = await askForProject(bound.gateway, threadItemId, snapshot);
   if (answer.budgetExhausted) return "budgetExhausted";
