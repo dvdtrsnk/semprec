@@ -9,8 +9,6 @@ import {
   CORE_TASK_NAMES,
   TASK_TENANCY,
   enqueueJob,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
   registerTask,
   runOnce,
   type TaskList,
@@ -44,6 +42,7 @@ import {
   updateItemWithClient,
   withTransaction,
   writeComputed,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -599,8 +598,7 @@ describe("background task isolation across two tenants: transcribe runtime (issu
 
     adminPool = getTestPool();
     await resetDatabase(adminPool);
-    await ensureQueueSchema(adminPool);
-    await grantQueueSchemaPrivileges(adminPool);
+    await installQueueSchema(adminPool);
     pool = await createRuntimeRolePool(adminPool, "semprec_data");
     tenantTables = await loadTenantTables();
     audioFixture = await generateMp4Fixture({ creationTime: FIXTURE_CREATION_TIME });

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { getTenantUserId } from "../../auth/usersStore.js";
 import { getItemById } from "../../chokePoint/itemsStore.js";
 import { getDecryptedCredential } from "../../credentials/externalCredentialsStore.js";
-import { getMailServerSettings } from "../../mail/mailServerSettingsStore.js";
+import { getMailServerSettings, recordResolvedCalDavUrl } from "../../mail/mailServerSettingsStore.js";
 import { requireSingleRow, withSavepoint, withTransaction } from "../../db/pool.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 import type { CustomRouteResult, RouteParams } from "../../customRoute.js";
@@ -65,7 +65,7 @@ const CALENDAR_SYNC_GUARD_WAIT_MS = 5_000;
 /** A pass that ended `ok` this long ago is due again; the sweep runs every five minutes. */
 const CALENDAR_SYNC_DUE_AFTER_SECONDS = 4 * 60;
 /** Manual sync requests of one account closer together than this queue one pass. */
-export const MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS = 60;
+export const MANUAL_CALENDAR_SYNC_DEBOUNCE_SECONDS = 15;
 
 const payloadSchema = z.strictObject({ accountItemId: z.uuid() });
 
@@ -148,7 +148,13 @@ export async function handleCalendarAccountSyncTask(
     const adapter = await openCalendarSyncAdapter(pool, prologue.account, adapters);
     const cursors = new Map(prologue.tracked.map((calendar) => [calendar.remoteId, calendar]));
     const fetched: FetchedCalendar[] = [];
-    for (const calendar of parseRemoteCalendars(await adapter.listCalendars(signal))) {
+    const calendars = parseRemoteCalendars(await adapter.listCalendars(signal));
+    const delegatedServerUrl = adapter.delegatedServerUrl?.() ?? null;
+    if (delegatedServerUrl !== null) {
+      // Stored before the Events, whose addresses are on that server: every later pass and push starts there.
+      await withTransaction(pool, (client) => recordResolvedCalDavUrl(client, accountItemId, delegatedServerUrl));
+    }
+    for (const calendar of calendars) {
       const stored = cursors.get(calendar.remoteId);
       const cursor = stored ? { syncToken: stored.syncToken, ctag: stored.ctag } : null;
       const known = stored ? (prologue.known.get(stored.calendarItemId) ?? []) : [];

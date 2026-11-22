@@ -16,6 +16,7 @@ export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadat
 export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
 export { assertNotDerivedValueWrite } from "./chokePoint/derivedValueGuard.js";
 export { runMigrations } from "./db/migrate.js";
+export { installQueueSchema } from "./db/queueSchema.js";
 export * from "./errors.js";
 export * from "./types.js";
 export { normalizeWallClockTime } from "./timezone.js";
@@ -376,6 +377,7 @@ export {
 } from "./mail/mailCredentialVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
+export { recordPendingSentCopy, type PendingSentCopy } from "./mail/mailSentCopies.js";
 export {
   createMailTransportFactory,
   type MailTransport,

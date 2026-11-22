@@ -158,7 +158,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `pulling to refresh reads the list again and asks once a minute for the accounts to sync`() =
+    @Test fun `every pull to refresh reads the list again and asks for the accounts to sync`() =
         runTest(dispatcher) {
             val vm = loaded()
             act(vm, CalendarListAction.Refresh)
@@ -166,7 +166,7 @@ class CalendarListViewModelTest : MainDispatcherTest() {
             assertEquals(listOf("m2", "m1"), accounts.syncs.asked)
             act(vm, CalendarListAction.Refresh)
             assertEquals(3, catalog.calls.count { it == "list" })
-            assertEquals(listOf("m2", "m1"), accounts.syncs.asked)
+            assertEquals(listOf("m2", "m1", "m2", "m1"), accounts.syncs.asked)
             vm.close()
         }
 

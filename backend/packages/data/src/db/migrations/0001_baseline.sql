@@ -2106,6 +2106,31 @@ GRANT SELECT(used_at) ON TABLE public.mail_oauth_states TO semprec_router;
 GRANT SELECT(expires_at) ON TABLE public.mail_oauth_states TO semprec_router;
 
 -- ----------------------------------------------------------------------------------------------------
+-- mail_sent_copies
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_sent_copies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    mailbox_item_id uuid NOT NULL,
+    message_id text NOT NULL,
+    raw bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    failed_at timestamp with time zone,
+    CONSTRAINT mail_sent_copies_message_id_check CHECK (((length(message_id) >= 1) AND (length(message_id) <= 998)))
+);
+
+COMMENT ON TABLE public.mail_sent_copies IS 'semprec:tenancy=tenant';
+
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_tenant_id_mailbox_item_id_message_id_key UNIQUE (tenant_id, mailbox_item_id, message_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_sent_copies TO semprec_side;
+
+-- ----------------------------------------------------------------------------------------------------
 -- mail_thread_aliases
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3593,6 +3618,9 @@ ALTER TABLE ONLY public.mail_oauth_states
 ALTER TABLE ONLY public.mail_oauth_states
     ADD CONSTRAINT mail_oauth_states_user_id_tenant_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES public.users(tenant_id, id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3932,6 +3960,9 @@ ALTER TABLE ONLY public.mail_message_flag_sync_state
 ALTER TABLE ONLY public.mail_oauth_states
     ADD CONSTRAINT mail_oauth_states_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.mcp_server_connection_state
     ADD CONSTRAINT mcp_server_connection_state_mcp_server_item_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_server_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
@@ -4266,6 +4297,12 @@ ALTER TABLE public.mail_oauth_states ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.mail_oauth_states AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mail_oauth_states USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_sent_copies ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_sent_copies AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_sent_copies USING (true) WITH CHECK (true);
 
 ALTER TABLE public.mail_thread_aliases ENABLE ROW LEVEL SECURITY;
 

@@ -78,6 +78,24 @@ described elsewhere and only referenced here:
   `openImapFlow()` with `maxIdleTime`/`socketTimeout`/`autoIdleDelay` options; the IDLE transport never connects
   itself. `autoIdleDelay` is 0 on that connection, which issues no command after its SELECT, so IDLE (the only time a
   server reports a delivery unasked) starts at once instead of after imapflow's 15 s default.
+- Some servers do not push their own deliveries to an IDLE session: on Purelymail a message the account sent to itself
+  and the bounce (DSN) of a refused recipient land in INBOX seconds after the send with no IDLE signal, and other
+  providers treat DSNs alike. Every accepted IMAP/SMTP send therefore schedules two follow-up `mailAccountSync` jobs,
+  due 15 s and 60 s later (`enqueuePostSendMailSyncs`, `mail/mailSyncEnqueue.ts`), enqueued by `recordPendingSentCopy`
+  in the transaction that records the send and its Sent copy (draft and approved agent sends, invitations and their
+  replies). Each slot has its own job key per mailbox with `preserve_run_at`, so further sends while it is pending
+  keep its due time; the job is the normal pass with its single attempt, so one that starts during a pass only asks
+  it for one more round, and one that starts while the account backs off a sync failure ends in the job's prologue
+  without a login like any other trigger (the SMTP server took the message; the failing IMAP server is left to the
+  sweep). Gmail and Graph file their own Sent copy and schedule none.
+- A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
+  established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
+  recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing
+  is enqueued once `stop()` began. imapflow does not restart an IDLE that ended without the client's DONE, so the
+  transport checks `idling` every 60 s and ends the session (`ImapIdleStoppedError`, reconnect after backoff) when two
+  consecutive checks find the open connection not idling. A connection the server already closed is not logged out;
+  its close ends the cleanup. Every session start, end (`server-closed`, `error` with the error's name and code,
+  `recycle`, `stop`) and reconnect (attempt, delay) is logged at info with the mailbox id and folder only.
 - Tests reach local fake servers only through `allowLoopbackOutboundForTests()`. Host egress filtering stays
   the second layer.
 
@@ -194,8 +212,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   failure record (`clearMailSyncFailure`, as the password route does) and the calendar credential refusal
   (`clearCalendarSyncCredentialRefusal`: `needsReauthorization` or `needsConsent` → `never`), enqueues a mail sync
   and, with Calendars on, `calendarAccountSync`, and does not write `syncStatus` or the watch address.
-- After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`); a failed
-  restart is a 500 although the token was replaced.
+- After commit the route awaits `mailLiveSync.restartAccount(mailboxItemId)` (not `runAfterCommit`), so the hosted
+  lifecycle reads the new token before the answer when it can. A failed restart is logged (`mailboxItemId`,
+  `errorName`) and the route still answers 200, as the password sign-in again does: the token is committed and the
+  queued pass reads it.
 
 ### OAuth token refresh
 
@@ -230,8 +250,14 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   or notification, is logged and rethrown, and is not retried (`maxAttempts` 1); the sweep queues the account again
   once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
-  ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
-  rerun was requested and the pass did not fail, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  ends the pass when another one does. An IMAP pass that completed takes a rerun request in its final transaction
+  (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease, on the sync connection it holds
+  checked out: the move phase on pending moves read anew, then the reconcile. It runs at most `IMAP_PASS_MAX_ROUNDS`
+  (3) rounds, so a trigger during a pass is served without a new job, connection or login; a round that left new
+  messages or backfill for later (`complete` false) ends the rounds and leaves them to the follow-up. On every way out
+  of the pass one transaction releases the lease and, when a rerun is still requested (one after the last round, an
+  unfinished backfill, or any Gmail or Graph pass) and the pass did not fail, enqueues exactly one follow-up pass. A
+  holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, messages, changed flags, vanished UIDs, every full
@@ -729,9 +755,11 @@ internals proven against the real library by its unit test; an upgrade must re-p
   (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
 - The hosted IMAP lifecycle owns its discovery/startup task. A start queues the account's pass once, however often
-  its discovery is retried. The folder lookup runs under a work slot of the limiter and each folder's IDLE
-  connection under an IDLE slot. Policy refusals and transient errors go into a jittered backoff (decorrelated
-  jitter between 5 s and 5 min), while `MailReauthorizationRequiredError` (the composition root's `getCredential`
+  its discovery is retried, and every established IDLE session queues one catch-up pass (see the IDLE transport
+  above). The folder lookup runs under a work slot of the limiter and each folder's IDLE
+  connection under an IDLE slot. Policy refusals, transient errors and a session that ended with an error go into a
+  jittered backoff (decorrelated jitter between 5 s and 5 min; a clean server close and the 6 h recycle reconnect at
+  once), while `MailReauthorizationRequiredError` (the composition root's `getCredential`
   throws it when no credential is stored; its connection factory classifies a refused login as it) ends the
   discovery or the folder's loop after one report until `restartAccount` hosts a new lifecycle; stop cancels waits
   (a slot or login wait included) and joins all owned work before pool shutdown. IDLE logout grace is 10 s, then
@@ -756,9 +784,11 @@ internals proven against the real library by its unit test; an upgrade must re-p
 - Each step is claimed atomically in a short guarded transaction (operation token, monotonic desired revision,
   captured revision, durable phase, bounded validated evidence) and committed before dispatch. Only the
   claiming token records the outcome. The provider call runs outside every transaction, on the account's IMAP sync
-  connection (the kept session, see above), under a 30 s elapsed deadline per preparation/step. A drain runs its
-  moves one after another on one connection; a move after which the connection is not known to be clean closes it,
-  and the next move opens another.
+  connection (the kept session, see above), under a 30 s elapsed deadline per preparation/step.
+- An IMAP move phase (`drainImapMoves`) runs all its moves one after another over one connection it owns and closes,
+  which hands a pooled one back to the session pool; a later round of a pass hands it the pass's open connection. A
+  move after which the connection is not known to be clean (a failed or unanswered command, a preparation without a
+  result, a client that does not report itself reusable) closes that connection, and the next move opens a new one.
 - OAuth tokens are acquired before the claim into a private one-use command; a lost claim discards it.
 - Unknown acknowledgement or owner death leaves the operation in-flight/uncertain; nothing (lease, timer, new
   desire) clears it automatically and no command is blindly repeated. IMAP identity includes UIDVALIDITY and
@@ -964,10 +994,27 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   people linking). A failed send deletes its claim in its own transaction; a failed finalization keeps it.
   No automatic send retry.
 - Transports: SMTP (`createSmtpMailTransport`), Gmail and Graph REST clients. Once the provider accepted the
-  message, close/Sent-copy/response-cleanup failures keep the accepted result. The send stays synchronous: the
-  IMAP connection for an SMTP account's Sent copy opens while SMTP submits, the APPEND runs only after acceptance,
-  and a refused submission closes that connection unused before the refusal is answered. A Graph failure before
-  acceptance best-effort deletes the owned draft.
+  message, close/response-cleanup failures keep the accepted result. The submission stays synchronous: the request
+  answers only after the provider accepted or refused the message, so a refusal is the answer and the claim decides
+  exactly-once. The send opens no IMAP connection.
+- Sent copy (`mail/mailSentCopies.ts`). Gmail and Graph file sent mail themselves; an SMTP transport answers an
+  accepted send with `needsSentCopy`. The caller then records the accepted bytes and the Message-ID in
+  `mail_sent_copies` and enqueues `mailSentCopy` (job key `mail-sent-copy:<copyId>`, tenant-scoped) in the
+  transaction that records the send: `sendDraftEmail`'s finalization, or for the invitation jobs, which record their
+  send nowhere else, a transaction of its own right after the acceptance (`recordPendingSentCopyAfterSend`, retried,
+  never thrown, since a throw would send the invitation again; a copy still not recorded is logged as an error). A
+  finalization that fails after the acceptance records the copy the same way before its error is answered.
+  The job runs at least once: under an IMAP work slot of the account and the server host, its login admitted by the
+  host's login rate, it searches the Sent folder for the
+  Message-ID (`SEARCH HEADER Message-ID`) and APPENDs with `\Seen` only when it is absent, then deletes the row, so a
+  repeated run appends nothing twice. A copy of a mailbox that is gone, in the trash or has Mail off drops every copy
+  of that mailbox without an APPEND and resolves its problem (`dropSentCopiesOfMailbox`, logged); switching Mail off
+  does the same in its transaction. Every other failure keeps the row and retries with graphile-worker's backoff
+  (`MAIL_SENT_COPY_MAX_ATTEMPTS`, about 1.5 h); the final attempt marks the row failed and raises the mailbox's
+  `mailSentCopyFailed` problem (`mail:sentCopy:<mailbox>`, source `mail_account_sync_state` of the mailbox). The next
+  appended copy of that mailbox and its next completed IMAP sync pass give every failed copy a fresh job at attempt 0
+  (`requeueFailedSentCopies`); the problem resolves when an appended copy leaves none failed. A purged mailbox takes
+  its copies with it.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.
 
@@ -1002,7 +1049,9 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   delete credential, sync state, folder sync states, server settings → enqueue `mailboxRemoval` → stop the
   calendar sync (`stopCalendarAccountSync`). Deletes matching no row are fine.
 - `mailboxRemoval` job (`mail/mailboxRemovalJob.ts`, lane `mailbox-removal:<tenant>`): chunks of ≤ 100 rows,
-  Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), each chunk locks the Mailboxes item `FOR SHARE`
+  Emails then Folders (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`: the Emails in the mailbox's live Folders, and the Emails
+  whose meta row names the mailbox, is marked `folder_copy_removed_at` and has no edge to a live Folder, i.e. whose
+  last copy vanished before a pass decided them), each chunk locks the Mailboxes item `FOR SHARE`
   (`lockItemTrashEpoch`) and trashes with `deletedAtExact` = the mailbox's `deleted_at`; a live mailbox ends it.
 - The same task with `purpose: "mailOff"` (key `mailbox-mail-off-<id>`, same lane) removes the mail of a live
   account with Mail off: each chunk takes the paused sync state row `FOR SHARE`, the mail-thread guard and the live
@@ -1145,7 +1194,8 @@ on-demand content and attachment reads and the provider search.
 ## Lock orders to keep
 
 - Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
-  folder/item rows.
+  folder/item rows; an IMAP pass's final transaction then the mailbox's failed `mail_sent_copies` rows
+  (`requeueFailedSentCopies`). The Sent-copy job takes its copy rows without the sync state row.
 - History claim, release and upload: mailbox sync guard → sync state row → (upload) mail-thread guard → folder sync
   state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.

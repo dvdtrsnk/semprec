@@ -54,6 +54,7 @@ import {
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "./mail/blobStorage.js";
+import { handleMailSentCopyTask } from "./mail/mailSentCopies.js";
 import type { MailTransportFactory } from "./mail/mailTransport.js";
 import {
   handleApprovalRequestExecuteTask,
@@ -259,6 +260,13 @@ export function createCoreTaskList(
         handleSyncMailAccountTask(pool, { mailboxItemId }, mailSyncAdapters, mailModuleIds, mailBlobStorage, {
           job: { id: helpers.job.id },
         }),
+      );
+    },
+    [CORE_TASK_NAMES.MAIL_SENT_COPY]: async (payload, helpers) => {
+      await handleMailSentCopyTask(
+        pool,
+        { copyId: requireString(payload, "copyId") },
+        { jobId: helpers.job.id, isFinalAttempt: helpers.job.attempts >= helpers.job.max_attempts },
       );
     },
     [CORE_TASK_NAMES.MAILBOX_REMOVAL]: async (payload) => {

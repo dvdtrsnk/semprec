@@ -73,6 +73,7 @@ const TENANT_TABLES = [
   "mail_message_content_cache",
   "mail_message_flag_sync_state",
   "mail_message_move_sync_state",
+  "mail_sent_copies",
   "person_email_index",
   "external_credentials",
   "credential_access_log",

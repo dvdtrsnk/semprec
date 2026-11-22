@@ -10,7 +10,7 @@ import type { CustomRouteResult, RouteParams } from "../customRoute.js";
 
 /** What removing one mailbox would affect; the confirmation dialog shows these counts. */
 export interface MailboxRemovalImpact {
-  /** Non-deleted Emails in the mailbox's Folders, drafts excluded. */
+  /** Non-deleted Emails of the mailbox (`MAILBOX_REMOVAL_MEMBERS_CTE_SQL`), drafts excluded. */
   messages: number;
   drafts: number;
   /** Threads whose every non-deleted message is one of this mailbox's. */
@@ -30,6 +30,10 @@ interface MailboxRemovalImpactRow {
  * Leading CTEs (`$1` mailbox id, `$2` Folders db, `$3` Emails db) defining the removal's members. The
  * impact report and the removal job both start from this text, so both apply one definition. An Email
  * is a draft when one of its folders is a Drafts folder.
+ *
+ * Members are the Emails in the mailbox's live Folders, and the Emails of the mailbox whose last folder copy an IMAP
+ * pass removed (`folder_copy_removed_at`) before a pass decided them: those have no edge to any live Folder, so only
+ * their meta row still names the mailbox.
  */
 export const MAILBOX_REMOVAL_MEMBERS_CTE_SQL = `
 WITH mailbox_folders AS (
@@ -59,13 +63,31 @@ folder_members AS (
   JOIN item_relations r ON (r.item_a = mf.id OR r.item_b = mf.id)
   WHERE r.relation_definition_id IN (SELECT id FROM email_folder_relations)
 ),
+folderless_members AS (
+  SELECT meta.item_id AS email_id, false AS is_drafts
+  FROM mail_message_meta meta
+  WHERE meta.tenant_id = app_tenant_default()
+    AND meta.mailbox_item_id = $1::uuid
+    AND meta.folder_copy_removed_at IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM item_relations r
+      JOIN items f ON f.database_id = $2::uuid
+       AND f.id = CASE WHEN r.item_a = meta.item_id THEN r.item_b ELSE r.item_a END
+       AND f.deleted_at IS NULL
+      WHERE r.relation_definition_id IN (SELECT id FROM email_folder_relations)
+        AND (r.item_a = meta.item_id OR r.item_b = meta.item_id)
+    )
+),
 mailbox_emails AS (
-  SELECT fm.email_id, bool_or(fm.is_drafts) AS is_draft
-  FROM folder_members fm
+  SELECT m.email_id, bool_or(m.is_drafts) AS is_draft
+  FROM (SELECT email_id, is_drafts FROM folder_members
+        UNION ALL
+        SELECT email_id, is_drafts FROM folderless_members) m
   JOIN items e ON e.database_id = $3::uuid
-   AND e.id = fm.email_id
+   AND e.id = m.email_id
    AND e.deleted_at IS NULL
-  GROUP BY fm.email_id
+  GROUP BY m.email_id
 )`;
 
 /** One statement, so the counts read one snapshot. */

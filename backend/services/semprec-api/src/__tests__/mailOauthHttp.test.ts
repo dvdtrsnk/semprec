@@ -643,7 +643,7 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
     expect(anonymous.status).toBe(401);
   });
 
-  it("answers a generic 500 when the restart fails after the commit, and logs it without a secret", async () => {
+  it("answers 200 when the restart fails after the commit, with the new token stored and no request error logged", async () => {
     const address = `${randomUUID()}@gmail.com`;
     const mailboxId = await hostedMailbox(address);
     const unbound = await listen({
@@ -663,16 +663,14 @@ describe("reauthorizing a mailbox behind the REST adapter, with the live-sync ro
 
       const answer = await post("/api/mail/mailboxes/oauth/complete", { state, code: SECRETS.code });
 
-      expect(answer.status).toBe(500);
-      expect(await answer.json()).toEqual({ error: { code: "internal_error" } });
+      expect(answer.status).toBe(200);
+      expect(await answer.json()).toEqual({ mailboxId });
     } finally {
       await new Promise<void>((resolve) => unbound.close(() => resolve()));
     }
     expect(await storedToken(mailboxId)).toBe(SECRETS.newRefreshToken);
     expect(eventsOf(mailboxId)).toEqual([{ event: "start", credential: SECRETS.refreshToken }]);
-    expect(logged).toHaveBeenCalledTimes(1);
-    const record = inspect(logged.mock.calls, { depth: 8 });
-    expect(record).toContain('"mailLiveSync.restartAccount" was called before the mail live-sync root exists');
-    expect(Object.values(SECRETS).filter((secret) => record.includes(secret))).toEqual([]);
+    // The route logs the failed restart itself (covered in `mailOauthRoutes.test.ts`); the adapter has no error to log.
+    expect(logged).not.toHaveBeenCalled();
   });
 });

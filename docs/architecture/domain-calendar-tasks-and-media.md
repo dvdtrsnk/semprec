@@ -232,9 +232,21 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `providerUnavailable` with one message. The credential is scoped (`caldavCredentialScope`) to the origin discovery
   starts at and, for iCloud only, to https hosts under `icloud.com` on the default port, where Apple's discovery
   delegates; a request, a redirect or an address in an answer (principal, calendar home, resource) outside it is
-  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. A server
-  whose well-known address redirects to another host is set up with its CalDAV address instead. Discovery starts at `https://caldav.icloud.com/` for iCloud, else at the
-  account's `caldav_url` (`mail_account_server_settings`) or `https://<address domain>/.well-known/caldav`:
+  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. The one
+  exception is resolving the account's server (RFC 6764), only while it has none stored: at connect, for a body's
+  well-known `caldavUrl`, and in a pass of an account without `caldav_url`, whose discovery starts at its domain's
+  well-known address. There the session's first request, made to the well-known address, may follow redirects within
+  that address's origin (up to the redirect cap) and then one redirect off it, the delegation, to another server whose
+  address the account could have been set up with (`allowsWellKnownDelegation`: https, a DNS
+  name that is no local name, the default port, no userinfo; the outbound policy still refuses a private address).
+  The scope moves to that server for the rest of the session, so a second cross-origin hop (a domain's `www.` host
+  delegating on to its provider) is refused like any other: the `www.` host was the delegation. The server becomes the account's `caldav_url`: the
+  connect stores it instead of the body's address, the pass (`delegatedServerUrl`) right after the calendar listing
+  through mail's `recordResolvedCalDavUrl` (the Mailboxes item `FOR SHARE`, written only while `caldav_url` is
+  `null`). From then on every discovery starts there and a redirect off it is refused like any other; a password
+  replacement verifies the stored address without resolving. Discovery starts at `https://caldav.icloud.com/` for
+  iCloud, else at the account's `caldav_url` (`mail_account_server_settings`) or
+  `https://<address domain>/.well-known/caldav`:
   `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
   the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
   A fetch with a sync token uses sync-collection; a deletion or a changed series in the delta, an expired token or a
@@ -377,9 +389,9 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, `never` or
   `error`, or `ok` and last synced 4 min ago or more; a `needsReauthorization` or `needsConsent` account is left out
   until a new sign-in (a replaced password or OAuth grant) sets it back to `never` and queues its pass;
-  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 60 s per account and never
+  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 15 s per account and never
   dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
-  under the account row's share lock. With none in the last 60 s the pass runs now; a request inside the window of a
+  under the account row's share lock. With none in the last 15 s the pass runs now; a request inside the window of a
   pass that started queues one at the window's end; while that one is still ahead it serves the request too. The
   deferred pass is queued under the account's job key with that `run_at` and `jobKeyMode` `preserve_run_at`, so a pass
   already waiting keeps its earlier time. Neither lock is waited for longer than 50 ms: while another writer holds

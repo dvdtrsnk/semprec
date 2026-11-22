@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { simpleParser, type AddressObject, type EmailAddress } from "mailparser";
 import type { ImapFetchedMessage, ImapFetchedRange, ImapFolderRef, ImapMailClient } from "../mail/imapReconcile.js";
 import { IMAP_SNIPPET_BYTES } from "../mail/imapSnippet.js";
+import type { SentCopyImapClient } from "../mail/mailSentCopies.js";
 import { fakeFetchedMessage } from "./fakeImapMessages.js";
 import type { MailEnvelopeAddress } from "../mail/mailMessageMetaStore.js";
 import type { FetchedMessage } from "../mail/providerTypes.js";
@@ -127,7 +128,7 @@ export class FakeImapAccount {
       .map((call) => (call.path === undefined ? call.method : `${call.method} ${call.path}`));
   }
 
-  client(): ImapMailClient {
+  client(): ImapMailClient & SentCopyImapClient {
     const answer = async (method: string, path?: string) => {
       const call = path === undefined ? { method } : { method, path };
       this.calls.push(call);
@@ -185,6 +186,8 @@ export class FakeImapAccount {
       appendMessage: async (path, raw, flags) => {
         this.deliver(path, raw, flags);
       },
+      hasMessageWithId: async (path, messageId) =>
+        this.folder(path).messages.some((message) => messageIdHeaderOf(message.raw) === messageId),
       prepareMove: async (path, uid) => {
         const folder = this.folder(path);
         return {
@@ -235,13 +238,20 @@ export class FakeImapAccount {
         const attachment = (await simpleParser(message.raw)).attachments[Number(part) - 2];
         return attachment ? Readable.from(attachment.content) : null;
       },
-    } satisfies Omit<Required<ImapMailClient>, "close" | "isReusable" | "ping">;
-    // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not.
+    } satisfies Omit<Required<ImapMailClient & SentCopyImapClient>, "close" | "isReusable" | "ping">;
+    // Every call is logged, delayed and gated before it is answered; `close` never rejects and is not. A call that
+    // rejected leaves the client not reusable, as it leaves a real connection in doubt.
+    let failed = false;
     const logged =
       <A extends unknown[], R>(method: string, fn: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
-        await answer(method, typeof args[0] === "string" ? args[0] : undefined);
-        return fn(...args);
+        try {
+          await answer(method, typeof args[0] === "string" ? args[0] : undefined);
+          return await fn(...args);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
       };
     return {
       getCapabilities: logged("getCapabilities", methods.getCapabilities),
@@ -255,12 +265,14 @@ export class FakeImapAccount {
       fetchFlagsChangedSince: logged("fetchFlagsChangedSince", methods.fetchFlagsChangedSince),
       setMessageFlag: logged("setMessageFlag", methods.setMessageFlag),
       appendMessage: logged("appendMessage", methods.appendMessage),
+      hasMessageWithId: logged("hasMessageWithId", methods.hasMessageWithId),
       prepareMove: logged("prepareMove", methods.prepareMove),
       executeMoveStep: logged("executeMoveStep", methods.executeMoveStep),
       fetchMessageBody: logged("fetchMessageBody", methods.fetchMessageBody),
       searchMessageId: logged("searchMessageId", methods.searchMessageId),
       searchText: logged("searchText", methods.searchText),
       downloadPart: logged("downloadPart", methods.downloadPart),
+      isReusable: () => !failed,
       close: async () => {},
     };
   }
@@ -299,6 +311,12 @@ export class FakeImapAccount {
     if (!folder) throw new Error(`No folder ${path}`);
     return folder;
   }
+}
+
+/** The Message-ID header of a raw message, as a server's `SEARCH HEADER Message-ID` matches it. */
+function messageIdHeaderOf(raw: Buffer): string | undefined {
+  const header = raw.toString("utf8").split(/\r?\n\r?\n/, 1)[0] ?? "";
+  return /^message-id:\s*(.+?)\s*$/im.exec(header)?.[1];
 }
 
 async function parsed(message: FakeImapMessage): Promise<FetchedMessage> {

@@ -8,6 +8,7 @@ import {
 import { decorrelatedJitterDelayMs, type RandomSource } from "./mailBackoff.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 import { MailReauthorizationRequiredError } from "./providerTypes.js";
+import { logger } from "./logger.js";
 
 export interface ImapIdleFolderTarget {
   path: string;
@@ -45,6 +46,17 @@ const DEFAULT_HARD_CYCLE_DEADLINE_MS = 6 * 60 * 60 * 1000;
 /** Jittered capped backoff (`decorrelatedJitterDelayMs`); retries for as long as the account stays active. */
 const DEFAULT_RECONNECT_BASE_DELAY_MS = 5_000;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 5 * 60 * 1000;
+
+type IdleRoundOutcome = { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown };
+
+/** All a session log carries about an error: its name and a short string code, never the message. */
+function errorFields(error: unknown): { errorName: string; errorCode?: string } {
+  const errorName = error instanceof Error ? error.name : typeof error;
+  const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+  return typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code)
+    ? { errorName, errorCode: code }
+    : { errorName };
+}
 
 export interface CreateBoundedImapIdleLifecycleFactoryOptions {
   /**
@@ -131,9 +143,14 @@ export function createBoundedImapIdleLifecycleFactory(
       return stopPromise;
     }
 
+    /** The next delay of a streak whose previous delay was `previousMs` (`null` at its start). */
+    function reconnectDelayMs(previousMs: number | null): number {
+      return decorrelatedJitterDelayMs(previousMs, reconnectBaseDelayMs, reconnectMaxDelayMs, random);
+    }
+
     /** Waits the next delay of a streak whose previous delay was `previousMs` (`null` at its start). */
     async function backoffOrStop(previousMs: number | null): Promise<{ stopped: boolean; delayMs: number }> {
-      const delayMs = decorrelatedJitterDelayMs(previousMs, reconnectBaseDelayMs, reconnectMaxDelayMs, random);
+      const delayMs = reconnectDelayMs(previousMs);
       return { stopped: await delayOrStop(delayMs), delayMs };
     }
 
@@ -142,30 +159,52 @@ export function createBoundedImapIdleLifecycleFactory(
       return { accountId: account.mailboxItemId, accountLimit: target.accountLimit, host: target.host, kind };
     }
 
-    /** Runs wholly inside a limiter slot, so an open IDLE session counts against the connection budget. */
-    async function runOneIdleRound(
-      folderPath: string,
-      credential: string,
-    ): Promise<{ kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown }> {
+    /** A signal's only effect: the deduplicated reconcile job, never a parallel ingestion path. Joined by `stop()`. */
+    function requestSync(folderPath: string): void {
+      if (stopped) return;
+      const task = enqueueMailAccountSync(pool, account.mailboxItemId)
+        .catch((err: unknown) => {
+          if (stopped) ownedFailures.push(err);
+          report(folderPath, err);
+        })
+        .finally(() => signals.delete(task));
+      signals.add(task);
+    }
+
+    function logSessionEnd(folderPath: string, outcome: IdleRoundOutcome | undefined, failure: unknown): void {
+      const fields = { mailboxItemId: account.mailboxItemId, folder: folderPath };
+      if (outcome === undefined) {
+        logger.info({ ...fields, reason: "error", ...errorFields(failure) }, "IMAP IDLE session ended");
+      } else if (outcome.kind === "ended" && outcome.err !== undefined) {
+        logger.info({ ...fields, reason: "error", ...errorFields(outcome.err) }, "IMAP IDLE session ended");
+      } else {
+        const reason = outcome.kind === "ended" ? "server-closed" : outcome.kind === "recycled" ? "recycle" : "stop";
+        logger.info({ ...fields, reason }, "IMAP IDLE session ended");
+      }
+    }
+
+    /**
+     * Runs wholly inside a limiter slot, so an open IDLE session counts against the connection budget.
+     *
+     * Every established session enqueues one catch-up sync. A server reports a change only to a
+     * connection that has the folder selected, and a fresh connection never signals a message that
+     * was already there at its SELECT, so whatever arrived while the folder had no connection (before
+     * the first session, between two, during a backoff) is left to this pass; anything after the
+     * SELECT is signalled once IDLE runs. A catch-up while the account backs off a sync failure ends in
+     * the sync job's prologue without a login.
+     */
+    async function runOneIdleRound(folderPath: string, credential: string): Promise<IdleRoundOutcome> {
       const connection = await transport.connect(
         account.mailboxItemId,
         credential,
         folderPath,
-        () => {
-          // A signal's only effect: the deduplicated reconcile job, never a parallel ingestion path.
-          if (stopped) return;
-          const task = enqueueMailAccountSync(pool, account.mailboxItemId)
-            .catch((err: unknown) => {
-              if (stopped) ownedFailures.push(err);
-              report(folderPath, err);
-            })
-            .finally(() => signals.delete(task));
-          signals.add(task);
-        },
+        () => requestSync(folderPath),
         stopController.signal,
       );
+      logger.info({ mailboxItemId: account.mailboxItemId, folder: folderPath }, "IMAP IDLE session started");
+      requestSync(folderPath);
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let outcome: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown } | undefined;
+      let outcome: IdleRoundOutcome | undefined;
       let primary: { value: unknown } | undefined;
       let ended: { value: unknown } | undefined;
       let endFailure: { value: unknown } | undefined;
@@ -191,6 +230,7 @@ export function createBoundedImapIdleLifecycleFactory(
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
+      logSessionEnd(folderPath, outcome, primary?.value);
       try {
         await connection.close();
       } catch (error) {
@@ -217,10 +257,21 @@ export function createBoundedImapIdleLifecycleFactory(
     }
 
     async function runFolderLoop(folderPath: string, credential: string): Promise<void> {
-      // The previous delay of the current connect-failure streak; `null` outside one.
+      // The previous delay of the current connect-failure streak (`null` outside one) drives the jittered backoff;
+      // `reconnects` counts the reconnects since the last established session, for the log.
       let previousDelayMs: number | null = null;
+      let reconnects = 0;
+      let delayMs: number | undefined;
       while (!stopped) {
-        let result: { kind: "stop" } | { kind: "recycled" } | { kind: "ended"; err: unknown };
+        if (delayMs !== undefined) {
+          reconnects++;
+          logger.info(
+            { mailboxItemId: account.mailboxItemId, folder: folderPath, attempt: reconnects, delayMs },
+            "IMAP IDLE reconnecting",
+          );
+          if (delayMs > 0 && (await delayOrStop(delayMs))) return;
+        }
+        let result: IdleRoundOutcome;
         try {
           const target = await connectionTarget("idle");
           if (stopped) return;
@@ -237,25 +288,23 @@ export function createBoundedImapIdleLifecycleFactory(
           if (ownedFailures.length > 0) return;
           // The server refused the login: every retry would be refused too.
           if (err instanceof MailReauthorizationRequiredError) return;
-          const backoff = await backoffOrStop(previousDelayMs);
-          if (backoff.stopped) return;
-          previousDelayMs = backoff.delayMs;
+          delayMs = reconnectDelayMs(previousDelayMs);
+          previousDelayMs = delayMs;
           continue;
         }
 
         if (result.kind === "stop") return;
-        if (result.kind === "recycled") {
-          previousDelayMs = null; // hard-cycle deadline: fresh connection, no backoff.
-          continue;
-        }
-
-        previousDelayMs = null; // a round that actually opened a connection clears any prior connect-failure streak.
-        if (result.err !== undefined) {
+        // A round that actually opened a connection clears any prior connect-failure streak.
+        previousDelayMs = null;
+        reconnects = 0;
+        if (result.kind === "ended" && result.err !== undefined) {
           if (stopped) ownedFailures.push(result.err);
           report(folderPath, result.err);
-          if ((await backoffOrStop(null)).stopped) return;
+          delayMs = reconnectDelayMs(null);
+          continue;
         }
-        // A clean server close reconnects immediately.
+        // The hard-cycle deadline and a clean server close reconnect immediately.
+        delayMs = 0;
       }
     }
 

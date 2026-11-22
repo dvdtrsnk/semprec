@@ -45,9 +45,14 @@ database it runs against was created from the current baseline:
 
 - It reads `DATABASE_URL` (the migrating role) and opens one owner pool without a statement
   timeout.
-- Inside `runAsSystem("deploy migrations", ...)` it runs `runMigrations`, then `ensureQueueSchema`
-  and `grantQueueSchemaPrivileges` (graphile-worker's schema and `semprec_side`'s grants on it,
-  which the SQL file cannot create).
+- Inside `runAsSystem("deploy migrations", ...)` it runs `runMigrations`, then `installQueueSchema`
+  (`data/db/queueSchema.ts`: graphile-worker's schema, then `semprec_side`'s grants on it, which the
+  SQL file cannot create).
+- Every queue runtime (semprec-api, semprec-agents, semprec-transcribe) also runs `installQueueSchema`
+  at start, so several processes run it at once on a fresh database. graphile-worker's own migration
+  tolerates that. The grants run in one `withTransaction` that first takes the advisory lock
+  `(2335, 0)`, because Postgres refuses concurrent updates of one catalog row
+  (`tuple concurrently updated`); the second process waits and re-grants what is already granted.
 - The pool is closed on every outcome; a failure to close is logged and never replaces the real
   error.
 - `backend/packages/data/src/testSupport/globalSetup.ts` runs the same sequence for the test

@@ -1,7 +1,11 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { ImapFlow } from "imapflow";
-import { afterEach, describe, expect, it } from "vitest";
-import { createImapFlowIdleTransport, type CreateIdleTunedImapFlowClient } from "../mail/imapIdleClient.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createImapFlowIdleTransport,
+  ImapIdleStoppedError,
+  type CreateIdleTunedImapFlowClient,
+} from "../mail/imapIdleClient.js";
 
 const neverAborted = new AbortController().signal;
 
@@ -11,7 +15,9 @@ const neverAborted = new AbortController().signal;
  */
 class LoopbackImapServer {
   private exists = 1;
-  private idling: Socket | undefined;
+  private idling: { socket: Socket; tag: string } | undefined;
+  /** IDLE commands received, renewals included. */
+  idleCommands = 0;
   private readonly sockets = new Set<Socket>();
   readonly server: Server = createServer((socket) => this.accept(socket));
 
@@ -24,7 +30,18 @@ class LoopbackImapServer {
 
   deliver(): void {
     this.exists++;
-    this.idling?.write(`* ${this.exists} EXISTS\r\n`);
+    this.idling?.socket.write(`* ${this.exists} EXISTS\r\n`);
+  }
+
+  get isIdling(): boolean {
+    return this.idling !== undefined;
+  }
+
+  /** Ends the running IDLE from the server side, as a server's tagged reply without the client's DONE would. */
+  endIdle(): void {
+    if (!this.idling) throw new Error("No connection is idling");
+    this.idling.socket.write(`${this.idling.tag} OK IDLE terminated by the server\r\n`);
+    this.idling = undefined;
   }
 
   async close(): Promise<void> {
@@ -38,17 +55,15 @@ class LoopbackImapServer {
     socket.on("error", () => {});
     socket.write("* OK loopback IMAP ready\r\n");
     let buffered = "";
-    let idleTag: string | undefined;
     socket.on("data", (chunk) => {
       buffered += chunk.toString("latin1");
       let end: number;
       while ((end = buffered.indexOf("\r\n")) !== -1) {
         const line = buffered.slice(0, end);
         buffered = buffered.slice(end + 2);
-        if (idleTag !== undefined && line.toUpperCase() === "DONE") {
+        if (this.idling?.socket === socket && line.toUpperCase() === "DONE") {
+          socket.write(`${this.idling.tag} OK IDLE terminated\r\n`);
           this.idling = undefined;
-          socket.write(`${idleTag} OK IDLE terminated\r\n`);
-          idleTag = undefined;
           continue;
         }
         const [tag = "*", verb = ""] = line.split(" ");
@@ -67,8 +82,8 @@ class LoopbackImapServer {
             );
             break;
           case "IDLE":
-            idleTag = tag;
-            this.idling = socket;
+            this.idleCommands++;
+            this.idling = { socket, tag };
             socket.write(`+ idling\r\n* ${this.exists} EXISTS\r\n`);
             break;
           case "LOGOUT":
@@ -132,6 +147,50 @@ describe("IMAP IDLE signal latency right after connecting", () => {
       ]);
       clearTimeout(timer);
       expect(outcome).not.toBe("late");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("ends the session when the server ends IDLE on a connection it keeps open", async () => {
+    server = new LoopbackImapServer();
+    const port = await server.listen();
+    const createClient: CreateIdleTunedImapFlowClient = async (_mailboxItemId, password, idleOptions) => {
+      const client = new ImapFlow({
+        host: "127.0.0.1",
+        port,
+        secure: false,
+        auth: { user: "account", pass: password },
+        logger: false,
+        ...idleOptions,
+      });
+      await client.connect();
+      return client;
+    };
+    const connection = await createImapFlowIdleTransport(createClient, { idleCheckIntervalMs: 20 }).connect(
+      "mailbox",
+      "secret",
+      "INBOX",
+      () => {},
+      neverAborted,
+    );
+    try {
+      await vi.waitFor(() => expect(server?.isIdling).toBe(true), { timeout: 1_000, interval: 5 });
+      let outcome: { value: unknown } | undefined;
+      void connection.waitForEnd().then((value) => {
+        outcome = { value };
+      });
+      // A healthy IDLE outlasts many checks.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(outcome).toBeUndefined();
+
+      server.endIdle();
+      await vi.waitFor(() => expect(outcome?.value).toBeInstanceOf(ImapIdleStoppedError), {
+        timeout: 1_000,
+        interval: 5,
+      });
+      // imapflow did not start IDLE again on its own.
+      expect(server.idleCommands).toBe(1);
     } finally {
       await connection.close();
     }

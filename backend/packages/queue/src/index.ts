@@ -56,6 +56,8 @@ export const CORE_TASK_NAMES = {
   LIBRARY_METADATA_PROCESS: "processLibraryMetadata",
   MAIL_ACCOUNT_SYNC: "mailAccountSync",
   MAIL_ACCOUNT_SYNC_SWEEP: "mailAccountSyncSweep",
+  // Appends one SMTP send's recorded Sent copy to its IMAP Sent folder; job key `mail-sent-copy:<copyId>`.
+  MAIL_SENT_COPY: "mailSentCopy",
   // Safety net for Emails items whose search index write was skipped.
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
   // Recomputes one Journal day item's cached `items.computed` Inbox-item list.
@@ -170,6 +172,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: "api",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
@@ -249,6 +252,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
+  [CORE_TASK_NAMES.MAIL_SENT_COPY]: "tenant",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
@@ -354,18 +358,28 @@ export async function assertSearchTaskIdentifiersRegistered(client: Queryable): 
   if (missing.length > 0) throw new SearchTaskIdentifiersNotRegisteredError(missing);
 }
 
+/** Two-key advisory lock class that serializes `grantQueueSchemaPrivileges` across processes. */
+const QUEUE_SCHEMA_GRANT_LOCK_CLASS = 2335;
+
 /**
  * Grants `semprec_side` access to the `graphile_worker` schema, which `ensureQueueSchema` creates
- * after the data baseline migration has run. Call once right after `ensureQueueSchema` as the role
- * that owns the schema; its `ALTER DEFAULT PRIVILEGES` covers tables a later graphile-worker adds.
+ * after the data baseline migration has run. Call it inside a transaction (`installQueueSchema` in
+ * `@semprec/data`) right after `ensureQueueSchema`, as the role that owns the schema; its
+ * `ALTER DEFAULT PRIVILEGES` covers tables a later graphile-worker adds.
+ *
+ * Every queue runtime runs it at start, so several processes run it at once on a fresh database.
+ * Postgres refuses two concurrent updates of the same catalog row (`tuple concurrently updated`),
+ * so it first takes the transaction advisory lock `(2335, 0)`: a second caller waits for the first
+ * commit and then re-grants what is already granted and finds the policies present.
  *
  * graphile-worker enables RLS on its private tables without policies, and `add_job`/`add_jobs` are
  * not `SECURITY DEFINER`, so a GRANT alone is not enough: a permissive policy per table, scoped to
  * `semprec_side` (not a role-wide `BYPASSRLS`), is added. Re-add it here if a graphile-worker
  * version renames or adds an RLS-enabled table.
  */
-export async function grantQueueSchemaPrivileges(pool: Pool): Promise<void> {
-  await runAsSystem("queue-schema", () => pool.query(GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL));
+export async function grantQueueSchemaPrivileges(client: PoolClient): Promise<void> {
+  await client.query("SELECT pg_advisory_xact_lock($1::int4, 0)", [QUEUE_SCHEMA_GRANT_LOCK_CLASS]);
+  await client.query(GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL);
 }
 
 const GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL = `

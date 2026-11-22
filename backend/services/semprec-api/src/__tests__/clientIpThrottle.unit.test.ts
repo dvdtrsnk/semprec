@@ -42,6 +42,7 @@ describe("CLIENT_IP_THROTTLE_LIMITS", () => {
       mailSignalPreview: { maxEvents: 120, windowSeconds: 900 },
       mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
       calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
+      mailWebhook: { maxEvents: 300, windowSeconds: 60 },
     });
   });
 });

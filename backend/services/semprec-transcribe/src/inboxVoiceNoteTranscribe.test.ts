@@ -7,14 +7,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import {
-  CORE_TASK_NAMES,
-  ensureQueueSchema,
-  grantQueueSchemaPrivileges,
-  registerTask,
-  runOnce,
-  type TaskList,
-} from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, runOnce, type TaskList } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import {
   createActionQueueAffinity,
@@ -31,6 +24,7 @@ import {
   recordInboxAttachmentMetadata,
   seedSystem,
   withTransaction,
+  installQueueSchema,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -101,8 +95,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDatabase(adminPool);
-  await ensureQueueSchema(adminPool);
-  await grantQueueSchemaPrivileges(adminPool);
+  await installQueueSchema(adminPool);
   blobDir = await mkdtemp(join(tmpdir(), "semprec-inbox-voice-note-"));
   storage = new ObservedStorage(blobDir);
   gateway = new FakeAudioGateway();

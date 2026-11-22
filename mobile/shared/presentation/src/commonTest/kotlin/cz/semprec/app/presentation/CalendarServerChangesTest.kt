@@ -58,7 +58,7 @@ class CalendarServerChangesTest : MainDispatcherTest() {
         assertEquals(3, windowReads())
     }
 
-    @Test fun `opening the calendar asks once a minute for the accounts to sync and server changes never do`() =
+    @Test fun `refreshing the calendar or its list asks for the accounts to sync and server changes never do`() =
         runTest(dispatcher) {
             val accounts = ScriptedInternetAccountRepository(
                 list = MailCall(mailContent(listOf(internetAccount("m1", calendars = true), internetAccount("m2")))),
@@ -77,14 +77,13 @@ class CalendarServerChangesTest : MainDispatcherTest() {
 
             sync.raise(setOf(SyncTopic.CALENDAR))
             runCurrent()
+            assertEquals(listOf("m1"), accounts.syncs.asked)
             vm.onAction(CalendarAction.Navigation.Refresh)
             runCurrent()
-            // The list of the same calendar shares the pause.
             val list = factory.calendarListViewModel()
             list.onAction(CalendarListAction.Refresh)
             runCurrent()
-            assertEquals(listOf("m1"), accounts.syncs.asked)
-            assertEquals(1, accounts.list.count)
+            assertEquals(listOf("m1", "m1", "m1"), accounts.syncs.asked)
             assertEquals(3, windowReads())
             vm.close()
             list.close()

@@ -26,6 +26,7 @@ const problemSchema = z.object({
 });
 const kinds = new Set([
   "mailSyncError",
+  "mailSentCopyFailed",
   "calendarSyncError",
   "agentHeartbeat",
   "agentRun",

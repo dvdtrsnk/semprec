@@ -26,7 +26,8 @@ import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import {
@@ -3470,8 +3471,9 @@ describe("bounded IMAP sync passes", () => {
 
       expect(await folderCursor()).toEqual(["3"]);
       expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
-      // Left incomplete, so the next pass is queued; it finds nothing new.
-      expect(await queuedSyncJobs(mailbox)).toBe("1");
+      // The pass started during the fetch found the lease held and only asked for one more round, which the running
+      // pass ran itself: nothing is queued, and a later pass finds nothing new.
+      expect(await queuedSyncJobs(mailbox)).toBe("0");
       await runSync(mailbox, { createImapClient: async () => account() });
       expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
       expect(await folderCursor()).toEqual(["3"]);
@@ -4786,8 +4788,7 @@ describe("queued sync status forward repair", () => {
     await resetDatabase(pool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
-    await ensureQueueSchema(pool);
-    await grantQueueSchemaPrivileges(pool);
+    await installQueueSchema(pool);
     runtime = await createRuntimeRolePool(pool, "semprec_data");
   });
   afterEach(async () => {

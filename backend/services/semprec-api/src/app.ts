@@ -242,7 +242,7 @@ export async function createDispatcher(
   });
   const pageMarkdownListener = createPageMarkdownRequestListener(pool, genericApplicationService);
   const speechListener = createSempSpeechRequestListener(pool, options.blobStorage, options.speechGateway);
-  const graphWebhookListener = createGraphWebhookRequestListener(pool);
+  const graphWebhookListener = createGraphWebhookRequestListener(pool, { trustProxy: options.trustProxy ?? false });
   // One limiter for both calendar webhooks, so a client address has one budget across them.
   const calendarWebhookOptions = {
     trustProxy: options.trustProxy ?? false,

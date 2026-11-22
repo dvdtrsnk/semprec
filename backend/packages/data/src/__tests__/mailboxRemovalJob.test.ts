@@ -13,12 +13,15 @@ import { restoreItemWithClient } from "../chokePoint/itemTrash.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { listItems } from "../chokePoint/itemsStore.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
 import { ingestAttachments, type ClassifiedAttachment } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createEmailDraft } from "../mail/draft.js";
+import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
+import { pauseMailAccountSync } from "../mail/mailAccountSyncStateStore.js";
+import { markMailMessageFolderCopyRemoved } from "../mail/mailMessageMetaStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import { listMailThreads } from "../mail/mailThreadListQuery.js";
@@ -297,6 +300,30 @@ async function threadOf(itemId: string): Promise<string> {
   return threadId;
 }
 
+/**
+ * What an IMAP pass writes for a vanished UID before its final transaction decides the Email: the folder edge removed
+ * and the meta row marked.
+ */
+async function vanishFolderCopy(client: PoolClient, ids: MailIds, emailId: string, folderId: string): Promise<void> {
+  const removed = await deleteRelationWithClient(
+    client,
+    { relationPropertyId: ids.emailFolderProperty, callerItemId: emailId, targetItemId: folderId },
+    EMAILS_RELATION_CONTEXT,
+  );
+  if (removed === null) throw new Error(`message ${emailId} had no copy in folder ${folderId}`);
+  if (!(await markMailMessageFolderCopyRemoved(client, emailId))) throw new Error(`message ${emailId} has no meta row`);
+}
+
+async function metaRowIds(itemIds: string[]): Promise<string[]> {
+  return inTenant(async (client) => {
+    const { rows } = await client.query<{ item_id: string }>(
+      "SELECT item_id FROM mail_message_meta WHERE item_id = ANY($1::uuid[]) ORDER BY item_id",
+      [itemIds],
+    );
+    return rows.map((row) => row.item_id);
+  });
+}
+
 async function queuedJobs(jobKey: string): Promise<Array<{ task_identifier: string; queue_name: string | null }>> {
   const { rows } = await admin.query<{ task_identifier: string; queue_name: string | null }>(
     "SELECT task_identifier, queue_name FROM graphile_worker.jobs WHERE key = $1",
@@ -452,6 +479,57 @@ describe("mailboxRemoval job (gh-2029)", () => {
     );
     expect(deletedStorageKeys).toEqual([]);
   });
+
+  it.each(["removal", "mailOff"] as const)(
+    "%s also trashes the mailbox's Emails whose last folder copy vanished before a pass decided them, and keeps another mailbox's",
+    async (purpose) => {
+      const ids = await inTenant((client) => loadIds(client));
+      const seeded = await inTenant(async (client) => {
+        const work = await createMailbox(client, ids, "Work");
+        const other = await createMailbox(client, ids, "Private");
+        const filed = await ingest(client, ids, { mailboxId: work.id, folder: work.inbox, messageId: "<filed@x>" });
+        const vanished = await ingest(client, ids, { mailboxId: work.id, folder: work.inbox, messageId: "<gone@x>" });
+        const moved = await ingest(client, ids, { mailboxId: work.id, folder: work.inbox, messageId: "<moved@x>" });
+        await ingest(client, ids, { mailboxId: work.id, folder: work.archive, messageId: "<moved@x>" });
+        const otherVanished = await ingest(client, ids, {
+          mailboxId: other.id,
+          folder: other.inbox,
+          messageId: "<other-gone@x>",
+        });
+        await vanishFolderCopy(client, ids, vanished, work.inbox);
+        await vanishFolderCopy(client, ids, moved, work.inbox);
+        await vanishFolderCopy(client, ids, otherVanished, other.inbox);
+        return { work, filed, vanished, moved, otherVanished };
+      });
+      const { work } = seeded;
+      const members = [seeded.filed, seeded.vanished, seeded.moved];
+
+      expect(await inTenant((client) => getMailboxRemovalImpact(client, work.id))).toEqual({
+        messages: 3,
+        drafts: 0,
+        threads: 3,
+        attachmentsKept: 0,
+      });
+      if (purpose === "removal") {
+        expect(await remove(work.id)).toBe(true);
+        await runJob(work.id);
+      } else {
+        await inTenant((client) => pauseMailAccountSync(client, work.id, "imap"));
+        await runInTenant(tenant, () => handleMailboxRemovalTask(runtime, { mailboxItemId: work.id, purpose }));
+      }
+
+      const trashed = purpose === "removal" ? "withMailbox" : "ownTime";
+      expect(await standingOf(work.id, [...members, seeded.otherVanished])).toEqual({
+        ...allStanding(members, trashed),
+        [seeded.otherVanished]: "live",
+      });
+      expect(await listedItemIds(ids.emails)).toEqual([seeded.otherVanished]);
+      // Mail-off releases each trashed Email's meta row; a removal keeps them for a restore.
+      expect(await metaRowIds([...members, seeded.otherVanished])).toEqual(
+        (purpose === "removal" ? [...members, seeded.otherVanished] : [seeded.otherVanished]).sort(),
+      );
+    },
+  );
 
   it("queues no job when the removal rolls back, and one job on the tenant's lane when it commits", async () => {
     const ids = await inTenant((client) => loadIds(client));

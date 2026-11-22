@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@semprec/queue";
+import { installQueueSchema } from "../../db/queueSchema.js";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { runInTenant } from "@semprec/shared";
 import { createBlob } from "../../blobs/blobsStore.js";
@@ -54,8 +55,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDatabase(adminPool);
-  await ensureQueueSchema(adminPool);
-  await grantQueueSchemaPrivileges(adminPool);
+  await installQueueSchema(adminPool);
   tenantA = await createTestTenant(adminPool);
   tenantB = await createTestTenant(adminPool);
   await runInTenant(tenantA, () => seedSystem(runtimePool));

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, ensureQueueSchema, grantQueueSchemaPrivileges, registerTask, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
 import { runInTenant } from "@semprec/shared";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { AiGatewayFailedError } from "@semprec/shared";
@@ -21,6 +21,7 @@ import {
   transcriptionSourceLink,
   withTransaction,
   writeComputed,
+  installQueueSchema,
 } from "@semprec/data";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createTranscriptSpeakerSuggestionTask } from "./transcriptSpeakerSuggestionTask.js";
@@ -239,8 +240,7 @@ async function automationAttempts(transcriptId: string): Promise<number | undefi
 beforeAll(async () => {
   adminPool = getTestPool();
   dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
-  await ensureQueueSchema(adminPool);
-  await grantQueueSchemaPrivileges(adminPool);
+  await installQueueSchema(adminPool);
 });
 
 beforeEach(async () => {

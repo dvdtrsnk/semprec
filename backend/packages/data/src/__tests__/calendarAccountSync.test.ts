@@ -815,7 +815,7 @@ describe("calendar sync of internet accounts", () => {
       return rows[0]?.requested ?? null;
     }
 
-    it("queues a pass at once, and coalesces requests within a minute into one pass at the minute's end", async () => {
+    it("queues a pass at once, and coalesces requests within 15 s into one pass at the window's end", async () => {
       const accountId = await createAccount({ calendarsEnabled: true });
       await clearJobs();
 
@@ -831,7 +831,7 @@ describe("calendar sync of internet accounts", () => {
       // The worker took the first pass; the second request comes a second later.
       await clearJobs();
       await ageRequest(accountId, 1);
-      const windowEnd = new Date(firstRunAt - 1_000 + 60_000).toISOString();
+      const windowEnd = new Date(firstRunAt - 1_000 + 15_000).toISOString();
       const second = await route(accountId);
       expect(second).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: windowEnd } });
       expect(await syncJobs(accountId)).toEqual([{ key: calendarAccountSyncJobKey(accountId), runAt: windowEnd }]);
@@ -840,9 +840,9 @@ describe("calendar sync of internet accounts", () => {
       expect(third).toEqual({ status: 202, body: { id: accountId, queued: true, runAt: windowEnd } });
       expect(await syncJobs(accountId)).toEqual([{ key: calendarAccountSyncJobKey(accountId), runAt: windowEnd }]);
 
-      // The deferred pass ran at the window's end; a request a minute after it queues at once again.
+      // The deferred pass ran at the window's end; a request more than 15 s after it queues at once again.
       await clearJobs();
-      await ageRequest(accountId, 120);
+      await ageRequest(accountId, 40);
       const later = await route(accountId);
       expect(Math.abs(Date.parse(later.body.runAt) - Date.now())).toBeLessThan(5_000);
       expect(await syncJobs(accountId)).toEqual([
@@ -850,7 +850,7 @@ describe("calendar sync of internet accounts", () => {
       ]);
     });
 
-    it("lets a pass still waiting to run serve a request within its minute", async () => {
+    it("lets a pass still waiting to run serve a request within its window", async () => {
       const accountId = await createAccount({ calendarsEnabled: true });
       await clearJobs();
       const first = await route(accountId);

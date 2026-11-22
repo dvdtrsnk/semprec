@@ -28,6 +28,7 @@ import { mergeModuleTaskListForAffinity } from "../../moduleTasks.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { recordingTransport, transportFor } from "../../testSupport/mailSendFakes.js";
+import { mailSentCopyJobKey } from "../../mail/mailSentCopies.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { ValidationError } from "../../errors.js";
 import {
@@ -235,6 +236,23 @@ function world(tenantId: string) {
 }
 
 type World = ReturnType<typeof world>;
+
+/** The Sent copies the jobs recorded in the tenant, each with whether its keyed append job is queued. */
+async function recordedSentCopies(pool: Pool, admin: Pool, tenantId: string) {
+  const { rows } = await runInTenant(tenantId, () =>
+    pool.query<{ id: string; mailbox_item_id: string; message_id: string; raw: Buffer }>(
+      "SELECT id, mailbox_item_id, message_id, raw FROM mail_sent_copies WHERE tenant_id = app_tenant_default()",
+    ),
+  );
+  const copies = [];
+  for (const row of rows) {
+    const { rows: jobs } = await admin.query("SELECT 1 FROM graphile_worker.jobs WHERE key = $1", [
+      mailSentCopyJobKey(row.id),
+    ]);
+    copies.push({ mailboxItemId: row.mailbox_item_id, messageId: row.message_id, raw: row.raw, jobs: jobs.length });
+  }
+  return copies;
+}
 
 async function readMessage(raw: Buffer) {
   const parsed = await simpleParser(raw);
@@ -609,6 +627,25 @@ describe("event invitation messages (issue #1774)", () => {
 
       expect(seen).toEqual([{ status: "pending", email: ATTENDEE, mailboxId: f.mailboxId }]);
       expect((await f.w.edge(f.eventId, f.personId))?.invitation).toHaveProperty("sentAt");
+    });
+
+    it("records one Sent copy of the accepted message and its keyed job when the transport files none, as SMTP", async () => {
+      const f = await invitedEvent();
+      transport = recordingTransport({
+        async send(message) {
+          transport.sent.push(message);
+          return { needsSentCopy: true };
+        },
+      });
+      setEventInvitationDelivery({ pool: dataPool, transports: transportFor(transport) });
+
+      await f.w.handle(plainRequest(f.ids));
+
+      const [sent] = transport.sent;
+      const parsed = await simpleParser(sent!.raw);
+      expect(await recordedSentCopies(dataPool, adminPool, f.w.tenantId)).toEqual([
+        { mailboxItemId: f.mailboxId, messageId: parsed.messageId, raw: sent!.raw, jobs: 1 },
+      ]);
     });
 
     it("converts the wall-clock times of the tenant zone to UTC", async () => {

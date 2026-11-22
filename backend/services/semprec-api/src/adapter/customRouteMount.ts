@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import type {
+  CalDavVerification,
   HeartbeatRuleKindRegistry,
   MailContentProviders,
   MailSendAdapterFactory,
@@ -35,11 +36,11 @@ export interface MailServerClients {
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
   /**
-   * Resolves when the login finds a calendar home at the CalDAV address. The password connect
-   * route calls it only for a body with `caldavUrl`; a mount without it fails such a request with
-   * a configuration error.
+   * Resolves when the login finds a calendar home at the CalDAV address, with the server a
+   * well-known address delegated the account to. The password connect route calls it only for a
+   * body with `caldavUrl`; a mount without it fails such a request with a configuration error.
    */
-  verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<void>;
+  verifyCalDav?: (input: VerifyCalDavServerInput) => Promise<CalDavVerification>;
   /**
    * `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the
    * container carries none.
