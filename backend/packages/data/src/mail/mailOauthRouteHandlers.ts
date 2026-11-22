@@ -35,7 +35,12 @@ import {
   type CreatedMailOauthState,
   type MailOauthProvider,
 } from "./mailOauthStatesStore.js";
-import { MAIL_ACCOUNT_SERVICES, oauthScopesForServices, type MailAccountService } from "./oauthServiceScopes.js";
+import {
+  hasMailConsent,
+  MAIL_ACCOUNT_SERVICES,
+  oauthScopesForServices,
+  type MailAccountService,
+} from "./oauthServiceScopes.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import {
@@ -641,6 +646,10 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
     }
     // A token response without `scope` granted exactly what was asked for (RFC 6749 §5.1).
     const grantedScopes = tokens.grantedScopes ?? oauthScopesForServices(provider, consumed.services);
+    // Checked before any mail call: without them the identity read and every later sync or send would fail.
+    if (!hasMailConsent(provider, grantedScopes)) {
+      throw new ChokePointError(400, "mail_consent_missing", "The sign-in did not allow access to the account's mail");
+    }
     const identity =
       provider === "gmail"
         ? await fetchGmailIdentity(fetchImpl, tokens.accessToken)

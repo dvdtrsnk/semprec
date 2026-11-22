@@ -2482,6 +2482,28 @@ describe("OAuth scopes per service", () => {
     expect(await connected()).toEqual(NOTHING);
   });
 
+  it.each<[string, "gmail" | "outlook", string]>([
+    ["Google with no box checked", "gmail", ""],
+    ["Google with only sending allowed", "gmail", GMAIL_SCOPES[1] ?? ""],
+    ["Google with only reading allowed and the calendar", "gmail", `${GMAIL_SCOPES[0]} ${GOOGLE_CALENDAR_SCOPE}`],
+    ["Microsoft without Mail.Send", "outlook", "Mail.ReadWrite offline_access User.Read"],
+  ])("answers mail_consent_missing and creates nothing for %s", async (_name, providerName, granted) => {
+    const url = await startedUrl({ provider: providerName });
+    const routes =
+      providerName === "gmail"
+        ? googleRoutes({ [GOOGLE_TOKEN_URL]: tokensGranting(granted) })
+        : { ...microsoftRoutes({ mail: "work.user@contoso.com" }), [MICROSOFT_TOKEN_URL]: tokensGranting(granted) };
+    const provider = fakeProvider(routes);
+
+    const error = await caught(complete({ state: stateOf(url), code: SECRETS.code }, provider));
+
+    expect(error).toBeInstanceOf(ChokePointError);
+    expect(error).toMatchObject({ status: 400, code: "mail_consent_missing" });
+    // Only the code exchange ran: no identity read with a token that cannot read mail.
+    expect(provider.calls).toHaveLength(1);
+    expect(await connected()).toEqual(NOTHING);
+  });
+
   it("switching Calendars on for a mail-only Google account keeps it on, needing consent, leaves mail sync alone and queues a calendar pass", async () => {
     const mailboxId = await connectGoogle(["mail"], GMAIL_SCOPES.join(" "));
     expect(await mailboxRow(mailboxId)).toMatchObject({ calendarsEnabled: false, calendarStatus: "off" });
