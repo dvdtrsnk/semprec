@@ -49,7 +49,11 @@ interface Account {
   mailbox: ImapMailboxFixture;
   /** Every message the SMTP server accepted. */
   accepted: MailTransportMessage[];
+  /** Runs right after the SMTP server accepted a message, before the send's finalization. */
+  afterAccept: (() => Promise<void>) | undefined;
   send(subject: string): Promise<void>;
+  /** The draft send route's answer, or its rejection, for one new draft. */
+  postSend(subject: string): Promise<{ status: number }>;
 }
 
 describe("the Sent copy of an SMTP send", () => {
@@ -88,12 +92,13 @@ describe("the Sent copy of an SMTP send", () => {
       transportFor({
         async send(message) {
           accepted.push(message);
+          await account.afterAccept?.();
           return { needsSentCopy: true };
         },
       }),
     );
     const identity = { user: { id: userId, locale: "en" } };
-    const send = async (subject: string) => {
+    const postSend = async (subject: string) => {
       const created = await createMailDraftCreateRouteHandler(runtime, { maxFileSizeBytes: 1024 * 1024 })({
         identity,
         params: {},
@@ -108,14 +113,23 @@ describe("the Sent copy of an SMTP send", () => {
         },
       });
       expect(created.status).toBe(201);
-      const sent = await createMailDraftSendRouteHandler(runtime, { mailServerClients: { send: adapters } })({
+      return createMailDraftSendRouteHandler(runtime, { mailServerClients: { send: adapters } })({
         identity,
         params: { id: created.body.id },
         body: undefined,
       });
-      expect(sent.status).toBe(200);
     };
-    return { imap, mailbox, accepted, send };
+    const account: Account = {
+      imap,
+      mailbox,
+      accepted,
+      afterAccept: undefined,
+      postSend,
+      send: async (subject) => {
+        expect((await postSend(subject)).status).toBe(200);
+      },
+    };
+    return account;
   }
 
   async function pendingCopies() {
@@ -136,12 +150,58 @@ describe("the Sent copy of an SMTP send", () => {
   }
 
   async function openProblems() {
-    const { rows } = await runtime.query<{ kind: string; source_id: string; occurrence_count: number }>(
-      `SELECT kind, source_id, occurrence_count FROM semp_problems
+    const { rows } = await runtime.query<{
+      kind: string;
+      source_table: string;
+      source_id: string;
+      occurrence_count: number;
+    }>(
+      `SELECT kind, source_table, source_id, occurrence_count FROM semp_problems
         WHERE tenant_id = app_tenant_default() AND resolved_at IS NULL ORDER BY kind`,
     );
     return rows;
   }
+
+  /** The copy's keyed job: `attempts` 0 is runnable again; equal to `max_attempts` it failed for good. */
+  async function jobOf(copyId: string) {
+    const { rows } = await admin.query<{ attempts: number; max_attempts: number }>(
+      "SELECT attempts, max_attempts FROM graphile_worker.jobs WHERE key = $1",
+      [mailSentCopyJobKey(copyId)],
+    );
+    return rows;
+  }
+
+  /**
+   * The copy's final attempt fails as a refused APPEND would, and its job ends as graphile-worker leaves a job that
+   * used up its attempts. The eight backed-off attempts are not waited for; the job row is set to their outcome.
+   */
+  async function failForGood(account: Account, copyId: string) {
+    account.imap.gate = async (call) => {
+      if (call.method === "appendMessage") throw new Error("[NO] Sent is over quota");
+    };
+    await expect(runCopy(account, copyId, { isFinalAttempt: true })).rejects.toThrow("[NO] Sent is over quota");
+    account.imap.gate = undefined;
+    const exhausted = await admin.query(
+      "UPDATE graphile_worker._private_jobs SET attempts = max_attempts, last_error = 'refused' WHERE key = $1",
+      [mailSentCopyJobKey(copyId)],
+    );
+    expect(exhausted.rowCount).toBe(1);
+    expect(await jobOf(copyId)).toEqual([
+      { attempts: MAIL_SENT_COPY_MAX_ATTEMPTS, max_attempts: MAIL_SENT_COPY_MAX_ATTEMPTS },
+    ]);
+  }
+
+  const switchMail = async (mailboxId: string, mailEnabled: boolean) => {
+    const mailboxes = (await createChokePoint(runtime).listDatabases()).find(
+      (row) => row.ownerModuleId === "mailboxes",
+    );
+    await createChokePoint(runtime).updateItem(
+      { databaseId: mailboxes!.id, itemId: mailboxId, propertiesPatch: { mailEnabled } },
+      userId,
+      userId,
+      { writerKind: "user" },
+    );
+  };
 
   function runCopy(account: Account, copyId: string, options: Partial<MailSentCopyTaskOptions> = {}) {
     return handleMailSentCopyTask(
@@ -228,22 +288,27 @@ describe("the Sent copy of an SMTP send", () => {
       expect(await pendingCopies()).toEqual([expect.objectContaining({ id: copy!.id, failed: false })]);
       expect(await openProblems()).toEqual([]);
 
-      await expect(runCopy(account, copy!.id, { isFinalAttempt: true })).rejects.toThrow("[NO] Sent is over quota");
+      await failForGood(account, copy!.id);
       expect(await pendingCopies()).toEqual([expect.objectContaining({ id: copy!.id, failed: true })]);
+      // The mailbox's sync state row, keyed by the mailbox id, is the source the problem names.
       expect(await openProblems()).toEqual([
-        { kind: "mailSentCopyFailed", source_id: account.mailbox.mailboxId, occurrence_count: 1 },
+        {
+          kind: "mailSentCopyFailed",
+          source_table: "mail_account_sync_state",
+          source_id: account.mailbox.mailboxId,
+          occurrence_count: 1,
+        },
       ]);
       expect(account.imap.countIn("Sent")).toBe(0);
 
-      // The server takes copies again: the next send's copy goes in and the failed one gets a new job.
-      account.imap.gate = undefined;
+      // The server takes copies again: the next send's copy goes in and the failed one gets a runnable job again.
       await account.send("Hello again");
       const [, next] = await pendingCopies();
       await runCopy(account, next!.id);
 
       expect(account.imap.countIn("Sent")).toBe(1);
       expect(await pendingCopies()).toEqual([expect.objectContaining({ id: copy!.id, failed: false })]);
-      expect(await sentCopyJobs()).toContainEqual(expect.objectContaining({ key: mailSentCopyJobKey(copy!.id) }));
+      expect(await jobOf(copy!.id)).toEqual([{ attempts: 0, max_attempts: MAIL_SENT_COPY_MAX_ATTEMPTS }]);
       expect(await openProblems()).toHaveLength(1);
 
       await runCopy(account, copy!.id);
@@ -254,18 +319,77 @@ describe("the Sent copy of an SMTP send", () => {
     },
   );
 
-  tenantIt("ends a copy of a mailbox that was put in the trash without an APPEND", async () => {
+  tenantIt(
+    "gives the copies that gave up a runnable job again after a completed sync pass of the mailbox",
+    async () => {
+      const account = await connectAccount();
+      await account.send("Hello Bob");
+      const [copy] = await pendingCopies();
+      await failForGood(account, copy!.id);
+
+      await account.mailbox.sync(async () => account.imap.client());
+
+      expect(await pendingCopies()).toEqual([expect.objectContaining({ id: copy!.id, failed: false })]);
+      expect(await jobOf(copy!.id)).toEqual([{ attempts: 0, max_attempts: MAIL_SENT_COPY_MAX_ATTEMPTS }]);
+      await runCopy(account, copy!.id);
+      expect(account.imap.countIn("Sent")).toBe(1);
+      expect(await openProblems()).toEqual([]);
+    },
+  );
+
+  tenantIt(
+    "drops every copy of a mailbox that was put in the trash without an APPEND and resolves its problem",
+    async () => {
+      const account = await connectAccount();
+      await account.send("Hello Bob");
+      await account.send("Hello again");
+      const [failed, pending] = await pendingCopies();
+      await failForGood(account, failed!.id);
+      const mailboxes = (await createChokePoint(runtime).listDatabases()).find(
+        (row) => row.ownerModuleId === "mailboxes",
+      );
+      await createChokePoint(runtime).softDeleteItem(mailboxes!.id, account.mailbox.mailboxId);
+
+      await runCopy(account, pending!.id);
+
+      expect(account.imap.countIn("Sent")).toBe(0);
+      expect(await pendingCopies()).toEqual([]);
+      expect(await openProblems()).toEqual([]);
+    },
+  );
+
+  tenantIt("drops every copy of a mailbox whose Mail is switched off and resolves its problem", async () => {
     const account = await connectAccount();
     await account.send("Hello Bob");
-    const [copy] = await pendingCopies();
-    const mailboxes = (await createChokePoint(runtime).listDatabases()).find(
-      (row) => row.ownerModuleId === "mailboxes",
-    );
-    await createChokePoint(runtime).softDeleteItem(mailboxes!.id, account.mailbox.mailboxId);
+    await account.send("Hello again");
+    const [failed] = await pendingCopies();
+    await failForGood(account, failed!.id);
+    expect(await openProblems()).toHaveLength(1);
 
-    await runCopy(account, copy!.id);
+    await switchMail(account.mailbox.mailboxId, false);
 
-    expect(account.imap.countIn("Sent")).toBe(0);
     expect(await pendingCopies()).toEqual([]);
+    expect(await openProblems()).toEqual([]);
   });
+
+  tenantIt(
+    "records the copy on its own when the send's finalization fails after the server accepted the message",
+    async () => {
+      const account = await connectAccount();
+      // The draft disappears between the acceptance and the finalization, which then cannot move it to Sent.
+      account.afterAccept = async () => {
+        await admin.query("UPDATE items SET deleted_at = now() WHERE tenant_id = $1 AND properties->>'name' = $2", [
+          tenant,
+          "Lost on the way",
+        ]);
+      };
+
+      await expect(account.postSend("Lost on the way")).rejects.toThrow();
+
+      const [copy, ...others] = await pendingCopies();
+      expect(others).toEqual([]);
+      expect(copy?.raw).toEqual(account.accepted[0]?.raw);
+      expect(await jobOf(copy!.id)).toEqual([{ attempts: 0, max_attempts: MAIL_SENT_COPY_MAX_ATTEMPTS }]);
+    },
+  );
 });

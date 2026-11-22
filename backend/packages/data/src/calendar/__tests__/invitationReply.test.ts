@@ -16,6 +16,7 @@ import { loadFullModuleRegistry } from "../../manifest/fullModuleRegistry.js";
 import { mergeModuleTaskListForAffinity } from "../../moduleTasks.js";
 import { ValidationError } from "../../errors.js";
 import { recordingTransport, transportFor, type RecordingTransport } from "../../testSupport/mailSendFakes.js";
+import { mailSentCopyJobKey } from "../../mail/mailSentCopies.js";
 import type { MailAttachmentWorld as World } from "../../testSupport/mailAttachmentFixtures.js";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import {
@@ -112,6 +113,23 @@ const handle = (payload: unknown, tenantId: string = world.tenantId) =>
 
 function payloadOf(invitation: { id: string; properties: Record<string, unknown> }, response = "accepted") {
   return { invitationId: invitation.id, response, respondedAt: invitation.properties.respondedAt };
+}
+
+/** The Sent copies the jobs recorded in the tenant, each with whether its keyed append job is queued. */
+async function recordedSentCopies(pool: Pool, admin: Pool, tenantId: string) {
+  const { rows } = await runInTenant(tenantId, () =>
+    pool.query<{ id: string; mailbox_item_id: string; message_id: string; raw: Buffer }>(
+      "SELECT id, mailbox_item_id, message_id, raw FROM mail_sent_copies WHERE tenant_id = app_tenant_default()",
+    ),
+  );
+  const copies = [];
+  for (const row of rows) {
+    const { rows: jobs } = await admin.query("SELECT 1 FROM graphile_worker.jobs WHERE key = $1", [
+      mailSentCopyJobKey(row.id),
+    ]);
+    copies.push({ mailboxItemId: row.mailbox_item_id, messageId: row.message_id, raw: row.raw, jobs: jobs.length });
+  }
+  return copies;
 }
 
 async function readMessage(raw: Buffer) {
@@ -304,6 +322,27 @@ describe("the reply to an answered invitation (issue gh-1953)", () => {
       expect(message?.lines.filter((line) => line.startsWith("ATTENDEE"))).toHaveLength(1);
       expect(message?.lines.some((line) => /^DTSTAMP:\d{8}T\d{6}Z$/.test(line))).toBe(true);
       expect((await onlyInvitation()).properties.status).toBe("accepted");
+    });
+
+    it("records one Sent copy of the accepted reply and its keyed job when the transport files none, as SMTP", async () => {
+      transport = recordingTransport({
+        async send(message) {
+          transport.sent.push(message);
+          return { needsSentCopy: true };
+        },
+      });
+      setInvitationReplyDelivery({ pool: runtime, transports: transportFor(transport) });
+      const id = await receiveInvitation();
+      await respond(id, "accepted");
+
+      await runQueued();
+
+      const [sent] = transport.sent;
+      const parsed = await simpleParser(sent!.raw);
+      const copies = await recordedSentCopies(runtime, admin, world.tenantId);
+      expect(copies).toEqual([
+        { mailboxItemId: expect.any(String), messageId: parsed.messageId, raw: sent!.raw, jobs: 1 },
+      ]);
     });
 
     it("takes the first address of the mailbox as the attendee when the message names no delivered-to address", async () => {

@@ -465,14 +465,18 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   `mail_sent_copies` and enqueues `mailSentCopy` (job key `mail-sent-copy:<copyId>`, tenant-scoped) in the
   transaction that records the send: `sendDraftEmail`'s finalization, or for the invitation jobs, which record their
   send nowhere else, a transaction of its own right after the acceptance (`recordPendingSentCopyAfterSend`, retried,
-  never thrown, since a throw would send the invitation again; a copy still not recorded is logged as an error).
+  never thrown, since a throw would send the invitation again; a copy still not recorded is logged as an error). A
+  finalization that fails after the acceptance records the copy the same way before its error is answered.
   The job runs at least once: under the account's IMAP connection slot it searches the Sent folder for the
   Message-ID (`SEARCH HEADER Message-ID`) and APPENDs with `\Seen` only when it is absent, then deletes the row, so a
-  repeated run appends nothing twice. A copy of a mailbox that is gone, in the trash or has Mail off ends without an
-  APPEND (logged). Every other failure keeps the row and retries with graphile-worker's backoff
+  repeated run appends nothing twice. A copy of a mailbox that is gone, in the trash or has Mail off drops every copy
+  of that mailbox without an APPEND and resolves its problem (`dropSentCopiesOfMailbox`, logged); switching Mail off
+  does the same in its transaction. Every other failure keeps the row and retries with graphile-worker's backoff
   (`MAIL_SENT_COPY_MAX_ATTEMPTS`, about 1.5 h); the final attempt marks the row failed and raises the mailbox's
-  `mailSentCopyFailed` problem (`mail:sentCopy:<mailbox>`). The next copy of that mailbox that is appended gives
-  every failed copy a new job, and the problem resolves once none is left. A purged mailbox takes its copies with it.
+  `mailSentCopyFailed` problem (`mail:sentCopy:<mailbox>`, source `mail_account_sync_state` of the mailbox). The next
+  appended copy of that mailbox and its next completed IMAP sync pass give every failed copy a fresh job at attempt 0
+  (`requeueFailedSentCopies`); the problem resolves when an appended copy leaves none failed. A purged mailbox takes
+  its copies with it.
 - Every mail-send failure log uses `describeMailFailure` (`mail/describeMailFailure.ts`: class name and SMTP
   codes) plus local ids, never the error object, because errors carry recipient addresses.
 

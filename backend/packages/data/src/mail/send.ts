@@ -37,7 +37,7 @@ import {
   type OutgoingMimeDeps,
 } from "./outgoingMime.js";
 import type { MailTransportFactory } from "./mailTransport.js";
-import { recordPendingSentCopy } from "./mailSentCopies.js";
+import { recordPendingSentCopy, recordPendingSentCopyAfterSend } from "./mailSentCopies.js";
 
 /**
  * An agent run (or an MCP client holding a run credential). An agent never sends directly: `sendDraftEmail`
@@ -336,7 +336,7 @@ export async function sendDraftEmail(
     throw err;
   }
 
-  return withTransaction(pool, async (client) => {
+  const finalized = withTransaction(pool, async (client) => {
     const sentAt = new Date();
     await updateItemWithClient(
       client,
@@ -400,4 +400,14 @@ export async function sendDraftEmail(
 
     return { itemId: input.draftItemId, messageId, threadId, sentAt };
   });
+  try {
+    return await finalized;
+  } catch (err) {
+    // The message was delivered and its claim stays; the copy rolled back with the finalization is recorded on its
+    // own, which never throws, so `err` is what the caller sees.
+    if (sentCopy !== null) {
+      await recordPendingSentCopyAfterSend(pool, { mailboxItemId: input.mailboxItemId, messageId, raw: sentCopy });
+    }
+    throw err;
+  }
 }

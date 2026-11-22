@@ -1,6 +1,7 @@
 import { captureMailMoveBaseline, listPendingMoves } from "./mailMessageMoveSyncStore.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "./mailMessageMoveSync.js";
 import { enqueueMailAccountSync } from "./mailSyncEnqueue.js";
+import { requeueFailedSentCopies } from "./mailSentCopies.js";
 export { enqueueMailAccountSync, mailAccountSyncJobKey } from "./mailSyncEnqueue.js";
 import type { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -379,6 +380,8 @@ export async function handleSyncMailAccountTask(
                   // and resolves the Semp problem in the same transaction.
                   await writeSyncStatus(client, "ok");
                   await resolveMailboxProblem(client, payload.mailboxItemId);
+                  // The account's IMAP server answers again: Sent copies that gave up get another job.
+                  await requeueFailedSentCopies(client, payload.mailboxItemId);
                 },
               },
             });

@@ -2,7 +2,7 @@
 // recorded in the transaction that records the send and appended by a queue job, at least once and without a
 // duplicate.
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getTenantUserId } from "../auth/usersStore.js";
@@ -152,11 +152,12 @@ export interface MailSentCopyTaskOptions {
  * after an APPEND whose deletion did not commit appends nothing twice. The connection holds the account's IMAP
  * connection slot, as a sync pass does.
  *
- * The copy ends without an APPEND only when the mailbox is gone, in the trash or has Mail switched off; that is
- * logged. Every other failure (no IMAP settings or credential, no Sent folder yet, a refused or failed command)
+ * The copy ends without an APPEND only when the mailbox is gone, in the trash or has Mail switched off: then every
+ * copy of the mailbox is dropped and its problem resolved (`dropSentCopiesOfMailbox`), which is logged. Every other failure (no IMAP settings or credential, no Sent folder yet, a refused or failed command)
  * rethrows for graphile-worker's retry with backoff and keeps the row. The final attempt also marks the row failed
- * and raises the mailbox's `mailSentCopyFailed` problem. The next copy of the mailbox that is appended gives every
- * failed copy a new job; the problem is resolved once the mailbox has no failed copy left.
+ * and raises the mailbox's `mailSentCopyFailed` problem. The next copy of the mailbox that is appended, or its next
+ * completed sync pass, gives every failed copy a new job; the problem is resolved once an appended copy leaves no
+ * failed one.
  */
 export async function handleMailSentCopyTask(
   pool: Pool,
@@ -197,17 +198,7 @@ async function appendSentCopy(pool: Pool, copy: StoredSentCopy, options: MailSen
     };
   });
   if (target === null) {
-    logger.info(
-      { mailboxItemId: copy.mailboxItemId, reason: "mailbox_inactive" },
-      "The Sent copy is not appended: the mailbox is gone, in the trash or has Mail switched off",
-    );
-    await withTransaction(pool, async (client) => {
-      await deleteSentCopy(client, copy.id);
-      await resolveProblem(client, {
-        dedupeKey: mailSentCopyProblemKey(copy.mailboxItemId),
-        resolutionKind: "sourceDeleted",
-      });
-    });
+    await withTransaction(pool, (client) => dropSentCopiesOfMailbox(client, copy.mailboxItemId));
     return;
   }
   const { sentPath, connectionLimit } = target;
@@ -237,20 +228,52 @@ async function appendSentCopy(pool: Pool, copy: StoredSentCopy, options: MailSen
   await withTransaction(pool, async (client) => {
     await deleteSentCopy(client, copy.id);
     // The server takes copies again: the copies that gave up get a new job, and the problem stays until they are in.
-    // Zero rows is the common case: no copy of the mailbox had given up.
-    const requeued = await client.query<{ id: string }>(
-      `UPDATE mail_sent_copies SET failed_at = NULL
-        WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1 AND failed_at IS NOT NULL RETURNING id`,
-      [copy.mailboxItemId],
-    );
-    for (const { id } of requeued.rows) await enqueueSentCopyJob(client, id);
-    if (requeued.rowCount === 0) {
+    if ((await requeueFailedSentCopies(client, copy.mailboxItemId)) === 0) {
       await resolveProblem(client, {
         dedupeKey: mailSentCopyProblemKey(copy.mailboxItemId),
         resolutionKind: "recovered",
       });
     }
   });
+}
+
+/**
+ * Gives every copy of the mailbox that gave up a runnable job again (a job that used up its attempts is replaced with
+ * a fresh one) and returns how many there were. Called once the account's server answered again: after an appended
+ * copy and after a completed sync pass.
+ */
+export async function requeueFailedSentCopies(client: PoolClient, mailboxItemId: string): Promise<number> {
+  // Zero rows is the common case: no copy of the mailbox had given up.
+  const requeued = await client.query<{ id: string }>(
+    `UPDATE mail_sent_copies SET failed_at = NULL
+      WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1 AND failed_at IS NOT NULL RETURNING id`,
+    [mailboxItemId],
+  );
+  for (const { id } of requeued.rows) {
+    // `add_job` keeps a permanently failed job under its key; it is removed so the new one starts at attempt 0.
+    await cancelJob(client, mailSentCopyJobKey(id));
+    await enqueueSentCopyJob(client, id);
+  }
+  return requeued.rowCount ?? 0;
+}
+
+/**
+ * Removes every pending copy of a mailbox that will never be appended (it is gone, in the trash or has Mail switched
+ * off) and resolves its Sent-copy problem. Their queued jobs find no row and end.
+ */
+export async function dropSentCopiesOfMailbox(client: PoolClient, mailboxItemId: string): Promise<void> {
+  // Zero rows is the common case: nothing was waiting.
+  const dropped = await client.query(
+    "DELETE FROM mail_sent_copies WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1",
+    [mailboxItemId],
+  );
+  if (dropped.rowCount !== 0) {
+    logger.info(
+      { mailboxItemId, reason: "mailbox_inactive", count: dropped.rowCount },
+      "Sent copies are not appended: the mailbox is gone, in the trash or has Mail switched off",
+    );
+  }
+  await resolveProblem(client, { dedupeKey: mailSentCopyProblemKey(mailboxItemId), resolutionKind: "sourceDeleted" });
 }
 
 /** The row is kept, marked failed; the mailbox's problem counts this copy once however often the job is redelivered. */
@@ -269,7 +292,7 @@ async function recordFailedSentCopy(pool: Pool, copy: StoredSentCopy, jobId: str
       category: "mail",
       kind: "mailSentCopyFailed",
       severity: "warning",
-      sourceTable: "mail_sent_copies",
+      sourceTable: "mail_account_sync_state",
       sourceId: copy.mailboxItemId,
       dedupeKey: mailSentCopyProblemKey(copy.mailboxItemId),
       since: new Date(),
