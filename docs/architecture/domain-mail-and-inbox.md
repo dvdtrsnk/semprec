@@ -218,8 +218,12 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   that fails before it holds the lease writes no error, status, problem or notification and rethrows for
   graphile-worker's retry.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
-  ends the pass when another one does. On every way out of the pass one transaction releases the lease and, when a
-  rerun was requested, enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
+  ends the pass when another one does. An IMAP pass that completed takes a rerun request in its final transaction
+  (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease and in the same connection slot,
+  on its open IMAP connection: the move phase on pending moves read anew, then the reconcile. It runs at most
+  `IMAP_PASS_MAX_ROUNDS` (3) rounds, so a trigger during a pass is served without a new job, connection or login. On
+  every way out of the pass one transaction releases the lease and, when a rerun is still requested (one after the
+  last round, an unfinished backfill, or any Gmail or Graph pass), enqueues exactly one follow-up pass. A holder that died blocks its mailbox for at most
   `MAIL_SYNC_PASS_LEASE_MS` (5 minutes); a failed release is logged and left to that expiry.
 - An IMAP pass (`reconcileImapAccount` in `mail/imapReconcile.ts`) never talks to the provider inside a
   transaction. The folder list, each folder's selection, new messages, changed flags, vanished UIDs and every

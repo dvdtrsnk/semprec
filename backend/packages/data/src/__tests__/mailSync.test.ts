@@ -3163,8 +3163,9 @@ describe("bounded IMAP sync passes", () => {
 
       expect(await folderCursor()).toEqual(["3"]);
       expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
-      // Left incomplete, so the next pass is queued; it finds nothing new.
-      expect(await queuedSyncJobs(mailbox)).toBe("1");
+      // The pass started during the fetch found the lease held and only asked for one more round, which the running
+      // pass ran itself: nothing is queued, and a later pass finds nothing new.
+      expect(await queuedSyncJobs(mailbox)).toBe("0");
       await runSync(mailbox, { createImapClient: async () => account() });
       expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
       expect(await folderCursor()).toEqual(["3"]);
