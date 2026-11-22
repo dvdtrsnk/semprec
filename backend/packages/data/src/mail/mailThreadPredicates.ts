@@ -10,7 +10,7 @@ export interface MailThreadFilters {
   search?: ParsedMailSearchQuery;
 }
 
-type FolderIdSql = `$${number}::uuid` | "mf.id";
+type FolderIdSql = `$${number}::uuid`;
 
 const threadInFolder = (folderId: FolderIdSql) =>
   `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE ${folderId} = ANY(c.folder_ids))`;
@@ -42,7 +42,6 @@ export const mailThreadPredicates = {
   sempDrafts: `(${mailThreadHasSempDraft("l.thread_id")}
     AND l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_non_junk))`,
   inFolder: (parameter: number) => threadInFolder(`$${parameter}::uuid`),
-  inFolderRow: threadInFolder("mf.id"),
   unread: "cs.unread",
   inMailbox: (parameter: number) =>
     `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.mailbox_item_id = $${parameter}::uuid)`,
