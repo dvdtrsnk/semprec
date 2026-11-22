@@ -494,7 +494,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies?.mailServerClients?.verifyPassword).toBe(verifyPassword);
   });
 
-  it("createDispatcher supplies only its registry provider, a limiter, the upload cap (issue gh-1895) and the send adapters when the caller gives no container", async () => {
+  it("createDispatcher supplies only its registry provider, a limiter, the upload cap (issue gh-1895), the mail content providers and the send adapters when the caller gives no container", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
     const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { dependencies?: CustomRouteDependencies } = {};
@@ -506,21 +506,27 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       { ...REDIRECT_DEFINITION, handler: capturing },
     ]);
 
+    const blobStorage = new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`));
     await createDispatcher(pool, {
       passwordResetMailer: noopPasswordResetMailer,
       appBaseUrl: "https://app.example.test",
       setupToken: "deps-setup-token",
       moduleRegistry,
-      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      blobStorage,
       maxFileSizeBytes: 1024,
     });
 
     expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual([
       "heartbeatRuleKinds",
+      "mailContent",
       "mailServerClients",
       "maxFileSizeBytes",
       "throttle",
     ]);
+    // No OAuth clients in the container, so only the IMAP content client; saved attachments go to the blob root
+    // when no mail attachment root is given.
+    expect(Object.keys(seen.dependencies?.mailContent ?? {}).sort()).toEqual(["attachmentStorage", "createImapClient"]);
+    expect(seen.dependencies?.mailContent?.attachmentStorage).toBe(blobStorage);
     // No verification client, which only the root has.
     expect(Object.keys(seen.dependencies?.mailServerClients ?? {})).toEqual(["send"]);
     expect(Object.keys(seen.dependencies?.mailServerClients?.send ?? {}).sort()).toEqual([
