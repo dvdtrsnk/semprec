@@ -644,7 +644,8 @@ internals proven against the real library by its unit test; an upgrade must re-p
     cut, or one inside an attached message, gives no snippet. Of a multipart message less than 2 KiB of the part is
     read, so its search text can be shorter than the server's; the 200-character preview is the same.
   - Written in READ COMMITTED transactions of at most `IMAP_MESSAGES_PER_BATCH` (50) messages, newest first: mailbox
-    sync guard → the mailbox and its sync state re-read → mail-thread guard → the folder's sync state row
+    sync guard → the account's sync state row `FOR UPDATE` and the mailbox re-read → mail-thread guard → the folder's
+    sync state row
     `FOR UPDATE`, which must still hold the uploaded UIDVALIDITY (else 409 `mail_history_uidvalidity_changed`), an
     unexpired lease of the token (else 409 `mail_history_lease_expired`) and the cursor the batch continues (the first
     at `rangeHigh`; else 409 `mail_history_range_stale` with `details.backfillBelowUid`, the cursor the folder holds).
@@ -1122,7 +1123,8 @@ on-demand content and attachment reads and the provider search.
 
 - Sync pass: mailbox sync guard → sync state row (lease renewal) → mail-thread guard → Gmail folder-state guard →
   folder/item rows.
-- History claim, release and upload: mailbox sync guard → (upload) mail-thread guard → folder sync state rows.
+- History claim, release and upload: mailbox sync guard → sync state row → (upload) mail-thread guard → folder sync
+  state rows.
 - Pass lease claim and release: the sync state row alone, then (release only) the follow-up job's insert.
 - Sync state row → Mailboxes item (sync job failure/activity writes, removal, reauthorization).
 - Service switch / removal: mailbox sync guard (Mail) → calendar sync guard (Calendars) → sync state row (Mail)

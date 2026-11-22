@@ -19,7 +19,7 @@ import { IMAP_MESSAGES_PER_BATCH, type ImapFetchedMessage } from "./imapReconcil
 import { removeStaleFolderCopies } from "./imapStaleFolderUids.js";
 import { bodyPartPrefixInText, IMAP_SNIPPET_BYTES, imapSnippetText } from "./imapSnippet.js";
 import { ingestEmailMessage } from "./ingest.js";
-import { getMailAccountSyncState, recordImapInitialSyncCompleted } from "./mailAccountSyncStateStore.js";
+import { lockMailAccountSyncState, recordImapInitialSyncCompleted } from "./mailAccountSyncStateStore.js";
 import {
   claimClientBackfillLeases,
   listMailboxFolderSyncStates,
@@ -116,18 +116,21 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, message: string): T {
 
 /**
  * Enters the mailbox's history in a write transaction: the mailbox sync guard first (a removal or the Mail switch
- * then waits for this transaction, as for a sync pass's), then the live Mailboxes item and its sync state. Only an IMAP
- * account with Mail on whose sign-in the server has not refused takes an upload.
+ * then waits for this transaction, as for a sync pass's), then the account's sync state row locked, as a pass's lease
+ * renewal locks it, before the mail-thread guard an upload takes, and the live Mailboxes item. Only an IMAP account
+ * with Mail on whose sign-in the server has not refused takes an upload.
  */
 async function enterMailboxHistory(
   client: PoolClient,
   mailboxItemId: string,
 ): Promise<{ ids: MailModuleIds; mailboxAliases: string[] }> {
   await lockMailboxSync(client, mailboxItemId, { maxWaitMs: MAILBOX_REMOVAL_SYNC_WAIT_MS });
+  // Locked before the mail-thread guard, as a send claim and a pass take the two, so an upload that completes the
+  // initial sync never waits for the row while holding the guard.
+  const state = await lockMailAccountSyncState(client, mailboxItemId);
   const ids = await resolveMailModuleIds(client);
   const mailbox = await getItemById(client, ids.mailboxesDatabaseId, mailboxItemId);
   if (mailbox === null || mailbox.deletedAt) throw mailboxNotFound();
-  const state = await getMailAccountSyncState(client, mailboxItemId);
   if (state === null || state.syncPausedAt !== null) throw new MailHistoryUnavailableError("mailboxUnavailable");
   if (state.syncMode !== "imap") throw new MailHistoryUnavailableError("notImap");
   if (state.lastFailureKind === "reauthorization") throw new MailHistoryUnavailableError("reauthorizationRequired");

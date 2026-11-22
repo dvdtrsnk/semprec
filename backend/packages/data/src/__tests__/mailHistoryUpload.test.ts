@@ -7,7 +7,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { MAIL_HEADER_VALUE_MAX_BYTES } from "../mail/imapLightFetch.js";
-import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import { getMailAccountSyncState, lockMailAccountSyncPaused } from "../mail/mailAccountSyncStateStore.js";
+import { lockMailThreadMutation } from "../mail/mailThreadMutationGuard.js";
 import {
   createMailHistoryClaimRouteHandler,
   createMailHistoryReleaseRouteHandler,
@@ -275,6 +276,15 @@ async function folderState(mailboxId: string, path: string) {
   return folderStateRow.parse(rows[0]);
 }
 
+/** Whether a session of this database waits for a lock another holds. */
+async function someoneWaitsForALock(): Promise<boolean> {
+  const { rows } = await admin.query<{ waiting: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+                     WHERE NOT l.granted AND d.datname = current_database()) AS waiting`,
+  );
+  return rows[0]?.waiting === true;
+}
+
 async function initialSyncCompleted(mailboxId: string): Promise<boolean> {
   const state = await withTransaction(runtime, (client) => getMailAccountSyncState(client, mailboxId));
   return state?.initialSyncCompletedAt != null;
@@ -483,6 +493,33 @@ describe("IMAP history uploaded by a native client", () => {
       expect(indexedByServer.get(messageIdOf("Late recent"))).toMatchObject({ content_state: "full" });
     });
   }, 180_000);
+
+  tenantIt("completes the initial sync beside a send claim holding the account's row, without a deadlock", async () => {
+    const imap = await account();
+    await imap.pass();
+    const answer = await claim(imap.mailboxId);
+    await imap.pass();
+    const body = await sliceBody(imap, answer.body.leaseToken, leasedFolder(answer));
+    let holding = () => {};
+    const held = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    // A send claim's lock order: the account's sync state row (share), then the mail-thread guard. It takes the guard
+    // only once the upload waits for a lock, so the upload has gone as far as it can beside the held row.
+    const sendClaim = withTransaction(runtime, async (client) => {
+      await lockMailAccountSyncPaused(client, imap.mailboxId);
+      holding();
+      for (let waited = 0; waited < 10_000 && !(await someoneWaitsForALock()); waited += 20)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      await lockMailThreadMutation(client);
+    });
+    await held;
+
+    const [uploaded] = await Promise.all([upload(imap.mailboxId, body), sendClaim]);
+
+    expect(uploaded.body.backfillBelowUid).toBeNull();
+    expect(await initialSyncCompleted(imap.mailboxId)).toBe(true);
+  });
 
   tenantIt("takes a folder's history in contiguous slices, newest first, over more than one write batch", async () => {
     const imap = await account(history(60));
