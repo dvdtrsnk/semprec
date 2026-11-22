@@ -80,6 +80,9 @@ internal class ImapClient private constructor(private val stream: ImapByteStream
         stream.close()
     }
 
+    /** Closes the connection at once, without logging out; for a client its caller can no longer hand on. */
+    fun close() = stream.close()
+
     private suspend fun greetAndSignIn(username: String, password: String) {
         val greeting = reader.next()
         val failure = when {

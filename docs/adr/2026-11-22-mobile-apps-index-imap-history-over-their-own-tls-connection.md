@@ -30,9 +30,11 @@ that opens a connection; this adds a second one, to a server that is not Semprec
   JVM and Android, in a `jvmAndAndroid` source set. Implicit TLS on port 993 only, TLS 1.2 at least, the platform's
   trust store and the certificate checked against the host name; never a plain connection and never STARTTLS. A
   server that offers IMAP only with STARTTLS on 143 is left to the server's own backfill.
-- Every outbound step is bounded: 30 s to connect and finish the handshake, 60 s of silence while reading, 5 minutes
-  per command, 1 MiB per response and 24 MiB per command. A failure is a typed value (`ImapFailure`: auth rejected,
-  TLS, unreachable, timeout, protocol, refused) that carries no server text and no credential.
+- Every outbound step is bounded: 30 s for the TCP connect and the TLS handshake together, 60 s of silence while
+  reading, 5 minutes per command, 1 MiB per response and 24 MiB per command. A connection the caller does not get (a
+  failure, a timeout or a cancellation, also one that arrives once the handshake or the sign-in finished) is closed.
+  A failure is a typed value (`ImapFailure`: auth rejected, TLS, unreachable, timeout, protocol, refused) that carries
+  no server text and no credential.
 - The password is never stored on the device. The use case `IndexMailHistory` (`:shared:domain`) takes it as a
   `MailHistoryLogin` (whose `toString` omits it) for one run; the accounts list's ViewModel queues the logins of the
   accounts it connected and runs them one at a time, so one IMAP connection at most per screen, in its

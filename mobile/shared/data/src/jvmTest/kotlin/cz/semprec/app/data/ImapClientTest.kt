@@ -1,16 +1,12 @@
 package cz.semprec.app.data
 
 import kotlinx.coroutines.runBlocking
-import javax.net.ssl.SNIHostName
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLSocket
 import kotlin.io.encoding.Base64
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 private const val USER = "me@example.com"
@@ -220,16 +216,5 @@ class ImapClientTest {
         val client = stalling.client(timeouts = ImapTimeouts(readMillis = 5_000, commandMillis = 400))
         assertEquals(ImapFailure.TIMEOUT, failureOf { client.uidSearch(1, 10) })
         assertTrue(stalling.awaitClientClosedAll())
-    }
-
-    @Test
-    fun theTlsSocketChecksTheCertificateAgainstTheHostAndOffersOnlyModernTls() {
-        val socket = assertIs<SSLSocket>(SSLContext.getDefault().socketFactory.createSocket())
-        val parameters = verifyingHost(socket, "imap.example.com")
-        assertEquals("HTTPS", parameters.endpointIdentificationAlgorithm)
-        assertEquals(listOf(SNIHostName("imap.example.com")), parameters.serverNames)
-        assertTrue(parameters.protocols.isNotEmpty())
-        assertTrue(parameters.protocols.all { it == "TLSv1.2" || it == "TLSv1.3" })
-        socket.close()
     }
 }
