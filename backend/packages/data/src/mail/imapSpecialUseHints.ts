@@ -1,4 +1,5 @@
 import type { ListOptions } from "imapflow";
+import type { ProviderFolder } from "./folderDiscovery.js";
 
 /** The IMAP host of every iCloud Mail account. */
 export const ICLOUD_IMAP_HOST = "imap.mail.me.com";
@@ -20,4 +21,24 @@ const ICLOUD_SPECIAL_USE_HINTS: NonNullable<ListOptions["specialUseHints"]> = {
 /** The folders whose purpose a server's own folder names fix, for a LIST; a hinted folder the server lacks is ignored. */
 export function imapListOptions(host: string): ListOptions {
   return host === ICLOUD_IMAP_HOST ? { specialUseHints: ICLOUD_SPECIAL_USE_HINTS } : {};
+}
+
+const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
+  "\\Inbox": "inbox",
+  "\\Sent": "sent",
+  "\\Junk": "junk",
+  "\\Trash": "trash",
+  "\\Drafts": "drafts",
+  "\\Archive": "archive",
+  "\\All": "all",
+};
+
+/** A listed IMAP folder as its Folder item: named by its path, its purpose from its RFC 6154 special-use attribute. */
+export function imapProviderFolder(folder: { path: string; specialUse?: string }): ProviderFolder {
+  return {
+    providerId: folder.path,
+    name: folder.path,
+    behavior: "folder",
+    specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
+  };
 }

@@ -8,6 +8,7 @@ import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { ingestEmailMessage, type IngestedMailContent } from "./ingest.js";
 import type { FetchedMessage } from "./providerTypes.js";
+import { selectListedFolder } from "./imapListedFolder.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import type { ClassifiedAttachment, IndexedAttachment } from "./attachments.js";
 import {
@@ -20,7 +21,8 @@ import {
 } from "./mailFolderSyncStateStore.js";
 import { findEmailItemIdByFolderUid, listKnownFolderUids } from "./folderMembershipStore.js";
 import { removeStaleFolderCopies, retireFolderUids } from "./imapStaleFolderUids.js";
-import { ensureFolderItem, type ProviderFolder } from "./folderDiscovery.js";
+import { ensureFolderItem } from "./folderDiscovery.js";
+import { imapProviderFolder } from "./imapSpecialUseHints.js";
 import {
   anchorMailAccountConnection,
   ensureMailAccountSyncState,
@@ -298,16 +300,6 @@ const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
   "\\All": "all",
 };
 
-/** A listed IMAP folder as its Folder item: named by its path, its purpose from its RFC 6154 special-use attribute. */
-export function imapProviderFolder(folder: ImapFolderRef): ProviderFolder {
-  return {
-    providerId: folder.path,
-    name: folder.path,
-    behavior: "folder",
-    specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
-  };
-}
-
 /**
  * Gmail over IMAP: derives label Folder edges from `X-GM-LABELS`, alongside the All Mail edge the
  * UID reconcile maintains. Only called when the server reports labels (X-GM-EXT-1).
@@ -385,9 +377,10 @@ async function fetchImapFolder(
   ctx: ImapPassContext,
   folderPath: string,
   snapshot: MailFolderSyncStateRow,
-): Promise<FetchedImapFolder> {
+): Promise<FetchedImapFolder | null> {
   const { imap, capabilities, budget } = ctx;
-  const selection = await imap.selectFolder(folderPath);
+  const selection = await selectListedFolder(imap, folderPath, ctx.params);
+  if (selection === null) return null;
   const uidvalidityChanged = snapshot.uidvalidity !== null && snapshot.uidvalidity !== String(selection.uidvalidity);
   const state = uidvalidityChanged
     ? { uidvalidity: String(selection.uidvalidity), uidnext: null, highestmodseq: null }
@@ -703,6 +696,7 @@ type ImapFolderStep =
   | { kind: "ended" }
   | { kind: "overtaken" }
   | { kind: "leased" }
+  | { kind: "vanished" }
   | {
       kind: "written";
       state: MailFolderSyncStateRow;
@@ -718,6 +712,7 @@ async function syncImapFolderLive(
   snapshot: MailFolderSyncStateRow,
 ): Promise<Exclude<ImapFolderStep, { kind: "leased" }>> {
   const fetched = await fetchImapFolder(ctx, folderPath, snapshot);
+  if (fetched === null) return { kind: "vanished" };
   const written = await ctx.write((client, storage) =>
     applyImapFolder(client, fetched, { ...ctx.params, storage }, ctx.relationDefinitionId),
   );
@@ -747,7 +742,8 @@ async function backfillImapFolder(
   const limit = ctx.budget.full + ctx.budget.index;
   if (snapshot.backfillBelowUid === null || snapshot.liveFromUid === null || limit === 0) return unchanged;
   if (snapshot.clientBackfillLease !== null) return { kind: "leased" };
-  const selection = await ctx.imap.selectFolder(folderPath);
+  const selection = await selectListedFolder(ctx.imap, folderPath, ctx.params);
+  if (selection === null) return { kind: "vanished" };
   if (String(selection.uidvalidity) !== snapshot.uidvalidity) return unchanged;
   const liveFromUid = Number(snapshot.liveFromUid);
   const range = await ctx.imap.fetchMessagesBefore(folderPath, Number(snapshot.backfillBelowUid), limit);
@@ -900,16 +896,6 @@ export async function reconcileImapFolder(
   }
 }
 
-const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
-  "\\Inbox": "inbox",
-  "\\Sent": "sent",
-  "\\Junk": "junk",
-  "\\Trash": "trash",
-  "\\Drafts": "drafts",
-  "\\Archive": "archive",
-  "\\All": "all",
-};
-
 export interface ReconcileImapAccountParams {
   mailboxItemId: string;
   protectedMoveMessageIds?: ReadonlySet<string>;
@@ -1034,6 +1020,10 @@ export async function reconcileImapAccount(
       if (folder.status && unchangedSinceLastReconcile(snapshot, folder.status)) continue;
       const step = await syncImapFolderLive(contextOf(folder, folderItemId), folder.path, snapshot);
       if (step.kind === "ended") return ended;
+      if (step.kind === "vanished") {
+        states.delete(folderItemId);
+        continue;
+      }
       // Another pass moved this folder on since its state was read: this pass stops and leaves the rest to a later one.
       if (step.kind === "overtaken") {
         overtaken = true;
@@ -1058,6 +1048,7 @@ export async function reconcileImapAccount(
           backfillLeased = true;
           continue;
         }
+        if (step.kind === "vanished") continue;
         if (!step.complete) complete = false;
         for (const emailItemId of step.copiesRemovedFrom) copiesRemovedFrom.add(emailItemId);
       }

@@ -394,6 +394,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   pass that ends with every folder's backfill done, or by the upload that finishes the last one. A backfill left to a
   client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
   minutes, when an expired or released lease has given the folder back to the server.
+- A folder the server no longer holds when the pass selects it (deleted or renamed by another client since the
+  pass's LIST, answered `NO`) is skipped by both steps and logged; the other folders sync as usual and the next
+  pass's listing retires its Folder.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
   before its backfill is simply not found by it.

@@ -12,6 +12,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 import type { FakeImapServer } from "../testSupport/fakeImapServer.js";
+import type { ImapMailClient } from "../mail/imapMailClient.js";
 import {
   createImapMailboxFixture,
   createSyncedLoopbackMailbox,
@@ -191,6 +192,33 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     );
     expect(await emailsNamed("Offer")).toEqual([offer]);
     expect(await emailsNamed("Re: Offer")).toEqual([expect.objectContaining({ trashed: true, folders: [] })]);
+  });
+
+  tenantIt("syncs the other folders when a folder is deleted after the pass listed it", async () => {
+    const mailbox = await synced(QRESYNC);
+    mailbox.server.deliver("Archive", [], plainMessage("Archived later"));
+    mailbox.server.deliver("INBOX", [], plainMessage("New in INBOX"));
+    // Another client deletes Archive between this pass's LIST and its SELECT of the folder.
+    const deletingAfterList = async (): Promise<ImapMailClient> => {
+      const client = await mailbox.overWire();
+      return Object.assign(Object.create(client) as ImapMailClient, {
+        listFolders: async () => {
+          const folders = await client.listFolders();
+          mailbox.server.deleteFolder("Archive");
+          return folders;
+        },
+      });
+    };
+
+    await mailbox.mailbox.sync(deletingAfterList);
+
+    expect(await emailsNamed("New in INBOX")).toMatchObject([{ trashed: false, folders: ["INBOX"] }]);
+    expect(await emailsNamed("Archived later")).toEqual([]);
+    const { rows } = await runtime.query<{ last_error: string | null; failing_since: Date | null }>(
+      "SELECT last_error, failing_since FROM mail_account_sync_state WHERE item_id = $1",
+      [mailbox.mailbox.mailboxId],
+    );
+    expect(rows).toEqual([{ last_error: null, failing_since: null }]);
   });
 
   tenantIt("shows a message another client moved from INBOX to Archive as moved, on the same item", async () => {
