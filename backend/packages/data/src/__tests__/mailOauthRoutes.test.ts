@@ -531,6 +531,23 @@ describe("POST /api/mail/mailboxes/oauth/complete", () => {
     expect(await connected()).toEqual(expected);
   });
 
+  it("names a second Google account after its address, so two Gmail mailboxes are told apart", async () => {
+    await complete({ state: stateOf(await start("gmail")), code: SECRETS.code }, fakeProvider(googleRoutes()));
+    const second = fakeProvider(
+      googleRoutes({
+        [GMAIL_PROFILE_URL]: () => json({ emailAddress: "second.user@gmail.com" }),
+        [GMAIL_SEND_AS_URL]: () => json({}),
+      }),
+    );
+
+    await complete({ state: stateOf(await start("gmail")), code: "second-code" }, second);
+
+    expect((await connected()).mailboxes.map((mailbox) => mailbox.name).sort()).toEqual([
+      "Gmail",
+      "second.user@gmail.com",
+    ]);
+  });
+
   it("stores only the profile address when Gmail lists no send-as entries", async () => {
     const provider = fakeProvider(googleRoutes({ [GMAIL_SEND_AS_URL]: () => json({}) }));
 

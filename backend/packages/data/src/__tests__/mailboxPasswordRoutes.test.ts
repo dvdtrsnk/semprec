@@ -566,6 +566,19 @@ describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-
   describe("verification and writes", () => {
     beforeEach(seedTenantZero);
 
+    it("names a second iCloud mailbox after its address, so the two are told apart", async () => {
+      const verifier = acceptingVerifier();
+      await connect(ICLOUD_BODY, { dependencies: verifier.dependencies });
+
+      const second = await connect(
+        { ...ICLOUD_BODY, address: "second@example.test" },
+        { dependencies: verifier.dependencies },
+      );
+
+      expect(second.status).toBe(201);
+      expect(second.item.properties).toMatchObject({ name: "second@example.test", provider: "icloud" });
+    });
+
     it("creates an iCloud mailbox with its app password, the fixed iCloud settings, an IMAP sync state and a queued sync", async () => {
       const verifier = acceptingVerifier();
 

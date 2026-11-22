@@ -54,6 +54,7 @@ import { ensureComposeFolders, type ProviderFolder } from "./folderDiscovery.js"
 import { GMAIL_SYSTEM_FOLDERS } from "./gmailReconcile.js";
 import { graphProviderFolder } from "./graphReconcile.js";
 import { logger } from "./logger.js";
+import { newMailboxName } from "./mailboxNaming.js";
 
 /**
  * Served without a session. The redirect URI is this path on the configured redirect base URL, identical in the
@@ -465,7 +466,11 @@ async function createConnectedMailbox(client: PoolClient, mailbox: NewMailbox): 
     {
       databaseId: mailboxesDatabaseId,
       properties: {
-        name: PROVIDER_SETTINGS[mailbox.provider].mailboxName,
+        name: await newMailboxName(client, {
+          mailboxesDatabaseId,
+          preferred: PROVIDER_SETTINGS[mailbox.provider].mailboxName,
+          address: mailbox.identity.address,
+        }),
         provider: mailbox.provider,
         ...NEW_MAILBOX_SERVICE_SWITCHES,
         calendarsEnabled: mailbox.services.includes("calendars"),
