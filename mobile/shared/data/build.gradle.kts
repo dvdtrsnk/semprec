@@ -1,9 +1,21 @@
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+
 plugins {
     id("semprec.kmp")
     // Generates the serializers of the wire DTOs in this module.
     alias(libs.plugins.kotlin.serialization)
 }
 kotlin {
+    // The JVM and Android targets share the java.net and javax.net.ssl socket of the IMAP client.
+    @OptIn(ExperimentalKotlinGradlePluginApi::class)
+    applyDefaultHierarchyTemplate {
+        common {
+            group("jvmAndAndroid") {
+                withJvm()
+                withAndroidTarget()
+            }
+        }
+    }
     sourceSets {
         commonMain.dependencies {
             implementation(project(":shared:domain"))
