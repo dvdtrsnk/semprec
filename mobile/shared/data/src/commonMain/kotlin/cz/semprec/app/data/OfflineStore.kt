@@ -43,7 +43,8 @@ internal data class KeptAnswer(val status: Int, val body: String, val etag: Stri
  * session token), JSON files written with [writeCacheFile]
  * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). [answers] holds the answers of the offline
  * set, [people] the person the server last confirmed for the session, [queue] the writes waiting for the server
- * (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection.md).
+ * (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection.md), [pages] the note pages
+ * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md).
  *
  * Keeping anything for one account removes the directories of every other. [clear] removes everything, and an
  * account it ended keeps nothing afterwards, so an answer arriving late for a session that ended is dropped. Every
@@ -69,6 +70,7 @@ internal class OfflineStore(
     val answers = KeptAnswers(this, maxAnswers)
     val people = KeptPeople(this)
     val queue = KeptQueue(this)
+    val pages = KeptPages(this)
 
     /**
      * Runs [block] for [account] with the lock held, on [dispatcher]; `null` without running it when the account's

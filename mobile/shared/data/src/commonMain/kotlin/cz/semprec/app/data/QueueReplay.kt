@@ -83,9 +83,15 @@ internal class OfflineWrites(
     /** The queue of the account signed in, as it changes. */
     val status: StateFlow<QueueStatus> = mutableStatus.asStateFlow()
 
+    /** Runs after every replay: the note pages wait for the ids the queue maps, so they are written then. */
+    var afterReplay: suspend () -> Unit = {}
+
     init {
         state.onReachedAgain = ::replaySoon
     }
+
+    /** The sender of the window attached last, which sends what the device keeps; `null` before any attached. */
+    fun sender(): QueueSender? = replayer.current()
 
     /** The window's [sender] sends what is queued from now on; whatever waits is replayed. */
     fun attach(sender: QueueSender) {
@@ -112,9 +118,12 @@ internal class OfflineWrites(
         }
     }
 
-    /** Replays the queue now, or once more after the replay under way. */
+    /** Replays the queue now, or once more after the replay under way, and then runs [afterReplay]. */
     fun replaySoon() {
-        scope.launch { replayer.run() }
+        scope.launch {
+            replayer.run()
+            afterReplay()
+        }
     }
 
     /** Forgets the failures recorded for the account signed in. */
@@ -209,6 +218,8 @@ internal class QueueReplayer(
     }
 
     fun account(): String? = sender.load()?.account()
+
+    fun current(): QueueSender? = sender.load()
 
     /** Replays until the queue is empty, the server cannot act on the first write or nobody is signed in. */
     suspend fun run() {

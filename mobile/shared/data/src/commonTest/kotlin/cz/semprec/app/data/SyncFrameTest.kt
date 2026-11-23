@@ -32,6 +32,18 @@ class SyncFrameTest {
         )
     }
 
+    @Test fun `a frame that a page changed is kept with its item and raises no topic`() {
+        val doc = """{"type":"invalidate","scope":"doc","docId":"d1","itemId":"$ITEM","databaseId":"$DB",""" +
+            """"lastEditedAt":"2026-11-23T10:00:00.000Z"}"""
+        assertEquals(SyncFrame.PageChanged(ITEM), parseSyncFrame(doc))
+        assertEquals(emptySet<SyncTopic>(), SyncFrame.PageChanged(ITEM).topics(mapOf(DB to "notes")))
+        listOf(
+            doc.replace("\"docId\":\"d1\",", ""),
+            doc.replace("\"itemId\":\"$ITEM\",", ""),
+            doc.replace("\"itemId\":\"$ITEM\"", "\"itemId\":3"),
+        ).forEach { raw -> assertNull(parseSyncFrame(raw), raw) }
+    }
+
     @Test fun `frames outside the followed catalog or with a broken field are dropped`() {
         listOf(
             "not json",

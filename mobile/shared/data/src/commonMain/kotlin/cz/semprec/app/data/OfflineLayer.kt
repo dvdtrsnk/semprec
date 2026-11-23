@@ -90,6 +90,13 @@ class OfflineLayer internal constructor(
     internal val writes = OfflineWrites(store, scope, state, clock, newId)
     private val views = QueuedViews(store, clock.today)
 
+    /** The note pages read and written through the device. */
+    val pages = OfflinePages(store, state) { writes.sender() }
+
+    init {
+        writes.afterReplay = pages::writeWaiting
+    }
+
     /** Emits when what the screens of every window show may have changed. */
     val changes: Flow<Unit> = state.changes
 

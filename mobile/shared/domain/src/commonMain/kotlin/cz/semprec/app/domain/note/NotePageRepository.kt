@@ -18,8 +18,11 @@ data class NotePageInfo(val title: String, val blockIds: List<String>, val lastE
 interface NotePageRepository {
     suspend fun read(itemId: String): RepositoryResult<PageDocument>
 
-    /** Replaces the page when [etag] is still its version; otherwise [PageWrite.Conflict]. */
-    suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite>
+    /**
+     * Replaces the page with [markdown], edited from [base] (the Markdown last read or written), when [etag] is still
+     * its version; otherwise [PageWrite.Conflict], or the merge or the kept change that [PageWrite] describes.
+     */
+    suspend fun replace(itemId: String, markdown: String, etag: String, base: String): RepositoryResult<PageWrite>
 
     suspend fun info(itemId: String): RepositoryResult<NotePageInfo>
 

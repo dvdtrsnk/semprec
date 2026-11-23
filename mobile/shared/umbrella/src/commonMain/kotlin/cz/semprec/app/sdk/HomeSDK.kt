@@ -34,6 +34,7 @@ import cz.semprec.app.domain.NoMailThreadListCache
 import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SearchEverything
 import cz.semprec.app.domain.SyncChanges
+import cz.semprec.app.domain.note.PageChanges
 import cz.semprec.app.presentation.CollectionTarget
 import cz.semprec.app.presentation.CollectionViewModel
 import cz.semprec.app.presentation.CollectionViewModelFactory
@@ -110,10 +111,12 @@ class HomeSDK(
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
     private val syncChanges = SyncChanges()
+    private val pageChanges = PageChanges(offline?.pages?.changed ?: emptyFlow())
 
     /** The sync socket of this window. */
-    val sync: SyncSDK =
-        SyncSDK(SyncSocket(auth.api, syncChanges, CoroutineScope(SupervisorJob() + Dispatchers.Default), offline))
+    val sync: SyncSDK = SyncSDK(
+        SyncSocket(auth.api, syncChanges, CoroutineScope(SupervisorJob() + Dispatchers.Default), offline, pageChanges),
+    )
 
     /** The profile and the account screens below it. */
     val account: AccountSDK = AccountSDK.create(auth.api, auth, collectionReads)
@@ -186,7 +189,7 @@ class HomeSDK(
     val journal: JournalSDK = JournalSDK(auth.api)
 
     /** The note editor of pages, Journal periods and texts kept elsewhere. */
-    val noteEditor: NoteEditorSDK = NoteEditorSDK(auth.api)
+    val noteEditor: NoteEditorSDK = NoteEditorSDK(auth.api, pageChanges)
 
     /** The sleep plans, night exceptions and settings. */
     val sleep: SleepSDK = SleepSDK(auth.api)

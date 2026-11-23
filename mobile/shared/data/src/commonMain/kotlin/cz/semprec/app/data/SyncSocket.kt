@@ -3,6 +3,7 @@ package cz.semprec.app.data
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
+import cz.semprec.app.domain.note.PageChanges
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.http.HttpMethod
 import io.ktor.websocket.Frame
@@ -49,7 +50,9 @@ internal fun nextReconnectDelayMillis(attempt: Int, random: () -> Double): Long 
  * ([AuthenticatedApi.openSocket] signs the window out), and nor does one started while nobody is signed in. [start] and [stop] are called on one thread, the main thread of the app.
  *
  * With [offline], every connect and every text frame tells the offline layer that what it keeps may have changed
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md).
+ * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). A frame that a page changed raises its item
+ * on [pages], so an open note reads it again
+ * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md).
  */
 class SyncSocket internal constructor(
     private val api: AuthenticatedApi,
@@ -58,12 +61,14 @@ class SyncSocket internal constructor(
     private val reconnectDelay: (attempt: Int) -> Long,
     private val coalesceMillis: Long,
     private val offline: OfflineLayer? = null,
+    private val pages: PageChanges = PageChanges(),
 ) {
     constructor(
         api: AuthenticatedApi,
         changes: SyncChanges,
         scope: CoroutineScope,
         offline: OfflineLayer? = null,
+        pages: PageChanges = PageChanges(),
     ) : this(
         api,
         changes,
@@ -71,6 +76,7 @@ class SyncSocket internal constructor(
         { attempt -> nextReconnectDelayMillis(attempt, Random::nextDouble) },
         FRAME_COALESCE_MILLIS,
         offline,
+        pages,
     )
 
     private var job: Job? = null
@@ -116,7 +122,9 @@ class SyncSocket internal constructor(
             for (frame in session.incoming) {
                 if (frame !is Frame.Text) continue
                 offline?.frameArrived()
-                val topics = parseSyncFrame(frame.readText())?.topics(databases).orEmpty()
+                val parsed = parseSyncFrame(frame.readText())
+                if (parsed is SyncFrame.PageChanged) pages.changed(parsed.itemId)
+                val topics = parsed?.topics(databases).orEmpty()
                 if (topics.isNotEmpty()) raised.trySend(topics)
             }
         } finally {

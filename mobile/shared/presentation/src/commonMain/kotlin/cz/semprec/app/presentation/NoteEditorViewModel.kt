@@ -4,16 +4,22 @@ import androidx.lifecycle.viewModelScope
 import cz.semprec.app.domain.JournalRepository
 import cz.semprec.app.domain.PageBlockType
 import cz.semprec.app.domain.note.NotePageRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 
 /**
  * One note: a page of an item, the page of a Journal period, or Markdown its owner keeps. Every edit is applied by
- * the document rules of the domain, shown at once and written after a pause in typing (see [NotePageStore]).
+ * the document rules of the domain, shown at once and written after a pause in typing (see [NotePageStore]). When
+ * [pageChanges] names the item of the page shown, the page is read again quietly, unless a change waits to be
+ * written.
  */
 class NoteEditorViewModel internal constructor(
     source: NoteEditorSource,
     pages: NotePageRepository,
     journal: JournalRepository,
     settings: NoteEditorSettings,
+    pageChanges: Flow<String> = emptyFlow(),
 ) : ScreenViewModel<NoteEditorState, NoteEditorAction, NoteEditorEffect>(NoteEditorState()) {
     private var lastId = 0
     private val newId: () -> String = { "note-${++lastId}" }
@@ -30,6 +36,8 @@ class NoteEditorViewModel internal constructor(
 
     init {
         store.load()
+        // A page the server holds a newer version of is read again in place, unless a change waits to be written.
+        viewModelScope.launch { pageChanges.collect { itemId -> if (itemId == store.itemId) store.reread() } }
     }
 
     override fun onAction(action: NoteEditorAction) {

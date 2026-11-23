@@ -49,7 +49,12 @@ class FakeJournalRepository : JournalRepository {
 
     override suspend fun page(itemId: String): RepositoryResult<PageDocument> = onPage(itemId)
 
-    override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> {
+    override suspend fun replacePage(
+        itemId: String,
+        markdown: String,
+        etag: String,
+        base: String,
+    ): RepositoryResult<PageWrite> {
         replaced += Triple(itemId, markdown, etag)
         return onReplace(itemId, markdown, etag)
     }

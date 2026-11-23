@@ -27,7 +27,7 @@ class AuthenticatedApi(
     private val client: ApiClient,
     private val storage: SessionStorage,
     val changes: ItemChanges = ItemChanges(),
-    private val offline: OfflineLayer? = null,
+    internal val offline: OfflineLayer? = null,
     private val onSessionRejected: suspend () -> Unit,
 ) {
     /**

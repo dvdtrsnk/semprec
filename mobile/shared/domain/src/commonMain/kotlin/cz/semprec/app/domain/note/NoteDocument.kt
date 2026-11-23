@@ -50,6 +50,17 @@ class NoteSource internal constructor(private val kept: Map<String, Pair<NoteBlo
     /** The lines [block] was read from, or `null` when it was changed, added or never read. */
     internal fun linesOf(block: NoteBlock): List<String>? = kept[block.id]?.takeIf { it.first == block }?.second
 
+    /** The lines of the blocks of both, for blocks read with distinct ids from two notes. */
+    internal operator fun plus(other: NoteSource): NoteSource = NoteSource(kept + other.kept)
+
+    /** The same lines for blocks whose ids [ids] renames. */
+    internal fun renamed(ids: Map<String, String>): NoteSource = NoteSource(
+        kept.entries.associate { (id, read) ->
+            val renamed = ids[id] ?: id
+            renamed to (read.first.copy(id = renamed) to read.second)
+        },
+    )
+
     companion object {
         /** No block read: every block is written from its model. */
         val NONE = NoteSource(emptyMap())

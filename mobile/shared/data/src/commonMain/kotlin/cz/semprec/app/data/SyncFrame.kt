@@ -6,8 +6,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
 /**
- * The frames of `WS /api/sync` that a screen of the app follows. The server's catalog has more (documents, Semp
- * threads, agent runs, badge counts); those are dropped here, as is anything outside the catalog.
+ * The frames of `WS /api/sync` that a screen of the app follows. The server's catalog has more (Semp threads, agent
+ * runs, badge counts); those are dropped here, as is anything outside the catalog.
  */
 internal sealed interface SyncFrame {
     /** An `invalidate` frame of scope `item` or `relation`: an item of [databaseId], or one of its links, changed. */
@@ -18,6 +18,9 @@ internal sealed interface SyncFrame {
 
     /** An `invalidate` frame of scope `mailThread`: the list row of the thread [threadId] changed. */
     data class MailThreadChanged(val threadId: String) : SyncFrame
+
+    /** An `invalidate` frame of scope `doc`: the page of the item [itemId] changed; it raises no topic. */
+    data class PageChanged(val itemId: String) : SyncFrame
 }
 
 /** The databases, by canonical key, whose changes each topic follows. */
@@ -58,6 +61,7 @@ internal fun SyncFrame.topics(databaseKeys: Map<String, String>?): Set<SyncTopic
         }
     is SyncFrame.Notified -> TOPICS_BY_NOTIFICATION_KIND[kind].orEmpty()
     is SyncFrame.MailThreadChanged -> setOf(SyncTopic.MAIL_THREADS)
+    is SyncFrame.PageChanged -> emptySet()
 }
 
 /**
@@ -79,6 +83,7 @@ private fun frameOf(root: JsonObject): SyncFrame? =
             "item" -> itemFrame(root)
             "relation" -> relationFrame(root)
             "mailThread" -> root.text("threadId")?.let(SyncFrame::MailThreadChanged)
+            "doc" -> docFrame(root)
             else -> null
         }
         "notification" -> (root["notification"] as? JsonObject)?.let(::notificationFrame)
@@ -98,6 +103,11 @@ private fun relationFrame(frame: JsonObject): SyncFrame? {
         (propertyKey is JsonNull || frame.text("propertyKey") != null) &&
         frame.text("op") in RELATION_OPS
     return if (valid) SyncFrame.DatabaseChanged(databaseId) else null
+}
+
+private fun docFrame(frame: JsonObject): SyncFrame? {
+    val itemId = frame.text("itemId") ?: return null
+    return if (frame.text("docId") != null) SyncFrame.PageChanged(itemId) else null
 }
 
 private fun notificationFrame(notification: JsonObject): SyncFrame? {
