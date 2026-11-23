@@ -116,7 +116,7 @@ private extension CalendarMonthView {
                 ForEach(0..<7, id: \.self) { column in
                     Text(CalendarDates.monthShortName(month))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isCurrent ? Color.red : .primary)
+                        .foregroundStyle(isCurrent ? Theme.Colors.today : .primary)
                         .opacity(column == CalendarDates.isoWeekday(month) - 1 ? 1 : 0)
                         .frame(maxWidth: .infinity)
                 }

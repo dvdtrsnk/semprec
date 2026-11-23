@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The weeks as pages, Monday first, on the week of the selected day. A swipe moves the weeks with the finger;
@@ -43,8 +44,10 @@ private extension CalendarWeekStrip {
                         Text("\(CalendarDates.dayNumber(day))")
                             .font(.callout.weight(day == selectedDay || day == today ? .semibold : .regular))
                             .foregroundStyle(numberStyle(day))
-                            .frame(width: 34, height: 34)
-                            .background(circle(day))
+                            // A capsule round the number, as the diary's axis selects its periods.
+                            .padding(.horizontal, Self.capsulePadding)
+                            .frame(minWidth: Self.capsuleHeight, minHeight: Self.capsuleHeight)
+                            .background(capsule(day))
                             .measuresZoomFrame(if: day == selectedDay) { zoomMeasures?.stripDay = $0 }
                     }
                     .buttonStyle(.plain)
@@ -65,19 +68,19 @@ private extension CalendarWeekStrip {
     static let duration = 0.25
 
     func numberStyle(_ day: String) -> AnyShapeStyle {
-        // Today's red circle always carries white digits; another selected day inverts the text colour.
-        if day == selectedDay { return day == today ? AnyShapeStyle(Color.white) : AnyShapeStyle(.background) }
-        if day == today { return AnyShapeStyle(Color.red) }
+        // The selected day's capsule carries white digits; today is in the app's gold.
+        if day == selectedDay { return AnyShapeStyle(Color.white) }
+        if day == today { return AnyShapeStyle(Theme.Colors.today) }
         return CalendarDates.isoWeekday(day) >= 6 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary)
     }
 
-    /// The circle behind a day's number: whole on the selected day, shrunk and hidden on the others. It keeps its
-    /// colour while it shrinks; it fades out over the first half of the shrinking and in over the second half of
-    /// the growing, so it is gone while still half its size.
-    func circle(_ day: String) -> some View {
+    /// The capsule behind a day's number, in the app's selection colour: whole on the selected day, shrunk and hidden
+    /// on the others. It fades out over the first half of the shrinking and in over the second half of the growing,
+    /// so it is gone while still half its size.
+    func capsule(_ day: String) -> some View {
         let isSelected = day == selectedDay
-        return Circle()
-            .fill(day == today ? Color.red : Color.primary)
+        return Capsule()
+            .fill(Theme.Colors.selection)
             .scaleEffect(isSelected ? 1 : Self.shrunk)
             .animation(.easeInOut(duration: Self.duration), value: isSelected)
             .opacity(isSelected ? 1 : 0)
@@ -89,6 +92,9 @@ private extension CalendarWeekStrip {
             )
     }
 
-    /// How small an unselected day's circle is: a circle shrinks to it and grows from it.
+    /// How small an unselected day's capsule is: a capsule shrinks to it and grows from it.
     static let shrunk = 0.2
+    /// The height of the selected day's capsule and the room between its number and its ends.
+    static let capsuleHeight: CGFloat = 34
+    static let capsulePadding: CGFloat = 12
 }

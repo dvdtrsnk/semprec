@@ -35,6 +35,11 @@ struct JournalScreen: View {
     /// The state the page's cards show while the axis moves: the cards of a new selection are built once the axis
     /// comes to rest, so building them never takes a frame from the axis's scroll.
     @State private var heldState: JournalState?
+    /// Counts the changes of the selected period and the presses of Today, for their haptics, as in the calendar: a
+    /// new period ticks, Today taps softly, and the period Today brings does not tick again.
+    @State private var selectionTicks = 0
+    @State private var todayTaps = 0
+    @State private var todayBrings: JournalSelection?
 
     // MARK: - Init
     init(
@@ -65,6 +70,19 @@ struct JournalScreen: View {
             }
             .animation(.snappy(duration: 0.3), value: noteFocus.isActive)
             .noteFormatBar(noteFocus)
+            // Today floats at the bottom leading edge, where the calendar has its own.
+            .safeAreaInset(edge: .bottom) {
+                if case .content = viewModel.state.phase, !noteFocus.isActive { todayBar }
+            }
+            .sensoryFeedback(.selection, trigger: selectionTicks)
+            .sensoryFeedback(.impact(flexibility: .soft), trigger: todayTaps)
+            .onChange(of: viewModel.state.selection) { _, selection in
+                if selection == todayBrings {
+                    todayBrings = nil
+                } else {
+                    selectionTicks += 1
+                }
+            }
             .task { await viewModel.observe() }
     }
 }
@@ -72,28 +90,25 @@ struct JournalScreen: View {
 // MARK: - Subviews
 private extension JournalScreen {
 
+    /// The room above the axis, under the top of the screen.
     var titleRow: some View {
-        HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-            Spacer(minLength: 0)
-            Button {
-                // Today on today only scrolls back to it; another day scrolls there once it is selected.
-                let state = viewModel.state
-                if state.selection == JournalSelection(kind: .day, start: state.today) {
-                    axisMotion.centerRequests += 1
-                }
-                viewModel.goToday()
-            } label: {
-                Text("journal.today", bundle: .module)
-                    .font(.headline)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 12)
+        Color.clear.frame(height: Theme.Spacing.small)
+    }
+
+    /// Today, as the calendar's, at the bottom leading edge.
+    var todayBar: some View {
+        JournalTodayBar {
+            todayTaps += 1
+            // Today on today only scrolls back to it; another day scrolls there once it is selected.
+            let state = viewModel.state
+            let today = JournalSelection(kind: .day, start: state.today)
+            if state.selection == today {
+                axisMotion.centerRequests += 1
+            } else {
+                todayBrings = today
             }
-            .journalAccentGlass()
-            .accessibilityIdentifier(JournalIdentifiers.today)
+            viewModel.goToday()
         }
-        .padding(.horizontal, Theme.Spacing.medium + 4)
-        .padding(.top, Theme.Spacing.small)
-        .padding(.bottom, Theme.Spacing.small)
     }
 
     /// How far down the page the selected row is: below the heading and the rows above it.

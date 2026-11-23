@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// One day of the month view: its number and a few chips of what is on it. A chip of an item that can be edited is
@@ -34,7 +35,6 @@ struct CalendarMonthCell: View {
                 .font(.footnote.weight(emphasized ? .semibold : .regular))
                 .foregroundStyle(numberStyle)
                 .frame(width: Self.digitSize, height: Self.digitSize)
-                .background(Circle().fill(date == today ? Color.red : .clear))
                 .measuresZoomFrame(if: selected) { zoomMeasures?.monthDay = $0 }
             ForEach(shown, id: \.identity) { item in
                 chip(item)
@@ -77,7 +77,7 @@ private extension CalendarMonthCell {
     var hidden: Int { max(visible.count - maxChips, 0) }
 
     var numberStyle: AnyShapeStyle {
-        if date == today { return AnyShapeStyle(Color.white) }
+        if date == today { return AnyShapeStyle(Theme.Colors.today) }
         return isWeekday ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 

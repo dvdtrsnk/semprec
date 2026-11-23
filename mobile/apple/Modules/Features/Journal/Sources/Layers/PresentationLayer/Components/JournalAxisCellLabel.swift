@@ -36,7 +36,7 @@ struct JournalAxisCellLabel: View {
     private var pill: some View {
         let isSelected = cell.current
         return Capsule()
-            .fill(Theme.Colors.appAccent)
+            .fill(Theme.Colors.selection)
             .scaleEffect(isSelected ? 1 : Self.shrunk)
             .animation(.easeInOut(duration: Self.duration), value: isSelected)
             .opacity(isSelected ? 1 : 0)
@@ -53,7 +53,7 @@ struct JournalAxisCellLabel: View {
     /// The periods that hold today's date, the day, its month, quarter and year, are in gold whatever is selected.
     private var color: Color {
         if cell.current { return .white }
-        if cell.today { return JournalColors.gold }
+        if cell.today { return Theme.Colors.today }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
     private var font: Font { cell.kind == .year ? .title3 : .subheadline }
