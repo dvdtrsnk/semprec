@@ -5,12 +5,18 @@ export function mailAccountSyncJobKey(mailboxItemId: string): string {
   return `mail-account-sync:${mailboxItemId}`;
 }
 
+/**
+ * Ahead of the default-priority jobs on the same worker: a new account's index enqueues follow-up jobs per message
+ * (link propagation, search reindex) by the thousand, and new mail must not wait for them.
+ */
+export const MAIL_ACCOUNT_SYNC_PRIORITY = -1;
+
 export async function enqueueMailAccountSync(client: Queryable, mailboxItemId: string): Promise<void> {
   await enqueueJob(
     client,
     CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC,
     { mailboxItemId },
-    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 1 },
+    { jobKey: mailAccountSyncJobKey(mailboxItemId), maxAttempts: 1, priority: MAIL_ACCOUNT_SYNC_PRIORITY },
   );
 }
 
@@ -44,6 +50,7 @@ export async function enqueuePostSendMailSyncs(client: Queryable, mailboxItemId:
         jobKeyMode: "preserve_run_at",
         runAt: new Date(now + delayMs),
         maxAttempts: 1,
+        priority: MAIL_ACCOUNT_SYNC_PRIORITY,
       },
     );
   }

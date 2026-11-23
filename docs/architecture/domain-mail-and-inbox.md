@@ -238,7 +238,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   batch deletes the attachment bytes it wrote (`withBatchStorage`); committed batches keep theirs.
 - One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
   sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
-  `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
+  `mail-account-sync:<mailbox>` at priority `MAIL_ACCOUNT_SYNC_PRIORITY` (-1), ahead of the per-message follow-up jobs a
+  large index enqueues by the thousand (the post-send follow-ups too); graphile-worker folds a repeat enqueue into a job that waits but starts a new job
   beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
   pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
   When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
