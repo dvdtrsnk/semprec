@@ -1,14 +1,13 @@
 import DesignSystem
 import SwiftUI
 
-/// How far the diary's page is scrolled from its top (up to a screen's height, beyond which nothing behind the page
-/// changes) and how large it is. Only the views behind the page read it, so a scroll redraws them alone.
+/// How far the diary's page is scrolled from its top, up to a screen's height, beyond which nothing behind the page
+/// changes. Only the background reads it, so a scroll redraws the background alone.
 @MainActor
 @Observable
 final class JournalPageScroll {
 
     var offset: CGFloat = 0
-    var pageSize: CGSize = .zero
 }
 
 /// The page behind the diary, as in the design: a soft blue haze at the top left and warm sand at the top right that
@@ -66,6 +65,9 @@ struct JournalBackgroundPattern: View {
             colors: Self.colors
         )
     }
+
+    /// The top row of the gradient, from left to right: the haze the page starts with.
+    static var topColors: [Color] { Array(colors.prefix(3)) }
 
     /// Three columns, from the top row to the bottom one.
     private static let colors: [Color] = [
@@ -152,62 +154,4 @@ enum JournalColors {
     static let gold = Color(light: 0xB08D45, dark: 0xD6B36B)
     /// The cards on the diary's page: near white over the gradient, a raised grey in dark appearance.
     static let card = Color(light: 0xFDFDFC, dark: 0x1C1D20)
-}
-
-/// The band behind the pinned axis row, from the top of the screen: it comes in over the row's own height as the row
-/// rises to the top, so the rows passing above go under it and the page never shows through the row once it stays.
-struct JournalPinnedBand: View {
-
-    // MARK: - Dependencies
-    let scroll: JournalPageScroll
-    /// How far down the page the pinned row is, and how tall it is.
-    let pinnedOffset: CGFloat
-    let rowHeight: CGFloat
-    let solidHeight: CGFloat
-
-    // MARK: - Body
-    var body: some View {
-        JournalTopBand(pageSize: scroll.pageSize, solidHeight: solidHeight, scrolled: scroll.offset)
-            .opacity(opacity)
-    }
-
-    private var opacity: Double {
-        guard rowHeight > 0 else { return 0 }
-        return min(max(1 - (pinnedOffset - scroll.offset) / rowHeight, 0), 1)
-    }
-}
-
-/// The band at the top of the screen behind the axis row that stays there: the page's own pattern at that place,
-/// blurred and fading out below the row, so the page scrolling under it does not show through the row's text.
-struct JournalTopBand: View {
-
-    // MARK: - Dependencies
-    /// The size of the whole page, which the pattern is laid out in so that the band matches the page behind it.
-    let pageSize: CGSize
-    /// How far down from the top of the screen the band is solid.
-    let solidHeight: CGFloat
-    /// How far the page is scrolled, so that the band shows the part of the page behind it.
-    let scrolled: CGFloat
-
-    // MARK: - Body
-    var body: some View {
-        JournalBackgroundPattern(scrolled: scrolled)
-            .frame(width: pageSize.width + Self.blur * 4, height: pageSize.height)
-            .blur(radius: Self.blur)
-            .frame(width: pageSize.width, height: solidHeight + Self.fade, alignment: .top)
-            .clipped()
-            .mask {
-                VStack(spacing: 0) {
-                    Color.black.frame(height: solidHeight)
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                        .frame(height: Self.fade)
-                }
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
-    /// How far below the solid part the band fades out.
-    static let fade: CGFloat = 28
-    private static let blur: CGFloat = 10
 }

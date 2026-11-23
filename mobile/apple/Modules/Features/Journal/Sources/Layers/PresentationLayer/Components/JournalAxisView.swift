@@ -10,22 +10,28 @@ import SwiftUI
 /// that scrolls itself with the system's scroll animation to a period the person tapped (or to the selection, after
 /// Today). Every period a row shows has its days in the row of days, so a scroll never runs past the end of another
 /// row. The rows keep their identity whatever is selected; the row of the selected level is pinned to the top of the
-/// page with `band` behind it, while the page passes under it. A scroll that comes to rest near the edge of the
-/// windows asks for windows around the day it reached (`onMove`); the cells change only then, at rest.
-struct JournalAxisView<Band: View>: View {
+/// page while the page passes under it. A scroll that comes to rest near the edge of the windows asks for windows
+/// around the day it reached (`onMove`); the cells change only then, at rest.
+///
+/// The axis lies on `material`, one solid layer from the top of the screen down to a divider under the last row. As
+/// the page scrolls, the layer's lower edge goes up with the rows until it reaches the pinned row, and stays under it
+/// from then on; the rows below the pinned one pass under the pinned row, and the rows above it go up under the
+/// material the screen keeps over its top. A divider lies under the pinned row too, so a pinned month or year is set
+/// off from the rows below.
+struct JournalAxisView<Material: View>: View {
 
     // MARK: - Dependencies
     let rows: [JournalAxisRow]
     let selectionStart: String
     let selectionKind: JournalPeriodKind
-    /// The top inset of the page's content, under which the pinned row stays: its band reaches up over it.
-    let pinTop: CGFloat
+    /// How far above the axis the material reaches: up past the top of the screen, whatever the page shows above.
+    let materialReach: CGFloat
     let onSelect: (JournalAxisCell) -> Void
     let onMove: (String) -> Void
     /// Told `true` when a row starts to move the axis and `false` when the axis comes to rest.
     let onMoving: (Bool) -> Void
-    /// What lies behind the pinned row, from the top of the screen down.
-    @ViewBuilder let band: () -> Band
+    /// The solid layer the axis lies on.
+    @ViewBuilder let material: () -> Material
 
     // MARK: - State
     @Binding var motion: JournalAxisMotion
@@ -49,14 +55,24 @@ struct JournalAxisView<Band: View>: View {
                 )
                 .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
                 .padding(.vertical, Self.rowSpacing / 2)
-                .background(alignment: .top) {
-                    if isPinned {
-                        band().offset(y: -pinTop)
-                    }
+                // The pinned row carries its own strip of the material, so the rows below pass under it.
+                .background {
+                    if isPinned { material() }
+                }
+                .overlay(alignment: .bottom) {
+                    if isPinned { JournalDivider() }
                 }
                 .pinned(isPinned)
                 .padding(.top, top(of: row.kind))
             }
+        }
+        .background(alignment: .bottom) {
+            material()
+                .overlay(alignment: .bottom) { JournalDivider() }
+                .frame(height: materialReach + axisHeight)
+                .rising(axisHeight: axisHeight, pinnedTop: top(of: selectionKind), below: belowPinned)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
@@ -84,6 +100,16 @@ struct JournalAxisView<Band: View>: View {
     /// How far down the axis the row of `kind` lies: under the rows of the wider levels.
     private func top(of kind: JournalPeriodKind) -> CGFloat {
         rows.prefix { $0.kind != kind }.reduce(0) { $0 + $1.kind.height + Self.rowSpacing }
+    }
+
+    /// The height of all the rows.
+    private var axisHeight: CGFloat {
+        rows.reduce(0) { $0 + $1.kind.height + Self.rowSpacing }
+    }
+
+    /// How far the axis reaches below the pinned row: the rows of the narrower levels.
+    private var belowPinned: CGFloat {
+        axisHeight - top(of: selectionKind) - selectionKind.height - Self.rowSpacing
     }
 
     /// The first day of the windows, which changes only when the windows move.
@@ -181,7 +207,7 @@ private extension JournalAxisView {
 private extension View {
 
     /// Keeps the view at the top of the enclosing scroll view's content, just under its top inset, once the page
-    /// scrolls it there, while `isPinned`: the scroll view's coordinate space starts at that inset. The offset is a
+    /// scrolls it there, while `isPinned`. The scroll view's coordinate space starts at the inset. The offset is a
     /// visual effect, worked out from the view's place in the scroll view as each frame is drawn, so the view stays
     /// exactly in step with the scroll and the page's own state never changes while it scrolls. The effect is always
     /// there, only its offset depends on `isPinned`: a row that becomes pinned stays the same view, and its scroll
@@ -189,6 +215,16 @@ private extension View {
     func pinned(_ isPinned: Bool) -> some View {
         visualEffect { content, proxy in
             content.offset(y: isPinned ? max(0, -proxy.frame(in: .scrollView).minY) : 0)
+        }
+    }
+
+    /// The material under the axis, whose lower edge is the axis's: it rises with the rows until it reaches the
+    /// pinned row (`pinnedTop` down the axis, `below` above the axis's end), and stays under it from then on.
+    func rising(axisHeight: CGFloat, pinnedTop: CGFloat, below: CGFloat) -> some View {
+        visualEffect { content, proxy in
+            let pinnedRow = proxy.frame(in: .scrollView).maxY - axisHeight + pinnedTop
+            let pinnedShift = max(0, -pinnedRow)
+            return content.offset(y: max(0, pinnedShift - below))
         }
     }
 }

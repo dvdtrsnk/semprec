@@ -6,9 +6,9 @@ import SwiftUI
 /// The diary: a time axis of years, months and days, and below it the note of the selected period. A day also shows
 /// its week, events, Inbox and note; a month lists its weeks; a year shows its note and lists its quarters. Each note
 /// is edited in the light note editor, which writes it itself. The whole page scrolls over the diary's gradient, the
-/// heading and the Today button with it; only the axis row of the selected level stays at the top, on glass, with the
-/// page passing under it. While the page scrolls, only the background and the band behind that row redraw: they read
-/// the scroll from `pageScroll`, which the screen itself never reads.
+/// heading and the Today button with it; the axis lies on a solid material that ends in a divider, and only the axis
+/// row of the selected level stays at the top, with the page passing under it. While the page scrolls, only the
+/// background redraws: it reads the scroll from `pageScroll`, which the screen itself never reads.
 struct JournalScreen: View {
 
     // MARK: - Dependencies
@@ -25,8 +25,8 @@ struct JournalScreen: View {
     /// Where the axis stands, shared by its three rows.
     @State private var axisMotion = JournalAxisMotion()
     /// How tall the heading is and the visible height of the page: the page is at least so tall that it scrolls far
-    /// enough for the selected row to reach the top. The top inset of its content is where the band behind the pinned
-    /// row reaches up to.
+    /// enough for the selected row to reach the top. The axis's material reaches up over the heading and the top inset
+    /// of the content.
     @State private var titleHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     @State private var contentTop: CGFloat = 0
@@ -52,7 +52,6 @@ struct JournalScreen: View {
         content
             .background {
                 JournalBackground(scroll: pageScroll)
-                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageScroll.pageSize = $0 })
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(JournalIdentifiers.screen)
@@ -104,28 +103,16 @@ private extension JournalScreen {
         return titleHeight + above.reduce(0) { $0 + $1.kind.height + Self.axisRowSpacing }
     }
 
-    var pinnedHeight: CGFloat {
-        let kind = viewModel.state.selection.kind
-        return kind.height + Self.axisRowSpacing
-    }
-
     var axis: some View {
         JournalAxisView(
             rows: viewModel.state.axis,
             selectionStart: viewModel.state.selection.start,
             selectionKind: viewModel.state.selection.kind,
-            pinTop: contentTop,
+            materialReach: contentTop + titleHeight + Self.materialOverreach,
             onSelect: viewModel.select,
             onMove: viewModel.showAxis(around:),
             onMoving: { moving in heldState = moving ? viewModel.state : nil },
-            band: {
-                JournalPinnedBand(
-                    scroll: pageScroll,
-                    pinnedOffset: pinnedOffset,
-                    rowHeight: pinnedHeight,
-                    solidHeight: contentTop + pinnedHeight
-                )
-            },
+            material: { JournalHeaderMaterial() },
             motion: $axisMotion
         )
     }
@@ -149,6 +136,15 @@ private extension JournalScreen {
                                 of: { $0.size.height },
                                 action: { titleHeight = $0 }
                             )
+                            // The material over the top of the screen, above the content's top inset: what scrolls up
+                            // there goes under it, as under a bar.
+                            .overlay(alignment: .top) {
+                                JournalHeaderMaterial()
+                                    .frame(height: contentTop + Self.materialOverreach)
+                                    .alignmentGuide(.top) { $0[.bottom] }
+                                    .keptAtTop()
+                            }
+                            .zIndex(2)
                         axis.zIndex(1)
                         page.padding(.top, Theme.Spacing.medium)
                     }
@@ -189,6 +185,8 @@ private extension JournalScreen {
 
     /// The space between two rows of the axis.
     static var axisRowSpacing: CGFloat { 2 }
+    /// How far the axis's material reaches past the top of the screen, so no scroll ever shows its upper edge.
+    static var materialOverreach: CGFloat { 40 }
 
     /// What the longer periods are, under the bar; a day's heading says all in the bar.
     @ViewBuilder var header: some View {
