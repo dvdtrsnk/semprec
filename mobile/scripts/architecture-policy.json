@@ -143,8 +143,6 @@
         "overview.row.inbox",
         "overview.row.mail",
         "overview.row.recordings",
-        "overview.row.journal",
-        "overview.row.journal.today",
         "overview.row.tasks",
         "overview.row.finance",
         "overview.project.status.inProgress",

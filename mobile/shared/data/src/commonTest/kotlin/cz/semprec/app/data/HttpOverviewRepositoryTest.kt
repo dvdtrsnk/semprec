@@ -14,7 +14,9 @@ import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -24,17 +26,22 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 private const val OVERVIEW_AREAS_ID = "aaaaaaaa-0000-4000-8000-000000000001"
 private const val OVERVIEW_PROJECTS_ID = "aaaaaaaa-0000-4000-8000-000000000002"
 private const val EVENTS_ID = "aaaaaaaa-0000-4000-8000-000000000003"
 private const val GONE_ID = "aaaaaaaa-0000-4000-8000-000000000004"
 
-private const val OVERVIEW = """{"inboxPending":9,"mailUnread":5,"tasksToday":4,"problemCount":2,
+private const val OVERVIEW = """{"inboxPending":9,"mailUnread":5,"problemCount":2,
+    "collections":[{"databaseId":"$EVENTS_ID","ownerModuleId":"events"},
+    {"databaseId":"$GONE_ID","ownerModuleId":"people"}]}"""
+
+/** The answer of a server from before the overview stopped counting tasks, projects and items. */
+private const val COUNTED_OVERVIEW = """{"inboxPending":9,"mailUnread":5,"tasksToday":4,"problemCount":2,
     "journalTodayItemId":"j1",
     "areas":[{"id":"area-work","activeProjectCount":6}],
-    "collections":[{"databaseId":"$EVENTS_ID","ownerModuleId":"events","itemCount":214},
-    {"databaseId":"$GONE_ID","ownerModuleId":"people","itemCount":3}]}"""
+    "collections":[{"databaseId":"$EVENTS_ID","ownerModuleId":"events","itemCount":214}]}"""
 
 private const val DATABASES = """{"databases":[
     {"id":"$OVERVIEW_AREAS_ID","key":"areas","name":"Areas"},
@@ -87,15 +94,11 @@ class HttpOverviewRepositoryTest {
         val overview = assertIs<RepositoryResult.Content<Overview>>(result).value
         assertEquals(9, overview.summary.inboxPending)
         assertEquals(5, overview.summary.mailUnread)
-        assertEquals(4, overview.summary.tasksToday)
         assertEquals(2, overview.summary.problemCount)
-        assertEquals("j1", overview.summary.journalTodayItemId)
         assertEquals(listOf("area-work", "area-old"), overview.areas.map { it.id })
-        assertEquals(6, overview.areas[0].activeProjectCount)
         assertEquals("briefcase", overview.areas[0].icon)
         assertEquals(1.0, overview.areas[0].position)
         assertTrue(overview.areas[0].active)
-        assertEquals(0, overview.areas[1].activeProjectCount)
         assertEquals(false, overview.areas[1].active)
         val project = overview.projects.single()
         assertEquals("Semprec iOS", project.name)
@@ -104,10 +107,40 @@ class HttpOverviewRepositoryTest {
         assertEquals(1.0, project.pinnedOrder)
         val collection = overview.collections.single()
         assertEquals("Events", collection.name)
-        assertEquals(214, collection.itemCount)
         assertEquals("events", collection.ownerModuleId)
         assertEquals(2, collection.order)
         assertEquals("calendar", collection.icon)
+    }
+
+    @Test
+    fun theAnswerOfAServerThatStillCountsReadsAsWell() = runTest {
+        val overview = assertIs<RepositoryResult.Content<Overview>>(repository(COUNTED_OVERVIEW).load()).value
+
+        assertEquals(9, overview.summary.inboxPending)
+        assertEquals(listOf("events"), overview.collections.map { it.ownerModuleId })
+    }
+
+    @Test
+    fun theReadsGoOutTogether() = runTest {
+        val projectsAsked = CompletableDeferred<Unit>()
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                // The overview answers only once the last read went out: read one after another, it never would.
+                "/api/overview" -> withTimeoutOrNull(5.seconds) { projectsAsked.await() }
+                    ?.let { json(OVERVIEW) } ?: json("{}", HttpStatusCode.ServiceUnavailable)
+                "/api/databases" -> json(DATABASES)
+                "/api/databases/$OVERVIEW_AREAS_ID/query" -> json(AREAS)
+                "/api/databases/$OVERVIEW_PROJECTS_ID/query" -> {
+                    projectsAsked.complete(Unit)
+                    json(PROJECTS)
+                }
+                else -> json("{}", HttpStatusCode.NotFound)
+            }
+        }
+        val storage = InMemorySessionStorage().apply { save(StoredSession("https://s.example", "tok")) }
+        val repo = HttpOverviewRepository(AuthenticatedApi(ApiClient(engine), storage, onSessionRejected = {}))
+
+        assertIs<RepositoryResult.Content<Overview>>(repo.load())
     }
 
     @Test

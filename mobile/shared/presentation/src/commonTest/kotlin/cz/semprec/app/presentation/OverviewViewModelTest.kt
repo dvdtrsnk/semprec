@@ -31,20 +31,18 @@ class OverviewViewModelTest : MainDispatcherTest() {
         accountEmail = "a@b.cz",
         inboxPending = 9,
         mailUnread = 5,
-        tasksToday = 4,
         problemCount = 2,
-        journalTodayItemId = "journal-1",
         areas = listOf(
-            OverviewAreaItem("work", "Work", "#5856D6", "briefcase", 6),
-            OverviewAreaItem("health", "Health", "#FF2D55", "heart", 2),
+            OverviewAreaItem("work", "Work", "#5856D6", "briefcase"),
+            OverviewAreaItem("health", "Health", "#FF2D55", "heart"),
         ),
         projects = listOf(
             OverviewProjectItem("p1", "Semprec iOS", "#007AFF", "Work", "inProgress"),
             OverviewProjectItem("p2", "Půlmaraton", "#FF3B30", "Health", "inProgress"),
         ),
         collections = listOf(
-            OverviewCollectionItem("d1", "events", "Events", "calendar", "#FF3B30", 214),
-            OverviewCollectionItem("d2", "people", "People", "person", "#30B0C7", 48),
+            OverviewCollectionItem("d1", "events", "Events", "calendar", "#FF3B30"),
+            OverviewCollectionItem("d2", "people", "People", "person", "#30B0C7"),
         ),
     )
 
@@ -136,8 +134,6 @@ class OverviewViewModelTest : MainDispatcherTest() {
             OverviewTarget.Tasks,
             OverviewTarget.Finance,
             OverviewTarget.Profile,
-            OverviewTarget.Journal("journal-1"),
-            OverviewTarget.Journal(null),
             OverviewTarget.Area("work"),
             OverviewTarget.Project("p1"),
             OverviewTarget.Collection("events", "d1"),
@@ -235,7 +231,7 @@ class OverviewViewModelTest : MainDispatcherTest() {
         val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         val repository = ScriptedOverviewRepository(
             { CONTENT },
-            { RepositoryResult.Content(overviewData.copy(summary = overviewSummary.copy(tasksToday = 7))) },
+            { RepositoryResult.Content(overviewData.copy(summary = overviewSummary.copy(mailUnread = 7))) },
         )
         val vm = OverviewViewModel(LoadOverview(repository), SIGNED_IN, changes)
         runCurrent()
@@ -243,7 +239,7 @@ class OverviewViewModelTest : MainDispatcherTest() {
         changes.emit(Unit)
         runCurrent()
         assertEquals(2, repository.calls)
-        assertEquals(7, vm.state.value.tasksToday)
+        assertEquals(7, vm.state.value.mailUnread)
         vm.close()
     }
 }

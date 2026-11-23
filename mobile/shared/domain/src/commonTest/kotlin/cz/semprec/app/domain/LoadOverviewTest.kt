@@ -6,16 +6,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
-private val SUMMARY = OverviewSummary(9, 5, 4, 2, "journal-1")
+private val SUMMARY = OverviewSummary(9, 5, 2)
 
 private fun area(id: String, position: Double?, active: Boolean = true) =
-    OverviewArea(id, id.uppercase(), null, null, position, active, 0)
+    OverviewArea(id, id.uppercase(), null, null, position, active)
 
 private fun project(id: String, order: Double?, pinned: Boolean = true) =
     OverviewProject(id, id, null, null, "inProgress", pinned, order)
 
 private fun collection(id: String, order: Int?, visible: Boolean = true, hidden: Boolean = false) =
-    OverviewCollection(id, "owner-$id", id, null, null, 1, order, visible, hidden)
+    OverviewCollection(id, "owner-$id", id, null, null, order, visible, hidden)
 
 private class FakeOverviewRepository(private val answer: RepositoryResult<Overview>) : OverviewRepository {
     override suspend fun load(): RepositoryResult<Overview> = answer

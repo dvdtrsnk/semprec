@@ -10,12 +10,10 @@ struct OverviewRow: Identifiable {
     enum Trailing: Equatable {
 
         case none
-        /// A plain count, as the number of mails or collection items.
+        /// A plain count, as the number of unread mails.
         case count(Int)
         /// A count on a red pill: something that waits for the person.
         case badge(Int)
-        /// The word "Today": the journal row opens today's entry.
-        case today
     }
 
     // MARK: - Properties
@@ -90,8 +88,6 @@ private struct OverviewRowLabel: View {
                 .padding(.horizontal, 7)
                 .frame(minWidth: 22, minHeight: 22)
                 .background(Theme.Colors.destructive, in: Capsule())
-        case .today:
-            Text("overview.row.journal.today", bundle: .module)
         }
     }
 }

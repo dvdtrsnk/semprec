@@ -12,9 +12,6 @@ sealed interface OverviewTarget {
     data object Finance : OverviewTarget
     data object Profile : OverviewTarget
 
-    /** The journal of today; [itemId] is the entry of today, `null` while there is none yet. */
-    data class Journal(val itemId: String?) : OverviewTarget
-
     data class Area(val id: String) : OverviewTarget
     data class Project(val id: String) : OverviewTarget
     data class Collection(val ownerModuleId: String, val databaseId: String) : OverviewTarget

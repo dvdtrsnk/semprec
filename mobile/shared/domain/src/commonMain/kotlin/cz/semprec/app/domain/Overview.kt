@@ -1,15 +1,13 @@
 package cz.semprec.app.domain
 
-/** The counts and ids of the overview that the server assembles in one read. */
+/** The counts of the overview that the server assembles in one read: what waits for the person. */
 data class OverviewSummary(
     val inboxPending: Int,
     val mailUnread: Int,
-    val tasksToday: Int,
     val problemCount: Int,
-    val journalTodayItemId: String?,
 )
 
-/** An area with the number of its active projects; [position] orders areas, [active] hides an archived one. */
+/** An area; [position] orders areas, [active] hides an archived one. */
 data class OverviewArea(
     val id: String,
     val name: String,
@@ -17,7 +15,6 @@ data class OverviewArea(
     val icon: String?,
     val position: Double?,
     val active: Boolean,
-    val activeProjectCount: Int,
 )
 
 /** A project of the overview; [status] is the stored key (`inProgress`, `longTerm`, `done`, `archived`). */
@@ -31,14 +28,13 @@ data class OverviewProject(
     val pinnedOrder: Double?,
 )
 
-/** A collection (a database the person browses) with its item count and how the server wants it listed. */
+/** A collection (a database the person browses) and how the server wants it listed. */
 data class OverviewCollection(
     val databaseId: String,
     val ownerModuleId: String,
     val name: String,
     val icon: String?,
     val color: String?,
-    val itemCount: Int,
     val order: Int?,
     val clientVisible: Boolean,
     val hidden: Boolean,

@@ -60,18 +60,8 @@ extension SharedOverviewScreenModel {
             accountName: state.accountName,
             inboxPending: Int(state.inboxPending),
             mailUnread: Int(state.mailUnread),
-            tasksToday: Int(state.tasksToday),
             problemCount: Int(state.problemCount),
-            journalTodayItemId: state.journalTodayItemId,
-            areas: state.areas.map {
-                OverviewArea(
-                    id: $0.id,
-                    name: $0.name,
-                    color: $0.color,
-                    icon: $0.icon,
-                    activeProjectCount: Int($0.activeProjectCount)
-                )
-            },
+            areas: state.areas.map { OverviewArea(id: $0.id, name: $0.name, color: $0.color, icon: $0.icon) },
             projects: state.projects.map {
                 OverviewProject(id: $0.id, name: $0.name, color: $0.color, areaName: $0.areaName, status: $0.status)
             },
@@ -81,8 +71,7 @@ extension SharedOverviewScreenModel {
                     ownerModuleId: $0.ownerModuleId,
                     name: $0.name,
                     icon: $0.icon,
-                    color: $0.color,
-                    itemCount: Int($0.itemCount)
+                    color: $0.color
                 )
             }
         )
@@ -104,7 +93,6 @@ extension SharedOverviewScreenModel {
         case .tasks: .tasks
         case .finance: .finance
         case .profile: .profile
-        case .journal(let journal): .journal(itemId: journal.itemId)
         case .area(let area): .area(id: area.id)
         case .project(let project): .project(id: project.id)
         case .collection(let collection):
@@ -120,7 +108,6 @@ extension SharedOverviewScreenModel {
         case .tasks: SharedSDK.OverviewTargetTasks.shared
         case .finance: SharedSDK.OverviewTargetFinance.shared
         case .profile: SharedSDK.OverviewTargetProfile.shared
-        case .journal(let itemId): SharedSDK.OverviewTargetJournal(itemId: itemId)
         case .area(let id): SharedSDK.OverviewTargetArea(id: id)
         case .project(let id): SharedSDK.OverviewTargetProject(id: id)
         case .collection(let ownerModuleId, let databaseId):

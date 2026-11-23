@@ -2,23 +2,17 @@ package cz.semprec.app.data
 
 import kotlinx.serialization.Serializable
 
-/** `GET /api/overview`: the badges and counts of the overview in one read. */
+/** `GET /api/overview`: the counts of what waits and the collections of the overview in one read. */
 @Serializable
 internal data class OverviewDto(
     val inboxPending: Int = 0,
     val mailUnread: Int = 0,
-    val tasksToday: Int = 0,
-    val areas: List<AreaCountDto> = emptyList(),
-    val collections: List<CollectionCountDto> = emptyList(),
+    val collections: List<OverviewCollectionDto> = emptyList(),
     val problemCount: Int = 0,
-    val journalTodayItemId: String? = null,
 )
 
 @Serializable
-internal data class AreaCountDto(val id: String, val activeProjectCount: Int = 0)
-
-@Serializable
-internal data class CollectionCountDto(val databaseId: String, val ownerModuleId: String, val itemCount: Int = 0)
+internal data class OverviewCollectionDto(val databaseId: String, val ownerModuleId: String)
 
 /** `GET /api/search`: the groups that have matches. */
 @Serializable

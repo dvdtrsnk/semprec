@@ -273,38 +273,6 @@
         }
       }
     },
-    "overview.row.journal" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Deník"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Journal"
-          }
-        }
-      }
-    },
-    "overview.row.journal.today" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dnes"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Today"
-          }
-        }
-      }
-    },
     "overview.row.mail" : {
       "localizations" : {
         "cs" : {
