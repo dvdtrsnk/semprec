@@ -55,6 +55,7 @@ struct JournalAxisView<Material: View>: View {
                 )
                 .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
                 .padding(.vertical, Self.rowSpacing / 2)
+                .padding(.bottom, dividerGap(under: row.kind))
                 // The pinned row carries its own strip of the material, so the rows below pass under it.
                 .background {
                     if isPinned { material() }
@@ -99,17 +100,28 @@ struct JournalAxisView<Material: View>: View {
 
     /// How far down the axis the row of `kind` lies: under the rows of the wider levels.
     private func top(of kind: JournalPeriodKind) -> CGFloat {
-        rows.prefix { $0.kind != kind }.reduce(0) { $0 + $1.kind.height + Self.rowSpacing }
+        rows.prefix { $0.kind != kind }.reduce(0) { $0 + height(of: $1.kind) }
+    }
+
+    /// The height a row takes on the axis, with the room above a divider under it.
+    private func height(of kind: JournalPeriodKind) -> CGFloat {
+        kind.height + Self.rowSpacing + dividerGap(under: kind)
+    }
+
+    /// The room between a row and the divider under it, as between the calendar's week strip and its divider: under
+    /// the selected row and under the last row, where the material ends.
+    private func dividerGap(under kind: JournalPeriodKind) -> CGFloat {
+        kind == selectionKind || kind == rows.last?.kind ? Self.dividerGap : 0
     }
 
     /// The height of all the rows.
     private var axisHeight: CGFloat {
-        rows.reduce(0) { $0 + $1.kind.height + Self.rowSpacing }
+        rows.reduce(0) { $0 + height(of: $1.kind) }
     }
 
     /// How far the axis reaches below the pinned row: the rows of the narrower levels.
     private var belowPinned: CGFloat {
-        axisHeight - top(of: selectionKind) - selectionKind.height - Self.rowSpacing
+        axisHeight - top(of: selectionKind) - height(of: selectionKind)
     }
 
     /// The first day of the windows, which changes only when the windows move.
@@ -198,6 +210,7 @@ private extension JournalAxisView {
     }
 
     static var rowSpacing: CGFloat { 2 }
+    static var dividerGap: CGFloat { 3 }
     /// How close to the edge of the windows a scroll may rest before they move: a year, so that the periods around
     /// the one in the middle are always there.
     static var edgeDays: Double { 365 }
