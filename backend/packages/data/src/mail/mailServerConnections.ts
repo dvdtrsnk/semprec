@@ -1,6 +1,6 @@
 import { connect, isIP, Socket, type LookupFunction } from "node:net";
 import { TLSSocket } from "node:tls";
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type ListOptions } from "imapflow";
 import { createTransport, type SendMailOptions } from "nodemailer";
 import {
   OutboundAddressNotAllowedError,
@@ -12,6 +12,7 @@ import {
 import { sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
 import { ImapFlowMailClient, isImapConnectionLimitError } from "./imapFlowClient.js";
 import type { ImapFolderRef } from "./imapReconcile.js";
+import { imapListOptions } from "./imapSpecialUseHints.js";
 import { logger } from "./logger.js";
 import type { MailServerEndpoint } from "./mailServerSettingsStore.js";
 import {
@@ -45,6 +46,8 @@ export interface MailServerConnectionOptions {
   socketTimeout?: number;
   /** IMAP only, imapflow's `autoIdleDelay`: how long a selected connection stays inactive before it starts IDLE. */
   autoIdleDelay?: number;
+  /** IMAP only: ENABLE QRESYNC where the server advertises it. Defaults to `true`. */
+  qresync?: boolean;
   /** IMAP only: admits the login under the server host's login rate. Defaults to `sharedImapConnectionLimiter`. */
   loginAdmission?: Pick<ImapConnectionLimiter, "admitLogin">;
   /** IMAP only: abandons the wait for a login admission. */
@@ -191,7 +194,7 @@ function buildImapFlow(
     connectionTimeout,
     greetingTimeout: GREETING_TIMEOUT_MS,
     // imapflow ENABLEs QRESYNC only where the server advertises it; a sync pass then receives VANISHED for expunges.
-    qresync: true,
+    qresync: options.qresync ?? true,
     ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
@@ -231,12 +234,16 @@ class FolderListingTimeoutError extends Error {
  * imapflow assigns special-use, so the purposes match the sync pass's listing. `null` when it failed or expired, with
  * the cause in `failures`; on expiry the caller's close fails the LIST still running.
  */
-async function listVerifiedFolders(client: ImapFlow, failures: unknown[]): Promise<ImapFolderRef[] | null> {
+async function listVerifiedFolders(
+  client: ImapFlow,
+  options: ListOptions,
+  failures: unknown[],
+): Promise<ImapFolderRef[] | null> {
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<"expired">((resolve) => {
     timer = setTimeout(() => resolve("expired"), FOLDER_LISTING_DEADLINE_MS);
   });
-  const listed = client.list().then(
+  const listed = client.list(options).then(
     (entries) => ({ ok: true as const, entries }),
     (error: unknown) => ({ ok: false as const, error }),
   );
@@ -388,7 +395,7 @@ async function verifyImapAttempt(
   let folders: ImapFolderRef[] | null = null;
   if (listFolders && result.ok && !expired && failures.length === 0 && observations.length === 0) {
     listing = true;
-    folders = await listVerifiedFolders(client, listingFailures);
+    folders = await listVerifiedFolders(client, imapListOptions(settings.endpoint.host), listingFailures);
     if (listingFailures.length > 0) folders = null;
     // A listing that failed leaves a connection in an unknown state; what its close reports is the listing's too.
     if (folders !== null) listing = false;
@@ -555,7 +562,10 @@ export async function openImapConnection(
   credential: MailServerCredential,
   options: MailServerConnectionOptions = {},
 ): Promise<ImapFlowMailClient> {
-  return new ImapFlowMailClient(await openImapFlow(settings, credential, options));
+  return new ImapFlowMailClient(
+    await openImapFlow(settings, credential, options),
+    imapListOptions(settings.endpoint.host),
+  );
 }
 
 /** Connect and send failures map as the IMAP factory's do. */

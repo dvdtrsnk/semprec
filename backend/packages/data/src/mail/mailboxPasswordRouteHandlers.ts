@@ -45,7 +45,7 @@ import { enqueueCalendarAccountSync } from "../calendar/sync/calendarAccountSync
 import { clearCalendarSyncCredentialRefusal } from "../calendar/sync/calendarSyncStore.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { ensureComposeFolders, type ProviderFolder } from "./folderDiscovery.js";
-import { imapProviderFolder } from "./imapReconcile.js";
+import { imapProviderFolder } from "./imapSpecialUseHints.js";
 import { logger } from "./logger.js";
 
 /** Gmail and Outlook sign in through OAuth instead. */

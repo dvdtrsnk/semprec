@@ -46,6 +46,12 @@ export interface ImapIdleFlowOptions {
   maxIdleTime: number;
   socketTimeout: number;
   autoIdleDelay: number;
+  /**
+   * Always `false`. imapflow 1.7.6 does not lower the message count it holds for a VANISHED expunge, so once QRESYNC
+   * is enabled the EXISTS of the next delivery repeats that count and emits nothing: on iCloud every message deleted
+   * in INBOX silenced the next arrival. Without QRESYNC the server reports EXPUNGE, which imapflow counts.
+   */
+  qresync: false;
 }
 
 /**
@@ -279,6 +285,7 @@ export function createImapFlowIdleTransport(
           maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
           socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
           autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+          qresync: false,
         },
         signal,
       );
@@ -309,6 +316,7 @@ export function createImapFlowIdleTransport(
           maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
           socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
           autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+          qresync: false,
         },
         signal,
       );

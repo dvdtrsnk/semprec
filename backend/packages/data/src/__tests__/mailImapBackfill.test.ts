@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { withTransaction } from "../db/pool.js";
 import {
   IMAP_FULL_MESSAGES_PER_PASS,
+  IMAP_BACKFILL_MESSAGES_PER_BATCH,
   IMAP_INDEX_MESSAGES_PER_PASS,
   IMAP_MESSAGES_PER_BATCH,
 } from "../mail/imapReconcile.js";
@@ -329,6 +330,64 @@ describe("IMAP history as an index, backfilled newest first", () => {
         }),
       ]);
     },
+  );
+
+  it.each([
+    {
+      history: "older history, stored as an index",
+      daysAgo: 200,
+      count: 3 * IMAP_BACKFILL_MESSAGES_PER_BATCH,
+      // The batch it was writing.
+      firstPass: IMAP_BACKFILL_MESSAGES_PER_BATCH,
+    },
+    {
+      history: "recent history, downloaded in full",
+      daysAgo: 1,
+      count: IMAP_FULL_MESSAGES_PER_PASS,
+      // The one full message it had downloaded.
+      firstPass: 1,
+    },
+  ])(
+    "yields a backfill of $history to a trigger that arrives during it, taking the new mail first",
+    ({ daysAgo, count, firstPass }) =>
+      runInTenant(tenant, async () => {
+        const fake = new FakeImapServer({ folders: FOLDERS, capabilities: QRESYNC, latencyMs: 0 });
+        server = fake;
+        const port = await fake.listen();
+        const mailbox = await createImapMailboxFixture(runtime);
+        for (let uid = 1; uid <= count; uid++)
+          fake.deliver("INBOX", [], plainMessage(`History ${uid}`, { date: new Date(Date.now() - daysAgo * DAY_MS) }));
+        // New mail arrives once the backfill has started, and the account is triggered as an IDLE signal triggers it.
+        let triggered = false;
+        const triggeringClient = async () => {
+          const client = await connectLoopbackImapClient(port);
+          return Object.assign(Object.create(client) as typeof client, {
+            fetchMessagesBefore: async (...args: Parameters<typeof client.fetchMessagesBefore>) => {
+              const range = await client.fetchMessagesBefore(...args);
+              if (!triggered) {
+                triggered = true;
+                fake.deliver("INBOX", [], plainMessage("New during the backfill"));
+                await admin.query("UPDATE mail_account_sync_state SET pass_rerun_requested = true WHERE item_id = $1", [
+                  mailbox.mailboxId,
+                ]);
+              }
+              return range;
+            },
+          });
+        };
+
+        await mailbox.sync(triggeringClient, recordingStorage());
+
+        // The backfill stopped, the next round of the pass took the new mail, then the rest of the history.
+        const all = await messages();
+        const fresh = all.get("New during the backfill");
+        expect(fresh).toMatchObject({ arrival: "live", content_state: "full" });
+        const history = [...all.values()].filter((message) => message.subject.startsWith("History "));
+        expect(history).toHaveLength(count);
+        expect(history.filter((message) => message.created_at < fresh!.created_at)).toHaveLength(firstPass);
+        expect(await initialSyncCompleted(mailbox.mailboxId)).toBe(true);
+      }),
+    60_000,
   );
 
   tenantIt(

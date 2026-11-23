@@ -1,4 +1,5 @@
 import { ValidationError } from "../errors.js";
+import { ICLOUD_IMAP_HOST } from "./imapSpecialUseHints.js";
 import { logger } from "./logger.js";
 import type { ImapFolderRef } from "./imapReconcile.js";
 import {
@@ -56,7 +57,7 @@ async function verifyMailCredentialsWithOptions(
   input: VerifyMailCredentialsInput,
   testOptions?: VerificationTestOptions,
 ): Promise<VerifiedMailServerSettings> {
-  const imapHost = input.provider === "icloud" ? "imap.mail.me.com" : input.imapHost;
+  const imapHost = input.provider === "icloud" ? ICLOUD_IMAP_HOST : input.imapHost;
   const smtpHost = input.provider === "icloud" ? "smtp.mail.me.com" : input.smtpHost;
   if (!imapHost || !smtpHost) throw new ValidationError("IMAP and SMTP hosts are required");
   const imap: MailServerEndpoint[] =

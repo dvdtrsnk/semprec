@@ -88,6 +88,9 @@ described elsewhere and only referenced here:
   it for one more round, and one that starts while the account backs off a sync failure ends in the job's prologue
   without a login like any other trigger (the SMTP server took the message; the failing IMAP server is left to the
   sweep). Gmail and Graph file their own Sent copy and schedule none.
+- An IDLE connection does not ENABLE QRESYNC (`ImapIdleFlowOptions.qresync`): imapflow 1.7.6 does not lower its
+  message count for a VANISHED expunge, so the EXISTS of the next delivery would repeat the count it holds and emit
+  nothing; without QRESYNC the server reports EXPUNGE, which imapflow counts. The sync passes keep QRESYNC.
 - A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
   established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
   recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing
@@ -238,7 +241,8 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   batch deletes the attachment bytes it wrote (`withBatchStorage`); committed batches keep theirs.
 - One pass per mailbox runs at a time, in every sync mode. Every trigger (IMAP IDLE, Gmail and Graph push, the
   sweep, flag and move write-back, the Mail switch, a sign-in) enqueues `mailAccountSync` under the job key
-  `mail-account-sync:<mailbox>`; graphile-worker folds a repeat enqueue into a job that waits but starts a new job
+  `mail-account-sync:<mailbox>` at priority `MAIL_ACCOUNT_SYNC_PRIORITY` (-1), ahead of the per-message follow-up jobs a
+  large index enqueues by the thousand (the post-send follow-ups too); graphile-worker folds a repeat enqueue into a job that waits but starts a new job
   beside one that runs, so the job key alone does not serialize passes. Before its credential read, a job claims the
   pass lease on the sync state row (`pass_lease_token`, `pass_lease_expires_at`; `claimMailSyncPass` locks the row).
   When another pass holds an unexpired lease the job sets `pass_rerun_requested` and ends without a provider call.
@@ -250,11 +254,13 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   or notification, is logged and rethrown, and is not retried (`maxAttempts` 1); the sweep queues the account again
   once it is due.
   `enterSyncPass` renews the lease in each write transaction, taking it again only while no live pass holds it, and
-  ends the pass when another one does. An IMAP pass that completed takes a rerun request in its final transaction
+  ends the pass when another one does. An IMAP pass that completed, or whose round a trigger recorded meanwhile
+  (`isMailSyncRerunRequested`, which a backfill yields to), takes a rerun request in its final transaction
   (`takeMailSyncRerunRequest`) and runs one more round itself, under the same lease, on the sync connection it holds
   checked out: the move phase on pending moves read anew, then the reconcile. It runs at most `IMAP_PASS_MAX_ROUNDS`
   (3) rounds, so a trigger during a pass is served without a new job, connection or login; a round that left new
-  messages or backfill for later (`complete` false) ends the rounds and leaves them to the follow-up. On every way out
+  messages or backfill for later (`complete` false) with no trigger recorded ends the rounds and leaves them to the
+  follow-up. On every way out
   of the pass one transaction releases the lease and, when a rerun is still requested (one after the last round, an
   unfinished backfill, or any Gmail or Graph pass) and the pass did not fail, enqueues exactly one follow-up pass. A
   holder that died blocks its mailbox for at most
@@ -264,7 +270,9 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   message's body parts and attachment bytes (spooled to a temp file, `mail/mailAttachmentSpool.ts`) and every index
   message's snippet are fetched with no transaction open and no guard held; the writes then run in short
   transactions: a prepare transaction (Folder items, each folder's sync state), one transaction per folder batch
-  (a folder's live step, or a backfill batch of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages), one for the flag
+  (a folder's live step of at most `IMAP_MESSAGES_PER_BATCH` = 50 messages, or a backfill batch of at most
+  `IMAP_BACKFILL_MESSAGES_PER_BATCH` = 10, so an index running for hours keeps every mail action waiting a few
+  seconds at most), one for the flag
   write-back confirmations (the IMAP `STORE`s run before it, outside any transaction) and a final one (account
   activity, the next pass, `ok` status, problem resolved). Each starts with `enterSyncPass` and then takes the mail-thread guard. A folder
   batch locks its `mail_folder_sync_state` row and writes only while it still holds the cursors its fetch started
@@ -370,9 +378,13 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   write transaction with the folder's flag changes and vanished UIDs; a folder left partial records `uidnext` above
   the last UID the step's `UID SEARCH` took when it wrote them all, else after the last ingested UID. Then every
   folder's backfill step, the inbox first: the UIDs below `backfill_below_uid`, highest (newest) first, in write
-  transactions of at most 50 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
+  transactions of at most 10 messages, each moving `backfill_below_uid` down to the lowest UID it wrote; the last batch
   of the step's range moves it to the lowest UID the search took, or sets it `NULL` when the search found every UID
-  left. New mail is therefore ingested before older history and never waits for a backfill. The first batch that writes a message whose Date lies before
+  left. New mail is therefore ingested before older history. A trigger that arrives while the backfill runs (an IDLE
+  signal, a write-back; it sets `pass_rerun_requested`) makes the backfill stop before its next batch, before the
+  next full download of the batch it prepares (keeping what it prepared) and before the next folder's backfill, and the
+  pass ends unfinished: the follow-up pass takes the new mail in its live step, so it
+  waits for at most one batch of history, not for the rest of the pass's budget. The first batch that writes a message whose Date lies before
   the full-content window sets `backfill_index_only`: UIDs only grow, so what is left below the cursor is in practice
   older history, stored as an index, which a native client may then upload (see
   [History upload from a native client](#history-upload-from-a-native-client)). A folder whose backfill a client holds
@@ -394,6 +406,13 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   pass that ends with every folder's backfill done, or by the upload that finishes the last one. A backfill left to a
   client's lease keeps `initial_sync_completed_at` unset but asks for no rerun: the account is due again in 30
   minutes, when an expired or released lease has given the folder back to the server.
+- A folder the server no longer holds when the pass selects it (deleted or renamed by another client since the
+  pass's LIST, answered `NO`) is skipped by both steps and logged; the other folders sync as usual.
+- A folder the server no longer lists (deleted or renamed by another client) has its Folder retired by the first pass
+  that ends with no backfill left (`mail/imapUnlistedFolders.ts`, a full listing only, so not Gmail over IMAP), in its
+  final transaction: its Email edges are removed, every Email that lost one is kept or trashed by its other copies as a
+  removed copy is, and the emptied Folder is trashed. Waiting for the backfill lets a renamed folder's messages reach
+  their new folder first, on the same items by Message-ID.
 - Vanished UIDs during a backfill: the count check compares server counts, and the UID diff (`UID SEARCH ALL`) runs
   against the known UIDs, the ones ingested so far, so a UID not backfilled yet is never removed and one expunged
   before its backfill is simply not found by it.

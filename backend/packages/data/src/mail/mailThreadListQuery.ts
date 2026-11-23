@@ -90,11 +90,11 @@ export function mailThreadCopyCtes(
   WHERE p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
 ), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), ${unreadCandidates}copies AS (
   SELECT m.thread_id, m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.preview_text,
-    NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
-    COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
-    COALESCE(i.properties->>'name', '') AS subject,
-    COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
-    COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
+    pr.date AS message_date,
+    COALESCE(pr.date, m.ingested_at, i.updated_at) AS activity,
+    COALESCE(pr.name, '') AS subject,
+    COALESCE(pr.read = 'true'::jsonb, false) AS is_read,
+    COALESCE(pr.flagged = 'true'::jsonb, false) AS flagged,
     EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
     EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
     COALESCE(f.has_sent, false) AS has_sent,
@@ -108,6 +108,12 @@ export function mailThreadCopyCtes(
     COALESCE(f.folder_ids, ARRAY[]::uuid[]) AS folder_ids
   FROM mail_message_meta m
   JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id AND i.database_id = (SELECT emails FROM schema_ids)
+  -- The properties read in one pass: each -> or ->> on a compressed jsonb decompresses it again, which across every
+  -- message of the tenant cost as much as the rest of the list.
+  CROSS JOIN LATERAL (
+    SELECT NULLIF(p.date, '')::timestamptz AS date, p.name, p.read, p.flagged
+    FROM jsonb_to_record(i.properties) AS p(date text, name text, read jsonb, flagged jsonb)
+  ) pr
   -- One aggregate per email over every folder edge, hash-joined; per-email lookups cost a loop per copy.
   LEFT JOIN (
     SELECT CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END AS email_id,
@@ -316,6 +322,11 @@ WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
   WHERE ${predicates.join(" AND ")}
     AND ($1::timestamptz IS NULL OR (l.activity, l.thread_id) < ($1::timestamptz, $2::uuid))
   ORDER BY l.activity DESC NULLS LAST, l.thread_id DESC LIMIT $3
+), page_copies AS MATERIALIZED (
+  -- The page's threads' rows, read once: a CTE has no index, so a lookup per thread scanned every message.
+  SELECT c.thread_id, c.mailbox_item_id FROM copies c WHERE c.thread_id IN (SELECT thread_id FROM page)
+), page_dedup AS MATERIALIZED (
+  SELECT d.* FROM dedup d WHERE d.thread_id IN (SELECT thread_id FROM page)
 )
 SELECT jsonb_build_object(
   'threadId', p.thread_id, 'subject', ts.subject,
@@ -337,13 +348,13 @@ LEFT JOIN items person ON person.tenant_id = app_tenant_default() AND person.dat
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('id', box.id, 'name', COALESCE(box.properties->>'name', ''), 'provider', box.properties->>'provider') ORDER BY box.id) AS value
   FROM items box WHERE box.tenant_id = app_tenant_default() AND box.database_id = (SELECT mailboxes FROM schema_ids) AND box.deleted_at IS NULL
-    AND box.id IN (SELECT mailbox_item_id FROM copies c WHERE c.thread_id = p.thread_id)
+    AND box.id IN (SELECT mailbox_item_id FROM page_copies c WHERE c.thread_id = p.thread_id)
 ) boxes ON true
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('name', x.name, 'address', x.address) ORDER BY x.activity, x.item_id, x.position) AS value
   FROM (
     SELECT DISTINCT ON (a.name, a.address) a.name, a.address, d.activity, d.item_id, a.position
-    FROM dedup d CROSS JOIN LATERAL (
+    FROM page_dedup d CROSS JOIN LATERAL (
       SELECT COALESCE(entry.value->>'name', '') AS name, entry.value->>'address' AS address, entry.ordinality AS position
       FROM jsonb_array_elements(
         jsonb_build_array(d.envelope->'from') ||

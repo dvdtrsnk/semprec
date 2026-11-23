@@ -20,6 +20,7 @@ import {
   isMailSyncBackingOff,
   releaseMailSyncPass,
   renewMailSyncPass,
+  isMailSyncRerunRequested,
   requestMailSyncRerun,
   takeMailSyncRerunRequest,
   listAccountsDueForSync,
@@ -379,15 +380,19 @@ export async function handleSyncMailAccountTask(
           const result = await reconcileImapAccount(pool, imap, {
             ...shared,
             moveBaseline: moves.moveBaseline,
+            triggered: () =>
+              withTransaction(pool, (client) => isMailSyncRerunRequested(client, payload.mailboxItemId, passToken)),
             pass: {
               enter: enterSyncPass,
               finish: async (client, outcome) => {
+                // A trigger that arrived during this round is served by the next one, on this connection; a backfill
+                // yields to it, ending the round unfinished. An unfinished backfill alone is left to the follow-up
+                // job instead (`pass.finish` asks for it).
+                const served =
+                  round < IMAP_PASS_MAX_ROUNDS &&
+                  (outcome.complete || (await isMailSyncRerunRequested(client, payload.mailboxItemId, passToken)));
                 await pass.finish(client, outcome);
-                // A trigger that arrived during this round is served by the next one, on this connection. An
-                // unfinished backfill is left to the follow-up job instead (`pass.finish` asked for it).
-                if (outcome.complete && round < IMAP_PASS_MAX_ROUNDS) {
-                  rerun = await takeMailSyncRerunRequest(client, payload.mailboxItemId, passToken);
-                }
+                if (served) rerun = await takeMailSyncRerunRequest(client, payload.mailboxItemId, passToken);
                 // The account's IMAP server answers again: Sent copies that gave up get another job.
                 await requeueFailedSentCopies(client, payload.mailboxItemId);
               },

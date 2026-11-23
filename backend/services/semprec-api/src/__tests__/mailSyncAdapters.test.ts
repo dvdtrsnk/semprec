@@ -1770,7 +1770,12 @@ describe("IMAP-mode accounts", () => {
     const server = await reachableFakeImap();
     const mailboxId = await createImapMailbox("Revoked IDLE", undefined, IMAP_WRONG_PASSWORD);
     const createClient = createIdleImapFlowClient(pool);
-    const idleOptions = { maxIdleTime: 25 * 60_000, socketTimeout: 35 * 60_000, autoIdleDelay: 0 };
+    const idleOptions = {
+      maxIdleTime: 25 * 60_000,
+      socketTimeout: 35 * 60_000,
+      autoIdleDelay: 0,
+      qresync: false as const,
+    };
 
     const error = await inTenantZero(() =>
       rejectionOf(createClient(mailboxId, IMAP_WRONG_PASSWORD, idleOptions, new AbortController().signal)),

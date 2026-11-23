@@ -2,6 +2,7 @@ import { executeImapMoveStep, type SafeImapMoveStepResult } from "./mailMoveProv
 import type {
   ImapFlow,
   FetchMessageObject,
+  ListOptions,
   MailboxObject,
   MessageStructureObject,
   SearchObject,
@@ -101,7 +102,10 @@ export class ImapFlowMailClient implements ImapMailClient {
   /** Set by any failed or timed-out provider operation: the connection's state is then unknown. */
   private failed = false;
 
-  constructor(private readonly client: ImapFlow) {}
+  constructor(
+    private readonly client: ImapFlow,
+    private readonly listOptions: ListOptions = {},
+  ) {}
 
   /** Moves count only when nothing of theirs was observed: a late or unexpected answer leaves the connection in doubt. */
   isReusable(): boolean {
@@ -298,8 +302,11 @@ export class ImapFlowMailClient implements ImapMailClient {
     const withStatus = this.client.capabilities.has("CONDSTORE");
     const list = await this.providerCall(() =>
       withStatus
-        ? this.client.list({ statusQuery: { uidValidity: true, uidNext: true, highestModseq: true, messages: true } })
-        : this.client.list(),
+        ? this.client.list({
+            ...this.listOptions,
+            statusQuery: { uidValidity: true, uidNext: true, highestModseq: true, messages: true },
+          })
+        : this.client.list(this.listOptions),
     );
     return list.map((f) => {
       const status = withStatus ? listedStatus(f.status) : undefined;

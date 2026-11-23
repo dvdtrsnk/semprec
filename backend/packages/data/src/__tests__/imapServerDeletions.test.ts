@@ -12,6 +12,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 import type { FakeImapServer } from "../testSupport/fakeImapServer.js";
+import type { ImapMailClient } from "../mail/imapMailClient.js";
 import {
   createImapMailboxFixture,
   createSyncedLoopbackMailbox,
@@ -193,6 +194,71 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     expect(await emailsNamed("Re: Offer")).toEqual([expect.objectContaining({ trashed: true, folders: [] })]);
   });
 
+  tenantIt("syncs the other folders when a folder is deleted after the pass listed it", async () => {
+    const mailbox = await synced(QRESYNC);
+    mailbox.server.deliver("Archive", [], plainMessage("Archived later"));
+    mailbox.server.deliver("INBOX", [], plainMessage("New in INBOX"));
+    // Another client deletes Archive between this pass's LIST and its SELECT of the folder.
+    const deletingAfterList = async (): Promise<ImapMailClient> => {
+      const client = await mailbox.overWire();
+      return Object.assign(Object.create(client) as ImapMailClient, {
+        listFolders: async () => {
+          const folders = await client.listFolders();
+          mailbox.server.deleteFolder("Archive");
+          return folders;
+        },
+      });
+    };
+
+    await mailbox.mailbox.sync(deletingAfterList);
+
+    expect(await emailsNamed("New in INBOX")).toMatchObject([{ trashed: false, folders: ["INBOX"] }]);
+    expect(await emailsNamed("Archived later")).toEqual([]);
+    const { rows } = await runtime.query<{ last_error: string | null; failing_since: Date | null }>(
+      "SELECT last_error, failing_since FROM mail_account_sync_state WHERE item_id = $1",
+      [mailbox.mailbox.mailboxId],
+    );
+    expect(rows).toEqual([{ last_error: null, failing_since: null }]);
+  });
+
+  /** Whether the mailbox's Folder of `path` is live, trashed, or gone. */
+  async function folderOf(path: string): Promise<"live" | "trashed" | "none"> {
+    const ids = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
+    const { rows } = await runtime.query<{ trashed: boolean }>(
+      `SELECT deleted_at IS NOT NULL AS trashed FROM items
+        WHERE tenant_id = app_tenant_default() AND database_id = $1 AND properties->>'providerId' = $2`,
+      [ids.foldersDatabaseId, path],
+    );
+    if (rows.length === 0) return "none";
+    return rows.every((row) => row.trashed) ? "trashed" : "live";
+  }
+
+  tenantIt("trashes a folder deleted by another client, with the messages it alone held", async () => {
+    const mailbox = await synced(QRESYNC);
+    const [archived] = await emailsNamed("Archive 1");
+    expect(archived).toMatchObject({ trashed: false, folders: ["Archive"] });
+
+    mailbox.server.deleteFolder("Archive");
+    await mailbox.mailbox.sync(mailbox.overWire);
+
+    expect(await emailsNamed("Archive 1")).toEqual([{ ...archived!, trashed: true, folders: [] }]);
+    expect(await folderOf("Archive")).toBe("trashed");
+    expect(await emailsNamed("INBOX 1")).toMatchObject([{ trashed: false, folders: ["INBOX"] }]);
+  });
+
+  tenantIt("keeps the item of a message whose folder another client renamed", async () => {
+    const mailbox = await synced(QRESYNC);
+    const [archived] = await emailsNamed("Archive 1");
+
+    // A rename as the client sees it: the folder's messages under another path, the old path gone.
+    mailbox.server.move("Archive", mailbox.uidOf("Archive", "Archive 1"), "Junk");
+    mailbox.server.deleteFolder("Archive");
+    await mailbox.mailbox.sync(mailbox.overWire);
+
+    expect(await emailsNamed("Archive 1")).toEqual([{ ...archived!, folders: ["Junk"] }]);
+    expect(await folderOf("Archive")).toBe("trashed");
+  });
+
   tenantIt("shows a message another client moved from INBOX to Archive as moved, on the same item", async () => {
     const mailbox = await synced(QRESYNC);
     const [before] = await emailsNamed("INBOX 3");
@@ -253,6 +319,45 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     30_000,
   );
 
+  tenantIt(
+    "signals a delivery that follows an expunge while the IDLE connection idles on a QRESYNC server",
+    async () => {
+      const mailbox = await synced(QRESYNC);
+      const { port } = mailbox;
+      // As the composition root builds it: the IDLE options decide QRESYNC.
+      const createClient: CreateIdleTunedImapFlowClient = async (_mailboxItemId, credential, idleOptions) => {
+        const client = new ImapFlow({
+          host: "127.0.0.1",
+          port,
+          secure: false,
+          auth: { user: IMAP_FIXTURE_ACCOUNT, pass: credential },
+          logger: false,
+          ...idleOptions,
+        });
+        client.on("error", () => {});
+        await client.connect();
+        return client;
+      };
+      let signals = 0;
+      const connection = await createImapFlowIdleTransport(createClient).connect(
+        mailbox.mailbox.mailboxId,
+        "app-password",
+        "INBOX",
+        () => signals++,
+        neverAborted,
+      );
+      cleanups.push(() => connection.close());
+      await vi.waitFor(() => expect(mailbox.server.isIdling("INBOX")).toBe(true), { timeout: 5_000, interval: 10 });
+
+      mailbox.server.expunge("INBOX", mailbox.uidOf("INBOX", "INBOX 1"));
+      await vi.waitFor(() => expect(signals).toBe(1), { timeout: 5_000, interval: 10 });
+      // The delivery brings INBOX back to the message count it had before the expunge.
+      mailbox.server.deliver("INBOX", [], plainMessage("After the expunge"));
+
+      await vi.waitFor(() => expect(signals).toBe(2), { timeout: 5_000, interval: 10 });
+    },
+  );
+
   tenantIt("removes a message expunged while the IDLE connection idles on INBOX, about a second later", async () => {
     const mailbox = await synced(QRESYNC);
     const { port } = mailbox;
@@ -262,7 +367,6 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
         port,
         secure: false,
         auth: { user: IMAP_FIXTURE_ACCOUNT, pass: credential },
-        qresync: true,
         logger: false,
         ...idleOptions,
       });
