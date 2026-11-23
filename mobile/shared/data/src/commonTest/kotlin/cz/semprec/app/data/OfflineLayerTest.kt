@@ -78,7 +78,7 @@ class OfflineLayerTest {
     private suspend fun TestScope.offlineWithKept(layer: OfflineLayer, server: ScriptedServer) {
         server.next(answered("a"))
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(NO_ANSWER)
         layer.read(server)
         runCurrent()
@@ -110,20 +110,29 @@ class OfflineLayerTest {
         assertEquals(2, server.sent)
     }
 
-    @Test fun `a socket connect makes every kept answer stale`() = runTest {
+    @Test fun `after a socket connect a kept answer is answered at once and read again`() = runTest {
         val server = ScriptedServer(answered("a"), answered("b"))
         val layer = layer()
         layer.read(server)
         layer.connected()
+        assertEquals(answered("a"), layer.read(server))
+        settleBackground()
+        assertEquals(2, server.sent)
         assertEquals(answered("b"), layer.read(server))
+        assertEquals(2, server.sent)
     }
 
-    @Test fun `a socket frame makes every kept answer stale`() = runTest {
+    @Test fun `after a socket frame a kept answer is answered at once and read again`() = runTest {
         val server = ScriptedServer(answered("a"), answered("b"))
         val layer = layer()
+        val told = emissions(layer)
         layer.read(server)
         layer.frameArrived()
+        assertEquals(answered("a"), layer.read(server))
+        settleBackground()
+        assertEquals(1, told())
         assertEquals(answered("b"), layer.read(server))
+        assertEquals(2, server.sent)
     }
 
     @Test fun `an answer stays fresh for five minutes and is then answered at once and read again`() = runTest {
@@ -206,11 +215,11 @@ class OfflineLayerTest {
         assertEquals(NO_ANSWER, layer.read(server))
     }
 
-    @Test fun `an answer a change signal made stale is not answered at once`() = runTest {
+    @Test fun `an answer a write made stale is not answered at once`() = runTest {
         val release = CompletableDeferred<Unit>()
         val layer = layer()
         layer.read(SESSION, overview) { answered("a") }
-        layer.frameArrived()
+        layer.wrote()
         val read = async {
             layer.read(SESSION, overview) {
                 release.await()
@@ -223,7 +232,7 @@ class OfflineLayerTest {
         assertEquals(answered("b"), read.await())
     }
 
-    @Test fun `a change signal while a request is out leaves its answer stale`() = runTest {
+    @Test fun `a write while a request is out leaves its answer stale`() = runTest {
         val release = CompletableDeferred<Unit>()
         var sent = 0
         val layer = layer()
@@ -235,7 +244,7 @@ class OfflineLayerTest {
             }
         }
         runCurrent()
-        layer.frameArrived()
+        layer.wrote()
         release.complete(Unit)
         first.await()
         layer.read(SESSION, overview) {
@@ -287,7 +296,7 @@ class OfflineLayerTest {
         val server = ScriptedServer(answered("a"))
         val layer = layer()
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(notFound)
         assertEquals(notFound, layer.read(server))
         server.next(NO_ANSWER)
@@ -299,7 +308,7 @@ class OfflineLayerTest {
         val server = ScriptedServer(answered("a"))
         val layer = layer()
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(refused)
         assertEquals(refused, layer.read(server))
         server.next(NO_ANSWER)
@@ -361,6 +370,8 @@ class OfflineLayerTest {
         runCurrent()
         assertEquals(1, emitted())
         server.next(answered("c"))
+        assertEquals(answered("b"), layer.read(server))
+        settleBackground()
         assertEquals(answered("c"), layer.read(server))
     }
 
@@ -395,6 +406,7 @@ class OfflineLayerTest {
         layer.connected()
         assertEquals(1, emitted())
         server.next(answered("b"))
+        // The kept answer was asked for before a write: its read waits.
         assertEquals(answered("b"), layer.read(server))
     }
 

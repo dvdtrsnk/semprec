@@ -80,10 +80,12 @@ internal data class ApiRequest(
  * A kept answer is fresh when this process kept it after the last change signal and less than
  * [KEPT_ANSWER_FRESH_FOR] ago; a fresh answer is returned without a request. The change signals are a write that
  * succeeded ([wrote]), the sync socket connecting ([connected]), every frame it receives ([frameArrived]) and every
- * queued write that reached the server or was dropped. Any other read goes out: a success is kept and returned, `404`
- * removes the kept answer, and a request that got no answer, a `5xx` or a `429` returns the kept answer when there is
- * one; an item's own read (`GET /api/items/:id`) without one returns the newest copy of the item that another kept
- * answer holds, when one holds it with its `databaseId`.
+ * queued write that reached the server or was dropped. A kept answer that is not fresh is still returned at once,
+ * its request going out behind it, unless a write went to the server after it was asked for
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). Any other read goes out: a
+ * success is kept and returned, `404` removes the kept answer, and a request that got no answer, a `5xx` or a `429`
+ * returns the kept answer when there is one; an item's own read (`GET /api/items/:id`) without one returns the newest
+ * copy of the item that another kept answer holds, when one holds it with its `databaseId`.
  *
  * A request that got no answer makes the process offline until a request gets one or the socket connects. Offline,
  * a read with a kept answer returns it at once, and at most once every [OFFLINE_PROBE_EVERY] one of them goes out in
@@ -162,7 +164,7 @@ class OfflineLayer internal constructor(
     /** A write of a window succeeded; the window announces it itself, so nothing is emitted. */
     internal suspend fun wrote() {
         state.locked {
-            state.freshness.changed()
+            state.freshness.wrote()
             state.connectivity.offline = false
         }
     }
@@ -219,10 +221,10 @@ class OfflineLayer internal constructor(
 
 /**
  * The kept answers of the reads of [OfflineLayer]: a fresh one, or any one while offline, answers at once. So does
- * one no change signal of this process made stale (one read from disk after a start, or one only older than
- * [KEPT_ANSWER_FRESH_FOR]): the request then goes out behind it ([readAgain]), and when the server answers something
- * else the windows are told, once for the answers that arrive together. Otherwise the request goes out and its answer
- * is settled ([settle]). An item's own read that gets no answer, a `5xx` or a `429`
+ * one no write of this process made stale (one read from disk after a start, one older than
+ * [KEPT_ANSWER_FRESH_FOR], or one a change on the server made stale): the request then goes out behind it
+ * ([readAgain]), and when the server answers something else the windows are told, once for the answers that arrive
+ * together. Otherwise the request goes out and its answer is settled ([settle]). An item's own read that gets no answer, a `5xx` or a `429`
  * and has no kept answer of its own is answered with the newest copy of the item that another kept answer holds
  * ([itemCopy]), so an item seen in a list opens, and reads back a write made to it, without a connection.
  */
@@ -267,7 +269,7 @@ private class KeptReads(
         key: String,
         response: ApiResponse,
         kept: KeptAnswer?,
-        sentAt: Long,
+        sentAt: FreshnessStamp,
         copy: suspend () -> ApiResponse? = { null },
     ): ApiResponse = when (response) {
         is ApiResponse.Success -> {
@@ -390,9 +392,9 @@ internal class LayerState(timeSource: TimeSource) {
 
     suspend fun <T> locked(block: () -> T): T = lock.withLock { block() }
 
-    /** Something every window shows changed: the kept answers turn stale and the windows are told. */
+    /** A write of the queue changed what every window shows: the kept answers turn stale and the windows are told. */
     suspend fun changed() {
-        locked { freshness.changed() }
+        locked { freshness.wrote() }
         mutableChanges.tryEmit(Unit)
     }
 
@@ -436,20 +438,29 @@ internal class LayerState(timeSource: TimeSource) {
     }
 }
 
+/** How many change signals, and of them how many writes, a process had seen when a request went out. */
+internal data class FreshnessStamp(val changes: Long, val writes: Long)
+
 /**
- * When each answer of this process was kept: the change signal its request went out after and the time it arrived.
- * An answer is fresh while no change signal followed and [KEPT_ANSWER_FRESH_FOR] has not passed.
+ * When each answer of this process was kept: the change signals its request went out after and the time it arrived.
+ * An answer is fresh while no change signal followed and [KEPT_ANSWER_FRESH_FOR] has not passed. A change signal is
+ * either a change on the server ([changed]: a frame, a connect, reaching the server again) or a write that went to the
+ * server ([wrote]), which is a change too.
  */
 internal class Freshness(private val timeSource: TimeSource) {
-    var signal = 0L
+    var signal = FreshnessStamp(changes = 0, writes = 0)
         private set
-    private val kept = HashMap<String, Pair<Long, TimeMark>>()
+    private val kept = HashMap<String, Pair<FreshnessStamp, TimeMark>>()
 
     fun changed() {
-        signal += 1
+        signal = signal.copy(changes = signal.changes + 1)
     }
 
-    fun kept(account: String, key: String, sentAt: Long) {
+    fun wrote() {
+        signal = FreshnessStamp(changes = signal.changes + 1, writes = signal.writes + 1)
+    }
+
+    fun kept(account: String, key: String, sentAt: FreshnessStamp) {
         kept[freshnessKey(account, key)] = sentAt to timeSource.markNow()
     }
 
@@ -464,11 +475,12 @@ internal class Freshness(private val timeSource: TimeSource) {
 
     /**
      * Whether a kept answer that is not fresh may still be given at once, its request going out behind it: when this
-     * process has not kept it (it was read from disk) or no change signal followed its keeping, only time.
+     * process has not kept it (it was read from disk), or no write went to the server after its request went out (only
+     * time or a change on the server made it stale). After a write the read waits, so it shows the write.
      */
     fun servesAtOnce(account: String, key: String): Boolean {
         val (sentAt, _) = kept[freshnessKey(account, key)] ?: return true
-        return sentAt == signal
+        return sentAt.writes == signal.writes
     }
 
     fun clear() {
