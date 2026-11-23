@@ -9,6 +9,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 /** At most this many answers are kept per account; the least recently used one goes first. */
 internal const val MAX_KEPT_ANSWERS = 500
@@ -40,7 +42,8 @@ internal data class KeptAnswer(val status: Int, val body: String, val etag: Stri
  * `directory/offline/<account>`, one directory per account named by [accountKey] (a SHA-1 of the server and the
  * session token), JSON files written with [writeCacheFile]
  * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). [answers] holds the answers of the offline
- * set, [people] the person the server last confirmed for the session.
+ * set, [people] the person the server last confirmed for the session, [queue] the writes waiting for the server
+ * (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection.md).
  *
  * Keeping anything for one account removes the directories of every other. [clear] removes everything, and an
  * account it ended keeps nothing afterwards, so an answer arriving late for a session that ended is dropped. Every
@@ -65,6 +68,7 @@ internal class OfflineStore(
 
     val answers = KeptAnswers(this, maxAnswers)
     val people = KeptPeople(this)
+    val queue = KeptQueue(this)
 
     /**
      * Runs [block] for [account] with the lock held, on [dispatcher]; `null` without running it when the account's
@@ -77,6 +81,7 @@ internal class OfflineStore(
                 current = account
                 othersRemoved = false
                 answers.reset()
+                queue.reset()
             }
             if (keeping && !othersRemoved) {
                 listCacheDirectory(root).filter { it != account }.forEach { deleteCachePath("$root/$it") }
@@ -93,6 +98,7 @@ internal class OfflineStore(
             current = null
             othersRemoved = false
             answers.reset()
+            queue.reset()
             deleteCachePath(root)
         }
     }
@@ -154,6 +160,21 @@ internal class KeptAnswers(private val store: OfflineStore, private val maxAnswe
             val names = indexOf(account)
             if (names.remove(name)) writeIndex(account, names)
         }
+    }
+
+    /**
+     * The newest kept JSON object with the id [id] that has `properties` (an item as the answers carry it): from the
+     * answers held in memory, the most recently used first, then from the files of the index, the most recently kept
+     * first; `null` when no kept answer holds one.
+     */
+    suspend fun newestObject(account: String, id: String): JsonObject? = store.using(account, keeping = false) {
+        memory.values.reversed().firstNotNullOfOrNull { parsed(it.body)?.itemWithId(id) }
+            ?: indexOf(account).firstNotNullOfOrNull { name ->
+                readCacheFile(path(account, name))
+                    ?.let { text -> decodeOrNull { store.json.decodeFromString(KeptAnswerFile.serializer(), text) } }
+                    ?.takeIf { it.account == account }
+                    ?.let { parsed(it.body)?.itemWithId(id) }
+            }
     }
 
     /** Forgets what is held in memory; called by the store, with its lock held, when the account changes or ends. */
@@ -228,6 +249,8 @@ internal class KeptPeople(private val store: OfflineStore) {
         }
     }
 }
+
+private fun parsed(body: String): JsonElement? = decodeOrNull { Json.parseToJsonElement(body) }
 
 private fun KeptAnswer.isTooLong(): Boolean =
     body.length > MAX_KEPT_ANSWER_BYTES / UTF8_MAX_BYTES_PER_CHAR &&

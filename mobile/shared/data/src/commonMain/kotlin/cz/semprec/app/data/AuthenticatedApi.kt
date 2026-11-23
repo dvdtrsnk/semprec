@@ -17,9 +17,11 @@ import io.ktor.http.HttpMethod
  * except those that only read or only save the text of a page, which [announces] lists.
  *
  * With [offline], a read of the offline set ([OfflineRoutes]) is answered by that layer, from what the device keeps
- * or from the server; every other request still goes to the server, and the layer learns from its outcome whether
- * the server was reached and whether a write may have changed what it keeps
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md).
+ * or from the server (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md), and a write of a queued
+ * route ([QueuedRoute]) is sent or queued by it (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-
+ * connection.md); the window's [AuthenticatedApi] sends what the layer replays. Every other request still goes to the
+ * server, and the layer learns from its outcome whether the server was reached and whether a write may have changed
+ * what it keeps.
  */
 class AuthenticatedApi(
     private val client: ApiClient,
@@ -28,6 +30,25 @@ class AuthenticatedApi(
     private val offline: OfflineLayer? = null,
     private val onSessionRejected: suspend () -> Unit,
 ) {
+    /**
+     * Sends the writes the offline layer queued, with the session signed in when each goes out; a `401` signs the
+     * window out, as for [send].
+     */
+    private val queueSender = object : QueueSender {
+        override fun account(): String? = storage.load()?.let(::accountKey)
+
+        override suspend fun send(request: ApiRequest): ApiResponse {
+            val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
+            val response = transmit(session, request)
+            if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+            return response
+        }
+    }
+
+    init {
+        offline?.writes?.attach(queueSender)
+    }
+
     /** The session the calls go out with, or `null` when nobody is signed in. */
     fun session(): StoredSession? = storage.load()
 
@@ -42,9 +63,11 @@ class AuthenticatedApi(
     ): ApiResponse {
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
         val request = ApiRequest(method, path, query, body, extraHeaders, bodyContentType, requestTimeoutMillis)
+        val queued = QueuedRoute.of(method, path)
         val response = when {
             offline == null -> transmit(session, request)
             OfflineRoutes.keeps(method, path) -> offline.read(session, request) { transmit(session, it) }
+            queued != null -> offline.write(session, queued, request) { transmit(session, it) }
             else -> transmit(session, request).also { sent ->
                 if (sent is ApiResponse.Success && OfflineRoutes.changesKept(method, path)) {
                     offline.wrote()
