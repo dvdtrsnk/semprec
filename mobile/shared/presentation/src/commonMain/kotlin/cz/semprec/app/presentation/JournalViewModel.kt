@@ -28,6 +28,10 @@ private val FALLBACK_DAY = CalendarDay(2000, 1, 1)
  * The windows of the axis stay where they are while the person selects periods inside them, so the screen can scroll
  * the axis to a new selection without its cells changing under the scroll; they move only to a day the person moved
  * the axis to ([JournalAction.ShowAxisAround]) or to a selection outside them.
+ *
+ * Once a period is shown, the one before and the one after it (the neighbouring day, month or year) are read in the
+ * background and kept, with a few read before them: selecting a kept period shows it at once, and the period is
+ * read again behind it, its answer replacing the kept one. A write elsewhere drops what is kept.
  */
 class JournalViewModel internal constructor(
     initialDay: String,
@@ -35,6 +39,10 @@ class JournalViewModel internal constructor(
     changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<JournalState, JournalAction, JournalEffect>(initialState(initialDay)) {
     private var loadJob: Job? = null
+    private var prefetchJob: Job? = null
+
+    /** The last periods read, newest last, for a selection of one of them to show at once. */
+    private val kept = LinkedHashMap<JournalPeriod, JournalPeriodPage>()
 
     /** The day the windows of the axis lie around. */
     private var around: CalendarDay = CalendarDay.parse(state.value.selection.start) ?: FALLBACK_DAY
@@ -44,6 +52,7 @@ class JournalViewModel internal constructor(
         // events, birthdays and Inbox) is read again. The page and the axis stay as they are, and a load already running is
         // not interrupted.
         reloadOnChanges(changes) {
+            kept.clear()
             if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {
                 val period = state.value.selection.toPeriod()
                 loadJob = viewModelScope.launch {
@@ -56,7 +65,9 @@ class JournalViewModel internal constructor(
                     }
                     ensureActive()
                     if (result is RepositoryResult.Content && state.value.selection.toPeriod() == period) {
+                        keep(period, result.value)
                         update { it.around(result.value) }
+                        prefetchAround(state.value.selection)
                     }
                 }
             }
@@ -103,12 +114,20 @@ class JournalViewModel internal constructor(
         update { it.copy(axis = axisFor(it.selection, it.today, around)) }
     }
 
-    /** Loads the selected period; with [keepsContent] the period shown so far stays until the answer replaces it. */
+    /**
+     * Loads the selected period; with [keepsContent] the period shown so far stays until the answer replaces it. A
+     * kept period shows at once and stays when it cannot be read again.
+     */
     private fun load(keepsContent: Boolean = false) {
         loadJob?.cancel()
         val selection = state.value.selection
         val period = selection.toPeriod()
-        if (!keepsContent) update { loading(it, around) }
+        val keptPage = kept[period]
+        if (keptPage != null) {
+            show(keptPage, selection)
+        } else if (!keepsContent) {
+            update { loading(it, around) }
+        }
         loadJob = viewModelScope.launch {
             val result = try {
                 loadPeriod(period)
@@ -118,12 +137,43 @@ class JournalViewModel internal constructor(
                 null
             }
             ensureActive()
-            when (result) {
-                is RepositoryResult.Content -> show(result.value, selection)
-                is RepositoryResult.Failure -> update { failed(it, around, result.kind) }
-                null -> update { failed(it, around, null) }
+            when {
+                result is RepositoryResult.Content -> {
+                    keep(period, result.value)
+                    show(result.value, selection)
+                    prefetchAround(selection)
+                }
+                keptPage != null -> Unit
+                result is RepositoryResult.Failure -> update { failed(it, around, result.kind) }
+                else -> update { failed(it, around, null) }
             }
         }
+    }
+
+    /** Reads the periods beside [selection] that are not kept yet, one after the other, and keeps them. */
+    private fun prefetchAround(selection: JournalSelection) {
+        prefetchJob?.cancel()
+        val missing = selection.neighbours().filter { it !in kept }
+        if (missing.isEmpty()) return
+        prefetchJob = viewModelScope.launch {
+            for (period in missing) {
+                val result = try {
+                    loadPeriod(period)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+                ensureActive()
+                if (result is RepositoryResult.Content) keep(period, result.value)
+            }
+        }
+    }
+
+    private fun keep(period: JournalPeriod, page: JournalPeriodPage) {
+        kept.remove(period)
+        kept[period] = page
+        while (kept.size > KEPT_PERIODS) kept.remove(kept.keys.first())
     }
 
     private fun show(page: JournalPeriodPage, selection: JournalSelection) {
@@ -152,6 +202,29 @@ private fun initialState(initialDay: String): JournalState {
     val selection = JournalSelection(JournalPeriodKind.DAY, day.toString())
     return JournalState(JournalPhase.LOADING, selection, day.toString(), axisFor(selection, day.toString()))
 }
+
+/** How many periods read are kept: the shown one, its neighbours and a few shown before them. */
+private const val KEPT_PERIODS = 9
+private const val MONTHS_IN_YEAR = 12
+
+/** The period after the selected one and the one before it, of the same kind. */
+private fun JournalSelection.neighbours(): List<JournalPeriod> {
+    val type = kind.toType()
+    val start = (CalendarDay.parse(start) ?: FALLBACK_DAY).startOf(type)
+    return listOf(1, -1).mapNotNull { step ->
+        val day = when (type) {
+            JournalPeriodType.DAY -> start.plusDays(step)
+            JournalPeriodType.WEEK -> start.plusDays(step * DAYS_IN_WEEK)
+            JournalPeriodType.MONTH -> start.plusMonths(step)
+            JournalPeriodType.QUARTER -> start.plusMonths(step * MONTHS_IN_QUARTER)
+            JournalPeriodType.YEAR -> start.plusMonths(step * MONTHS_IN_YEAR)
+        }
+        JournalPeriod.containing(type, day)
+    }
+}
+
+private const val DAYS_IN_WEEK = 7
+private const val MONTHS_IN_QUARTER = 3
 
 private fun JournalSelection.toPeriod(): JournalPeriod {
     val day = CalendarDay.parse(start) ?: FALLBACK_DAY

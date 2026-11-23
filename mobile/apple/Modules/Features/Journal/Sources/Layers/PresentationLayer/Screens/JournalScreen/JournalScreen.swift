@@ -35,6 +35,9 @@ struct JournalScreen: View {
     /// The state the page's cards show while the axis moves: the cards of a new selection are built once the axis
     /// comes to rest, so building them never takes a frame from the axis's scroll.
     @State private var heldState: JournalState?
+    /// Set while a swipe turns the page: the new period's page is shown as soon as it comes, the axis moving or not,
+    /// since the page is out of view while the axis moves.
+    @State private var isTurning = false
     /// Counts the changes of the selected period and the presses of Today, for their haptics, as in the calendar: a
     /// new period ticks, Today taps softly, and the period Today brings does not tick again.
     @State private var selectionTicks = 0
@@ -77,11 +80,7 @@ struct JournalScreen: View {
             .sensoryFeedback(.selection, trigger: selectionTicks)
             .sensoryFeedback(.impact(flexibility: .soft), trigger: todayTaps)
             .onChange(of: viewModel.state.selection) { _, selection in
-                if selection == todayBrings {
-                    todayBrings = nil
-                } else {
-                    selectionTicks += 1
-                }
+                if selection == todayBrings { todayBrings = nil } else { selectionTicks += 1 }
             }
             .task { await viewModel.observe() }
     }
@@ -91,9 +90,7 @@ struct JournalScreen: View {
 private extension JournalScreen {
 
     /// The room above the axis, under the top of the screen.
-    var titleRow: some View {
-        Color.clear.frame(height: Theme.Spacing.small)
-    }
+    var titleRow: some View { Color.clear.frame(height: Theme.Spacing.small) }
 
     /// Today, as the calendar's, at the bottom leading edge.
     var todayBar: some View {
@@ -111,12 +108,18 @@ private extension JournalScreen {
         }
     }
 
-    /// Selects the period `steps` away from the selected one, of the same kind, as a swipe of the page turns to it.
+    /// Selects the period `steps` away from the selected one, as a swipe of the page turns to it.
     func turn(_ steps: Int) -> JournalSelection? {
-        let selection = viewModel.state.selection
-        guard let start = JournalDates.shifted(selection.start, kind: selection.kind, by: steps) else { return nil }
-        viewModel.select(kind: selection.kind, start: start)
-        return JournalSelection(kind: selection.kind, start: start)
+        isTurning = true
+        heldState = nil
+        return viewModel.turn(by: steps)
+    }
+
+    /// The axis started or stopped moving: the page's cards wait for it to rest, unless a swipe turns the page.
+    func axisMoved(_ moving: Bool) {
+        let holds = moving && !isTurning
+        heldState = holds ? viewModel.state : nil
+        if !moving { isTurning = false }
     }
 
     /// How far down the page the selected row is: below the heading and the rows above it.
@@ -134,7 +137,7 @@ private extension JournalScreen {
             materialReach: contentTop + titleHeight + Self.materialOverreach,
             onSelect: viewModel.select,
             onMove: viewModel.showAxis(around:),
-            onMoving: { moving in heldState = moving ? viewModel.state : nil },
+            onMoving: axisMoved,
             material: { JournalHeaderMaterial() },
             motion: $axisMotion
         )

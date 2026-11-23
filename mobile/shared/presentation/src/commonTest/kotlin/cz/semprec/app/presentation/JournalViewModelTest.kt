@@ -28,6 +28,9 @@ class JournalViewModelTest : MainDispatcherTest() {
     private fun TestScope.loaded(day: String = "2026-10-16"): JournalViewModel =
         viewModel(day).also { runCurrent() }
 
+    /** How many times the period [key] was read, its neighbours read in the background aside. */
+    private fun reads(key: String = "2026-10-16") = repository.periodCalls.count { it.key == key }
+
     private fun withDiary() {
         repository.onPeriod = { content(periodPage(it, markdown = DIARY, itemId = "item-day")) }
     }
@@ -125,7 +128,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertNull(state.page)
         assertEquals(listOf(40, 41), state.weeks.map { it.number })
         assertEquals(JournalPageRef(JournalPeriodKind.WEEK, "2026-W40"), state.weeks.first().page.ref)
-        assertEquals(JournalPeriod(JournalPeriodType.MONTH, "2026-10"), repository.periodCalls.last())
+        assertEquals(1, reads("2026-10"))
         vm.close()
     }
 
@@ -152,13 +155,13 @@ class JournalViewModelTest : MainDispatcherTest() {
 
     @Test fun `selecting the same period or something invalid does not load again`() = runTest(dispatcher) {
         val vm = loaded()
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-16"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "not a day"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.WEEK, "2026-10-12"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.QUARTER, "2026-10-01"))
         runCurrent()
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), vm.state.value.selection)
         vm.close()
     }
@@ -171,7 +174,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         val after = vm.state.value
         assertEquals(before.selection, after.selection)
         assertEquals(before.page, after.page)
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         assertEquals("2027-01-01", after.axis.last().cells.first().start)
         assertEquals("2031-12-31", after.axis.last().cells.last().start)
         assertTrue(after.axis.last().cells.none { it.current })
@@ -181,7 +184,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.GoToday)
         runCurrent()
         assertEquals(before.axis, vm.state.value.axis)
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         vm.onAction(JournalAction.ShowAxisAround("2029-03-10"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
         runCurrent()
@@ -209,6 +212,77 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    // --- neighbours read ahead ---
+
+    @Test fun `a shown period has the period before and after it read in the background`() = runTest(dispatcher) {
+        val vm = loaded()
+        assertEquals(1, reads("2026-10-17"))
+        assertEquals(1, reads("2026-10-15"))
+        vm.onAction(JournalAction.Select(JournalPeriodKind.MONTH, "2026-10-01"))
+        runCurrent()
+        assertEquals(1, reads("2026-11"))
+        assertEquals(1, reads("2026-09"))
+        vm.onAction(JournalAction.Select(JournalPeriodKind.YEAR, "2026-01-01"))
+        runCurrent()
+        assertEquals(1, reads("2027"))
+        assertEquals(1, reads("2025"))
+        vm.close()
+    }
+
+    @Test fun `a period read ahead shows at once and its own answer then replaces it`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            if (it.key == "2026-10-17" && reads("2026-10-17") > 1) {
+                repository.late(gate, content(periodPage(it, markdown = "FRESH")))
+            } else {
+                content(periodPage(it, markdown = "KEPT ${it.key}"))
+            }
+        }
+        val vm = loaded()
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.shown)
+        assertEquals("KEPT 2026-10-17", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("FRESH", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        assertEquals(1, reads("2026-10-18"))
+        vm.close()
+    }
+
+    @Test fun `a period read ahead stays shown when it cannot be read again`() = runTest(dispatcher) {
+        repository.onPeriod = {
+            if (it.key == "2026-10-17" && reads("2026-10-17") > 1) journalFailure() else content(periodPage(it))
+        }
+        val vm = loaded()
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.shown)
+        assertNull(vm.state.value.failure)
+        vm.close()
+    }
+
+    @Test fun `a write elsewhere reads the periods ahead again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        repository.onPeriod = { content(periodPage(it, markdown = "BEFORE")) }
+        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        runCurrent()
+        repository.onPeriod = { content(periodPage(it, markdown = "AFTER")) }
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, reads("2026-10-17"))
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = { repository.late(gate, content(periodPage(it, markdown = "LATER"))) }
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        assertEquals("AFTER", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        gate.complete(Unit)
+        runCurrent()
+        vm.close()
+    }
+
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {
         val vm = loaded("2026-10-01")
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-03"))
@@ -216,7 +290,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.GoToday)
         runCurrent()
         assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), vm.state.value.selection)
-        assertEquals(JournalPeriod(JournalPeriodType.DAY, "2026-10-16"), repository.periodCalls.last())
+        assertEquals(1, reads("2026-10-16"))
         vm.close()
     }
 
@@ -339,7 +413,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         val vm = loaded()
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-16"))
         runCurrent()
-        assertEquals(2, repository.periodCalls.size)
+        assertEquals(2, reads())
         vm.close()
     }
 
@@ -375,7 +449,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.Retry)
         vm.onAction(JournalAction.OpenInbox)
         runCurrent()
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         assertTrue(vm.isClosed)
     }
 
@@ -387,7 +461,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertTrue(vm.isClosed)
         vm.onAction(JournalAction.Retry)
         runCurrent()
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
     }
 
     @Test fun `a write elsewhere in the window reads the period again but keeps the page and the axis`() =
@@ -402,7 +476,7 @@ class JournalViewModelTest : MainDispatcherTest() {
             }
             changes.emit(Unit)
             runCurrent()
-            assertEquals(2, repository.periodCalls.size)
+            assertEquals(2, reads())
             assertTrue(vm.state.value.events.isEmpty())
             assertEquals(before.inbox, vm.state.value.inbox)
             assertEquals(before.page, vm.state.value.page)
@@ -421,11 +495,11 @@ class JournalViewModelTest : MainDispatcherTest() {
         runCurrent()
         changes.emit(Unit)
         runCurrent()
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         gate.complete(Unit)
         runCurrent()
         assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
-        assertEquals(1, repository.periodCalls.size)
+        assertEquals(1, reads())
         vm.close()
     }
 }
