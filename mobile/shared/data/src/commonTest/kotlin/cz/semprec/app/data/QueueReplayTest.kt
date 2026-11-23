@@ -64,9 +64,8 @@ class QueueReplayTest {
         OfflineStore(directory, StandardTestDispatcher(testScheduler)),
         backgroundScope,
         TestTimeSource(),
-        now = { QUEUED_AT },
+        QueueClock(now = { QUEUED_AT }, random = { 0.0 }, today = { "2026-11-23" }),
         newId = { "n${++lastId}" },
-        random = { 0.0 },
     )
 
     private val patch =

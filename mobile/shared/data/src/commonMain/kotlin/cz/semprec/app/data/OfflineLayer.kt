@@ -83,23 +83,37 @@ class OfflineLayer internal constructor(
     internal val store: OfflineStore,
     private val scope: CoroutineScope,
     timeSource: TimeSource = TimeSource.Monotonic,
-    now: () -> String = ::currentInstant,
+    clock: QueueClock = QueueClock(::currentInstant, Random::nextDouble, ::localToday),
     newId: () -> String = ::randomId,
-    random: () -> Double = Random::nextDouble,
 ) {
     private val state = LayerState(timeSource)
-    internal val writes = OfflineWrites(store, scope, state, QueueClock(now, random), newId)
+    internal val writes = OfflineWrites(store, scope, state, clock, newId)
+    private val views = QueuedViews(store, clock.today)
 
     /** Emits when what the screens of every window show may have changed. */
     val changes: Flow<Unit> = state.changes
 
-    /** Answers [request], a read of the offline set made with [session]; [transmit] sends it to the server. */
+    /**
+     * Answers [request], a read of the offline set made with [session]; [transmit] sends it to the server. Every id
+     * the device made that the server answered is replaced by the server's id first, and the writes still queued are
+     * applied to the answer ([QueuedViews]).
+     */
     internal suspend fun read(
         session: StoredSession,
         request: ApiRequest,
         transmit: suspend (ApiRequest) -> ApiResponse,
     ): ApiResponse {
         val account = accountKey(session)
+        val queued = store.queue.state(account)
+        val resolved = queued?.let { request.resolved(it.ids) } ?: request
+        return views.project(account, resolved, answer(account, resolved, transmit), queued)
+    }
+
+    private suspend fun answer(
+        account: String,
+        request: ApiRequest,
+        transmit: suspend (ApiRequest) -> ApiResponse,
+    ): ApiResponse {
         val key = request.key()
         val kept = store.answers.answer(account, key)
         val served = kept?.let {

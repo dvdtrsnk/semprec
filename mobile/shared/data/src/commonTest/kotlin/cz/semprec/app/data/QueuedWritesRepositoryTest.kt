@@ -70,9 +70,8 @@ class QueuedWritesRepositoryTest {
             OfflineStore(directory, StandardTestDispatcher(testScheduler)),
             backgroundScope,
             TestTimeSource(),
-            now = { "2026-11-23T10:00:00Z" },
+            QueueClock(now = { "2026-11-23T10:00:00Z" }, random = { 0.0 }, today = { "2026-11-23" }),
             newId = { "made-${++lastId}" },
-            random = { 0.0 },
         )
         return AuthenticatedApi(ApiClient(engine), storage, offline = layer) {}
     }

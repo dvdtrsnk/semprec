@@ -45,8 +45,11 @@ internal interface QueueSender {
 /** How many writes wait for the server and which the server refused, for the account signed in. */
 internal data class QueueStatus(val waiting: Int, val failures: List<QueuedWriteFailure>)
 
-/** The time a queued write is stamped with and the jitter of its retries; tests fix both. */
-internal class QueueClock(val now: () -> String, val random: () -> Double)
+/**
+ * The time a queued write is stamped with, the jitter of its retries and the device's day queued writes are shown
+ * against; tests fix all three.
+ */
+internal class QueueClock(val now: () -> String, val random: () -> Double, val today: () -> String)
 
 /**
  * The delay before the next replay after the [attempt]-th that the server could not act on (0 after the first): its
