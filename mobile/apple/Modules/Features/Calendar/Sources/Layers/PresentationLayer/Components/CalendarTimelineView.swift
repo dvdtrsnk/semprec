@@ -187,7 +187,8 @@ private extension CalendarTimelineView {
         isToday && abs(hour * 60 - nowMinutes) < 20
     }
 
-    /// The current time in a red capsule over the hour labels, and the red line from it across the day.
+    /// The current time in a capsule over the hour labels, and the line from it across the day, in the gold that marks
+    /// today wherever the app shows dates.
     func nowLine(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text(CalendarDates.clock(minutes: nowMinutes))
@@ -195,9 +196,9 @@ private extension CalendarTimelineView {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(Capsule().fill(Color.red))
+                .background(Capsule().fill(Theme.Colors.today))
                 .frame(width: CalendarGeometry.gutter, alignment: .trailing)
-            Rectangle().fill(Color.red).frame(height: 1)
+            Rectangle().fill(Theme.Colors.today).frame(height: 1)
         }
         .frame(height: 18)
         .offset(y: geometry.y(minutes: nowMinutes) - 9)
