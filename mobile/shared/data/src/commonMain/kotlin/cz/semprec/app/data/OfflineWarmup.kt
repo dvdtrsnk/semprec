@@ -6,6 +6,7 @@ import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodType
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.TaskScope
+import kotlinx.coroutines.CancellationException
 
 /** How many days before and after today the diary is read ahead. */
 internal const val WARMUP_DIARY_DAYS = 7
@@ -20,9 +21,9 @@ private val WARMUP_MONTHS = -1..2
  * task lists of every [TaskScope], the areas, projects and people, the calendars, the invitations, the calendar
  * windows of the current month, the one before and the two after, the agenda's first page from today, the diary's days
  * from [WARMUP_DIARY_DAYS] back to as many ahead with their pages, the overview, the sleep of tonight, and the Inbox
- * cards and types. Each read goes through a repository over the window's [api], as the screens' do; one that fails is
- * left as it is, the next one goes on, and cancelling the caller stops the rest. [today] is the device's day,
- * `yyyy-MM-dd`, as the screens are given it.
+ * cards and types. Each read goes through a repository over the window's [api], as the screens' do; one that fails or
+ * throws is left as it is, the next one goes on, and cancelling the caller stops the rest. [today] is the device's
+ * day, `yyyy-MM-dd`, as the screens are given it.
  */
 class OfflineWarmup(private val api: AuthenticatedApi, private val today: () -> String = ::localToday) {
     /** The account the window is signed in with, or `null` when nobody is. */
@@ -76,10 +77,18 @@ class OfflineWarmup(private val api: AuthenticatedApi, private val today: () -> 
         }
     }
 
-    /** Runs each read while [online] holds; once it does not, the rest is skipped. */
+    /** Runs each read while [online] holds; once it does not, the rest is skipped. A read that throws is left too. */
     private class Reads(private val online: suspend () -> Boolean) {
         suspend fun read(read: suspend () -> Unit) {
-            if (online()) read()
+            if (!online()) return
+            try {
+                read()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // A read ahead only fills what its screen would read itself; one that throws is left as a failed one,
+                // so the reads after it still run and nothing escapes into the background scope of the layer.
+            }
         }
     }
 }

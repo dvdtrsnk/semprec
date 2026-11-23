@@ -2,6 +2,7 @@ package cz.semprec.app.data
 
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.InMemorySessionStorage
+import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.CalendarChanges
 import cz.semprec.app.domain.CalendarDay
@@ -108,6 +109,21 @@ private class WarmServer(dispatcher: CoroutineDispatcher) {
     fun count(prefix: String) = requests.count { it.startsWith(prefix) }
 }
 
+/** The session of [inner]; after [arm], its next read throws, as a read that fails unexpectedly inside a repository. */
+private class ThrowingStorage(private val inner: SessionStorage) : SessionStorage by inner {
+    private var armed = false
+
+    fun arm() {
+        armed = true
+    }
+
+    override fun load(): StoredSession? {
+        if (!armed) return inner.load()
+        armed = false
+        throw IllegalStateException("the session cannot be read")
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class OfflineWarmupTest {
     private val directory = newTestDirectory()
@@ -188,6 +204,17 @@ class OfflineWarmupTest {
         server.failing += "/api/overview"
         OfflineWarmup(api) { WARM_TODAY }.run { true }
         assertEquals(1, server.count("GET /api/overview"))
+        assertEquals(1, server.count("GET /api/inbox-types"))
+    }
+
+    @Test fun `a read that throws is left as it is and the next ones go on`() = runTest {
+        val layer = layer()
+        val throwing = ThrowingStorage(storage)
+        val api = AuthenticatedApi(ApiClient(server.engine), throwing, offline = layer) {}
+        runCurrent()
+        throwing.arm()
+        OfflineWarmup(api) { WARM_TODAY }.run { true }
+        assertEquals("GET /api/databases?limit=200", server.requests.first())
         assertEquals(1, server.count("GET /api/inbox-types"))
     }
 

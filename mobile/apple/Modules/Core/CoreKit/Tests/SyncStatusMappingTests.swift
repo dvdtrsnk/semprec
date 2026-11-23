@@ -33,4 +33,43 @@ final class SyncStatusMappingTests: XCTestCase {
         model = nil
         XCTAssertTrue(lease.isClosed)
     }
+
+    func testTheRealViewModelRelaysItsStateThroughTheStream() async throws {
+        let model = try XCTUnwrap(isolatedFactory().makeSyncStatus() as? Model)
+        let state = await firstState(of: model) { _ in true }
+        XCTAssertEqual(state, SyncStatusState(offline: false, waiting: 0, failed: 0))
+    }
+}
+
+// MARK: - Helpers
+// The helper waits with a timeout and then cancels its task, so a stream that ignores cancellation fails the test
+// instead of hanging it.
+private extension SyncStatusMappingTests {
+
+    func firstState<Model: ScreenModel>(
+        of model: Model,
+        timeout: TimeInterval = 5,
+        until predicate: @escaping @Sendable (Model.State) -> Bool
+    ) async -> Model.State? {
+        let found = Received<Model.State>()
+        let matched = XCTestExpectation(description: "A matching state arrived")
+        let observer = Task { @MainActor in
+            for await state in model.states() where predicate(state) {
+                found.values.append(state)
+                matched.fulfill()
+                return
+            }
+        }
+        _ = await XCTWaiter.fulfillment(of: [matched], timeout: timeout)
+        observer.cancel()
+        return found.values.first
+    }
+}
+
+/// Values a test task received on the main actor.
+@MainActor
+private final class Received<Value> {
+
+    // MARK: - Properties
+    var values: [Value] = []
 }
