@@ -111,6 +111,14 @@ private extension JournalScreen {
         }
     }
 
+    /// Selects the period `steps` away from the selected one, of the same kind, as a swipe of the page turns to it.
+    func turn(_ steps: Int) -> JournalSelection? {
+        let selection = viewModel.state.selection
+        guard let start = JournalDates.shifted(selection.start, kind: selection.kind, by: steps) else { return nil }
+        viewModel.select(kind: selection.kind, start: start)
+        return JournalSelection(kind: selection.kind, start: start)
+    }
+
     /// How far down the page the selected row is: below the heading and the rows above it.
     var pinnedOffset: CGFloat {
         let rows = viewModel.state.axis
@@ -161,7 +169,9 @@ private extension JournalScreen {
                             }
                             .zIndex(2)
                         axis.zIndex(1)
-                        page.padding(.top, Theme.Spacing.medium)
+                        page
+                            .journalPageTurn(isEnabled: true, shown: pageState.shown, onTurn: turn)
+                            .padding(.top, Theme.Spacing.medium)
                     }
                 }
                 .padding(.bottom, Theme.Spacing.large)
@@ -382,13 +392,5 @@ private extension JournalScreen {
         case .quarter: return JournalDates.quarterSpan(start: shownPeriod.start)
         case .year: return String(localized: "journal.subtitle.year", bundle: .module)
         }
-    }
-}
-
-private extension JournalWeek {
-
-    /// Whether `day` (`YYYY-MM-DD`) is one of the week's days; days in this form order as text.
-    func contains(day: String) -> Bool {
-        firstDay <= day && day <= lastDay
     }
 }

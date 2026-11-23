@@ -38,6 +38,11 @@ final class JournalViewModel: ObservableObject {
         model.send(.select(kind: cell.kind, start: cell.start))
     }
 
+    /// Selects the period of `kind` that starts on `start`, as a tap on it on the axis does.
+    func select(kind: JournalPeriodKind, start: String) {
+        model.send(.select(kind: kind, start: start))
+    }
+
     func goToday() {
         model.send(.goToday)
     }
