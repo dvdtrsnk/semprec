@@ -836,6 +836,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "purgeExpiredArchivedDatabases",
   "purgeExpiredTrash",
   "pushInterruptionLevelFor",
+  "quartersOfYear",
   "raiseAgentReplyProblem",
   "raiseProblem",
   "reactivateAccount",

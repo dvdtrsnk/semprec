@@ -7,17 +7,8 @@ import type { CustomRouteResult, RouteUser } from "../customRoute.js";
 export const overviewSummarySchema: z.ZodType<OverviewSummary> = z.strictObject({
   inboxPending: z.number().int().nonnegative(),
   mailUnread: z.number().int().nonnegative(),
-  tasksToday: z.number().int().nonnegative(),
-  areas: z.array(z.strictObject({ id: z.uuid(), activeProjectCount: z.number().int().nonnegative() })),
-  collections: z.array(
-    z.strictObject({
-      databaseId: z.uuid(),
-      ownerModuleId: z.string().min(1),
-      itemCount: z.number().int().nonnegative(),
-    }),
-  ),
+  collections: z.array(z.strictObject({ databaseId: z.uuid(), ownerModuleId: z.string().min(1) })),
   problemCount: z.number().int().nonnegative(),
-  journalTodayItemId: z.uuid().nullable(),
 });
 
 /** `GET /api/overview`: a single-consumer read for the Overview screen. Takes no request input. */
