@@ -8,7 +8,7 @@ enum CalendarTab {
     @MainActor
     static func root(_ composition: AppComposition) -> some View {
         CalendarScreenFactory.calendar(
-            makeModel: { composition.models.makeCalendar(initialDay: $0) },
+            makeModel: { composition.preparedTabs.calendarModel(initialDay: $0) },
             router: composition.calendarRouter
         )
     }

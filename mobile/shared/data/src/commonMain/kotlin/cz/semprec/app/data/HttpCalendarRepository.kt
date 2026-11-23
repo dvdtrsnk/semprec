@@ -13,6 +13,8 @@ import cz.semprec.app.domain.CalendarWindow
 import cz.semprec.app.domain.NewCalendarItem
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.http.HttpMethod
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -32,13 +34,21 @@ class HttpCalendarRepository(
 ) : CalendarRepository {
     private val databases = CalendarDatabases(api)
 
-    override suspend fun window(from: CalendarDay, to: CalendarDay): RepositoryResult<CalendarWindow> {
+    /**
+     * The timeline, the calendars and the badge are read together; the first that fails, in this order, is the
+     * answer.
+     */
+    override suspend fun window(from: CalendarDay, to: CalendarDay): RepositoryResult<CalendarWindow> = coroutineScope {
         val query = listOf("from" to from.toString(), "to" to to.toString())
-        val timeline = api.send(HttpMethod.Get, "/api/calendar/timeline", query = query)
-            .decode<TimelineResponse>().toTimeline()
-        val calendars = databases.items(CalendarDatabaseKeys.CALENDARS)
-        val badge = api.send(HttpMethod.Get, "/api/badge-counts").decode<BadgeCountsResponse>()
-        return when {
+        val timelineRead = async {
+            api.send(HttpMethod.Get, "/api/calendar/timeline", query = query).decode<TimelineResponse>().toTimeline()
+        }
+        val calendarsRead = async { databases.items(CalendarDatabaseKeys.CALENDARS) }
+        val badgeRead = async { api.send(HttpMethod.Get, "/api/badge-counts").decode<BadgeCountsResponse>() }
+        val timeline = timelineRead.await()
+        val calendars = calendarsRead.await()
+        val badge = badgeRead.await()
+        when {
             timeline is RepositoryResult.Failure -> timeline
             calendars is RepositoryResult.Failure -> calendars
             badge is RepositoryResult.Failure -> badge

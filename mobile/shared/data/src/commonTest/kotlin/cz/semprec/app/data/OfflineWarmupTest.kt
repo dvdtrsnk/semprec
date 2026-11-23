@@ -175,7 +175,8 @@ class OfflineWarmupTest {
             )
         val tasks = server.requests.filter { it.startsWith("POST /api/databases/db-tasks/query") }
         assertEquals(TaskScope.entries.size, tasks.distinct().size)
-        assertEquals(expected, server.requests - tasks.toSet())
+        // The reads of one screen go out together, so only which requests went out, each once, is fixed.
+        assertEquals(expected.sorted(), (server.requests - tasks.toSet()).sorted())
         assertEquals(0, server.count("GET /api/inbox/cards/count"))
     }
 

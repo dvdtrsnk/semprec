@@ -142,8 +142,13 @@ internal class KeptAnswers(private val store: OfflineStore, private val maxAnswe
             // Read before the file is written: reading the index deletes the files it does not name.
             val names = indexOf(account)
             val name = keptAnswerFileName(key)
+            // The same answer read again, as the reads behind an answer given at once mostly bring, is already on
+            // disk: only its place in the index moves.
+            val unchanged = memory[key] == answer && name in names
             val file = KeptAnswerFile(OFFLINE_FILE_VERSION, account, key, answer.status, answer.body, answer.etag)
-            if (writeCacheFile(path(account, name), store.json.encodeToString(KeptAnswerFile.serializer(), file))) {
+            if (unchanged ||
+                writeCacheFile(path(account, name), store.json.encodeToString(KeptAnswerFile.serializer(), file))
+            ) {
                 remember(key, answer)
                 names.remove(name)
                 names.add(0, name)

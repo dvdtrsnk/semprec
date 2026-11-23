@@ -21,8 +21,29 @@ struct CalendarZoomableTimeline<Content: View>: View {
     let paper: PaperScroll?
     let content: (CalendarGeometry) -> Content
 
+    // MARK: - Init
+    /// The day opens at `startId` from its first frame, rather than at its top and moved there once it appears.
+    init(
+        hourHeight: Double,
+        pinchY: CGFloat?,
+        startId: String,
+        topInset: CGFloat,
+        startRequests: Int,
+        paper: PaperScroll?,
+        @ViewBuilder content: @escaping (CalendarGeometry) -> Content
+    ) {
+        self.hourHeight = hourHeight
+        self.pinchY = pinchY
+        self.startId = startId
+        self.topInset = topInset
+        self.startRequests = startRequests
+        self.paper = paper
+        self.content = content
+        _position = State(initialValue: ScrollPosition(id: startId, anchor: .top))
+    }
+
     // MARK: - State
-    @State private var position = ScrollPosition(edge: .top)
+    @State private var position: ScrollPosition
     /// Where the scroll and the visible part are, kept outside SwiftUI's state: they change with every frame of a
     /// scroll and are read only when a zoom begins.
     @State private var place = Place()

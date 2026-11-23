@@ -91,7 +91,18 @@ private extension AppScene {
         .onReceive(composition.navigation.tabRequests) { tab in selectedTab.wrappedValue = tab }
         // Signed in: this device registers for pushes and schedules its reminders, and a tapped notification opens.
         .task { await composition.notifications?.refresh() }
+        // Once the first tab is on screen, the other tabs read their content ahead of being opened.
+        .task {
+            try? await Task.sleep(for: .milliseconds(300))
+            composition.preparedTabs.prepare(today: AppScene.deviceToday())
+        }
         .onReceive(composition.notificationArrivals) { composition.openTappedNotification() }
+    }
+
+    /// The device's current day, `YYYY-MM-DD`, as the tabs' screens are given it.
+    static func deviceToday(now: Date = Date()) -> String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: now)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its

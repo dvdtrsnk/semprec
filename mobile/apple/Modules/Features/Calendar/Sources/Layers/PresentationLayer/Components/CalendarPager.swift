@@ -27,6 +27,25 @@ struct CalendarPager<Page: View>: View {
     @State private var pageWidth: CGFloat = 0
     /// Set while a finger's drag has not been decided yet; only such a drag may turn the page when the scroll rests.
     @State private var isUndecidedDrag = false
+    /// Set once the pager first rests on `current`.
+    @State private var isPlaced = false
+
+    // MARK: - Init
+    /// The pager is laid out around `current` from the start.
+    init(
+        current: String,
+        neighbour: @escaping (_ key: String, _ steps: Int) -> String,
+        isEnabled: Bool,
+        onTurn: @escaping (_ steps: Int) -> Void,
+        @ViewBuilder page: @escaping (String) -> Page
+    ) {
+        self.current = current
+        self.neighbour = neighbour
+        self.isEnabled = isEnabled
+        self.onTurn = onTurn
+        self.page = page
+        _anchor = State(initialValue: current)
+    }
 
     // MARK: - Body
     var body: some View {
@@ -53,15 +72,21 @@ struct CalendarPager<Page: View>: View {
                 settleOnRest()
             }
         }
+        // Hidden until it rests on `current`: the scroll opens on its first page and is moved to `current` once its
+        // width is known, which would otherwise show another week or day for a frame.
+        .opacity(isPlaced ? 1 : 0)
         .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }, action: { _, new in
             tracker.offset = new
+            placeIfResting()
         })
         .onScrollGeometryChange(for: CGFloat.self, of: { $0.containerSize.width }, action: { _, new in
             pageWidth = new
+            placeIfResting()
         })
-        .onAppear {
-            anchor = current
-            position.scrollTo(id: current)
+        // Shown all the same should it never report resting there.
+        .task {
+            try? await Task.sleep(for: .seconds(1))
+            isPlaced = true
         }
         .onChange(of: current) { _, new in
             if new == turnedTo {
@@ -121,6 +146,18 @@ private extension CalendarPager {
             withAnimation(Self.slide) { position.scrollTo(id: resting) }
         } else if abs(tracker.offset - CGFloat(from) * pageWidth) > 0.5 {
             withAnimation(Self.slide) { position.scrollTo(id: base) }
+        }
+    }
+
+    /// Moves the pager onto `current` once its width is known, by the offset every page of that width lies at (a lazy
+    /// stack finds a page by its key only once it has laid it out), and shows it once it rests there.
+    func placeIfResting() {
+        guard !isPlaced, pageWidth > 0, let index = keys.firstIndex(of: current) else { return }
+        let target = CGFloat(index) * pageWidth
+        if abs(tracker.offset - target) < 1 {
+            isPlaced = true
+        } else {
+            position.scrollTo(x: target)
         }
     }
 
