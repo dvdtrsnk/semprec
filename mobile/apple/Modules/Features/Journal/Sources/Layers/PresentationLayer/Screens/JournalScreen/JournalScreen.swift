@@ -31,7 +31,7 @@ struct JournalScreen: View {
     @State private var viewportHeight: CGFloat = 0
     @State private var contentTop: CGFloat = 0
     /// How far the page is scrolled and how large it is, for the background and the band behind the pinned row.
-    @State private var pageScroll = JournalPageScroll()
+    @State private var pageScroll = PaperScroll()
     /// The state the page's cards show while the axis moves: the cards of a new selection are built once the axis
     /// comes to rest, so building them never takes a frame from the axis's scroll.
     @State private var heldState: JournalState?
@@ -51,7 +51,7 @@ struct JournalScreen: View {
     var body: some View {
         content
             .background {
-                JournalBackground(scroll: pageScroll)
+                PaperBackground(scroll: pageScroll)
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(JournalIdentifiers.screen)
@@ -161,11 +161,7 @@ private extension JournalScreen {
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentInsets.top }, action: { _, top in
                 contentTop = top
             })
-            .onScrollGeometryChange(
-                for: CGFloat.self,
-                of: { min(max($0.contentOffset.y + $0.contentInsets.top, 0), $0.containerSize.height) },
-                action: { _, offset in pageScroll.offset = offset }
-            )
+            .paperScroll(pageScroll)
         }
     }
 

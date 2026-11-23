@@ -24,6 +24,8 @@ struct CalendarScreen: View {
     @State private var zoomSpaceSize = CGSize.zero
     /// Where the views last laid out the places a change of zoom moves between.
     @State private var zoomMeasures = CalendarZoomMeasures()
+    /// How far the shown view is scrolled, for the paper behind the calendar alone.
+    @State private var paperScroll = PaperScroll()
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> CalendarViewModel) {
@@ -105,7 +107,8 @@ private extension CalendarScreen {
                     CalendarDayView(
                         state: viewModel.state,
                         viewModel: viewModel,
-                        todayRequests: todayRequests
+                        todayRequests: todayRequests,
+                        paper: paperScroll
                     )
                     // Measured in its own copy of the zoom space, beneath the transition: a view moving in or out
                     // reports where it rests, not where the change has carried it.
@@ -113,12 +116,12 @@ private extension CalendarScreen {
                     .transition(zoomChanges.transition(for: .day))
                     .zIndex(zoomLayer)
                 case .month:
-                    CalendarMonthView(state: viewModel.state, viewModel: viewModel)
+                    CalendarMonthView(state: viewModel.state, viewModel: viewModel, paper: paperScroll)
                         .coordinateSpace(.named(CalendarZoomTransition.space))
                         .transition(zoomChanges.transition(for: .month))
                         .zIndex(zoomLayer)
                 case .year:
-                    CalendarYearView(state: viewModel.state, viewModel: viewModel)
+                    CalendarYearView(state: viewModel.state, viewModel: viewModel, paper: paperScroll)
                         .coordinateSpace(.named(CalendarZoomTransition.space))
                         .transition(zoomChanges.transition(for: .year))
                         .zIndex(zoomLayer)
@@ -135,6 +138,8 @@ private extension CalendarScreen {
                     })
             }
             .coordinateSpace(.named(CalendarZoomTransition.space))
+            // The diary's paper, its haze moving with the shown view's scroll.
+            .background { PaperBackground(scroll: paperScroll) }
             .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { zoomSpaceSize = $0 })
             .environment(\.calendarZoomMeasures, zoomMeasures)
             .onAppear { shownZoom = viewModel.state.zoom }
@@ -149,7 +154,11 @@ private extension CalendarScreen {
                     monthDay: zoomMeasures.monthDay?.offsetBy(dx: 0, dy: rowMove) ?? estimatedMonthDay
                 )
                 zoomLayer += 1
-                withAnimation(CalendarZoomTransition.animation) { shownZoom = new }
+                // Another view starts at its own place, with the haze at the top.
+                withAnimation(CalendarZoomTransition.animation) {
+                    shownZoom = new
+                    paperScroll.offset = 0
+                }
             }
         }
     }

@@ -20,6 +20,8 @@ struct OverviewScreen: View {
     // MARK: - State
     @State private var isSearching = false
     @State private var hasAppeared = false
+    /// How far the list is scrolled, for the paper behind it alone.
+    @State private var paperScroll = PaperScroll()
 
     // MARK: - Init
     init(
@@ -82,6 +84,8 @@ private extension OverviewScreen {
                     overview(content)
                 }
             }
+            // The diary's paper, its haze scrolling away with the list.
+            .background { PaperBackground(scroll: paperScroll) }
         }
     }
 
@@ -106,6 +110,8 @@ private extension OverviewScreen {
             section("overview.section.collections", rows: OverviewRows.collections(content))
         }
         .groupedListStyle()
+        .scrollContentBackground(.hidden)
+        .paperScroll(paperScroll)
         .refreshable { await viewModel.refresh() }
         .accessibilityIdentifier(OverviewIdentifiers.content)
     }

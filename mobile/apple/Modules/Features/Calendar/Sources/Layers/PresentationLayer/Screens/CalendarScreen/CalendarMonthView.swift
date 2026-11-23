@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// Months one after another in a vertical scroll, as the system Calendar shows them: each month only its own days by
@@ -10,6 +11,8 @@ struct CalendarMonthView: View {
     // MARK: - Dependencies
     let state: CalendarState
     let viewModel: CalendarViewModel
+    /// The paper behind the calendar, whose haze goes up and down with this scroll.
+    let paper: PaperScroll
 
     /// Where a change of zoom finds the places it moves between.
     @Environment(\.calendarZoomMeasures)
@@ -25,9 +28,10 @@ struct CalendarMonthView: View {
     @State private var cache = CalendarKeyCache()
 
     // MARK: - Init
-    init(state: CalendarState, viewModel: CalendarViewModel) {
+    init(state: CalendarState, viewModel: CalendarViewModel, paper: PaperScroll) {
         self.state = state
         self.viewModel = viewModel
+        self.paper = paper
         let month = CalendarDates.firstOfMonth(state.selectedDay)
         _topMonth = State(initialValue: month)
         _anchor = State(initialValue: month)
@@ -50,6 +54,7 @@ struct CalendarMonthView: View {
                     .scrollTargetLayout()
                 }
                 .scrollIndicators(.hidden)
+                .paperScrollFollowing(paper)
                 .scrollPosition(id: $topMonth, anchor: .top)
                 // A month at the top starts with its first week; its short name stays above, under the title.
                 .contentMargins(.top, -Self.labelHeight, for: .scrollContent)

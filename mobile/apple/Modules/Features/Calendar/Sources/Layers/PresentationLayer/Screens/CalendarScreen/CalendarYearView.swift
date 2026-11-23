@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// Years one after another in a vertical scroll, as the system Calendar shows them: each year its title and twelve
@@ -8,6 +9,8 @@ struct CalendarYearView: View {
     // MARK: - Dependencies
     let state: CalendarState
     let viewModel: CalendarViewModel
+    /// The paper behind the calendar, whose haze goes up and down with this scroll.
+    let paper: PaperScroll
 
     /// Where a change of zoom finds the places it moves between.
     @Environment(\.calendarZoomMeasures)
@@ -22,9 +25,10 @@ struct CalendarYearView: View {
     @State private var isScrolledByFinger = false
 
     // MARK: - Init
-    init(state: CalendarState, viewModel: CalendarViewModel) {
+    init(state: CalendarState, viewModel: CalendarViewModel, paper: PaperScroll) {
         self.state = state
         self.viewModel = viewModel
+        self.paper = paper
         let year = CalendarDates.year(state.selectedDay)
         _topYear = State(initialValue: year)
         _anchor = State(initialValue: year)
@@ -41,6 +45,7 @@ struct CalendarYearView: View {
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
+        .paperScrollFollowing(paper)
         .scrollPosition(id: $topYear, anchor: .top)
         .onScrollPhaseChange { _, phase in
             isScrolledByFinger = phase == .tracking || phase == .interacting || phase == .decelerating

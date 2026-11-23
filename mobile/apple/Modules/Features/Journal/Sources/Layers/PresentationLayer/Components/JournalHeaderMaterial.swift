@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The solid layer the diary's axis lies on, made as the calendar's day header is: the colours of what lies under it
@@ -6,7 +7,7 @@ import SwiftUI
 struct JournalHeaderMaterial: View {
 
     var body: some View {
-        LinearGradient(colors: JournalBackgroundPattern.topColors, startPoint: .leading, endPoint: .trailing)
+        LinearGradient(colors: PaperPattern.topColors, startPoint: .leading, endPoint: .trailing)
             .overlay(.background.opacity(0.12))
             .allowsHitTesting(false)
             .accessibilityHidden(true)

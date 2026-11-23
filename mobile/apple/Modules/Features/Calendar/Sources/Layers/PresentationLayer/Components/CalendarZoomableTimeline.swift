@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The vertical scroll of one day's timeline at the hour height the person zoomed to. Its content starts below
@@ -16,6 +17,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
     let topInset: CGFloat
     /// Each change scrolls the day back to its start, wherever the person scrolled it.
     let startRequests: Int
+    /// The paper whose haze this scroll moves, when the day is the one shown.
+    let paper: PaperScroll?
     let content: (CalendarGeometry) -> Content
 
     // MARK: - State
@@ -39,6 +42,7 @@ struct CalendarZoomableTimeline<Content: View>: View {
         .scrollPosition($position)
         .scrollDisabled(pinchY != nil)
         .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, new in place.offset = new })
+        .paperScrollFollowing(paper)
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { place.viewportTop = $0 })
         .onScrollPhaseChange { _, phase in
             if phase == .interacting { hasScrolled = true }
