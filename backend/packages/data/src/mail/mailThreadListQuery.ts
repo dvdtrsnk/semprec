@@ -322,6 +322,11 @@ WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
   WHERE ${predicates.join(" AND ")}
     AND ($1::timestamptz IS NULL OR (l.activity, l.thread_id) < ($1::timestamptz, $2::uuid))
   ORDER BY l.activity DESC NULLS LAST, l.thread_id DESC LIMIT $3
+), page_copies AS MATERIALIZED (
+  -- The page's threads' rows, read once: a CTE has no index, so a lookup per thread scanned every message.
+  SELECT c.thread_id, c.mailbox_item_id FROM copies c WHERE c.thread_id IN (SELECT thread_id FROM page)
+), page_dedup AS MATERIALIZED (
+  SELECT d.* FROM dedup d WHERE d.thread_id IN (SELECT thread_id FROM page)
 )
 SELECT jsonb_build_object(
   'threadId', p.thread_id, 'subject', ts.subject,
@@ -343,13 +348,13 @@ LEFT JOIN items person ON person.tenant_id = app_tenant_default() AND person.dat
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('id', box.id, 'name', COALESCE(box.properties->>'name', ''), 'provider', box.properties->>'provider') ORDER BY box.id) AS value
   FROM items box WHERE box.tenant_id = app_tenant_default() AND box.database_id = (SELECT mailboxes FROM schema_ids) AND box.deleted_at IS NULL
-    AND box.id IN (SELECT mailbox_item_id FROM copies c WHERE c.thread_id = p.thread_id)
+    AND box.id IN (SELECT mailbox_item_id FROM page_copies c WHERE c.thread_id = p.thread_id)
 ) boxes ON true
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('name', x.name, 'address', x.address) ORDER BY x.activity, x.item_id, x.position) AS value
   FROM (
     SELECT DISTINCT ON (a.name, a.address) a.name, a.address, d.activity, d.item_id, a.position
-    FROM dedup d CROSS JOIN LATERAL (
+    FROM page_dedup d CROSS JOIN LATERAL (
       SELECT COALESCE(entry.value->>'name', '') AS name, entry.value->>'address' AS address, entry.ordinality AS position
       FROM jsonb_array_elements(
         jsonb_build_array(d.envelope->'from') ||
