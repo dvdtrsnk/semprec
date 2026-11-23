@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Today at the bottom leading edge of the diary, as the calendar's: a glass capsule floating over the page.
+/// Today at the bottom leading edge of the diary, as the calendar's and the system Calendar's: a glass capsule 48
+/// points tall floating over the page, in the type of a toolbar button (body, regular).
 struct JournalTodayBar: View {
 
     // MARK: - Dependencies
@@ -11,9 +12,9 @@ struct JournalTodayBar: View {
         HStack {
             Button(action: onToday) {
                 Text("journal.today", bundle: .module)
-                    .font(.body.weight(.semibold))
-                    .padding(.horizontal, 18)
-                    .frame(height: 44)
+                    .font(.body)
+                    .padding(.horizontal, 17)
+                    .frame(height: 48)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .capsule)

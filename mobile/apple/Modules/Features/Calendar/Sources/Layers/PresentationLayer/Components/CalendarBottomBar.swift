@@ -1,8 +1,9 @@
 import CoreKit
 import SwiftUI
 
-/// The two floating capsules at the bottom of the calendar: "Dnes" at the leading edge, and at the trailing edge the
-/// calendars and the invitations with the count of the new ones. What the clipboard holds shows above them.
+/// The two floating capsules at the bottom of the calendar, as the system Calendar's: "Dnes" at the leading edge in
+/// the type of a toolbar button (body, regular), and at the trailing edge the calendars and the invitations with the
+/// count of the new ones, both capsules 48 points tall. What the clipboard holds shows above them.
 struct CalendarBottomBar: View {
 
     // MARK: - Dependencies
@@ -26,9 +27,9 @@ struct CalendarBottomBar: View {
             HStack {
                 Button(action: onToday) {
                     Text("calendar.today", bundle: .module)
-                        .font(.body.weight(.semibold))
-                        .padding(.horizontal, 18)
-                        .frame(height: 44)
+                        .font(.body)
+                        .padding(.horizontal, Self.todayPadding)
+                        .frame(height: Self.height)
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: .capsule)
@@ -36,13 +37,16 @@ struct CalendarBottomBar: View {
                 Spacer()
                 HStack(spacing: 0) {
                     Button(action: onCalendars) {
-                        Image(systemName: "calendar").frame(width: 44, height: 44)
+                        Image(systemName: "calendar")
+                            .font(Self.iconFont)
+                            .frame(width: Self.iconWidth, height: Self.height)
                     }
                     .accessibilityLabel(Text("calendar.calendars", bundle: .module))
                     .accessibilityIdentifier(CalendarIdentifiers.calendars)
                     Button(action: onInvitations) {
                         Image(systemName: "tray")
-                            .frame(width: 44, height: 44)
+                            .font(Self.iconFont)
+                            .frame(width: Self.iconWidth, height: Self.height)
                             .overlay(alignment: .topTrailing) { badge }
                     }
                     .accessibilityLabel(invitationsLabel)
@@ -59,6 +63,14 @@ struct CalendarBottomBar: View {
 
 // MARK: - Subviews
 private extension CalendarBottomBar {
+
+    /// The height of both capsules, the room on each side of "Dnes" and the width of each icon, as the system
+    /// Calendar's bottom bar.
+    static let height: CGFloat = 48
+    static let todayPadding: CGFloat = 17
+    static let iconWidth: CGFloat = 54
+    /// The icons at the size of the system Calendar's bar.
+    static let iconFont = Font.title2
 
     @ViewBuilder var badge: some View {
         if pendingInvitations > 0 {
