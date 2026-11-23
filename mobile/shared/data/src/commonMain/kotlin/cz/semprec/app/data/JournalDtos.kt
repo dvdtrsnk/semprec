@@ -7,10 +7,12 @@ import cz.semprec.app.domain.JournalEvent
 import cz.semprec.app.domain.JournalInboxEntry
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodPage
+import cz.semprec.app.domain.JournalQuarterPage
 import cz.semprec.app.domain.JournalWeekPage
 import kotlinx.serialization.Serializable
 
 private val WEEK_NUMBER = Regex("-W(\\d{2})$")
+private val QUARTER_NUMBER = Regex("-Q([1-4])$")
 
 @Serializable
 internal data class JournalRangeDto(val from: String, val to: String)
@@ -31,6 +33,25 @@ internal data class JournalWeekDto(
         val to = CalendarDay.parse(range.to)
         return if (number != null && from != null && to != null) {
             JournalWeekPage(period, number, from, to, itemId, markdown)
+        } else {
+            null
+        }
+    }
+}
+
+@Serializable
+internal data class JournalQuarterDto(
+    val period: String,
+    val range: JournalRangeDto,
+    val itemId: String? = null,
+    val markdown: String? = null,
+) {
+    fun toDomain(): JournalQuarterPage? {
+        val number = QUARTER_NUMBER.find(period)?.groupValues?.get(1)?.toIntOrNull()
+        val from = CalendarDay.parse(range.from)
+        val to = CalendarDay.parse(range.to)
+        return if (number != null && from != null && to != null) {
+            JournalQuarterPage(period, number, from, to, itemId, markdown)
         } else {
             null
         }
@@ -110,16 +131,18 @@ internal data class JournalPeriodResponse(
     val markdown: String? = null,
     val week: JournalWeekDto? = null,
     val weeks: List<JournalWeekDto> = emptyList(),
+    val quarters: List<JournalQuarterDto> = emptyList(),
     val inbox: List<JournalInboxDto> = emptyList(),
     val events: List<JournalEventDto> = emptyList(),
     val birthdays: List<JournalBirthdayDto> = emptyList(),
 ) {
-    /** The domain page, or `null` when a date or a week of the answer cannot be read. */
+    /** The domain page, or `null` when a date, a week or a quarter of the answer cannot be read. */
     fun toDomain(requested: JournalPeriod): JournalPeriodPage? {
         val dates = dates()
         val given = listOfNotNull(week) + weeks
         val weekPages = given.mapNotNull { it.toDomain() }.takeIf { it.size == given.size }
-        return if (dates != null && weekPages != null) {
+        val quarterPages = quarters.mapNotNull { it.toDomain() }.takeIf { it.size == quarters.size }
+        return if (dates != null && weekPages != null && quarterPages != null) {
             JournalPeriodPage(
                 period = JournalPeriod(requested.type, period),
                 from = dates.first,
@@ -128,6 +151,7 @@ internal data class JournalPeriodResponse(
                 itemId = item?.id,
                 markdown = markdown,
                 weeks = weekPages,
+                quarters = quarterPages,
                 inbox = inbox.map { it.toDomain() },
                 events = events.map { it.toDomain() },
                 birthdays = birthdays.map { it.toDomain() },

@@ -38,7 +38,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertEquals(JournalPhase.LOADING, state.phase)
         assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-14"), state.selection)
         assertEquals(
-            listOf(JournalPeriodKind.YEAR, JournalPeriodKind.QUARTER, JournalPeriodKind.MONTH, JournalPeriodKind.DAY),
+            listOf(JournalPeriodKind.YEAR, JournalPeriodKind.MONTH, JournalPeriodKind.DAY),
             state.axis.map {
                 it.kind
             }
@@ -129,16 +129,24 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a quarter and a year show their own page`() = runTest(dispatcher) {
+    @Test fun `a year shows its own page and lists its four quarters`() = runTest(dispatcher) {
+        repository.onPeriod = { content(periodPage(it, quarterMarkdown = "Ship it")) }
         val vm = loaded()
-        vm.onAction(JournalAction.Select(JournalPeriodKind.QUARTER, "2026-11-05"))
-        runCurrent()
-        assertEquals(JournalSelection(JournalPeriodKind.QUARTER, "2026-10-01"), vm.state.value.selection)
-        assertEquals(JournalPageRef(JournalPeriodKind.QUARTER, "2026-Q4"), vm.state.value.page?.ref)
         vm.onAction(JournalAction.Select(JournalPeriodKind.YEAR, "2026-06-01"))
         runCurrent()
-        assertEquals(JournalPageRef(JournalPeriodKind.YEAR, "2026"), vm.state.value.page?.ref)
-        assertTrue(vm.state.value.events.isEmpty())
+        val state = vm.state.value
+        assertEquals(JournalPageRef(JournalPeriodKind.YEAR, "2026"), state.page?.ref)
+        assertEquals(listOf(1, 2, 3, 4), state.quarters.map { it.number })
+        val fourth = state.quarters.last()
+        assertEquals("2026-10-01", fourth.from)
+        assertEquals("2026-12-31", fourth.to)
+        assertEquals(JournalPageRef(JournalPeriodKind.QUARTER, "2026-Q4"), fourth.page.ref)
+        assertEquals(listOf(JournalBlockKind.TEXT), fourth.page.blocks.map { it.kind })
+        assertTrue(state.events.isEmpty())
+        assertTrue(state.weeks.isEmpty())
+        vm.onAction(JournalAction.Select(JournalPeriodKind.MONTH, "2026-10-01"))
+        runCurrent()
+        assertTrue(vm.state.value.quarters.isEmpty())
         vm.close()
     }
 
@@ -148,8 +156,10 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-16"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "not a day"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.WEEK, "2026-10-12"))
+        vm.onAction(JournalAction.Select(JournalPeriodKind.QUARTER, "2026-10-01"))
         runCurrent()
         assertEquals(1, repository.periodCalls.size)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), vm.state.value.selection)
         vm.close()
     }
 

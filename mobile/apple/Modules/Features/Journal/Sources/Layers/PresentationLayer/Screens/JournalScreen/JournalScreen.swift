@@ -3,10 +3,11 @@ import DesignSystem
 import NoteEditor
 import SwiftUI
 
-/// The diary: a time axis of years, quarters, months and days, and below it the note of the selected period. A day
-/// also shows its week, events, Inbox and note; a month lists its weeks. Each note is edited in the light note
-/// editor, which writes it itself. The whole page scrolls over the diary's gradient, the heading and the Today button
-/// with it; only the axis row of the selected level stays at the top, on glass, with the page passing under it.
+/// The diary: a time axis of years, months and days, and below it the note of the selected period. A day also shows
+/// its week, events, Inbox and note; a month lists its weeks; a year shows its note and lists its quarters. Each note
+/// is edited in the light note editor, which writes it itself. The whole page scrolls over the diary's gradient, the
+/// heading and the Today button with it; only the axis row of the selected level stays at the top, on glass, with the
+/// page passing under it.
 struct JournalScreen: View {
 
     // MARK: - Dependencies
@@ -17,8 +18,9 @@ struct JournalScreen: View {
     private let notes: JournalNotes
 
     // MARK: - State
-    /// Weeks whose open state the person flipped from what the screen shows by default.
-    @State private var flippedWeeks: Set<Int> = []
+    /// The weeks and quarters, by their period key, whose open state the person flipped from what the screen shows by
+    /// default.
+    @State private var flippedSections: Set<String> = []
     /// Where the axis stands, shared by its rows that scroll and its row that stays.
     @State private var axisMotion = JournalAxisMotion()
     /// How tall the heading and the rows above the selected level are, and the visible height of the page: the page
@@ -188,7 +190,8 @@ private extension JournalScreen {
             switch shownPeriod.kind {
             case .day: dayContent
             case .month: monthContent
-            case .quarter, .year, .week: periodNote
+            case .year: yearContent
+            case .quarter, .week: periodNote
             }
         }
         .padding(.horizontal, Theme.Spacing.medium)
@@ -276,7 +279,17 @@ private extension JournalScreen {
         }
     }
 
-    // MARK: Quarter and year
+    // MARK: Year
+    var yearContent: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
+            periodNote
+            ForEach(viewModel.state.quarters) { quarter in
+                quarterCard(quarter)
+            }
+        }
+    }
+
+    // MARK: Own note
     @ViewBuilder var periodNote: some View {
         if let page = viewModel.state.page {
             card { notes.editor(page, focus: noteFocus) }
@@ -285,17 +298,45 @@ private extension JournalScreen {
 
     // MARK: Pieces
     func weekCard(_ week: JournalWeek, openByDefault: Bool) -> some View {
-        let isOpen = flippedWeeks.contains(week.number) != openByDefault
+        collapsibleCard(
+            page: week.page,
+            title: String(format: String(localized: "journal.week", bundle: .module), week.number),
+            span: JournalDates.weekRange(first: week.firstDay, last: week.lastDay),
+            openByDefault: openByDefault,
+            identifier: JournalIdentifiers.weekTogglePrefix + String(week.number)
+        )
+    }
+
+    /// A quarter of the shown year, open by default when it holds today.
+    func quarterCard(_ quarter: JournalQuarter) -> some View {
+        collapsibleCard(
+            page: quarter.page,
+            title: String(format: String(localized: "journal.quarter", bundle: .module), quarter.number),
+            span: JournalDates.quarterSpan(start: quarter.firstDay),
+            openByDefault: quarter.firstDay <= viewModel.state.today && viewModel.state.today <= quarter.lastDay,
+            identifier: JournalIdentifiers.quarterTogglePrefix + String(quarter.number)
+        )
+    }
+
+    /// A card of a week or a quarter: its title and days in a row that opens and closes its note.
+    func collapsibleCard(
+        page: JournalPage,
+        title: String,
+        span: String,
+        openByDefault: Bool,
+        identifier: String
+    ) -> some View {
+        let isOpen = flippedSections.contains(page.ref.period) != openByDefault
         return VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            Button { toggle(week) } label: {
+            Button { toggle(page.ref.period) } label: {
                 HStack(spacing: Theme.Spacing.medium) {
                     Image(systemName: "chevron.right")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.Colors.secondaryText)
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    Text(weekTitle(week)).font(.title3.weight(.bold))
+                    Text(title).font(.title3.weight(.bold))
                     Spacer(minLength: 0)
-                    Text(JournalDates.weekRange(first: week.firstDay, last: week.lastDay))
+                    Text(span)
                         .foregroundStyle(Theme.Colors.secondaryText)
                 }
                 .padding(.vertical, 4)
@@ -303,9 +344,9 @@ private extension JournalScreen {
             }
             .buttonStyle(.plain)
             .accessibilityValue(Text(isOpen ? "journal.week.expanded" : "journal.week.collapsed", bundle: .module))
-            .accessibilityIdentifier(JournalIdentifiers.weekTogglePrefix + String(week.number))
+            .accessibilityIdentifier(identifier)
             if isOpen {
-                notes.editor(week.page, focus: noteFocus)
+                notes.editor(page, focus: noteFocus)
             }
         }
         .padding(.horizontal, Theme.Spacing.medium + 4)
@@ -313,16 +354,12 @@ private extension JournalScreen {
         .journalCard()
     }
 
-    func toggle(_ week: JournalWeek) {
-        if flippedWeeks.contains(week.number) {
-            flippedWeeks.remove(week.number)
+    func toggle(_ period: String) {
+        if flippedSections.contains(period) {
+            flippedSections.remove(period)
         } else {
-            flippedWeeks.insert(week.number)
+            flippedSections.insert(period)
         }
-    }
-
-    func weekTitle(_ week: JournalWeek) -> String {
-        String(format: String(localized: "journal.week", bundle: .module), week.number)
     }
 }
 

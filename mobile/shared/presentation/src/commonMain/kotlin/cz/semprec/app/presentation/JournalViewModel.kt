@@ -32,8 +32,8 @@ class JournalViewModel internal constructor(
     private var loadJob: Job? = null
 
     init {
-        // After a write elsewhere in the window, what the shown period lists around its page (its weeks, events,
-        // birthdays and Inbox) is read again. The page and the axis stay as they are, and a load already running is
+        // After a write elsewhere in the window, what the shown period lists around its page (its weeks, quarters,
+        // events, birthdays and Inbox) is read again. The page and the axis stay as they are, and a load already running is
         // not interrupted.
         reloadOnChanges(changes) {
             if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {
@@ -73,7 +73,7 @@ class JournalViewModel internal constructor(
         val selection = day?.let { JournalSelection(kind, it.toString()) }
         val current = state.value
         val reloads = selection != current.selection || current.phase == JournalPhase.ERROR
-        if (kind == JournalPeriodKind.WEEK || selection == null) return
+        if (kind == JournalPeriodKind.QUARTER || kind == JournalPeriodKind.WEEK || selection == null) return
         if (reloads) {
             // Over a shown period, the axis moves to the new selection at once while the period it shows stays until
             // the new one arrives, so the screen changes in place instead of passing through a loading state.
@@ -127,6 +127,7 @@ class JournalViewModel internal constructor(
                 axis = axisFor(it.selection, page.today.toString()),
                 page = own,
                 weeks = page.weeks.map { week -> week.toState() },
+                quarters = page.quarters.map { quarter -> quarter.toState() },
                 events = page.events.map { event -> event.toState() },
                 birthdays = page.birthdays.map { birthday -> JournalBirthdayState(birthday.id, birthday.personName) },
                 inbox = page.inbox.map { entry -> entry.toState() },
@@ -163,6 +164,7 @@ private fun loading(state: JournalState) = state.copy(
     axis = axisFor(state.selection, state.today),
     page = null,
     weeks = emptyList(),
+    quarters = emptyList(),
     events = emptyList(),
     birthdays = emptyList(),
     inbox = emptyList(),
@@ -171,9 +173,10 @@ private fun loading(state: JournalState) = state.copy(
 private fun failed(state: JournalState, failure: FailureKind?) =
     loading(state).copy(phase = JournalPhase.ERROR, failure = failure)
 
-/** [this] with what [page] lists around its own page: its weeks, events, birthdays and Inbox. */
+/** [this] with what [page] lists around its own page: its weeks, quarters, events, birthdays and Inbox. */
 private fun JournalState.around(page: JournalPeriodPage) = copy(
     weeks = page.weeks.map { week -> week.toState() },
+    quarters = page.quarters.map { quarter -> quarter.toState() },
     events = page.events.map { event -> event.toState() },
     birthdays = page.birthdays.map { birthday -> JournalBirthdayState(birthday.id, birthday.personName) },
     inbox = page.inbox.map { entry -> entry.toState() },

@@ -50,12 +50,12 @@ enum JournalDates {
         date(key).map { calendar.component(.year, from: $0) } ?? 0
     }
 
-    /// The months a quarter spans: `Říjen – Prosinec 2026`.
+    /// The months a quarter spans: `Říjen – Prosinec`.
     static func quarterSpan(start: String) -> String {
         guard let first = date(start), let last = calendar.date(byAdding: .month, value: 2, to: first) else {
             return start
         }
-        return "\(formatted(first, template: "LLLL")) – \(formatted(last, template: "LLLLy"))"
+        return "\(formatted(first, template: "LLLL")) – \(formatted(last, template: "LLLL"))"
     }
 
     /// The week's days: `12.–18. 10.`.

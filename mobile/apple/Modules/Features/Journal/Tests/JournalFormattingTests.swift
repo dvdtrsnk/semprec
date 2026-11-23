@@ -42,7 +42,7 @@ final class JournalFormattingTests: XCTestCase {
         XCTAssertEqual(JournalDates.monthTitle("2026-10-01"), "October 2026")
         XCTAssertEqual(JournalDates.quarterTitle(start: "2026-10-01"), "Q4 2026")
         XCTAssertEqual(JournalDates.quarterTitle(start: "2026-01-01"), "Q1 2026")
-        XCTAssertEqual(JournalDates.quarterSpan(start: "2026-10-01"), "October – December 2026")
+        XCTAssertEqual(JournalDates.quarterSpan(start: "2026-10-01"), "October – December")
         XCTAssertEqual(JournalDates.dayTitle("soon"), "soon")
     }
 

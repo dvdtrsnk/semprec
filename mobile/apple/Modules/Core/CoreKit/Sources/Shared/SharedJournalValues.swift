@@ -139,6 +139,16 @@ extension JournalWeek {
     }
 }
 
+// MARK: - JournalQuarter
+extension JournalQuarter {
+
+    init(_ quarter: SharedSDK.JournalQuarterState) {
+        self.init(
+            number: Int(quarter.number), firstDay: quarter.from, lastDay: quarter.to, page: JournalPage(quarter.page)
+        )
+    }
+}
+
 // MARK: - JournalEvent
 extension JournalEvent {
 

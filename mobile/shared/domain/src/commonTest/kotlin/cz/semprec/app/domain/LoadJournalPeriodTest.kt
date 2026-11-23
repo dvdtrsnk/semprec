@@ -43,6 +43,7 @@ private fun pageFor(period: JournalPeriod) = JournalPeriodPage(
     itemId = null,
     markdown = null,
     weeks = emptyList(),
+    quarters = emptyList(),
     inbox = emptyList(),
     events = emptyList(),
     birthdays = emptyList(),

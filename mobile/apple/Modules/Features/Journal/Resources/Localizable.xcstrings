@@ -561,6 +561,22 @@
         }
       }
     },
+    "journal.quarter" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld. kvartál"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Q%lld"
+          }
+        }
+      }
+    },
     "journal.subtitle.day" : {
       "localizations" : {
         "cs" : {

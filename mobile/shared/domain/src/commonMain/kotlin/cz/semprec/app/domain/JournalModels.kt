@@ -40,7 +40,17 @@ data class JournalWeekPage(
     val markdown: String?
 )
 
-/** What the API answers for one period: its own page, and for a day or a month the pieces the screen shows. */
+/** A quarter's page inside a year: [quarter] is 1 to 4, [itemId] and [markdown] are `null` until written. */
+data class JournalQuarterPage(
+    val period: String,
+    val quarter: Int,
+    val from: CalendarDay,
+    val to: CalendarDay,
+    val itemId: String?,
+    val markdown: String?
+)
+
+/** What the API answers for one period: its own page, and for a day, a month or a year the pieces the screen shows. */
 data class JournalPeriodPage(
     val period: JournalPeriod,
     val from: CalendarDay,
@@ -49,6 +59,7 @@ data class JournalPeriodPage(
     val itemId: String?,
     val markdown: String?,
     val weeks: List<JournalWeekPage>,
+    val quarters: List<JournalQuarterPage>,
     val inbox: List<JournalInboxEntry>,
     val events: List<JournalEvent>,
     val birthdays: List<JournalBirthday>,

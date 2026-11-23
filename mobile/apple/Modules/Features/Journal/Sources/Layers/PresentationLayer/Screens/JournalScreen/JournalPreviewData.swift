@@ -17,10 +17,6 @@ extension Array where Element == JournalAxisRow {
             axisCell(.year, "2026-01-01", year: 2026, onPath: true),
             axisCell(.year, "2027-01-01", year: 2027, onPath: false)
         ]),
-        JournalAxisRow(kind: .quarter, cells: [
-            axisCell(.quarter, "2026-07-01", quarter: 3, month: 7, onPath: false),
-            axisCell(.quarter, "2026-10-01", quarter: 4, month: 10, onPath: true)
-        ]),
         JournalAxisRow(kind: .month, cells: [
             axisCell(.month, "2026-09-01", quarter: 3, month: 9, onPath: false),
             axisCell(.month, "2026-10-01", quarter: 4, month: 10, onPath: true),

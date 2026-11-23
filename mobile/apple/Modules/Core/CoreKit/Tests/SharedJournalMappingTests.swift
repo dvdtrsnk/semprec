@@ -24,6 +24,7 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.today, "2026-10-16")
         XCTAssertNil(state.page)
         XCTAssertEqual(state.weeks, [])
+        XCTAssertEqual(state.quarters, [])
     }
 
     func testStateMapsTheShownPeriodOrItsAbsence() {
@@ -63,6 +64,19 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.weeks.first?.firstDay, "2026-10-12")
         XCTAssertEqual(state.weeks.first?.lastDay, "2026-10-18")
         XCTAssertEqual(state.weeks.first?.page.ref, CoreKit.JournalPageRef(kind: .week, period: "2026-W42"))
+    }
+
+    func testStateMapsAQuarterWithItsPage() {
+        let ref = SharedSDK.JournalPageRef(kind: .quarter, period: "2026-Q4")
+        let quarter = SharedSDK.JournalQuarterState(
+            number: 4, from: "2026-10-01", to: "2026-12-31",
+            page: SharedSDK.JournalPageState(ref: ref, blocks: [])
+        )
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, quarters: [quarter]))
+        XCTAssertEqual(state.quarters.first?.number, 4)
+        XCTAssertEqual(state.quarters.first?.firstDay, "2026-10-01")
+        XCTAssertEqual(state.quarters.first?.lastDay, "2026-12-31")
+        XCTAssertEqual(state.quarters.first?.page.ref, CoreKit.JournalPageRef(kind: .quarter, period: "2026-Q4"))
     }
 
     func testStateMapsEventsBirthdaysInboxAndAxis() {

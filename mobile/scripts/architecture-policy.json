@@ -1241,6 +1241,7 @@
         "journal.inbox.status.rejected",
         "journal.notes",
         "journal.problem.dismiss",
+        "journal.quarter",
         "journal.subtitle.day",
         "journal.subtitle.dayToday",
         "journal.subtitle.month",

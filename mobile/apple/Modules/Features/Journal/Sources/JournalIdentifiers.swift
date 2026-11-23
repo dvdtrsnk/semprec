@@ -8,6 +8,8 @@ enum JournalIdentifiers {
     static let axisCellPrefix = "journal.axis."
     /// Followed by the ISO week number.
     static let weekTogglePrefix = "journal.week.toggle."
+    /// Followed by the quarter's number, 1 to 4.
+    static let quarterTogglePrefix = "journal.quarter.toggle."
     /// Followed by the event id.
     static let eventPrefix = "journal.event."
     static let inboxProcess = "journal.inbox.process"

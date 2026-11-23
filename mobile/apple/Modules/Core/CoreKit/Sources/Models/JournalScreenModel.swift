@@ -93,6 +93,24 @@ public struct JournalWeek: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A quarter of the diary, 1 to 4; `firstDay` and `lastDay` are `YYYY-MM-DD` and `page` is its note.
+public struct JournalQuarter: Equatable, Sendable, Identifiable {
+
+    public let number: Int
+    public let firstDay: String
+    public let lastDay: String
+    public let page: JournalPage
+
+    public var id: Int { number }
+
+    public init(number: Int, firstDay: String, lastDay: String, page: JournalPage) {
+        self.number = number
+        self.firstDay = firstDay
+        self.lastDay = lastDay
+        self.page = page
+    }
+}
+
 /// An event of the selected day; the times are minutes since midnight and `nil` for an all-day event.
 public struct JournalEvent: Equatable, Sendable, Identifiable {
 
@@ -184,7 +202,8 @@ public struct JournalInboxItem: Equatable, Sendable, Identifiable {
 }
 
 /// The diary: the selected period of the time axis with its note and, for a day, its events, birthdays and Inbox.
-/// A month has no `page` of its own; it lists its `weeks`. A day has its own week in `weeks`.
+/// A month has no `page` of its own; it lists its `weeks`. A year lists its `quarters`. A day has its own week in
+/// `weeks`.
 public struct JournalState: Equatable, Sendable {
 
     public var phase: JournalPhase
@@ -194,11 +213,12 @@ public struct JournalState: Equatable, Sendable {
     public var axis: [JournalAxisRow]
     public var page: JournalPage?
     public var weeks: [JournalWeek]
+    public var quarters: [JournalQuarter]
     public var events: [JournalEvent]
     public var birthdays: [JournalBirthday]
     public var inbox: [JournalInboxItem]
-    /// The period the page, weeks, events and Inbox belong to: right after a new selection still the previous one,
-    /// until the new period arrives. `nil` while nothing is shown.
+    /// The period the page, weeks, quarters, events and Inbox belong to: right after a new selection still the previous
+    /// one, until the new period arrives. `nil` while nothing is shown.
     public var shown: JournalSelection?
 
     public init(
@@ -208,6 +228,7 @@ public struct JournalState: Equatable, Sendable {
         axis: [JournalAxisRow] = [],
         page: JournalPage? = nil,
         weeks: [JournalWeek] = [],
+        quarters: [JournalQuarter] = [],
         events: [JournalEvent] = [],
         birthdays: [JournalBirthday] = [],
         inbox: [JournalInboxItem] = [],
@@ -219,6 +240,7 @@ public struct JournalState: Equatable, Sendable {
         self.axis = axis
         self.page = page
         self.weeks = weeks
+        self.quarters = quarters
         self.events = events
         self.birthdays = birthdays
         self.inbox = inbox
