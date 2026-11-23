@@ -9,6 +9,7 @@ import {
   type MailThreadFilters,
 } from "./mailThreadPredicates.js";
 import type { ParsedMailSearchQuery } from "./search.js";
+import { listMailThreadCandidates, ordersAtOrBefore, type MailThreadCandidates } from "./mailThreadCandidates.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
 const namedItem = z.object({ id: z.uuid(), name: z.string() });
@@ -224,6 +225,41 @@ export function hasInvalidMailSearchDate(search: ParsedMailSearchQuery): boolean
   );
 }
 
+/**
+ * The Inbox and folder lists read a window of candidate threads (`listMailThreadCandidates`) instead of every message
+ * of the tenant: the page computed over the window is final up to the window's boundary, and a page that reaches past
+ * it is computed again over a window four times larger. Every other list reads every message.
+ */
+async function listPage<Row extends { thread: unknown; activity_key: string }>(
+  limit: number,
+  filters: {
+    box: string;
+    folderId: string | null;
+    threadId?: string | null;
+    threadIds?: readonly string[] | null;
+    changedThreadIds?: readonly string[] | null;
+  },
+  queryPage: (window: readonly string[] | null) => Promise<{ rows: Row[] }>,
+  candidates: (size: number) => Promise<MailThreadCandidates>,
+): Promise<Row[]> {
+  const windowed =
+    (filters.box === "inbox" || filters.folderId !== null) &&
+    !filters.threadId &&
+    !filters.threadIds &&
+    !filters.changedThreadIds;
+  if (!windowed) return (await queryPage(null)).rows;
+  for (let size = 4 * (limit + 1); ; size *= 4) {
+    const window = await candidates(size);
+    const { rows } = await queryPage(window.threadIds);
+    const { boundary } = window;
+    if (boundary === null) return rows;
+    const final = rows.filter((row) =>
+      ordersAtOrBefore({ at: row.activity_key, id: thread.parse(row.thread).threadId }, boundary),
+    );
+    if (final.length === limit + 1) return final;
+  }
+}
+
 export async function listMailThreads(
   client: PoolClient,
   limit: number,
@@ -276,8 +312,9 @@ export async function listMailThreads(
   );
   const search = filters.search ? matchesSearch(filters.search, 12, filters.searchMessageItemIds) : null;
   if (search) predicates.push(search.sql);
-  const result = await client.query<{ thread: unknown; thread_item_id: string | null }>(
-    `
+  const queryPage = (window: readonly string[] | null) =>
+    client.query<{ thread: unknown; thread_item_id: string | null; activity_key: string }>(
+      `
 WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
   SELECT t.id AS thread_id, project.id AS project_id
   FROM mail_threads t
@@ -338,7 +375,8 @@ SELECT jsonb_build_object(
   'senderPerson', CASE WHEN person.id IS NULL THEN NULL ELSE jsonb_build_object('id', person.id, 'name', COALESCE(person.properties->>'name', ''), 'relationship', person.properties->>'relationship') END,
   'project', project_name.value, 'company', company_name.value, 'hasSempDraft', ${mailThreadHasSempDraft("p.thread_id")}
 ) AS thread,
-  (SELECT mt.item_id FROM mail_threads mt WHERE mt.tenant_id = app_tenant_default() AND mt.id = p.thread_id) AS thread_item_id
+  (SELECT mt.item_id FROM mail_threads mt WHERE mt.tenant_id = app_tenant_default() AND mt.id = p.thread_id) AS thread_item_id,
+  to_char(p.activity AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS activity_key
 FROM page p
 JOIN thread_subject ts ON ts.thread_id = p.thread_id
 ${threadRelationNameJoin("project", "projects")}
@@ -368,22 +406,25 @@ LEFT JOIN LATERAL (
 ) parts ON true
 ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
 `,
-    [
-      cursor?.at ?? null,
-      cursor?.id ?? null,
-      limit + 1,
-      filters.folderId,
-      filters.mailboxId,
-      filters.projectId ?? null,
-      filters.areaId ?? null,
-      filters.personId ?? null,
-      filters.threadId ?? null,
-      filters.threadIds ?? null,
-      filters.changedThreadIds ?? null,
-      ...(search?.params ?? []),
-    ],
+      [
+        cursor?.at ?? null,
+        cursor?.id ?? null,
+        limit + 1,
+        filters.folderId,
+        filters.mailboxId,
+        filters.projectId ?? null,
+        filters.areaId ?? null,
+        filters.personId ?? null,
+        filters.threadId ?? null,
+        filters.threadIds ?? null,
+        window ?? filters.changedThreadIds ?? null,
+        ...(search?.params ?? []),
+      ],
+    );
+  const result = await listPage(limit, filters, queryPage, (size) =>
+    listMailThreadCandidates(client, filters.folderId, size),
   );
-  const rows = result.rows.map((row) => ({
+  const rows = result.map((row) => ({
     thread: thread.parse(row.thread),
     itemId: z.uuid().nullable().parse(row.thread_item_id),
   }));

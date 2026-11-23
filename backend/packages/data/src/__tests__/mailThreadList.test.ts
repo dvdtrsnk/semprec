@@ -382,6 +382,61 @@ describe("mail thread list", () => {
       });
     });
   });
+  it.each([
+    { list: "the Inbox", listed: "inbox", other: "sent", query: () => "" },
+    { list: "a folder", listed: "sent", other: "inbox", query: (folderId: string) => `&folderId=${folderId}` },
+  ] as const)(
+    "pages $list in the order of every thread's newest listed message, also past a window of candidates",
+    ({ listed, other, query }) =>
+      runInTenant(tenant, async () => {
+        const f = await setup();
+        for (let day = 1; day <= 12; day++)
+          await f.ingest({
+            id: `<day-${day}@example.test>`,
+            subject: `Day ${day}`,
+            folder: f.folders[listed].id,
+            date: new Date(Date.UTC(2026, 0, day)),
+          });
+        // Its newest message is a draft, which the list leaves out: it is listed at its older message.
+        await f.ingest({
+          id: "<old@example.test>",
+          subject: "Old with a new draft",
+          folder: f.folders[listed].id,
+          date: new Date("2025-12-01T00:00:00Z"),
+        });
+        await f.ingest({
+          id: "<draft@example.test>",
+          refs: ["<old@example.test>"],
+          subject: "Re: Old with a new draft",
+          folder: f.folders.drafts.id,
+          from: "me@example.test",
+          date: new Date("2026-03-01T00:00:00Z"),
+        });
+        // Newer than every listed thread, in another folder only.
+        await f.ingest({
+          id: "<elsewhere@example.test>",
+          subject: "Elsewhere only",
+          folder: f.folders[other].id,
+          date: new Date("2026-02-01T00:00:00Z"),
+        });
+
+        const subjects: string[] = [];
+        let cursor: string | null = null;
+        do {
+          const page: Awaited<ReturnType<typeof list>>["body"] = (
+            await list(`/api/mail/threads?limit=2${query(f.folders[listed].id)}${cursor ? `&cursor=${cursor}` : ""}`)
+          ).body;
+          subjects.push(...page.threads.map((row) => row.subject));
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+
+        expect(subjects).toEqual([
+          ...Array.from({ length: 12 }, (_, index) => `Day ${12 - index}`),
+          "Old with a new draft",
+        ]);
+      }),
+  );
+
   it("uses date, then ingest time, then the legacy updated timestamp without losing cursor precision", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
