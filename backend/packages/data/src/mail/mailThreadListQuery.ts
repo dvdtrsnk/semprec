@@ -90,11 +90,11 @@ export function mailThreadCopyCtes(
   WHERE p.database_id = (SELECT emails FROM schema_ids) AND p.key = 'folder'
 ), own_addresses AS (${MAIL_OWN_ADDRESSES_SQL}), ${unreadCandidates}copies AS (
   SELECT m.thread_id, m.item_id, m.message_id, m.mailbox_item_id, m.envelope, m.preview_text,
-    NULLIF(i.properties->>'date', '')::timestamptz AS message_date,
-    COALESCE(NULLIF(i.properties->>'date', '')::timestamptz, m.ingested_at, i.updated_at) AS activity,
-    COALESCE(i.properties->>'name', '') AS subject,
-    COALESCE(i.properties->'read' = 'true'::jsonb, false) AS is_read,
-    COALESCE(i.properties->'flagged' = 'true'::jsonb, false) AS flagged,
+    pr.date AS message_date,
+    COALESCE(pr.date, m.ingested_at, i.updated_at) AS activity,
+    COALESCE(pr.name, '') AS subject,
+    COALESCE(pr.read = 'true'::jsonb, false) AS is_read,
+    COALESCE(pr.flagged = 'true'::jsonb, false) AS flagged,
     EXISTS (SELECT 1 FROM mail_attachments a WHERE a.tenant_id = m.tenant_id AND a.message_item_id = m.item_id) AS attached,
     EXISTS (SELECT 1 FROM own_addresses o WHERE o.address = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))) AS own,
     COALESCE(f.has_sent, false) AS has_sent,
@@ -108,6 +108,12 @@ export function mailThreadCopyCtes(
     COALESCE(f.folder_ids, ARRAY[]::uuid[]) AS folder_ids
   FROM mail_message_meta m
   JOIN items i ON i.tenant_id = m.tenant_id AND i.id = m.item_id AND i.database_id = (SELECT emails FROM schema_ids)
+  -- The properties read in one pass: each -> or ->> on a compressed jsonb decompresses it again, which across every
+  -- message of the tenant cost as much as the rest of the list.
+  CROSS JOIN LATERAL (
+    SELECT NULLIF(p.date, '')::timestamptz AS date, p.name, p.read, p.flagged
+    FROM jsonb_to_record(i.properties) AS p(date text, name text, read jsonb, flagged jsonb)
+  ) pr
   -- One aggregate per email over every folder edge, hash-joined; per-email lookups cost a loop per copy.
   LEFT JOIN (
     SELECT CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END AS email_id,
