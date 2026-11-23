@@ -72,7 +72,7 @@ internal data class ApiRequest(
  * [changes] emits, so the screens of every window read again.
  */
 class OfflineLayer internal constructor(
-    private val store: OfflineStore,
+    internal val store: OfflineStore,
     private val scope: CoroutineScope,
     timeSource: TimeSource = TimeSource.Monotonic,
 ) {
@@ -92,7 +92,7 @@ class OfflineLayer internal constructor(
     ): ApiResponse {
         val account = accountKey(session)
         val key = request.key()
-        val kept = store.answer(account, key)
+        val kept = store.answers.answer(account, key)
         val served = kept?.let {
             lock.withLock {
                 when {
@@ -155,7 +155,7 @@ class OfflineLayer internal constructor(
         sentAt: Long,
     ): ApiResponse = when (response) {
         is ApiResponse.Success -> {
-            store.keep(account, key, KeptAnswer(response.status, response.body, response.etag))
+            store.answers.keep(account, key, KeptAnswer(response.status, response.body, response.etag))
             lock.withLock { freshness.kept(account, key, sentAt) }
             reached()
             response
@@ -170,7 +170,7 @@ class OfflineLayer internal constructor(
                 kept?.toResponse() ?: response
             }
             response.status == NOT_FOUND_STATUS -> {
-                store.forget(account, key)
+                store.answers.forget(account, key)
                 lock.withLock { freshness.forgot(account, key) }
                 reached()
                 response
