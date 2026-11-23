@@ -40,7 +40,10 @@ struct CalendarMonthView: View {
     // MARK: - Body
     var body: some View {
         VStack(spacing: 0) {
-            CalendarMonthHeader(title: CalendarDates.monthName(topMonth ?? selectedMonth))
+            CalendarMonthHeader(
+                title: CalendarDates.monthName(topMonth ?? selectedMonth),
+                isCurrent: (topMonth ?? selectedMonth) == CalendarDates.firstOfMonth(state.today)
+            )
             GeometryReader { proxy in
                 // Six weeks fill the height, so a row's height is known before the first month is laid out.
                 let rowHeight = Self.rowHeight(gridHeight: proxy.size.height)

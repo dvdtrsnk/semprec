@@ -76,7 +76,7 @@ extension JournalAxisCell {
         switch kind {
         case .year: String(year)
         case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
-        case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
+        case .month: JournalDates.monthShort(month)
         case .day, .week: "\(JournalDates.weekdayShort(weekday)) \(day)"
         }
     }

@@ -2,8 +2,8 @@ import CoreKit
 import SwiftUI
 
 /// The two floating capsules at the bottom of the calendar, as the system Calendar's: "Dnes" at the leading edge in
-/// the type of a toolbar button (body, regular), and at the trailing edge the calendars and the invitations with the
-/// count of the new ones, both capsules 48 points tall. What the clipboard holds shows above them.
+/// the type of a toolbar button (body), a little heavier, and at the trailing edge the calendars and the invitations
+/// with the count of the new ones, both capsules 48 points tall. What the clipboard holds shows above them.
 struct CalendarBottomBar: View {
 
     // MARK: - Dependencies
@@ -27,7 +27,7 @@ struct CalendarBottomBar: View {
             HStack {
                 Button(action: onToday) {
                     Text("calendar.today", bundle: .module)
-                        .font(.body)
+                        .font(.body.weight(.medium))
                         .padding(.horizontal, Self.todayPadding)
                         .frame(height: Self.height)
                 }
