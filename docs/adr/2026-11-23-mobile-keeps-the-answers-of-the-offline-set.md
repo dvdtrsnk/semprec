@@ -67,6 +67,12 @@ row change feed would be a new server protocol where the realtime decisions keep
 - **Stale and missing answers.** Otherwise the request goes out: a success is kept and returned, `404` removes the
   kept answer, and a request that got no answer, a `5xx` or a `429` returns the kept answer when there is one, else the
   failure. Every other answer is returned as it came.
+- **An item without an answer of its own.** An item's own read (`GET /api/items/:id`) that gets no answer, a `5xx` or
+  a `429` and has no kept answer of its own returns the newest copy of the item that another kept answer holds with
+  its `databaseId` (a row of a list, most recently used or kept first), without the relations and links that list did
+  not ask for. The screens list most items long before they open one, and the item repository reads an item back
+  after each change it writes to it: without the copy, an item seen only in a list could not be opened offline, and a
+  change made to it offline, though queued, would report that it failed.
 - **Offline.** A request that got no answer makes the process offline until a request gets one or a socket connects.
   Offline, a read with a kept answer returns it at once, and at most once every 15 s one such read goes out in the
   background to check the connection. When an answer other than a window's own write ends the offline state, every

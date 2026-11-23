@@ -158,14 +158,16 @@ internal fun JsonObject.titleOf(): String? {
 
 /**
  * The first JSON object in [this] tree, depth first, whose `id` is [id] and that has `properties`: an item as the
- * answers of the offline set carry it.
+ * answers of the offline set carry it. With [whole], only one that also names its `databaseId`, as the item answers
+ * carry it and the target of a relation does not.
  */
-internal fun JsonElement.itemWithId(id: String): JsonObject? = when (this) {
+internal fun JsonElement.itemWithId(id: String, whole: Boolean = false): JsonObject? = when (this) {
     is JsonObject -> {
         val named = (this["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content == id
-        if (named && this["properties"] is JsonObject) this else values.firstNotNullOfOrNull { it.itemWithId(id) }
+        val item = named && this["properties"] is JsonObject && (!whole || this["databaseId"] is JsonPrimitive)
+        if (item) this else values.firstNotNullOfOrNull { it.itemWithId(id, whole) }
     }
-    is JsonArray -> firstNotNullOfOrNull { it.itemWithId(id) }
+    is JsonArray -> firstNotNullOfOrNull { it.itemWithId(id, whole) }
     else -> null
 }
 

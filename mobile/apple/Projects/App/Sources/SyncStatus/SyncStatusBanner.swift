@@ -18,13 +18,15 @@ struct SyncStatusBanner: View {
 
     // MARK: - Body
     var body: some View {
+        let lines = SyncStatusLine.lines(for: viewModel.state)
         VStack(spacing: 0) {
-            ForEach(SyncStatusLine.lines(for: viewModel.state), id: \.self) { line in
+            ForEach(lines, id: \.self) { line in
                 row(line)
             }
         }
         .frame(maxWidth: .infinity)
-        .background(.bar)
+        // The background reaches under the status bar; with no line it is clear, so the screen below draws there.
+        .background(lines.isEmpty ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AppIdentifiers.syncStatus)
         .task { await viewModel.observe() }

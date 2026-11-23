@@ -110,6 +110,22 @@ class QueuedViewsRepositoryTest {
         assertEquals("Water", work.details.load(ItemKind.TASK, water.id).content().title)
     }
 
+    @Test fun `a task only listed before going offline is completed and renamed and opens`() = runTest {
+        val api = api()
+        api.connected()
+        val work = WorkData(api)
+        val listed = work.tasks.tasks(TaskScope.TODAY).content().single { it.id == "t1" }
+        reachable = false
+
+        val done = work.details.update(listed, ItemChange.Done(true)).content()
+        val renamed = work.details.update(done, ItemChange.Title("Call back")).content()
+
+        assertEquals(TaskStatus.DONE, done.status)
+        assertEquals("Call back", renamed.title)
+        val opened = work.details.load(ItemKind.TASK, "t1").content()
+        assertEquals(TaskStatus.DONE to "Call back", opened.status to opened.title)
+    }
+
     @Test fun `a task renamed offline shows its new name`() = runTest {
         val api = api()
         val work = WorkData(api)

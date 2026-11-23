@@ -165,19 +165,22 @@ internal class KeptAnswers(private val store: OfflineStore, private val maxAnswe
     }
 
     /**
-     * The newest kept JSON object with the id [id] that has `properties` (an item as the answers carry it): from the
-     * answers held in memory, the most recently used first, then from the files of the index, the most recently kept
-     * first; `null` when no kept answer holds one.
+     * The newest kept JSON object with the id [id] that has `properties` (an item as the answers carry it), with
+     * [whole] one that also names its `databaseId` ([itemWithId]): from the answers held in memory, the most recently
+     * used first, then from the files of the index, the most recently kept first; `null` when no kept answer holds one.
      */
-    suspend fun newestObject(account: String, id: String): JsonObject? = store.using(account, keeping = false) {
-        memory.values.reversed().firstNotNullOfOrNull { parsed(it.body)?.itemWithId(id) }
-            ?: indexOf(account).firstNotNullOfOrNull { name ->
-                readCacheFile(path(account, name))
-                    ?.let { text -> decodeOrNull { store.json.decodeFromString(KeptAnswerFile.serializer(), text) } }
-                    ?.takeIf { it.account == account }
-                    ?.let { parsed(it.body)?.itemWithId(id) }
-            }
-    }
+    suspend fun newestObject(account: String, id: String, whole: Boolean = false): JsonObject? =
+        store.using(account, keeping = false) {
+            memory.values.reversed().firstNotNullOfOrNull { parsed(it.body)?.itemWithId(id, whole) }
+                ?: indexOf(account).firstNotNullOfOrNull { name ->
+                    readCacheFile(path(account, name))
+                        ?.let { text ->
+                            decodeOrNull { store.json.decodeFromString(KeptAnswerFile.serializer(), text) }
+                        }
+                        ?.takeIf { it.account == account }
+                        ?.let { parsed(it.body)?.itemWithId(id, whole) }
+                }
+        }
 
     /** Forgets what is held in memory; called by the store, with its lock held, when the account changes or ends. */
     fun reset() {

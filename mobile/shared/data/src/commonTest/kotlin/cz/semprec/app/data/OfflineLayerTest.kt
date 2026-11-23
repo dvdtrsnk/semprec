@@ -20,6 +20,7 @@ import kotlin.time.TestTimeSource
 
 private val SESSION = StoredSession("https://s.example", "tok")
 private val NO_ANSWER = ApiResponse.Failure(FailureKind.UNAVAILABLE, null)
+private const val LISTED_TASK = """{"id":"t1","databaseId":"db-tasks","properties":{"name":"Call"}}"""
 
 private fun answered(body: String) = ApiResponse.Success(200, body, "\"$body\"")
 
@@ -46,6 +47,8 @@ class OfflineLayerTest {
     private val time = TestTimeSource()
     private val overview = ApiRequest(HttpMethod.Get, "/api/overview")
     private val timeline = ApiRequest(HttpMethod.Get, "/api/calendar/timeline", listOf("from" to "a", "to" to "b"))
+    private val listed = ApiRequest(HttpMethod.Post, "/api/databases/db-tasks/query", body = "{}")
+    private val taskRead = ApiRequest(HttpMethod.Get, "/api/items/t1", listOf("include" to "links,relations"))
 
     private fun TestScope.layer() =
         OfflineLayer(OfflineStore(directory, StandardTestDispatcher(testScheduler)), backgroundScope, time)
@@ -206,6 +209,33 @@ class OfflineLayerTest {
         assertEquals(refused, layer.read(server))
         server.next(NO_ANSWER)
         assertEquals(answered("a"), layer.read(server))
+    }
+
+    @Test fun `an item read without an answer of its own returns the item a kept list holds`() = runTest {
+        for (failure in listOf(NO_ANSWER, ApiResponse.Failure(FailureKind.UNAVAILABLE, 503))) {
+            val layer = OfflineLayer(
+                OfflineStore(newTestDirectory(), StandardTestDispatcher(testScheduler)),
+                backgroundScope,
+                time,
+            )
+            layer.read(ScriptedServer(answered("""{"items":[$LISTED_TASK]}""")), listed)
+            assertEquals(ApiResponse.Success(200, LISTED_TASK), layer.read(ScriptedServer(failure), taskRead))
+        }
+    }
+
+    @Test fun `an item read gets no copy that lacks its database`() = runTest {
+        val layer = layer()
+        val related = """{"items":[{"id":"p1","databaseId":"db-projects","properties":{"name":"Garden"},
+            "relations":{"tasks":[{"id":"t1","title":"Call","properties":{"name":"Call"}}]}}]}"""
+        layer.read(ScriptedServer(answered(related)), listed)
+        assertEquals(NO_ANSWER, layer.read(ScriptedServer(NO_ANSWER), taskRead))
+    }
+
+    @Test fun `only an item's own read gets the copy of the item`() = runTest {
+        val layer = layer()
+        layer.read(ScriptedServer(answered("""{"items":[$LISTED_TASK]}""")), listed)
+        val related = ApiRequest(HttpMethod.Get, "/api/items/t1/related")
+        assertEquals(NO_ANSWER, layer.read(ScriptedServer(NO_ANSWER), related))
     }
 
     @Test fun `offline a kept read answers at once and checks the connection every fifteen seconds`() = runTest {

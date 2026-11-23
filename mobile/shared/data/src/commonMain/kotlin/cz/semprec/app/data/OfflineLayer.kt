@@ -44,6 +44,7 @@ internal val KEPT_ANSWER_FRESH_FOR: Duration = 5.minutes
 /** How often, at most, a request checks in the background whether the server can be reached again. */
 internal val OFFLINE_PROBE_EVERY: Duration = 15.seconds
 
+private const val OK_STATUS = 200
 private const val NOT_FOUND_STATUS = 404
 
 /** One request as [AuthenticatedApi.send] got it, without the session it goes out with. */
@@ -79,7 +80,8 @@ internal data class ApiRequest(
  * succeeded ([wrote]), the sync socket connecting ([connected]), every frame it receives ([frameArrived]) and every
  * queued write that reached the server or was dropped. Any other read goes out: a success is kept and returned, `404`
  * removes the kept answer, and a request that got no answer, a `5xx` or a `429` returns the kept answer when there is
- * one.
+ * one; an item's own read (`GET /api/items/:id`) without one returns the newest copy of the item that another kept
+ * answer holds, when one holds it with its `databaseId`.
  *
  * A request that got no answer makes the process offline until a request gets one or the socket connects. Offline,
  * a read with a kept answer returns it at once, and at most once every [OFFLINE_PROBE_EVERY] one of them goes out in
@@ -215,7 +217,9 @@ class OfflineLayer internal constructor(
 
 /**
  * The kept answers of the reads of [OfflineLayer]: a fresh one, or any one while offline, answers at once; otherwise
- * the request goes out and its answer is settled ([settle]).
+ * the request goes out and its answer is settled ([settle]). An item's own read that gets no answer, a `5xx` or a `429`
+ * and has no kept answer of its own is answered with the newest copy of the item that another kept answer holds
+ * ([itemCopy]), so an item seen in a list opens, and reads back a write made to it, without a connection.
  */
 private class KeptReads(
     private val store: OfflineStore,
@@ -243,15 +247,20 @@ private class KeptReads(
             return kept.toResponse()
         }
         val sentAt = state.locked { state.freshness.signal }
-        return settle(account, key, transmit(request), kept, sentAt)
+        return settle(account, key, transmit(request), kept, sentAt) { itemCopy(account, request) }
     }
 
+    /**
+     * Keeps or forgets what [response] answered for [key]; a request that got no answer, a `5xx` or a `429` returns
+     * [kept], else [copy], else the failure.
+     */
     private suspend fun settle(
         account: String,
         key: String,
         response: ApiResponse,
         kept: KeptAnswer?,
         sentAt: Long,
+        copy: suspend () -> ApiResponse? = { null },
     ): ApiResponse = when (response) {
         is ApiResponse.Success -> {
             store.answers.keep(account, key, KeptAnswer(response.status, response.body, response.etag))
@@ -262,11 +271,11 @@ private class KeptReads(
         is ApiResponse.Failure -> when {
             response.status == null -> {
                 state.answered(response)
-                kept?.toResponse() ?: response
+                kept?.toResponse() ?: copy() ?: response
             }
             response.kind == FailureKind.UNAVAILABLE -> {
                 state.reached()
-                kept?.toResponse() ?: response
+                kept?.toResponse() ?: copy() ?: response
             }
             response.status == NOT_FOUND_STATUS -> {
                 store.answers.forget(account, key)
@@ -297,6 +306,15 @@ private class KeptReads(
             }
         }
     }
+
+    /**
+     * The newest copy of the item [request] reads on its own that a kept answer holds whole, with its `databaseId`, as
+     * a `200`; `null` for any other read and when no kept answer holds the item.
+     */
+    private suspend fun itemCopy(account: String, request: ApiRequest): ApiResponse? =
+        itemIdOf(request)
+            ?.let { id -> store.answers.newestObject(account, id, whole = true) }
+            ?.let { copy -> ApiResponse.Success(OK_STATUS, copy.toString()) }
 
     private class Served(val probe: Boolean)
 }

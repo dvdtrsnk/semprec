@@ -236,7 +236,8 @@ private fun JsonElement.rewritten(
 private fun PendingWrite.targetId(): String = segment(request.path, ITEM_SEGMENT).orEmpty()
 
 /** The item id of a `GET /api/items/:id`, or `null` for any other read. */
-private fun itemIdOf(read: ApiRequest): String? =
+/** The id of the item [read] reads on its own (`GET /api/items/:id`), or `null` for any other request. */
+internal fun itemIdOf(read: ApiRequest): String? =
     if (read.method == HttpMethod.Get && QueuedRoute.of(HttpMethod.Patch, read.path) == QueuedRoute.PATCH_ITEM) {
         segment(read.path, ITEM_SEGMENT)
     } else {

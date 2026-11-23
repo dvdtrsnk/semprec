@@ -56,31 +56,34 @@ private extension AppScene {
         rootNavigator: Navigator,
         selectedTab: Binding<AppTab>
     ) -> some View {
-        TabView(selection: selectedTab) {
-            Tab("tab.overview", systemImage: "list.bullet.rectangle", value: AppTab.overview) {
-                Self.stack(.overview, composition) { OverviewTab.root(composition) }
-            }
-            .accessibilityIdentifier(AppIdentifiers.overviewTab)
-            Tab("tab.calendar", systemImage: "calendar", value: AppTab.calendar) {
-                Self.stack(.calendar, composition) { CalendarTab.root(composition) }
-            }
-            .accessibilityIdentifier(AppIdentifiers.calendarTab)
-            Tab("tab.journal", systemImage: "book", value: AppTab.journal) {
-                Self.stack(.journal, composition) { JournalTab.root(composition) }
-            }
-            .accessibilityIdentifier(AppIdentifiers.journalTab)
-        }
-        .adaptiveTabNavigation()
-        // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view method.
-        .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
-            if let composition {
-                // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler here.
-                AnyView(Self.destinationView(destination, composition: composition))
-            }
-        }
-        .navigationRoot(rootNavigator)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        // The banner sits above the tab view rather than in a top safe-area inset of it: iOS lays the tabs' navigation
+        // bars out under such an inset, so the banner covered their buttons.
+        VStack(spacing: 0) {
             SyncStatusBanner(viewModel: SyncStatusViewModel(model: composition.models.makeSyncStatus()))
+            TabView(selection: selectedTab) {
+                Tab("tab.overview", systemImage: "list.bullet.rectangle", value: AppTab.overview) {
+                    Self.stack(.overview, composition) { OverviewTab.root(composition) }
+                }
+                .accessibilityIdentifier(AppIdentifiers.overviewTab)
+                Tab("tab.calendar", systemImage: "calendar", value: AppTab.calendar) {
+                    Self.stack(.calendar, composition) { CalendarTab.root(composition) }
+                }
+                .accessibilityIdentifier(AppIdentifiers.calendarTab)
+                Tab("tab.journal", systemImage: "book", value: AppTab.journal) {
+                    Self.stack(.journal, composition) { JournalTab.root(composition) }
+                }
+                .accessibilityIdentifier(AppIdentifiers.journalTab)
+            }
+            .adaptiveTabNavigation()
+            // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view
+            // method.
+            .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
+                if let composition {
+                    // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler here.
+                    AnyView(Self.destinationView(destination, composition: composition))
+                }
+            }
+            .navigationRoot(rootNavigator)
         }
         .sempOverlay(composition)
         .onAppear { composition.currentTab = selectedTab.wrappedValue }
