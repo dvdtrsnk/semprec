@@ -3,8 +3,10 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
-/// One period on the axis: the selection on a flat capsule in the deep accent, drawn as the calendar's week strip
-/// draws its selected day, the day, month, quarter and year of today's date in gold, weekends greyed.
+/// One period on the axis, laid out as the calendar's week strip lays out a day: a small grey caption above (the
+/// weekday of a day, the year over each January) and the period below in the strip's type, on a flat capsule in the
+/// deep accent when it is selected, as the strip's circle. The day, month, quarter and year of today's date are in
+/// gold, weekends greyed.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -12,21 +14,28 @@ struct JournalAxisCellLabel: View {
 
     // MARK: - Body
     var body: some View {
-        Text(cell.title)
-            .font(font)
-            .fontWeight(emphasized ? .bold : .semibold)
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .fixedSize()
-            // The capsule leaves room on both sides of the text, and is never narrower than the cell's own room.
-            .padding(.horizontal, Self.pillPadding)
-            .frame(minWidth: cell.kind.width - Self.gap)
-            .frame(height: cell.kind.height - Self.gap)
-            .background { pill }
-            // The cell keeps its width on the axis; a capsule wider than it reaches into the gaps beside it.
-            .frame(width: cell.kind.width - Self.gap)
-            .padding(Self.gap / 2)
-            .contentShape(.capsule)
+        VStack(spacing: Self.captionSpacing) {
+            if cell.kind.hasCaption {
+                // The line keeps its place under a month without a caption, so the months stay level.
+                Text(cell.caption ?? " ")
+                    .font(.caption2)
+                    .foregroundStyle(weekend ? Theme.Colors.secondaryText.opacity(0.6) : Theme.Colors.secondaryText)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Text(cell.title)
+                .font(.callout.weight(emphasized ? .semibold : .regular))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .fixedSize()
+                // A capsule round the text, a circle round a short one, as the strip's circle round a day.
+                .padding(.horizontal, Self.pillPadding)
+                .frame(minWidth: Self.pillHeight, minHeight: Self.pillHeight)
+                .background { pill }
+        }
+        // The cell keeps its width on the axis; a capsule wider than it reaches into the room beside it.
+        .frame(width: cell.kind.width, height: cell.kind.height)
+        .contentShape(.rect)
     }
 
     /// The capsule behind the selected period, as the calendar's circle behind its selected day: whole on the
@@ -56,28 +65,38 @@ struct JournalAxisCellLabel: View {
         if cell.today { return JournalColors.gold }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
-    private var font: Font { cell.kind == .year ? .title3 : .subheadline }
 
-    /// The space between two neighbouring pills.
-    private static let gap: CGFloat = 6
-    /// The room between the text and the ends of its capsule.
-    private static let pillPadding: CGFloat = 12
-    /// How long the capsule takes to grow or shrink, and how small it is on a period that is not selected: as the
-    /// calendar's week strip.
+    /// As the calendar's week strip: the room between the caption and the period, the height of the selection's
+    /// circle, how long it takes to grow or shrink and how small it is on a period that is not selected.
+    private static let captionSpacing: CGFloat = 4
+    private static let pillHeight: CGFloat = 34
     private static let duration = 0.25
     private static let shrunk = 0.2
+    /// The room between the text and the ends of its capsule.
+    private static let pillPadding: CGFloat = 10
 }
 
 // MARK: - Labels
 @MainActor
 extension JournalAxisCell {
 
+    /// The period itself: the day's number, the month's short name, the year.
     var title: String {
         switch kind {
         case .year: String(year)
-        case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
-        case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
-        case .day, .week: "\(JournalDates.weekdayShort(weekday)) \(day)"
+        case .quarter: "Q\(quarter)"
+        case .month: JournalDates.monthShort(month)
+        case .day, .week: String(day)
+        }
+    }
+
+    /// What the small line above the period says: a day's weekday, and the year over the first month or quarter of
+    /// a year, where the months turn to another one.
+    var caption: String? {
+        switch kind {
+        case .year: nil
+        case .quarter, .month: month == 1 ? String(year) : nil
+        case .day, .week: JournalDates.weekdayShort(weekday)
         }
     }
 
@@ -108,20 +127,23 @@ extension JournalPeriodKind {
         }
     }
 
+    /// About as wide as a day of the calendar's week strip, a seventh of a phone's width.
     var width: CGFloat {
         switch self {
-        case .year: 92
-        case .quarter: 74
-        case .month: 70
-        case .week, .day: 68
+        case .year: 80
+        case .quarter, .month: 60
+        case .week, .day: 54
         }
     }
 
+    /// Whether the period has a line above it, as a day of the calendar's week strip has its weekday.
+    var hasCaption: Bool { self != .year }
+
+    /// A caption above a period, as in the calendar's week strip; a year has the period alone.
     var height: CGFloat {
         switch self {
-        case .year: 38
-        case .quarter, .month, .week: 32
-        case .day: 36
+        case .year: 40
+        case .quarter, .month, .week, .day: 54
         }
     }
 
