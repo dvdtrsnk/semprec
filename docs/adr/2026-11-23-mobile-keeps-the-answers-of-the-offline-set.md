@@ -76,6 +76,16 @@ row change feed would be a new server protocol where the realtime decisions keep
   sign-in) is kept in `<account>/session.json`. A restore that gets no answer, a `5xx` or a `429` opens the app signed
   in as that person, and stays unreachable as before when none is kept; every other answer is handled as before, a
   `401` signing the window out.
+- **Warm-up.** Every window registers an `OfflineWarmup` with the layer, which reads the offline set ahead of the
+  screens with the requests those screens send, through repositories over the window's `AuthenticatedApi`: the schema
+  and the databases, the task lists of every scope, the areas, projects and people, the calendars and invitations,
+  the calendar windows of the current month, the one before and the two after, the agenda's first page from today,
+  the diary's days from 7 back to 7 ahead with their pages, the overview, tonight's sleep, and the Inbox cards and
+  types; today is the device's day, as the screens are given it. A warm-up is due when a window starts, when an answer
+  ends the offline state and when a sync socket connects, and it runs once the queue replay that follows has finished,
+  so it reads what the replay wrote. It runs the warm-up of the window registered last, at most once every 30 minutes
+  per account for the process, never offline and never without a session; it stops once the process turns offline,
+  and a read that fails is left as it is.
 - **No server change.** The server keeps no replay buffer and no change feed: a device that was offline reads again,
   which [[2026-10-16-tenant-scoped-realtime-fan-out]] already prescribes for a reconnecting client, and the socket's
   frames only mark what is kept as stale.
@@ -84,9 +94,12 @@ row change feed would be a new server protocol where the realtime decisions keep
 
 - A screen of the offline set opens at once from the device when nothing changed since it was last read, and without
   a connection it opens with what was kept; reads after a write, a reconnect or a frame go to the server as before.
-- A read the device never kept fails without a connection as it did. Writing offline is
-  [[2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection]]; warming the set ahead of the screens
-  (`[offline-first 06/07]`) and showing the offline state (`[offline-first 07/07]`) will follow.
+- A read the device neither kept nor warmed fails without a connection as it did: a collection other than tasks,
+  areas, projects and people is kept once opened. Writing offline is
+  [[2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection]]; showing the offline state
+  (`[offline-first 07/07]`) will follow.
+- A warm-up sends about forty requests to the server, each distinct request once; the reads it repeats (the schema,
+  the databases) are answered from the device.
 - The device holds a copy of the person's data outside the Keychain, protected by the system's file protection and
   removed at every end of the session; it holds no token, because the account is named by a hash.
 - Requests outside the offline set behave exactly as before, and without a data directory nothing changes at all.

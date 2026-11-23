@@ -78,6 +78,9 @@ internal data class ApiRequest(
  * a read with a kept answer returns it at once, and at most once every [OFFLINE_PROBE_EVERY] one of them goes out in
  * [scope] to check the connection. When an answer ends the offline state, every kept answer turns stale, [changes]
  * emits, so the screens of every window read again, and the queue is replayed.
+ *
+ * After every replay that finished, the note pages that wait are written ([pages]) and, when one is due, the window
+ * that registered last ([warmUpWith]) reads the offline set ahead of its screens ([OfflineWarmupSchedule]).
  */
 class OfflineLayer internal constructor(
     internal val store: OfflineStore,
@@ -89,12 +92,21 @@ class OfflineLayer internal constructor(
     private val state = LayerState(timeSource)
     internal val writes = OfflineWrites(store, scope, state, clock, newId)
     private val views = QueuedViews(store, clock.today)
+    private val warmups = OfflineWarmupSchedule(state, timeSource)
+    private val reads = KeptReads(store, state, scope)
 
     /** The note pages read and written through the device. */
     val pages = OfflinePages(store, state) { writes.sender() }
 
     init {
-        writes.afterReplay = pages::writeWaiting
+        writes.afterReplay = {
+            pages.writeWaiting()
+            warmups.runIfDue()
+        }
+        state.onReachedAgain = {
+            warmups.due()
+            writes.replaySoon()
+        }
     }
 
     /** Emits when what the screens of every window show may have changed. */
@@ -113,31 +125,7 @@ class OfflineLayer internal constructor(
         val account = accountKey(session)
         val queued = store.queue.state(account)
         val resolved = queued?.let { request.resolved(it.ids) } ?: request
-        return views.project(account, resolved, answer(account, resolved, transmit), queued)
-    }
-
-    private suspend fun answer(
-        account: String,
-        request: ApiRequest,
-        transmit: suspend (ApiRequest) -> ApiResponse,
-    ): ApiResponse {
-        val key = request.key()
-        val kept = store.answers.answer(account, key)
-        val served = kept?.let {
-            state.locked {
-                when {
-                    state.connectivity.offline -> Served(probe = state.connectivity.probeDue())
-                    state.freshness.isFresh(account, key) -> Served(probe = false)
-                    else -> null
-                }
-            }
-        }
-        if (kept != null && served != null) {
-            if (served.probe) probe(account, key, request, transmit)
-            return kept.toResponse()
-        }
-        val sentAt = state.locked { state.freshness.signal }
-        return settle(account, key, transmit(request), kept, sentAt)
+        return views.project(account, resolved, reads.answer(account, resolved, transmit), queued)
     }
 
     /** Sends or queues [request], a write of [route] made with [session]; [transmit] sends it to the server. */
@@ -164,6 +152,13 @@ class OfflineLayer internal constructor(
     /** The sync socket of a window connected: the server is reached, what it sent meanwhile is unknown. */
     internal suspend fun connected() {
         state.connected()
+        warmups.due()
+        writes.replaySoon()
+    }
+
+    /** A window starts: its [warmup] reads the offline set ahead of the screens from now on, once the queue replayed. */
+    fun warmUpWith(warmup: OfflineWarmup) {
+        warmups.register(warmup)
         writes.replaySoon()
     }
 
@@ -176,6 +171,60 @@ class OfflineLayer internal constructor(
     suspend fun clear() {
         store.clear()
         state.locked { state.freshness.clear() }
+    }
+
+    companion object {
+        @OptIn(ExperimentalAtomicApi::class)
+        private val layers = AtomicReference<Map<String, OfflineLayer>>(emptyMap())
+
+        /**
+         * The layer of [directory] for the whole process: every window that keeps its data there shares it, so they
+         * share one store, one freshness, one offline state and one queue. Its background work runs for as long as
+         * the process.
+         */
+        @OptIn(ExperimentalAtomicApi::class)
+        fun shared(directory: String): OfflineLayer {
+            while (true) {
+                val current = layers.load()
+                current[directory]?.let { return it }
+                val layer = OfflineLayer(OfflineStore(directory), CoroutineScope(SupervisorJob() + Dispatchers.Default))
+                if (layers.compareAndSet(current, current + (directory to layer))) return layer
+            }
+        }
+    }
+}
+
+/**
+ * The kept answers of the reads of [OfflineLayer]: a fresh one, or any one while offline, answers at once; otherwise
+ * the request goes out and its answer is settled ([settle]).
+ */
+private class KeptReads(
+    private val store: OfflineStore,
+    private val state: LayerState,
+    private val scope: CoroutineScope,
+) {
+    suspend fun answer(
+        account: String,
+        request: ApiRequest,
+        transmit: suspend (ApiRequest) -> ApiResponse,
+    ): ApiResponse {
+        val key = request.key()
+        val kept = store.answers.answer(account, key)
+        val served = kept?.let {
+            state.locked {
+                when {
+                    state.connectivity.offline -> Served(probe = state.connectivity.probeDue())
+                    state.freshness.isFresh(account, key) -> Served(probe = false)
+                    else -> null
+                }
+            }
+        }
+        if (kept != null && served != null) {
+            if (served.probe) probe(account, key, request, transmit)
+            return kept.toResponse()
+        }
+        val sentAt = state.locked { state.freshness.signal }
+        return settle(account, key, transmit(request), kept, sentAt)
     }
 
     private suspend fun settle(
@@ -231,26 +280,6 @@ class OfflineLayer internal constructor(
     }
 
     private class Served(val probe: Boolean)
-
-    companion object {
-        @OptIn(ExperimentalAtomicApi::class)
-        private val layers = AtomicReference<Map<String, OfflineLayer>>(emptyMap())
-
-        /**
-         * The layer of [directory] for the whole process: every window that keeps its data there shares it, so they
-         * share one store, one freshness, one offline state and one queue. Its background work runs for as long as
-         * the process.
-         */
-        @OptIn(ExperimentalAtomicApi::class)
-        fun shared(directory: String): OfflineLayer {
-            while (true) {
-                val current = layers.load()
-                current[directory]?.let { return it }
-                val layer = OfflineLayer(OfflineStore(directory), CoroutineScope(SupervisorJob() + Dispatchers.Default))
-                if (layers.compareAndSet(current, current + (directory to layer))) return layer
-            }
-        }
-    }
 }
 
 /**

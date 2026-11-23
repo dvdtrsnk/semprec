@@ -13,14 +13,6 @@ private const val GRID_DAYS = 42
 private const val MONTHS_IN_YEAR = 12
 private const val SYSTEM_SLEEP = "sleep"
 private const val SYSTEM_TASKS = "tasks"
-private const val DAYS_BEFORE_GRID = 7
-private const val DAYS_AFTER_GRID = 49
-
-/** The first and the last day of the window that is loaded around [day]: its month grid with a week on each side. */
-internal fun windowOf(day: CalendarDay): Pair<CalendarDay, CalendarDay> {
-    val gridStart = day.startOfMonth().startOfWeek()
-    return gridStart.plusDays(-DAYS_BEFORE_GRID) to gridStart.plusDays(DAYS_AFTER_GRID)
-}
 
 /** The 42 days of the month view of [day]: from the Monday of its first week, six weeks. */
 internal fun monthGridOf(day: CalendarDay): List<String> {

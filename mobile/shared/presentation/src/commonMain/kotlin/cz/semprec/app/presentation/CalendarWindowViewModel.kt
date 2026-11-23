@@ -103,7 +103,7 @@ abstract class CalendarWindowViewModel internal constructor(
     private fun load(showLoading: Boolean) {
         loadJob?.cancel()
         val day = CalendarDay.parse(state.value.selectedDay) ?: FALLBACK_DAY
-        val (from, to) = windowOf(day)
+        val (from, to) = day.calendarWindow()
         if (showLoading) update { it.copy(phase = CalendarPhase.LOADING, failure = null) }
         loadJob = viewModelScope.launch {
             val result = guarded { loadWindow(from, to) }

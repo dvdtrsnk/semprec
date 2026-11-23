@@ -16,6 +16,8 @@ private const val DATE_LENGTH = 10
 private const val PARTS_OF_DATE = 3
 private const val FIRST_SEPARATOR = 4
 private const val SECOND_SEPARATOR = 7
+private const val DAYS_BEFORE_GRID = 7
+private const val DAYS_AFTER_GRID = 49
 
 private val MONTH_LENGTHS = listOf(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
@@ -66,6 +68,15 @@ data class CalendarDay(val year: Int, val month: Int, val day: Int) : Comparable
     fun startOfMonth(): CalendarDay = CalendarDay(year, month, 1)
 
     fun lengthOfMonth(): Int = daysIn(year, month)
+
+    /**
+     * The first and the last day of the window the calendar loads around this day: the six weeks of its month grid
+     * with a week on each side.
+     */
+    fun calendarWindow(): Pair<CalendarDay, CalendarDay> {
+        val gridStart = startOfMonth().startOfWeek()
+        return gridStart.plusDays(-DAYS_BEFORE_GRID) to gridStart.plusDays(DAYS_AFTER_GRID)
+    }
 
     override fun compareTo(other: CalendarDay): Int = epochDay.compareTo(other.epochDay)
 

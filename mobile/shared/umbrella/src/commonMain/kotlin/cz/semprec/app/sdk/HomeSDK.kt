@@ -22,6 +22,7 @@ import cz.semprec.app.data.HttpPushRepository
 import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.data.OfflineLayer
+import cz.semprec.app.data.OfflineWarmup
 import cz.semprec.app.data.SyncSocket
 import cz.semprec.app.data.WorkData
 import cz.semprec.app.domain.InMemoryRecentSearches
@@ -73,7 +74,8 @@ import kotlinx.coroutines.flow.emptyFlow
  * the server no longer knows. [dataDirectory] is a directory the system keeps (Application Support on Apple), where the
  * answers of the offline set are kept for the signed-in account, so its screens open from the device and without a
  * connection; every window of the process that names it shares what is kept there, and every end of the session
- * empties it as well. `null` keeps nothing and every request goes to the server
+ * empties it as well. The window reads that set ahead of its screens ([OfflineWarmup]) when it starts with a session
+ * and when the connection comes back. `null` keeps nothing and every request goes to the server
  * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
@@ -105,6 +107,10 @@ class HomeSDK(
         changes = ItemChanges(offline?.changes ?: emptyFlow()),
         offline = offline,
     )
+
+    init {
+        offline?.warmUpWith(OfflineWarmup(auth.api))
+    }
     private val threadLists: MailThreadListCache =
         cacheDirectory?.let { FileMailThreadListCache(it, auth.api) } ?: NoMailThreadListCache()
     private val viewModels =

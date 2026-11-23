@@ -83,12 +83,15 @@ internal class OfflineWrites(
     /** The queue of the account signed in, as it changes. */
     val status: StateFlow<QueueStatus> = mutableStatus.asStateFlow()
 
-    /** Runs after every replay: the note pages wait for the ids the queue maps, so they are written then. */
-    var afterReplay: suspend () -> Unit = {}
-
-    init {
-        state.onReachedAgain = ::replaySoon
-    }
+    /**
+     * Runs after every replay that finished, whatever started it: the note pages wait for the ids the queue maps, and
+     * the warm-up reads what the replay wrote.
+     */
+    var afterReplay: suspend () -> Unit
+        get() = replayer.afterRun
+        set(value) {
+            replayer.afterRun = value
+        }
 
     /** The sender of the window attached last, which sends what the device keeps; `null` before any attached. */
     fun sender(): QueueSender? = replayer.current()
@@ -118,12 +121,9 @@ internal class OfflineWrites(
         }
     }
 
-    /** Replays the queue now, or once more after the replay under way, and then runs [afterReplay]. */
+    /** Replays the queue now, or once more after the replay under way; [afterReplay] runs when it finished. */
     fun replaySoon() {
-        scope.launch {
-            replayer.run()
-            afterReplay()
-        }
+        scope.launch { replayer.run() }
     }
 
     /** Forgets the failures recorded for the account signed in. */
@@ -221,16 +221,25 @@ internal class QueueReplayer(
 
     fun current(): QueueSender? = sender.load()
 
-    /** Replays until the queue is empty, the server cannot act on the first write or nobody is signed in. */
+    /** Runs after every [run] that replayed, once its replay finished; a [run] that found one under way leaves it. */
+    var afterRun: suspend () -> Unit = {}
+
+    /**
+     * Replays until the queue is empty, the server cannot act on the first write or nobody is signed in, then runs
+     * [afterRun]. While a replay is under way it only asks that one to run once more, and that one runs [afterRun].
+     */
     suspend fun run() {
         again.store(true)
+        var replayed = false
         while (again.load() && running.tryLock()) {
             try {
                 while (again.compareAndSet(expectedValue = true, newValue = false)) replayAll()
+                replayed = true
             } finally {
                 running.unlock()
             }
         }
+        if (replayed) afterRun()
     }
 
     private suspend fun replayAll() {
