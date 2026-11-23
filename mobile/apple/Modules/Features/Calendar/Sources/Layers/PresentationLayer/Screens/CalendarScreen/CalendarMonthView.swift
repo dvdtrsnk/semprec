@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Months one after another in a vertical scroll, as the system Calendar shows them: each month only its own days by
 /// week, Monday first, with its short name above its first day, and the large title naming the month at the top. A
-/// month scrolled to the top becomes the selected one; a tap on a day opens it, and a chip dropped on a day moves its
-/// item there.
+/// month scrolled to the top becomes the selected one; a tap on a day opens it. Each day shows only a line of what is
+/// on it; its items are edited in the day.
 struct CalendarMonthView: View {
 
     // MARK: - Dependencies
@@ -44,27 +44,23 @@ struct CalendarMonthView: View {
                 title: CalendarDates.monthName(topMonth ?? selectedMonth),
                 isCurrent: (topMonth ?? selectedMonth) == CalendarDates.firstOfMonth(state.today)
             )
-            GeometryReader { proxy in
-                // Six weeks fill the height, so a row's height is known before the first month is laid out.
-                let rowHeight = Self.rowHeight(gridHeight: proxy.size.height)
-                let items = itemsByDate
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(months, id: \.self) { month in
-                            section(month, rowHeight: rowHeight, items: items)
-                        }
+            let items = itemsByDate
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(months, id: \.self) { month in
+                        section(month, rowHeight: Self.rowHeight, items: items)
                     }
-                    .scrollTargetLayout()
                 }
-                .scrollIndicators(.hidden)
-                .paperScrollFollowing(paper)
-                .scrollPosition(id: $topMonth, anchor: .top)
-                // A month at the top starts with its first week; its short name stays above, under the title.
-                .contentMargins(.top, -Self.labelHeight, for: .scrollContent)
-                .onScrollPhaseChange { _, phase in
-                    isScrolledByFinger = phase == .tracking || phase == .interacting || phase == .decelerating
-                    if phase == .idle { selectTopMonth(force: true) }
-                }
+                .scrollTargetLayout()
+            }
+            .scrollIndicators(.hidden)
+            .paperScrollFollowing(paper)
+            .scrollPosition(id: $topMonth, anchor: .top)
+            // A month at the top starts with its first week; its short name stays above, under the title.
+            .contentMargins(.top, -Self.labelHeight, for: .scrollContent)
+            .onScrollPhaseChange { _, phase in
+                isScrolledByFinger = phase == .tracking || phase == .interacting || phase == .decelerating
+                if phase == .idle { selectTopMonth(force: true) }
             }
             .onChange(of: topMonth) { selectTopMonth(force: false) }
             .onChange(of: selectedMonth) { _, month in
@@ -81,10 +77,9 @@ struct CalendarMonthView: View {
 // MARK: - Layout
 extension CalendarMonthView {
 
-    /// The height of a week: six of them fill the grid below the header.
-    static func rowHeight(gridHeight: CGFloat) -> CGFloat {
-        max((gridHeight / 6).rounded(), 44)
-    }
+    /// The height of a week, as the system Calendar's compact month: the day's number and the line of what is on
+    /// it, the months going on below.
+    static let rowHeight: CGFloat = 69
 }
 
 // MARK: - Subviews
@@ -138,7 +133,7 @@ private extension CalendarMonthView {
         return HStack(spacing: 0) {
             ForEach(dates.indices, id: \.self) { column in
                 if let date = dates[column] {
-                    cell(date, rowHeight: rowHeight, items: items[date] ?? [])
+                    cell(date, items: items[date] ?? [])
                 } else {
                     Color.clear.frame(maxWidth: .infinity)
                 }
@@ -153,16 +148,14 @@ private extension CalendarMonthView {
         }
     }
 
-    func cell(_ date: String, rowHeight: CGFloat, items: [CalendarItem]) -> some View {
+    func cell(_ date: String, items: [CalendarItem]) -> some View {
         CalendarMonthCell(
             date: date,
             items: items,
             today: state.today,
             selected: date == state.selectedDay,
             isWeekday: CalendarDates.isoWeekday(date) < 6,
-            maxChips: max(Int((rowHeight - 34) / 14), 0),
-            onOpen: { viewModel.navigate(.show(zoom: .day, day: date)) },
-            onDrop: { viewModel.gesture(.moveToDay(itemId: $0, day: date)) }
+            onOpen: { viewModel.navigate(.show(zoom: .day, day: date)) }
         )
     }
 

@@ -222,7 +222,7 @@ private extension CalendarScreen {
     /// at the top of the cell, with the selected month scrolled to the top as a month view first shows it.
     var estimatedMonthDay: CGRect? {
         guard let header = zoomMeasures.monthHeaderHeight, zoomSpaceSize.height > header else { return nil }
-        let rowHeight = CalendarMonthView.rowHeight(gridHeight: zoomSpaceSize.height - header)
+        let rowHeight = CalendarMonthView.rowHeight
         let top = header + CGFloat(rowIndex) * rowHeight + CalendarMonthCell.digitTop
         return CGRect(x: 0, y: top, width: CalendarMonthCell.digitSize, height: CalendarMonthCell.digitSize)
     }
