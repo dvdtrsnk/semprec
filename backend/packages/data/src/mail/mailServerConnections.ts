@@ -46,6 +46,8 @@ export interface MailServerConnectionOptions {
   socketTimeout?: number;
   /** IMAP only, imapflow's `autoIdleDelay`: how long a selected connection stays inactive before it starts IDLE. */
   autoIdleDelay?: number;
+  /** IMAP only: ENABLE QRESYNC where the server advertises it. Defaults to `true`. */
+  qresync?: boolean;
   /** IMAP only: admits the login under the server host's login rate. Defaults to `sharedImapConnectionLimiter`. */
   loginAdmission?: Pick<ImapConnectionLimiter, "admitLogin">;
   /** IMAP only: abandons the wait for a login admission. */
@@ -192,7 +194,7 @@ function buildImapFlow(
     connectionTimeout,
     greetingTimeout: GREETING_TIMEOUT_MS,
     // imapflow ENABLEs QRESYNC only where the server advertises it; a sync pass then receives VANISHED for expunges.
-    qresync: true,
+    qresync: options.qresync ?? true,
     ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),

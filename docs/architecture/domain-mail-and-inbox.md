@@ -88,6 +88,9 @@ described elsewhere and only referenced here:
   it for one more round, and one that starts while the account backs off a sync failure ends in the job's prologue
   without a login like any other trigger (the SMTP server took the message; the failing IMAP server is left to the
   sweep). Gmail and Graph file their own Sent copy and schedule none.
+- An IDLE connection does not ENABLE QRESYNC (`ImapIdleFlowOptions.qresync`): imapflow 1.7.6 does not lower its
+  message count for a VANISHED expunge, so the EXISTS of the next delivery would repeat the count it holds and emit
+  nothing; without QRESYNC the server reports EXPUNGE, which imapflow counts. The sync passes keep QRESYNC.
 - A fresh IDLE connection never signals a message that was already in the folder at its SELECT, so every
   established IDLE session (the first after `start()`, every reconnect after a server close, an error or the 6 h
   recycle) enqueues one `mailAccountSync`, which catches whatever arrived while the folder had no connection; nothing

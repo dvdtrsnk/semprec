@@ -93,6 +93,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
       socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
       autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+      qresync: false,
     });
   });
 

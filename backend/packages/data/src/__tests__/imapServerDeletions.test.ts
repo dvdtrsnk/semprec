@@ -319,6 +319,45 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
     30_000,
   );
 
+  tenantIt(
+    "signals a delivery that follows an expunge while the IDLE connection idles on a QRESYNC server",
+    async () => {
+      const mailbox = await synced(QRESYNC);
+      const { port } = mailbox;
+      // As the composition root builds it: the IDLE options decide QRESYNC.
+      const createClient: CreateIdleTunedImapFlowClient = async (_mailboxItemId, credential, idleOptions) => {
+        const client = new ImapFlow({
+          host: "127.0.0.1",
+          port,
+          secure: false,
+          auth: { user: IMAP_FIXTURE_ACCOUNT, pass: credential },
+          logger: false,
+          ...idleOptions,
+        });
+        client.on("error", () => {});
+        await client.connect();
+        return client;
+      };
+      let signals = 0;
+      const connection = await createImapFlowIdleTransport(createClient).connect(
+        mailbox.mailbox.mailboxId,
+        "app-password",
+        "INBOX",
+        () => signals++,
+        neverAborted,
+      );
+      cleanups.push(() => connection.close());
+      await vi.waitFor(() => expect(mailbox.server.isIdling("INBOX")).toBe(true), { timeout: 5_000, interval: 10 });
+
+      mailbox.server.expunge("INBOX", mailbox.uidOf("INBOX", "INBOX 1"));
+      await vi.waitFor(() => expect(signals).toBe(1), { timeout: 5_000, interval: 10 });
+      // The delivery brings INBOX back to the message count it had before the expunge.
+      mailbox.server.deliver("INBOX", [], plainMessage("After the expunge"));
+
+      await vi.waitFor(() => expect(signals).toBe(2), { timeout: 5_000, interval: 10 });
+    },
+  );
+
   tenantIt("removes a message expunged while the IDLE connection idles on INBOX, about a second later", async () => {
     const mailbox = await synced(QRESYNC);
     const { port } = mailbox;
@@ -328,7 +367,6 @@ describe("messages deleted or moved on the IMAP server by another client", () =>
         port,
         secure: false,
         auth: { user: IMAP_FIXTURE_ACCOUNT, pass: credential },
-        qresync: true,
         logger: false,
         ...idleOptions,
       });
