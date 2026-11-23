@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
-/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the day, month, quarter and
-/// year of today's date in gold, weekends greyed.
+/// One period on the axis: the selection on a flat capsule in the deep accent, drawn as the calendar's week strip
+/// draws its selected day, the day, month, quarter and year of today's date in gold, weekends greyed.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -24,13 +24,23 @@ struct JournalAxisCellLabel: View {
             .contentShape(.capsule)
     }
 
-    /// Only the selected period sits on a capsule of liquid glass tinted in the accent; the others are bare text.
-    @ViewBuilder private var pill: some View {
-        if cell.current {
-            Color.clear
-                .glassEffect(.regular.tint(Theme.Colors.appAccent.opacity(0.85)), in: .capsule)
-                .shadow(color: Theme.Colors.appAccent.opacity(0.3), radius: 6, y: 3)
-        }
+    /// The capsule behind the selected period, as the calendar's circle behind its selected day: whole on the
+    /// selection, shrunk and hidden on the other periods. It grows from that size when its period is selected and
+    /// shrinks to it when another one is; it fades out over the first half of the shrinking and in over the second
+    /// half of the growing, so it is gone while still half its size.
+    private var pill: some View {
+        let isSelected = cell.current
+        return Capsule()
+            .fill(Theme.Colors.appAccent)
+            .scaleEffect(isSelected ? 1 : Self.shrunk)
+            .animation(.easeInOut(duration: Self.duration), value: isSelected)
+            .opacity(isSelected ? 1 : 0)
+            .animation(
+                isSelected
+                    ? .easeOut(duration: Self.duration / 2).delay(Self.duration / 2)
+                    : .easeIn(duration: Self.duration / 2),
+                value: isSelected
+            )
     }
 
     private var emphasized: Bool { cell.current || cell.today }
@@ -45,6 +55,10 @@ struct JournalAxisCellLabel: View {
 
     /// The space between two neighbouring pills.
     private static let gap: CGFloat = 6
+    /// How long the capsule takes to grow or shrink, and how small it is on a period that is not selected: as the
+    /// calendar's week strip.
+    private static let duration = 0.25
+    private static let shrunk = 0.2
 }
 
 // MARK: - Labels
