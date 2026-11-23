@@ -7,6 +7,7 @@ import cz.semprec.app.domain.SyncTopic
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
@@ -38,6 +39,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -68,6 +70,7 @@ private class FakeSyncServer(val port: Int) {
     val refusedHandshakes = Channel<Unit>(Channel.UNLIMITED)
     var handshakeStatus: HttpStatusCode? = null
     var sessionStatus: HttpStatusCode = HttpStatusCode.OK
+    val schemaReads = AtomicInteger()
     private var server: EmbeddedServer<*, *>? = null
 
     fun start() {
@@ -83,7 +86,10 @@ private class FakeSyncServer(val port: Int) {
                 }
             }
             routing {
-                get("/api/schema") { call.respondText(SCHEMA, ContentType.Application.Json) }
+                get("/api/schema") {
+                    schemaReads.incrementAndGet()
+                    call.respondText(SCHEMA, ContentType.Application.Json)
+                }
                 get("/api/auth/session") { call.respondText("{}", ContentType.Application.Json, sessionStatus) }
                 webSocket("/api/sync") {
                     authorizations.send(call.request.headers[HttpHeaders.Authorization])
@@ -164,6 +170,31 @@ class SyncSocketTest {
         assertEquals(0, pendingRaises(SyncTopic.CALENDAR))
         assertEquals(0, pendingRaises(SyncTopic.MAIL_ACCOUNTS))
         assertNull(withTimeoutOrNull(QUIET_MILLIS) { server.connections.receive() })
+    }
+
+    @Test fun `a connect and every frame make what the offline layer keeps stale`() = runBlocking<Unit> {
+        val layer = OfflineLayer(OfflineStore(newTestDirectory()), scope)
+        val api = AuthenticatedApi(ApiClient(), storage, offline = layer) { rejected += 1 }
+        val offlineSocket = SyncSocket(api, changes, scope, { 50L }, 200L, layer)
+        server.start()
+        signIn()
+        api.send(HttpMethod.Get, "/api/schema")
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(1, server.schemaReads.get())
+
+        offlineSocket.start()
+        val session = connection()
+        everyTopicRaised()
+        // The socket read the schema after it connected, which made the kept one stale, and kept the new answer.
+        assertEquals(2, server.schemaReads.get())
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(2, server.schemaReads.get())
+
+        session.send(Frame.Text(itemFrame("db-events")))
+        raised(SyncTopic.CALENDAR)
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(3, server.schemaReads.get())
+        offlineSocket.stop()
     }
 
     @Test fun `reconnects after the network returns and reads everything again`() = runBlocking<Unit> {

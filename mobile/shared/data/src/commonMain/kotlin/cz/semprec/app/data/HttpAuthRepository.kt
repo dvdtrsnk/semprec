@@ -6,6 +6,7 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.AuthRepository
+import cz.semprec.app.domain.ItemChanges
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.Session
 import cz.semprec.app.domain.SessionStatus
@@ -28,6 +29,9 @@ import kotlinx.serialization.encodeToString
  * [endingSession] runs on signing out only, after [sessionEnded] and before the server ends the session, with calls
  * that still carry it: what belongs to the session on the server (the push subscription of this device) is ended
  * there first.
+ *
+ * [changes] and [offline] are those of [api]: the window's change events and the offline layer its reads of the
+ * offline set go through, if the device keeps any.
  */
 class HttpAuthRepository(
     private val client: ApiClient,
@@ -35,12 +39,14 @@ class HttpAuthRepository(
     private val device: DeviceInfo,
     private val sessionEnded: suspend () -> Unit = {},
     private val endingSession: suspend (AuthenticatedApi) -> Unit = {},
+    changes: ItemChanges = ItemChanges(),
+    offline: OfflineLayer? = null,
 ) : AuthRepository {
     private val mutableStatus = MutableStateFlow<SessionStatus>(SessionStatus.Restoring)
     override val status: StateFlow<SessionStatus> = mutableStatus.asStateFlow()
 
     /** The calls of the signed-in person; a rejected session signs this device out. */
-    val api = AuthenticatedApi(client, storage, onSessionRejected = ::forget)
+    val api = AuthenticatedApi(client, storage, changes, offline, onSessionRejected = ::forget)
 
     override suspend fun restore() {
         val stored = storage.load()
