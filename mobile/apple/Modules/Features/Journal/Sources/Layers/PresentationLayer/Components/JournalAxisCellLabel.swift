@@ -17,9 +17,14 @@ struct JournalAxisCellLabel: View {
             .fontWeight(emphasized ? .bold : .semibold)
             .foregroundStyle(color)
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .frame(width: cell.kind.width - Self.gap, height: cell.kind.height - Self.gap)
+            .fixedSize()
+            // The capsule leaves room on both sides of the text, and is never narrower than the cell's own room.
+            .padding(.horizontal, Self.pillPadding)
+            .frame(minWidth: cell.kind.width - Self.gap)
+            .frame(height: cell.kind.height - Self.gap)
             .background { pill }
+            // The cell keeps its width on the axis; a capsule wider than it reaches into the gaps beside it.
+            .frame(width: cell.kind.width - Self.gap)
             .padding(Self.gap / 2)
             .contentShape(.capsule)
     }
@@ -55,6 +60,8 @@ struct JournalAxisCellLabel: View {
 
     /// The space between two neighbouring pills.
     private static let gap: CGFloat = 6
+    /// The room between the text and the ends of its capsule.
+    private static let pillPadding: CGFloat = 12
     /// How long the capsule takes to grow or shrink, and how small it is on a period that is not selected: as the
     /// calendar's week strip.
     private static let duration = 0.25
@@ -105,8 +112,8 @@ extension JournalPeriodKind {
         switch self {
         case .year: 92
         case .quarter: 74
-        case .month: 64
-        case .week, .day: 62
+        case .month: 70
+        case .week, .day: 68
         }
     }
 
