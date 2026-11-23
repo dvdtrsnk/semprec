@@ -20,6 +20,9 @@ class FakeNotePages : NotePageRepository {
     val markdown = mutableMapOf<String, String>()
     private val versions = mutableMapOf<String, Int>()
     val calls = mutableListOf<String>()
+
+    /** The Markdown each replacement said it was edited from, in order. */
+    val bases = mutableListOf<String>()
     var failing: String? = null
 
     /** When set, a replacement is written at once but answered only once it completes, as a slow server does. */
@@ -30,6 +33,12 @@ class FakeNotePages : NotePageRepository {
 
     /** When set, a read takes the page at once but answers only once it completes, as a slow server does. */
     var readGate: CompletableDeferred<Unit>? = null
+
+    /**
+     * When set, a replacement answers what it returns for the page and the Markdown sent, instead of writing it; a
+     * [PageWrite.Merged] answer becomes the page, as the server then holds the merge.
+     */
+    var writeAnswer: ((itemId: String, markdown: String) -> PageWrite)? = null
 
     fun put(itemId: String, page: String) {
         markdown[itemId] = page
@@ -54,7 +63,13 @@ class FakeNotePages : NotePageRepository {
         return document
     }
 
-    override suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> {
+    override suspend fun replace(
+        itemId: String,
+        markdown: String,
+        etag: String,
+        base: String,
+    ): RepositoryResult<PageWrite> {
+        bases += base
         replaceHold?.await()
         val written = replaced(itemId, markdown, etag)
         replaceGate?.await()
@@ -62,7 +77,10 @@ class FakeNotePages : NotePageRepository {
     }
 
     private fun replaced(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> =
-        answer("replace $itemId") {
+        answer("replace $itemId $etag") {
+            val scripted = writeAnswer?.invoke(itemId, markdown)
+            if (scripted is PageWrite.Merged) put(itemId, scripted.markdown)
+            if (scripted != null) return@answer scripted
             if (etag != etag(itemId)) {
                 PageWrite.Conflict
             } else {

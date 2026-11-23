@@ -24,7 +24,12 @@ private class ScriptedJournal(
         return ensure
     }
     override suspend fun page(itemId: String) = page
-    override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> {
+    override suspend fun replacePage(
+        itemId: String,
+        markdown: String,
+        etag: String,
+        base: String,
+    ): RepositoryResult<PageWrite> {
         written += Triple(itemId, markdown, etag)
         return write
     }

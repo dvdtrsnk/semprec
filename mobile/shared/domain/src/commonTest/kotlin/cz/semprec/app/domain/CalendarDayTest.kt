@@ -69,4 +69,11 @@ class CalendarDayTest {
         assertTrue(CalendarDay(2026, 10, 16) < CalendarDay(2026, 10, 17))
         assertTrue(CalendarDay(2027, 1, 1) > CalendarDay(2026, 12, 31))
     }
+
+    @Test fun `the calendar window is the month grid with a week on each side`() {
+        val october = CalendarDay(2026, 9, 21) to CalendarDay(2026, 11, 16)
+        assertEquals(october, CalendarDay(2026, 10, 14).calendarWindow())
+        assertEquals(october, CalendarDay(2026, 10, 31).calendarWindow())
+        assertEquals(CalendarDay(2026, 5, 25) to CalendarDay(2026, 7, 20), CalendarDay(2026, 6, 1).calendarWindow())
+    }
 }

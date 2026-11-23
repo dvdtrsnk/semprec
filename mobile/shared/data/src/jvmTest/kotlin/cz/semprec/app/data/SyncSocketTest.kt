@@ -4,9 +4,11 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
+import cz.semprec.app.domain.note.PageChanges
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
@@ -26,6 +28,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -38,10 +41,12 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 private const val WAIT_MILLIS = 10_000L
 // Long enough for a reconnect after the test's 50 ms delay, which then never happens.
@@ -52,6 +57,10 @@ private const val SCHEMA = """{"databases":[{"databaseId":"db-events","key":"eve
 private fun itemFrame(databaseId: String) =
     """{"type":"invalidate","scope":"item","databaseId":"$databaseId","itemId":"i1","op":"update",""" +
         """"updatedAt":"2026-11-20T10:00:00.000Z"}"""
+
+private fun docFrame(itemId: String) =
+    """{"type":"invalidate","scope":"doc","docId":"d-$itemId","itemId":"$itemId","databaseId":"db-notes",""" +
+        """"lastEditedAt":"2026-11-23T10:00:00.000Z"}"""
 
 private fun notificationFrame(kind: String) =
     """{"type":"notification","notification":{"id":"n1","userId":"u1","kind":"$kind"}}"""
@@ -68,6 +77,7 @@ private class FakeSyncServer(val port: Int) {
     val refusedHandshakes = Channel<Unit>(Channel.UNLIMITED)
     var handshakeStatus: HttpStatusCode? = null
     var sessionStatus: HttpStatusCode = HttpStatusCode.OK
+    val schemaReads = AtomicInteger()
     private var server: EmbeddedServer<*, *>? = null
 
     fun start() {
@@ -83,7 +93,10 @@ private class FakeSyncServer(val port: Int) {
                 }
             }
             routing {
-                get("/api/schema") { call.respondText(SCHEMA, ContentType.Application.Json) }
+                get("/api/schema") {
+                    schemaReads.incrementAndGet()
+                    call.respondText(SCHEMA, ContentType.Application.Json)
+                }
                 get("/api/auth/session") { call.respondText("{}", ContentType.Application.Json, sessionStatus) }
                 webSocket("/api/sync") {
                     authorizations.send(call.request.headers[HttpHeaders.Authorization])
@@ -164,6 +177,54 @@ class SyncSocketTest {
         assertEquals(0, pendingRaises(SyncTopic.CALENDAR))
         assertEquals(0, pendingRaises(SyncTopic.MAIL_ACCOUNTS))
         assertNull(withTimeoutOrNull(QUIET_MILLIS) { server.connections.receive() })
+    }
+
+    @Test fun `a connect and every frame make what the offline layer keeps stale`() = runBlocking<Unit> {
+        val layer = OfflineLayer(OfflineStore(newTestDirectory()), scope)
+        val api = AuthenticatedApi(ApiClient(), storage, offline = layer) { rejected += 1 }
+        val offlineSocket = SyncSocket(api, changes, scope, { 50L }, 200L, layer)
+        server.start()
+        signIn()
+        api.send(HttpMethod.Get, "/api/schema")
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(1, server.schemaReads.get())
+
+        offlineSocket.start()
+        val session = connection()
+        everyTopicRaised()
+        // The socket read the schema after it connected, which made the kept one stale, and kept the new answer.
+        assertEquals(2, server.schemaReads.get())
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(2, server.schemaReads.get())
+
+        session.send(Frame.Text(itemFrame("db-events")))
+        raised(SyncTopic.CALENDAR)
+        api.send(HttpMethod.Get, "/api/schema")
+        assertEquals(3, server.schemaReads.get())
+        offlineSocket.stop()
+    }
+
+    @Test fun `a frame that a page changed raises its item and no topic`() = runBlocking<Unit> {
+        val pages = PageChanges()
+        val named = Channel<String>(Channel.UNLIMITED)
+        scope.launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            pages.events.collect { named.send(it) }
+        }
+        val api = AuthenticatedApi(ApiClient(), storage) { rejected += 1 }
+        val pageSocket = SyncSocket(api, changes, scope, { 50L }, 200L, pages = pages)
+        server.start()
+        signIn()
+        pageSocket.start()
+        val session = connection()
+        everyTopicRaised()
+
+        session.send(Frame.Text(docFrame("p1")))
+        assertEquals("p1", withTimeout(WAIT_MILLIS) { named.receive() })
+        session.send(Frame.Text(itemFrame("db-events")))
+        raised(SyncTopic.CALENDAR)
+        SyncTopic.entries.forEach { topic -> assertEquals(0, pendingRaises(topic), topic.name) }
+        assertTrue(named.isEmpty)
+        pageSocket.stop()
     }
 
     @Test fun `reconnects after the network returns and reads everything again`() = runBlocking<Unit> {

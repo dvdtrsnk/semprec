@@ -6,14 +6,15 @@ import Foundation
 public final class SharedScreenModelFactory {
 
     // MARK: - Types
-    /// Where the session of the signed-in person, the id of this device's push subscription and the kept mail thread
-    /// lists are kept.
+    /// Where the session of the signed-in person, the id of this device's push subscription, the kept mail thread
+    /// lists and the kept offline data are kept.
     public enum SessionStore: Sendable {
         /// The Keychain of the device, so the person stays signed in across launches; the subscription id lives in the
-        /// user defaults and the mail thread lists in the app's caches directory.
+        /// user defaults, the mail thread lists in the app's caches directory and the offline data in
+        /// `Application Support/Offline`.
         case keychain
-        /// The memory of this process only, with no mail thread lists kept. Tests use it, so that a session or a list
-        /// another build stored on the same device never reaches them.
+        /// The memory of this process only, with no mail thread lists and no offline data kept. Tests use it, so that
+        /// a session or a list another build stored on the same device never reaches them.
         case memory
     }
 
@@ -34,14 +35,34 @@ public final class SharedScreenModelFactory {
         case .keychain: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.path
         case .memory: nil
         }
+        let dataDirectory: String? = switch sessionStore {
+        case .keychain: Self.offlineDirectory()
+        case .memory: nil
+        }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
             recorder: DeviceAudioRecorder(),
             player: DeviceAudioPlayer(),
             pushSubscriptions: subscriptions,
-            cacheDirectory: cacheDirectory
+            cacheDirectory: cacheDirectory,
+            dataDirectory: dataDirectory
         )
+    }
+
+    /// `Application Support/Offline`, which the system does not empty as it may empty the caches, created and excluded
+    /// from backups: it holds a copy of the server's data, which a restored device reads again. When the directory
+    /// cannot be created or excluded here, its path is still handed over: the shared layer creates it on its first
+    /// write, and it is then backed up with the app's other data, which loses nothing.
+    private static func offlineDirectory() -> String? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return nil }
+        var directory = support.appendingPathComponent("Offline", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? directory.setResourceValues(values)
+        return directory.path
     }
 }
 
@@ -54,6 +75,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func stopLiveUpdates() {
         sdk.sync.stop()
+    }
+
+    public func makeSyncStatus() -> any SyncStatusScreenModel {
+        SharedSyncStatusScreenModel(sdk.sync.statusViewModel())
     }
 
     public func makeSession() -> any SessionScreenModel {

@@ -12,6 +12,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func startLiveUpdates()
     /// Closes the scene's sync socket until the next `startLiveUpdates()`.
     func stopLiveUpdates()
+    /// Whether the scene is offline and how many of its changes wait to be sent or were refused.
+    func makeSyncStatus() -> any SyncStatusScreenModel
 
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel

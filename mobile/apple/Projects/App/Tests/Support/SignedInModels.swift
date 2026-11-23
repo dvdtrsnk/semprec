@@ -23,6 +23,8 @@ final class SignedInModels: ScreenModelFactory {
         real.stopLiveUpdates()
     }
 
+    func makeSyncStatus() -> any SyncStatusScreenModel { real.makeSyncStatus() }
+
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
     func makeOverview() -> any OverviewScreenModel { real.makeOverview() }

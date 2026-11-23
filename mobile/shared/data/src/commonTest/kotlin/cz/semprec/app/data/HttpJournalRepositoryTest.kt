@@ -198,7 +198,8 @@ class HttpJournalRepositoryTest {
         val repo =
             repository { respond("""{"trashedPages":[]}""", HttpStatusCode.OK, headersOf(HttpHeaders.ETag, "\"v2\"")) }
 
-        val written = assertIs<RepositoryResult.Content<PageWrite>>(repo.replacePage("item-1", "New", "\"v1\"")).value
+        val replaced = repo.replacePage("item-1", "New", "\"v1\"", "Old")
+        val written = assertIs<RepositoryResult.Content<PageWrite>>(replaced).value
 
         assertEquals(PageWrite.Saved("\"v2\""), written)
         val request = requests.single()
@@ -212,13 +213,13 @@ class HttpJournalRepositoryTest {
         assertEquals(
             PageWrite.Conflict,
             assertIs<RepositoryResult.Content<PageWrite>>(
-                repository { json("{}", HttpStatusCode.Conflict) }.replacePage("i", "x", "\"v1\""),
+                repository { json("{}", HttpStatusCode.Conflict) }.replacePage("i", "x", "\"v1\"", ""),
             ).value,
         )
         assertEquals(
             PageWrite.Conflict,
             assertIs<RepositoryResult.Content<PageWrite>>(
-                repository { json("{}", HttpStatusCode.PreconditionFailed) }.replacePage("i", "x", "\"v1\""),
+                repository { json("{}", HttpStatusCode.PreconditionFailed) }.replacePage("i", "x", "\"v1\"", ""),
             ).value,
         )
     }
@@ -227,13 +228,13 @@ class HttpJournalRepositoryTest {
         assertEquals(
             FailureKind.UNAVAILABLE,
             assertIs<RepositoryResult.Failure>(
-                repository { json("{}", HttpStatusCode.InternalServerError) }.replacePage("i", "x", "\"v1\""),
+                repository { json("{}", HttpStatusCode.InternalServerError) }.replacePage("i", "x", "\"v1\"", ""),
             ).kind,
         )
         assertEquals(
             FailureKind.REJECTED,
             assertIs<RepositoryResult.Failure>(
-                repository { json("{}", HttpStatusCode.BadRequest) }.replacePage("i", "x", "\"v1\""),
+                repository { json("{}", HttpStatusCode.BadRequest) }.replacePage("i", "x", "\"v1\"", ""),
             ).kind,
         )
     }

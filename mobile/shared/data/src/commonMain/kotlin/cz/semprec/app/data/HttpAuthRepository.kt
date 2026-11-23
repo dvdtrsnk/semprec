@@ -6,6 +6,7 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.AuthRepository
+import cz.semprec.app.domain.ItemChanges
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.Session
 import cz.semprec.app.domain.SessionStatus
@@ -28,6 +29,12 @@ import kotlinx.serialization.encodeToString
  * [endingSession] runs on signing out only, after [sessionEnded] and before the server ends the session, with calls
  * that still carry it: what belongs to the session on the server (the push subscription of this device) is ended
  * there first.
+ *
+ * [changes] and [offline] are those of [api]: the window's change events and the offline layer its reads of the
+ * offline set go through, if the device keeps any. With [offline], the person of every session the server confirms
+ * (a restore it answered, a sign-in) is kept on the device, and a restore that cannot reach the server reports the
+ * session signed in with the person kept for it, so the app opens without a connection; without a kept person it
+ * reports [SessionStatus.Unreachable].
  */
 class HttpAuthRepository(
     private val client: ApiClient,
@@ -35,12 +42,14 @@ class HttpAuthRepository(
     private val device: DeviceInfo,
     private val sessionEnded: suspend () -> Unit = {},
     private val endingSession: suspend (AuthenticatedApi) -> Unit = {},
+    changes: ItemChanges = ItemChanges(),
+    private val offline: OfflineLayer? = null,
 ) : AuthRepository {
     private val mutableStatus = MutableStateFlow<SessionStatus>(SessionStatus.Restoring)
     override val status: StateFlow<SessionStatus> = mutableStatus.asStateFlow()
 
     /** The calls of the signed-in person; a rejected session signs this device out. */
-    val api = AuthenticatedApi(client, storage, onSessionRejected = ::forget)
+    val api = AuthenticatedApi(client, storage, changes, offline, onSessionRejected = ::forget)
 
     override suspend fun restore() {
         val stored = storage.load()
@@ -49,10 +58,15 @@ class HttpAuthRepository(
             return
         }
         val response = client.send(stored.serverUrl, HttpMethod.Get, AuthenticatedApi.SESSION_PATH, stored.token)
+        offline?.observed(response)
         when (response) {
-            is ApiResponse.Success -> mutableStatus.value = response.readSession(stored.serverUrl)
+            is ApiResponse.Success -> {
+                val restored = response.readSession(stored.serverUrl)
+                if (restored is SessionStatus.SignedIn) keepPerson(stored, restored.session)
+                mutableStatus.value = restored
+            }
             is ApiResponse.Failure -> when (response.kind) {
-                FailureKind.UNAVAILABLE -> mutableStatus.value = SessionStatus.Unreachable(stored.serverUrl)
+                FailureKind.UNAVAILABLE -> mutableStatus.value = keptSession(stored)
                 else -> forget()
             }
         }
@@ -73,8 +87,10 @@ class HttpAuthRepository(
         return when (val login = response.decode<LoginResponse>()) {
             is RepositoryResult.Failure -> RepositoryResult.Failure(login.kind.forSignIn())
             is RepositoryResult.Content -> {
-                storage.save(StoredSession(serverUrl, login.value.token))
+                val stored = StoredSession(serverUrl, login.value.token)
+                storage.save(stored)
                 val session = Session(serverUrl, login.value.user.toDomain())
+                keepPerson(stored, session)
                 mutableStatus.value = SessionStatus.SignedIn(session)
                 RepositoryResult.Content(session)
             }
@@ -97,6 +113,16 @@ class HttpAuthRepository(
         endingSession(AuthenticatedApi(client, ending, onSessionRejected = {}))
         client.send(stored.serverUrl, HttpMethod.Post, LOGOUT_PATH, stored.token)
     }
+
+    private suspend fun keepPerson(stored: StoredSession, session: Session) {
+        offline?.store?.people?.keep(accountKey(stored), session.user)
+    }
+
+    /** The session signed in with the person kept for [stored], or unreachable when none is kept. */
+    private suspend fun keptSession(stored: StoredSession): SessionStatus =
+        offline?.store?.people?.person(accountKey(stored))
+            ?.let { person -> SessionStatus.SignedIn(Session(stored.serverUrl, person)) }
+            ?: SessionStatus.Unreachable(stored.serverUrl)
 
     private suspend fun forget() {
         storage.save(null)

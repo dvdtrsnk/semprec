@@ -5,6 +5,8 @@ import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.PageWrite
 import cz.semprec.app.domain.note.NoteBlock
 import cz.semprec.app.domain.note.NoteDocument
+import cz.semprec.app.domain.note.NoteMerge
+import cz.semprec.app.domain.note.NoteRead
 import cz.semprec.app.domain.note.NoteSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,8 +23,13 @@ import kotlinx.coroutines.sync.withLock
 /**
  * The blocks of the note and their page on the server. Reading never writes: a Journal period without a page stays
  * without one until its first change. A change is written after a pause in typing, one write at a time, against the
- * version the page was read with; a page changed elsewhere meanwhile is read again and the local change dropped.
- * Only the blocks a change touched are written anew; the others keep the Markdown lines they were read from.
+ * version the page was read with, naming the Markdown it was edited from (what was last read or saved). A page
+ * changed elsewhere meanwhile is merged three ways with the change by the repository, and the merge is shown in place,
+ * the blocks it left unchanged keeping their ids; a change typed while that write was under way is merged into it and
+ * written after the next pause. A change the server cannot be reached for is kept on the device and counts as saved
+ * there; a page that could not be merged is read again, and editing ends
+ * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md). Only the blocks a change touched are
+ * written anew; the others keep the Markdown lines they were read from.
  *
  * Writes run in a scope of their own, which closing the ViewModel does not cancel: a write already sent finishes, and
  * a change still waiting for its pause when the ViewModel closes is written then.
@@ -74,6 +81,8 @@ internal class NotePageStore(
     /**
      * Reads the page again in place; nothing happens while a change waits to be written or the page is not shown. An
      * answer is dropped when a change, a write or another read came meanwhile: it may be older than what they left.
+     * The blocks the answer holds unchanged keep their ids, so the caret stays: the server tells of every write of the
+     * page, this device's own included, and a reread follows each.
      */
     fun reread() {
         if (host.state.phase != NoteEditorPhase.CONTENT || host.state.saving || source is NoteEditorSource.Text) return
@@ -82,7 +91,9 @@ internal class NotePageStore(
         loadJob = host.scope.launch {
             val answered = reads.fetch()
             ensureActive()
-            if (answered is Answer.Done && generation == seen && !host.state.saving) apply(answered.value)
+            if (answered is Answer.Done && generation == seen && !host.state.saving) {
+                apply(answered.value, inPlace = true)
+            }
         }
     }
 
@@ -128,12 +139,14 @@ internal class NotePageStore(
         }
     }
 
-    private fun apply(snapshot: NoteSnapshot) {
+    /** Shows [snapshot]; [inPlace] keeps the ids of the blocks it holds unchanged. */
+    private fun apply(snapshot: NoteSnapshot, inPlace: Boolean = false) {
         generation++
         itemId = snapshot.itemId
         etag = snapshot.etag
         serverBlank = snapshot.markdown.isBlank()
-        val read = NoteDocument.parse(snapshot.markdown, newId)
+        val parsed = NoteDocument.parse(snapshot.markdown, newId)
+        val read = if (inPlace) NoteMerge.adopt(blocks, parsed) else parsed
         blocks = read.blocks
         origin = read.source
         saved = NoteDocument.markdown(blocks, origin)
@@ -168,25 +181,37 @@ internal class NotePageStore(
         val id = itemId ?: created()
         val token = etag
         if (id == null || token == null) return false
-        return when (val answered = answer { repositories.pages.replace(id, markdown, token) }) {
-            is Answer.Rejected -> host.update { it.failed(answered.kind) }.let { false }
+        // What the server, or the device until the server can be reached, holds now; `null` when nothing was written.
+        val holds = when (val answered = answer { repositories.pages.replace(id, markdown, token, saved) }) {
+            is Answer.Rejected -> {
+                host.update { it.failed(answered.kind) }
+                null
+            }
             is Answer.Done -> when (val written = answered.value) {
                 PageWrite.Conflict -> {
                     if (refresh()) host.update { it.reloaded() }
-                    false
+                    null
                 }
-                is PageWrite.Saved -> {
-                    generation++
+                is PageWrite.Saved -> markdown.also { etag = written.etag }
+                PageWrite.Kept -> markdown
+                is PageWrite.Merged -> {
                     etag = written.etag
-                    saved = markdown
-                    serverBlank = markdown.isBlank()
-                    host.update {
-                        it.copy(saving = NoteDocument.markdown(blocks, origin) != saved, lastEditedAt = settings.now())
-                    }
-                    true
+                    val read = shownAfterMerge(blocks, origin, markdown, written.markdown, newId)
+                    blocks = read.blocks
+                    origin = read.source
+                    host.update { it.copy(blocks = blocks.toEditor(), wordCount = NoteDocument.wordCount(blocks)) }
+                    written.markdown
                 }
             }
         }
+        if (holds != null) {
+            generation++
+            saved = holds
+            serverBlank = holds.isBlank()
+            val pending = NoteDocument.markdown(blocks, origin) != saved
+            host.update { it.copy(saving = pending, lastEditedAt = settings.now()) }
+        }
+        return holds != null
     }
 
     /**
@@ -213,6 +238,23 @@ internal class NotePageStore(
             }
         }
     }
+}
+
+/**
+ * What the editor shows once the page holds [written], the merge of [sent] with what changed elsewhere: a change typed
+ * meanwhile ([blocks] read with [origin]) is merged into it, and the blocks it left unchanged keep their ids, so the
+ * caret stays where it was.
+ */
+private fun shownAfterMerge(
+    blocks: List<NoteBlock>,
+    origin: NoteSource,
+    sent: String,
+    written: String,
+    newId: () -> String,
+): NoteRead {
+    val current = NoteDocument.markdown(blocks, origin)
+    val shown = if (current == sent) written else NoteMerge.merge(sent, current, written)
+    return NoteMerge.adopt(blocks, NoteDocument.parse(shown, newId))
 }
 
 /** The page was read again because it changed elsewhere; editing ends. */

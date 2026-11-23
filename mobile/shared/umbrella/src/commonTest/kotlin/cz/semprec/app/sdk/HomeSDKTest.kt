@@ -6,6 +6,7 @@ import cz.semprec.app.presentation.HomeItem
 import cz.semprec.app.presentation.HomePhase
 import cz.semprec.app.presentation.JournalPhase
 import cz.semprec.app.presentation.SettingsRow
+import cz.semprec.app.presentation.SyncStatusState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -75,6 +76,15 @@ class HomeSDKTest {
         val diaries = sdk.journal.journalViewModel("2026-10-16") to sdk.journal.journalViewModel("2026-10-16")
         assertNotSame(diaries.first, diaries.second)
         listOf(diaries.first, diaries.second).forEach { it.close() }
+    }
+
+    @Test fun `every sync status call returns a new ViewModel online with nothing waiting`() = runTest(dispatcher) {
+        val sync = HomeSDK().sync
+        val statuses = sync.statusViewModel() to sync.statusViewModel()
+        runCurrent()
+        assertNotSame(statuses.first, statuses.second)
+        assertEquals(SyncStatusState(offline = false, waiting = 0, failed = 0), statuses.first.state.value)
+        listOf(statuses.first, statuses.second).forEach { it.close() }
     }
 
     @Test fun `the diary without a session is unauthorized without a request`() = runTest(dispatcher) {

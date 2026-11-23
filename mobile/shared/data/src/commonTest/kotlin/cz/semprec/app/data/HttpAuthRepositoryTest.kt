@@ -21,6 +21,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -56,6 +58,134 @@ class HttpAuthRepositoryTest {
 
     private fun MockRequestHandleScope.json(body: String, status: HttpStatusCode = HttpStatusCode.OK) =
         respond(body, status, headersOf(HttpHeaders.ContentType, "application/json"))
+
+    private val directory = newTestDirectory()
+
+    /** A layer over the test's directory; another one created later finds what this one kept. */
+    private fun TestScope.layer() =
+        OfflineLayer(OfflineStore(directory, StandardTestDispatcher(testScheduler)), backgroundScope)
+
+    /** A repository with [layer], wired as `HomeSDK` wires it: the end of a session clears the layer. */
+    private fun offlineRepository(
+        storage: InMemorySessionStorage,
+        layer: OfflineLayer,
+        handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData,
+    ): HttpAuthRepository {
+        val engine = MockEngine { request ->
+            requests += request
+            handler(request)
+        }
+        return HttpAuthRepository(ApiClient(engine), storage, DEVICE, sessionEnded = { layer.clear() }, offline = layer)
+    }
+
+    private fun stored(token: String = "tok") =
+        InMemorySessionStorage().apply { save(StoredSession("https://s.example", token)) }
+
+    @Test
+    fun aRestoreTheServerAnsweredKeepsThePersonForAStartWithoutAConnection() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+
+        val offline = offlineRepository(storage, layer()) { throw IllegalStateException("offline") }
+        offline.restore()
+
+        val status = assertIs<SessionStatus.SignedIn>(offline.status.value)
+        assertEquals("https://s.example", status.session.serverUrl)
+        assertEquals("a@b.cz", status.session.user.email)
+        assertEquals("u1", status.session.user.id)
+    }
+
+    @Test
+    fun aSignInKeepsThePersonForAStartWithoutAConnection() = runTest {
+        val storage = InMemorySessionStorage()
+        offlineRepository(storage, layer()) { json("""{"token":"tok","user":$USER_JSON}""") }
+            .signIn("https://s.example", "a@b.cz", "secret")
+
+        val offline = offlineRepository(storage, layer()) { throw IllegalStateException("offline") }
+        offline.restore()
+
+        assertEquals("a@b.cz", assertIs<SessionStatus.SignedIn>(offline.status.value).session.user.email)
+    }
+
+    @Test
+    fun aStartWithoutAConnectionAndWithoutAKeptPersonIsUnreachable() = runTest {
+        val repo = offlineRepository(stored(), layer()) { throw IllegalStateException("offline") }
+
+        repo.restore()
+
+        assertEquals(SessionStatus.Unreachable("https://s.example"), repo.status.value)
+    }
+
+    @Test
+    fun aServerErrorAtTheStartIsSignedInWithTheKeptPerson() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+
+        val failing = offlineRepository(storage, layer()) { json("{}", HttpStatusCode.ServiceUnavailable) }
+        failing.restore()
+
+        assertIs<SessionStatus.SignedIn>(failing.status.value)
+    }
+
+    @Test
+    fun aPersonKeptForAnotherSessionIsNotUsed() = runTest {
+        offlineRepository(stored("old"), layer()) { json("""{"user":$USER_JSON}""") }.restore()
+
+        val repo = offlineRepository(stored("new"), layer()) { throw IllegalStateException("offline") }
+        repo.restore()
+
+        assertEquals(SessionStatus.Unreachable("https://s.example"), repo.status.value)
+    }
+
+    @Test
+    fun aRefusedRestoreRemovesTheKeptPerson() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+        offlineRepository(storage, layer()) { json("{}", HttpStatusCode.Unauthorized) }.restore()
+        storage.save(StoredSession("https://s.example", "tok"))
+
+        val offline = offlineRepository(storage, layer()) { throw IllegalStateException("offline") }
+        offline.restore()
+
+        assertEquals(SessionStatus.Unreachable("https://s.example"), offline.status.value)
+    }
+
+    @Test
+    fun signingOutRemovesTheKeptPerson() = runTest {
+        val storage = InMemorySessionStorage()
+        val repo = offlineRepository(storage, layer()) { json("""{"token":"tok","user":$USER_JSON}""") }
+        repo.signIn("https://s.example", "a@b.cz", "secret")
+        repo.signOut()
+        storage.save(StoredSession("https://s.example", "tok"))
+
+        val offline = offlineRepository(storage, layer()) { throw IllegalStateException("offline") }
+        offline.restore()
+
+        assertEquals(SessionStatus.Unreachable("https://s.example"), offline.status.value)
+    }
+
+    @Test
+    fun aStartWithoutAConnectionAnswersKeptReadsAtOnce() = runTest {
+        var reachable = true
+        val layer = layer()
+        val repo = offlineRepository(stored(), layer) { request ->
+            when {
+                !reachable -> throw IllegalStateException("offline")
+                request.url.encodedPath == AuthenticatedApi.SESSION_PATH -> json("""{"user":$USER_JSON}""")
+                else -> json("{}")
+            }
+        }
+        repo.restore()
+        val kept = repo.api.send(HttpMethod.Get, "/api/overview")
+        layer.frameArrived()
+        reachable = false
+        repo.restore()
+        reachable = true
+        val before = requests.size
+
+        assertEquals(kept, repo.api.send(HttpMethod.Get, "/api/overview"))
+        assertEquals(before, requests.size)
+    }
 
     @Test
     fun signInSendsTheDeviceAndStoresTheTokenOfTheAnswer() = runTest {

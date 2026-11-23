@@ -11,6 +11,10 @@ interface JournalRepository {
     /** Reads the canonical Markdown and the version of the page of an item. */
     suspend fun page(itemId: String): RepositoryResult<PageDocument>
 
-    /** Replaces the page of an item when [etag] is still its version; otherwise [PageWrite.Conflict]. */
-    suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite>
+    /**
+     * Replaces the page of an item with [markdown], edited from [base] (the Markdown of the page last read or written
+     * there), when [etag] is still its version; otherwise [PageWrite.Conflict], or with the offline set kept on the
+     * device, the merge or the kept change that [PageWrite] describes.
+     */
+    suspend fun replacePage(itemId: String, markdown: String, etag: String, base: String): RepositoryResult<PageWrite>
 }

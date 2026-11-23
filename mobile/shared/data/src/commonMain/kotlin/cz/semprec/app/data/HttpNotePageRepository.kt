@@ -36,8 +36,12 @@ class HttpNotePageRepository(
 
     override suspend fun read(itemId: String): RepositoryResult<PageDocument> = markdown.page(itemId)
 
-    override suspend fun replace(itemId: String, markdown: String, etag: String): RepositoryResult<PageWrite> =
-        this.markdown.replacePage(itemId, markdown, etag)
+    override suspend fun replace(
+        itemId: String,
+        markdown: String,
+        etag: String,
+        base: String,
+    ): RepositoryResult<PageWrite> = this.markdown.replacePage(itemId, markdown, etag, base)
 
     override suspend fun info(itemId: String): RepositoryResult<NotePageInfo> =
         when (val read = api.send(HttpMethod.Get, "/api/items/$itemId/page").decode<NotePageInfoDto>()) {

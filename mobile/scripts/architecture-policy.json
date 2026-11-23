@@ -75,7 +75,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel"],
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel", "SyncStatusViewModel"],
     "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
@@ -99,7 +99,11 @@
         "pending.searchResult",
         "semp.grabber.label",
         "reminder.event.body",
-        "reminder.task.body"
+        "reminder.task.body",
+        "sync.offline.saved",
+        "sync.offline.waiting",
+        "sync.failed",
+        "sync.dismiss"
       ],
       "androidUntranslatable": ["app_name"]
     },

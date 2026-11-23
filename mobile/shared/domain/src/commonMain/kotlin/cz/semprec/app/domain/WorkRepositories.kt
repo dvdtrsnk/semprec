@@ -6,6 +6,8 @@ import cz.semprec.app.core.ProjectRef
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.merge
 
 /** The task lists. */
 interface TaskRepository {
@@ -39,11 +41,13 @@ interface CatalogRepository {
  * Tells the open screens of a window that its data changed, so that they load again: the window's signed-in API
  * client announces every write it made, and the Podrobnosti sheet its own saves
  * (docs/adr/2026-11-16-open-mobile-screens-reload-after-any-write-of-their-window.md). Every window has its own
- * instance.
+ * instance. [elsewhere] adds the changes the window learns of from outside itself: the offline layer every window of
+ * the process shares emits when the connection came back
+ * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md).
  */
-class ItemChanges {
+class ItemChanges(elsewhere: Flow<Unit> = emptyFlow()) {
     private val mutable = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val events: Flow<Unit> = mutable.asSharedFlow()
+    val events: Flow<Unit> = merge(mutable.asSharedFlow(), elsewhere)
 
     fun announce() {
         mutable.tryEmit(Unit)

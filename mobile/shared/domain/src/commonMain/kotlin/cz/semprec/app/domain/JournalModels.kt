@@ -57,8 +57,18 @@ data class JournalPeriodPage(
 /** The Markdown of a page and the version token ([etag], quoted as the server sent it) a replacement must quote. */
 data class PageDocument(val markdown: String, val etag: String)
 
-/** The answer to replacing a page: written (with the new version), or refused because the page changed meanwhile. */
+/**
+ * The answer to replacing a page (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md):
+ * - [Saved]: the server holds the Markdown written, at the version [Saved.etag].
+ * - [Merged]: the change was merged three ways with what changed elsewhere meanwhile, and the page holds
+ *   [Merged.markdown] now, on the server or, until it can be reached, on the device; the next change is written
+ *   against [Merged.etag].
+ * - [Kept]: the device holds the Markdown written and sends it once the server can be reached.
+ * - [Conflict]: the page changed meanwhile and the change could not be merged.
+ */
 sealed interface PageWrite {
     data class Saved(val etag: String) : PageWrite
+    data class Merged(val etag: String, val markdown: String) : PageWrite
+    data object Kept : PageWrite
     data object Conflict : PageWrite
 }
