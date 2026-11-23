@@ -13,6 +13,15 @@ enum JournalDates {
         return calendar
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    /// Made once: a formatter is costly to make, and the cards of a month ask for a range each.
+    private static let weekRangeFormatter: DateIntervalFormatter = {
+        let formatter = DateIntervalFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = .current
+        formatter.dateTemplate = "dM"
+        return formatter
+    }()
 
     // MARK: - Parsing
     /// The device's current day. The server answers with its own today, which the diary adopts once it is loaded.
@@ -61,12 +70,7 @@ enum JournalDates {
     /// The week's days: `12.–18. 10.`.
     static func weekRange(first: String, last: String) -> String {
         guard let start = date(first), let end = date(last) else { return "\(first) – \(last)" }
-        let formatter = DateIntervalFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = .current
-        formatter.dateTemplate = "dM"
-        return formatter.string(from: start, to: end)
+        return weekRangeFormatter.string(from: start, to: end)
     }
 
     // MARK: - Axis labels

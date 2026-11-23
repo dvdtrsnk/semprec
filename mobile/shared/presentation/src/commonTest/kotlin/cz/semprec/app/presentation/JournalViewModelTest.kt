@@ -172,10 +172,10 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertEquals(before.selection, after.selection)
         assertEquals(before.page, after.page)
         assertEquals(1, repository.periodCalls.size)
-        assertEquals("2028-01-01", after.axis.last().cells.first().start)
-        assertEquals("2030-12-31", after.axis.last().cells.last().start)
+        assertEquals("2027-01-01", after.axis.last().cells.first().start)
+        assertEquals("2031-12-31", after.axis.last().cells.last().start)
         assertTrue(after.axis.last().cells.none { it.current })
-        assertEquals("2026-01-01", after.axis.first().cells.single { it.onPath }.start)
+        assertTrue(after.axis.first().cells.none { it.onPath })
         vm.onAction(JournalAction.ShowAxisAround("not a day"))
         assertEquals(after.axis, vm.state.value.axis)
         vm.onAction(JournalAction.GoToday)
@@ -185,10 +185,28 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.ShowAxisAround("2029-03-10"))
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
         runCurrent()
-        assertEquals("2025-01-01", vm.state.value.axis.last().cells.first().start)
+        assertEquals("2024-01-01", vm.state.value.axis.last().cells.first().start)
         vm.close()
         vm.onAction(JournalAction.ShowAxisAround("2027-01-01"))
-        assertEquals("2025-01-01", vm.state.value.axis.last().cells.first().start)
+        assertEquals("2024-01-01", vm.state.value.axis.last().cells.first().start)
+    }
+
+    @Test fun `a selection inside the windows keeps them while it loads and after`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(JournalAction.ShowAxisAround("2027-06-01"))
+        runCurrent()
+        val windows = vm.state.value.axis.map { row -> row.cells.map { it.start } }
+        assertEquals("2025-01-01", windows.last().first())
+        vm.onAction(JournalAction.Select(JournalPeriodKind.MONTH, "2026-03-01"))
+        assertEquals(windows, vm.state.value.axis.map { row -> row.cells.map { it.start } })
+        runCurrent()
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertEquals(windows, vm.state.value.axis.map { row -> row.cells.map { it.start } })
+        assertEquals("2026-03-01", vm.state.value.axis[1].cells.single { it.current }.start)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.YEAR, "2024-01-01"))
+        runCurrent()
+        assertEquals("2022-01-01", vm.state.value.axis.last().cells.first().start)
+        vm.close()
     }
 
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {

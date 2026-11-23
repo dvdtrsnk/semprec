@@ -7,7 +7,8 @@ import SwiftUI
 /// its week, events, Inbox and note; a month lists its weeks; a year shows its note and lists its quarters. Each note
 /// is edited in the light note editor, which writes it itself. The whole page scrolls over the diary's gradient, the
 /// heading and the Today button with it; only the axis row of the selected level stays at the top, on glass, with the
-/// page passing under it.
+/// page passing under it. While the page scrolls, only the background and the band behind that row redraw: they read
+/// the scroll from `pageScroll`, which the screen itself never reads.
 struct JournalScreen: View {
 
     // MARK: - Dependencies
@@ -21,20 +22,19 @@ struct JournalScreen: View {
     /// The weeks and quarters, by their period key, whose open state the person flipped from what the screen shows by
     /// default.
     @State private var flippedSections: Set<String> = []
-    /// Where the axis stands, shared by its rows that scroll and its row that stays.
+    /// Where the axis stands, shared by its three rows.
     @State private var axisMotion = JournalAxisMotion()
-    /// How tall the heading and the rows above the selected level are, and the visible height of the page: the page
-    /// is at least so tall that it scrolls far enough for the selected row to reach the top.
-    @State private var aboveHeight: CGFloat = 0
+    /// How tall the heading is and the visible height of the page: the page is at least so tall that it scrolls far
+    /// enough for the selected row to reach the top. The top inset of its content is where the band behind the pinned
+    /// row reaches up to.
+    @State private var titleHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
-    /// The size of the whole page, the top of its safe area and the frame of the selected axis row, on screen: the
-    /// band behind that row shows as the row comes up to the top.
-    @State private var pageSize: CGSize = .zero
-    @State private var safeTop: CGFloat = 0
-    @State private var pinnedFrame: CGRect = .zero
-    /// How far the page is scrolled from its top, up to a screen's height: the gradient at the top of the page moves
-    /// with it and is gone beyond that.
-    @State private var scrolled: CGFloat = 0
+    @State private var contentTop: CGFloat = 0
+    /// How far the page is scrolled and how large it is, for the background and the band behind the pinned row.
+    @State private var pageScroll = JournalPageScroll()
+    /// The state the page's cards show while the axis moves: the cards of a new selection are built once the axis
+    /// comes to rest, so building them never takes a frame from the axis's scroll.
+    @State private var heldState: JournalState?
 
     // MARK: - Init
     init(
@@ -51,12 +51,8 @@ struct JournalScreen: View {
     var body: some View {
         content
             .background {
-                JournalBackground(scrolled: scrolled)
-                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageSize = $0 })
-            }
-            .background {
-                Color.clear
-                    .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { safeTop = $0 })
+                JournalBackground(scroll: pageScroll)
+                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageScroll.pageSize = $0 })
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(JournalIdentifiers.screen)
@@ -81,7 +77,11 @@ private extension JournalScreen {
         HStack(alignment: .center, spacing: Theme.Spacing.medium) {
             Spacer(minLength: 0)
             Button {
-                axisMotion.centerRequests += 1
+                // Today on today only scrolls back to it; another day scrolls there once it is selected.
+                let state = viewModel.state
+                if state.selection == JournalSelection(kind: .day, start: state.today) {
+                    axisMotion.centerRequests += 1
+                }
                 viewModel.goToday()
             } label: {
                 Text("journal.today", bundle: .module)
@@ -97,37 +97,37 @@ private extension JournalScreen {
         .padding(.bottom, Theme.Spacing.small)
     }
 
-    /// The axis rows above, of and below the selected level.
-    var axisLevels: (upper: [JournalAxisRow], selected: [JournalAxisRow], lower: [JournalAxisRow]) {
+    /// How far down the page the selected row is: below the heading and the rows above it.
+    var pinnedOffset: CGFloat {
         let rows = viewModel.state.axis
-        guard let index = rows.firstIndex(where: { $0.kind == viewModel.state.selection.kind }) else {
-            return (rows, [], [])
-        }
-        return (Array(rows[..<index]), [rows[index]], Array(rows[(index + 1)...]))
+        let above = rows.prefix { $0.kind != viewModel.state.selection.kind }
+        return titleHeight + above.reduce(0) { $0 + $1.kind.height + Self.axisRowSpacing }
     }
 
-    func axis(_ shown: [JournalAxisRow]) -> some View {
+    var pinnedHeight: CGFloat {
+        let kind = viewModel.state.selection.kind
+        return kind.height + Self.axisRowSpacing
+    }
+
+    var axis: some View {
         JournalAxisView(
             rows: viewModel.state.axis,
-            shown: shown,
             selectionStart: viewModel.state.selection.start,
             selectionKind: viewModel.state.selection.kind,
+            pinTop: contentTop,
             onSelect: viewModel.select,
             onMove: viewModel.showAxis(around:),
+            onMoving: { moving in heldState = moving ? viewModel.state : nil },
+            band: {
+                JournalPinnedBand(
+                    scroll: pageScroll,
+                    pinnedOffset: pinnedOffset,
+                    rowHeight: pinnedHeight,
+                    solidHeight: contentTop + pinnedHeight
+                )
+            },
             motion: $axisMotion
         )
-    }
-
-    /// The selected level's row: its glass capsules stay at the top while the page passes under them.
-    var pinnedRow: some View {
-        axis(axisLevels.selected)
-            .padding(.vertical, Self.axisRowSpacing)
-            .background(alignment: .top) {
-                JournalTopBand(pageSize: pageSize, solidHeight: pinnedFrame.maxY, scrolled: scrolled)
-                    .offset(y: -pinnedFrame.minY)
-                    .opacity(bandOpacity)
-            }
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }, action: { pinnedFrame = $0 })
     }
 
     @ViewBuilder var content: some View {
@@ -138,49 +138,39 @@ private extension JournalScreen {
             StatusView(.failure(message: Text(FailureKind.message(for: failure)), retry: viewModel.retry))
         case .content:
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
+                VStack(alignment: .leading, spacing: 0) {
                     if noteFocus.isActive {
                         page.padding(.top, Theme.Spacing.small)
                     } else {
-                        VStack(spacing: Self.axisRowSpacing) {
-                            titleRow
-                            axis(axisLevels.upper)
-                        }
-                        .onGeometryChange(
-                            for: CGFloat.self,
-                            of: { $0.size.height },
-                            action: { aboveHeight = $0 }
-                        )
-                        Section {
-                            axis(axisLevels.lower)
-                            page.padding(.top, Theme.Spacing.medium)
-                        } header: {
-                            pinnedRow
-                        }
+                        titleRow
+                            .padding(.bottom, Self.axisRowSpacing)
+                            .onGeometryChange(
+                                for: CGFloat.self,
+                                of: { $0.size.height },
+                                action: { titleHeight = $0 }
+                            )
+                        axis.zIndex(1)
+                        page.padding(.top, Theme.Spacing.medium)
                     }
                 }
                 .padding(.bottom, Theme.Spacing.large)
-                .frame(minHeight: viewportHeight + aboveHeight, alignment: .top)
+                .frame(minHeight: viewportHeight + pinnedOffset, alignment: .top)
             }
             .onScrollGeometryChange(
                 for: CGFloat.self,
-                of: { $0.containerSize.height - $0.contentInsets.top - $0.contentInsets.bottom },
+                // The container is already the visible height, inside the bars' insets.
+                of: { $0.containerSize.height },
                 action: { _, height in viewportHeight = height }
             )
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentInsets.top }, action: { _, top in
+                contentTop = top
+            })
             .onScrollGeometryChange(
                 for: CGFloat.self,
                 of: { min(max($0.contentOffset.y + $0.contentInsets.top, 0), $0.containerSize.height) },
-                action: { _, offset in scrolled = offset }
+                action: { _, offset in pageScroll.offset = offset }
             )
         }
-    }
-
-    /// The band behind the selected row comes in over the last row's height before the row reaches the top, so the
-    /// rows passing above it go under the band and the page never shows through the row once it stays there.
-    var bandOpacity: Double {
-        guard pinnedFrame.height > 0 else { return 0 }
-        let distance = pinnedFrame.minY - safeTop
-        return min(max(1 - distance / pinnedFrame.height, 0), 1)
     }
 
     /// The cards of the selected period.
@@ -212,12 +202,12 @@ private extension JournalScreen {
 
     // MARK: Day
     @ViewBuilder var dayContent: some View {
-        if let week = viewModel.state.weeks.first {
+        if let week = pageState.weeks.first {
             weekCard(week, openByDefault: false)
         }
         eventsSection
         inboxSection
-        if let page = viewModel.state.page {
+        if let page = pageState.page {
             section(Text("journal.notes", bundle: .module)) {
                 notes.editor(page, focus: noteFocus)
             }
@@ -225,8 +215,8 @@ private extension JournalScreen {
     }
 
     var eventsSection: some View {
-        let events = viewModel.state.events
-        let birthdays = viewModel.state.birthdays
+        let events = pageState.events
+        let birthdays = pageState.birthdays
         return section(Text("journal.events", bundle: .module), count: events.count) {
             if events.isEmpty && birthdays.isEmpty {
                 Text("journal.events.none", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
@@ -244,9 +234,9 @@ private extension JournalScreen {
     }
 
     @ViewBuilder var inboxSection: some View {
-        let items = viewModel.state.inbox
+        let items = pageState.inbox
         // Today always has the Inbox, because that is where something new is written down.
-        let isToday = shownPeriod.start == viewModel.state.today
+        let isToday = shownPeriod.start == pageState.today
         if !items.isEmpty || isToday {
             section(Text("journal.inbox", bundle: .module), count: items.count, trailing: {
                 Button(action: viewModel.openInbox) {
@@ -263,7 +253,7 @@ private extension JournalScreen {
                     if item.id != items.last?.id || isToday { rowDivider }
                 }
                 if isToday {
-                    JournalCaptureRow(viewModel: capture, day: viewModel.state.today)
+                    JournalCaptureRow(viewModel: capture, day: pageState.today)
                 }
             })
             .onChange(of: capture.captured) { _, _ in viewModel.retry() }
@@ -273,8 +263,8 @@ private extension JournalScreen {
     // MARK: Month
     var monthContent: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            ForEach(viewModel.state.weeks) { week in
-                weekCard(week, openByDefault: week.contains(day: viewModel.state.today))
+            ForEach(pageState.weeks) { week in
+                weekCard(week, openByDefault: week.contains(day: pageState.today))
             }
         }
     }
@@ -283,7 +273,7 @@ private extension JournalScreen {
     var yearContent: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
             periodNote
-            ForEach(viewModel.state.quarters) { quarter in
+            ForEach(pageState.quarters) { quarter in
                 quarterCard(quarter)
             }
         }
@@ -291,7 +281,7 @@ private extension JournalScreen {
 
     // MARK: Own note
     @ViewBuilder var periodNote: some View {
-        if let page = viewModel.state.page {
+        if let page = pageState.page {
             card { notes.editor(page, focus: noteFocus) }
         }
     }
@@ -313,7 +303,7 @@ private extension JournalScreen {
             page: quarter.page,
             title: String(format: String(localized: "journal.quarter", bundle: .module), quarter.number),
             span: JournalDates.quarterSpan(start: quarter.firstDay),
-            openByDefault: quarter.firstDay <= viewModel.state.today && viewModel.state.today <= quarter.lastDay,
+            openByDefault: quarter.firstDay <= pageState.today && pageState.today <= quarter.lastDay,
             identifier: JournalIdentifiers.quarterTogglePrefix + String(quarter.number)
         )
     }
@@ -368,13 +358,16 @@ private extension JournalScreen {
 
     /// The period the cards belong to: while a new selection loads, still the one shown before, so its content keeps
     /// its own layout and subtitle.
-    var shownPeriod: JournalSelection { viewModel.state.shown ?? viewModel.state.selection }
+    var shownPeriod: JournalSelection { pageState.shown ?? pageState.selection }
+
+    /// What the page's cards show: the diary's state, or while the axis moves the state it had when it started to.
+    var pageState: JournalState { heldState ?? viewModel.state }
 
     var subtitle: String {
         switch shownPeriod.kind {
         case .day, .week:
             let year = JournalDates.year(shownPeriod.start)
-            let key = shownPeriod.start == viewModel.state.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
+            let key = shownPeriod.start == pageState.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
             return String(format: String(localized: String.LocalizationValue(key), bundle: .module), year)
         case .month: return String(localized: "journal.subtitle.month", bundle: .module)
         case .quarter: return JournalDates.quarterSpan(start: shownPeriod.start)

@@ -64,14 +64,22 @@ class JournalPeriodTest {
 
     @Test fun `every row is a window around the selection`() {
         val rows = journalAxis(JournalPeriodType.MONTH, CalendarDay(2026, 10, 1), day)
-        assertEquals(13, rows[0].cells.size)
+        assertEquals((2024..2028).map { CalendarDay(it, 1, 1) }, rows[0].cells.map { it.start })
         assertEquals(60, rows[1].cells.size)
-        assertEquals(CalendarDay(2025, 1, 1), rows[2].cells.first().start)
-        assertEquals(CalendarDay(2027, 12, 31), rows[2].cells.last().start)
-        assertEquals(365 + 365 + 365, rows[2].cells.size)
+        assertEquals(CalendarDay(2024, 1, 1), rows[2].cells.first().start)
+        assertEquals(CalendarDay(2028, 12, 31), rows[2].cells.last().start)
+        assertEquals(366 + 365 + 365 + 365 + 366, rows[2].cells.size)
         rows.dropLast(1).forEach { row ->
-            assertTrue(row.cells.first().start <= rows[2].cells.first().start, row.type.name)
+            assertEquals(rows[2].cells.first().start, row.cells.first().start, row.type.name)
             assertTrue(row.cells.last().start >= CalendarDay(2027, 10, 1), row.type.name)
         }
+    }
+
+    @Test fun `the window holds the two years on each side of its anchor and no more`() {
+        val around = CalendarDay(2026, 6, 15)
+        assertTrue(journalAxisWindowContains(around, CalendarDay(2024, 1, 1)))
+        assertTrue(journalAxisWindowContains(around, CalendarDay(2028, 12, 31)))
+        assertFalse(journalAxisWindowContains(around, CalendarDay(2023, 12, 31)))
+        assertFalse(journalAxisWindowContains(around, CalendarDay(2029, 1, 1)))
     }
 }

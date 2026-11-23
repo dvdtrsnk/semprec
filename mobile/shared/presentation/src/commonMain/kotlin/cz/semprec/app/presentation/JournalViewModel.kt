@@ -9,6 +9,7 @@ import cz.semprec.app.domain.JournalPeriodType
 import cz.semprec.app.domain.LoadJournalPeriod
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.journalAxis
+import cz.semprec.app.domain.journalAxisWindowContains
 import cz.semprec.app.domain.startOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -23,6 +24,10 @@ private val FALLBACK_DAY = CalendarDay(2000, 1, 1)
 /**
  * The diary: the selected period of the time axis with its note, and for a day its events, birthdays and Inbox. A
  * change of selection supersedes the load before it. The notes themselves are edited in the note editor.
+ *
+ * The windows of the axis stay where they are while the person selects periods inside them, so the screen can scroll
+ * the axis to a new selection without its cells changing under the scroll; they move only to a day the person moved
+ * the axis to ([JournalAction.ShowAxisAround]) or to a selection outside them.
  */
 class JournalViewModel internal constructor(
     initialDay: String,
@@ -30,6 +35,9 @@ class JournalViewModel internal constructor(
     changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<JournalState, JournalAction, JournalEffect>(initialState(initialDay)) {
     private var loadJob: Job? = null
+
+    /** The day the windows of the axis lie around. */
+    private var around: CalendarDay = CalendarDay.parse(state.value.selection.start) ?: FALLBACK_DAY
 
     init {
         // After a write elsewhere in the window, what the shown period lists around its page (its weeks, quarters,
@@ -73,22 +81,25 @@ class JournalViewModel internal constructor(
         val selection = day?.let { JournalSelection(kind, it.toString()) }
         val current = state.value
         val reloads = selection != current.selection || current.phase == JournalPhase.ERROR
-        if (kind == JournalPeriodKind.QUARTER || kind == JournalPeriodKind.WEEK || selection == null) return
+        val selectable = kind != JournalPeriodKind.QUARTER && kind != JournalPeriodKind.WEEK
+        if (!selectable || day == null || selection == null) return
         if (reloads) {
             // Over a shown period, the axis moves to the new selection at once while the period it shows stays until
             // the new one arrives, so the screen changes in place instead of passing through a loading state.
             val keepsContent = current.phase == JournalPhase.CONTENT
-            update { it.copy(selection = selection, axis = axisFor(selection, it.today)) }
+            if (!journalAxisWindowContains(around, day)) around = day
+            update { it.copy(selection = selection, axis = axisFor(selection, it.today, around)) }
             load(keepsContent)
         } else {
             // The same period again: nothing to load, but the axis returns to it from wherever it was moved.
-            update { it.copy(axis = axisFor(it.selection, it.today)) }
+            if (!journalAxisWindowContains(around, day)) around = day
+            update { it.copy(axis = axisFor(it.selection, it.today, around)) }
         }
     }
 
     /** A day that does not parse leaves the axis where it is. */
     private fun showAxisAround(day: String) {
-        val around = CalendarDay.parse(day) ?: return
+        around = CalendarDay.parse(day) ?: return
         update { it.copy(axis = axisFor(it.selection, it.today, around)) }
     }
 
@@ -97,7 +108,7 @@ class JournalViewModel internal constructor(
         loadJob?.cancel()
         val selection = state.value.selection
         val period = selection.toPeriod()
-        if (!keepsContent) update { loading(it) }
+        if (!keepsContent) update { loading(it, around) }
         loadJob = viewModelScope.launch {
             val result = try {
                 loadPeriod(period)
@@ -109,8 +120,8 @@ class JournalViewModel internal constructor(
             ensureActive()
             when (result) {
                 is RepositoryResult.Content -> show(result.value, selection)
-                is RepositoryResult.Failure -> update { failed(it, result.kind) }
-                null -> update { failed(it, null) }
+                is RepositoryResult.Failure -> update { failed(it, around, result.kind) }
+                null -> update { failed(it, around, null) }
             }
         }
     }
@@ -124,7 +135,7 @@ class JournalViewModel internal constructor(
                 failure = null,
                 shown = selection,
                 today = page.today.toString(),
-                axis = axisFor(it.selection, page.today.toString()),
+                axis = axisFor(it.selection, page.today.toString(), around),
                 page = own,
                 weeks = page.weeks.map { week -> week.toState() },
                 quarters = page.quarters.map { quarter -> quarter.toState() },
@@ -157,11 +168,11 @@ private fun axisFor(
     return journalAxis(selection.kind.toType(), start, todayDay, around ?: start).toState()
 }
 
-private fun loading(state: JournalState) = state.copy(
+private fun loading(state: JournalState, around: CalendarDay) = state.copy(
     phase = JournalPhase.LOADING,
     shown = null,
     failure = null,
-    axis = axisFor(state.selection, state.today),
+    axis = axisFor(state.selection, state.today, around),
     page = null,
     weeks = emptyList(),
     quarters = emptyList(),
@@ -170,8 +181,8 @@ private fun loading(state: JournalState) = state.copy(
     inbox = emptyList(),
 )
 
-private fun failed(state: JournalState, failure: FailureKind?) =
-    loading(state).copy(phase = JournalPhase.ERROR, failure = failure)
+private fun failed(state: JournalState, around: CalendarDay, failure: FailureKind?) =
+    loading(state, around).copy(phase = JournalPhase.ERROR, failure = failure)
 
 /** [this] with what [page] lists around its own page: its weeks, quarters, events, birthdays and Inbox. */
 private fun JournalState.around(page: JournalPeriodPage) = copy(
