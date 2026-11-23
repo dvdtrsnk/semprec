@@ -23,7 +23,9 @@ extension View {
     @ViewBuilder
     func journalNavigationBar(hidden: Bool) -> some View {
         #if os(iOS)
+            // A small title: the bar holds only the check that ends a focused note, over the page as it was.
             toolbar(hidden ? .hidden : .automatic, for: .navigationBar)
+                .navigationBarTitleDisplayMode(.inline)
         #else
             self
         #endif

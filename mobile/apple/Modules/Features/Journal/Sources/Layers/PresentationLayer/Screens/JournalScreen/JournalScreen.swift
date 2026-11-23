@@ -177,9 +177,9 @@ private extension JournalScreen {
         case .content:
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if noteFocus.isActive {
-                        page(pageState, inView: true).padding(.top, Theme.Spacing.small)
-                    } else {
+                    // While a note is focused only the page stays; it stays the same view, so the note being edited
+                    // is never made again under the person's cursor.
+                    if !noteFocus.isActive {
                         titleRow
                             .padding(.bottom, Self.axisRowSpacing)
                             .onGeometryChange(
@@ -197,19 +197,22 @@ private extension JournalScreen {
                             }
                             .zIndex(2)
                         axis.zIndex(1)
-                        JournalPager(
-                            current: pageState,
-                            isEnabled: true,
-                            request: turnRequest,
-                            onTurn: turn,
-                            page: { state, inView in page(state, inView: inView) }
-                        )
-                        .padding(.top, Theme.Spacing.medium)
                     }
+                    JournalPager(
+                        current: pageState,
+                        isEnabled: !noteFocus.isActive,
+                        request: turnRequest,
+                        onTurn: turn,
+                        page: { state, inView in page(state, inView: inView) }
+                    )
+                    .padding(.top, noteFocus.isActive ? Theme.Spacing.small : Theme.Spacing.medium)
                 }
                 .padding(.bottom, Theme.Spacing.large)
-                .frame(minHeight: viewportHeight + pinnedOffset, alignment: .top)
+                // Room for the selected row to reach the top; a focused note has no axis to pin.
+                .frame(minHeight: noteFocus.isActive ? 0 : viewportHeight + pinnedOffset, alignment: .top)
             }
+            // As in Notes, the page pulled down takes the keyboard with it, which ends writing in the note.
+            .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(
                 for: CGFloat.self,
                 // The container is already the visible height, inside the bars' insets.
