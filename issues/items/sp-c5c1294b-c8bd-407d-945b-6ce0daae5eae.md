@@ -10,10 +10,10 @@ parent: "sp-77a3392a-3026-414c-8dd4-c6ad627e5168"
 assignees: []
 milestone: null
 createdAt: "2026-11-23T07:06:27.589Z"
-updatedAt: "2026-11-23T07:06:36.642Z"
+updatedAt: "2026-11-23T08:53:08.639Z"
 closedAt: null
 source: null
-approval: {"specSha256":"ac9ef9f668a44f2dfca2788b54c20ca566138a2ee21ba3132def8a089cfff9ec","source":"repository","actor":"claude-delegated-by-david: delegated by dvdtrsnk for the offline-first mobile data, 2026-11-23","at":"2026-11-23T07:06:36.642Z"}
+approval: {"specSha256":"09c5f68e1f3b652dc10744ea2159a936704149ecdcf7cf057735c4455e65f1c7","source":"repository","actor":"claude-delegated-by-david: delegated by dvdtrsnk for the offline-first mobile data, 2026-11-23","at":"2026-11-23T08:53:08.639Z"}
 resolution: null
 ---
 **Blocked by:** sp-0412eb00-5180-4208-bb49-0e4c38ce9600
@@ -40,6 +40,7 @@ Load `kmp-shared`, `testing`, `error-handling` and `mobile-verify`.
 - mobile/shared/data/src/commonMain/kotlin/cz/semprec/app/data/HttpAuthRepository.kt
 - mobile/shared/umbrella/src/commonMain/kotlin/cz/semprec/app/sdk/HomeSDK.kt
 - mobile/shared/data/src/commonTest/kotlin/cz/semprec/app/data/HttpAuthRepositoryTest.kt
+- docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md (opening without a connection)
 
 ## Scope
 

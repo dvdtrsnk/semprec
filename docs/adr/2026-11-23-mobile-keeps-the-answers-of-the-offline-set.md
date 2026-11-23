@@ -72,6 +72,10 @@ row change feed would be a new server protocol where the realtime decisions keep
   background to check the connection. When an answer other than a window's own write ends the offline state, every
   kept answer turns stale and the layer's change flow emits; each window's `ItemChanges` merges that flow with its own
   announcements, so the open screens of every window read again.
+- **Opening without a connection.** The person the server last confirmed for the session (a restore it answered, a
+  sign-in) is kept in `<account>/session.json`. A restore that gets no answer, a `5xx` or a `429` opens the app signed
+  in as that person, and stays unreachable as before when none is kept; every other answer is handled as before, a
+  `401` signing the window out.
 - **No server change.** The server keeps no replay buffer and no change feed: a device that was offline reads again,
   which [[2026-10-16-tenant-scoped-realtime-fan-out]] already prescribes for a reconnecting client, and the socket's
   frames only mark what is kept as stale.
@@ -80,8 +84,9 @@ row change feed would be a new server protocol where the realtime decisions keep
 
 - A screen of the offline set opens at once from the device when nothing changed since it was last read, and without
   a connection it opens with what was kept; reads after a write, a reconnect or a frame go to the server as before.
-- A read the device never kept fails without a connection as it did; warming the set ahead of the screens, opening
-  the app offline, writing offline and showing the offline state are later decisions.
+- A read the device never kept fails without a connection as it did. Writing offline is
+  [[2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection]]; warming the set ahead of the screens
+  (`[offline-first 06/07]`) and showing the offline state (`[offline-first 07/07]`) will follow.
 - The device holds a copy of the person's data outside the Keychain, protected by the system's file protection and
   removed at every end of the session; it holds no token, because the account is named by a hash.
 - Requests outside the offline set behave exactly as before, and without a data directory nothing changes at all.
