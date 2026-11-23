@@ -32,6 +32,7 @@ import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
 import cz.semprec.app.domain.MailThreadListCache
 import cz.semprec.app.domain.NoMailThreadListCache
+import cz.semprec.app.domain.NoOfflineStatus
 import cz.semprec.app.domain.RevokePushSubscription
 import cz.semprec.app.domain.SearchEverything
 import cz.semprec.app.domain.SyncChanges
@@ -51,6 +52,7 @@ import cz.semprec.app.presentation.OverviewViewModelFactory
 import cz.semprec.app.presentation.SearchViewModel
 import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
+import cz.semprec.app.presentation.SyncStatusViewModelFactory
 import cz.semprec.app.presentation.TasksStart
 import cz.semprec.app.presentation.TasksViewModel
 import cz.semprec.app.presentation.WorkViewModelFactory
@@ -119,9 +121,10 @@ class HomeSDK(
     private val syncChanges = SyncChanges()
     private val pageChanges = PageChanges(offline?.pages?.changed ?: emptyFlow())
 
-    /** The sync socket of this window. */
+    /** The sync socket of this window and the status of its changes. */
     val sync: SyncSDK = SyncSDK(
         SyncSocket(auth.api, syncChanges, CoroutineScope(SupervisorJob() + Dispatchers.Default), offline, pageChanges),
+        SyncStatusViewModelFactory(offline ?: NoOfflineStatus),
     )
 
     /** The profile and the account screens below it. */

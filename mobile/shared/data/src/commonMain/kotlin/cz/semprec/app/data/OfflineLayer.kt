@@ -2,6 +2,8 @@ package cz.semprec.app.data
 
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.StoredSession
+import cz.semprec.app.domain.OfflineStatus
+import cz.semprec.app.domain.OfflineStatusSource
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.CoroutineScope
@@ -10,7 +12,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -80,7 +87,8 @@ internal data class ApiRequest(
  * emits, so the screens of every window read again, and the queue is replayed.
  *
  * After every replay that finished, the note pages that wait are written ([pages]) and, when one is due, the window
- * that registered last ([warmUpWith]) reads the offline set ahead of its screens ([OfflineWarmupSchedule]).
+ * that registered last ([warmUpWith]) reads the offline set ahead of its screens ([OfflineWarmupSchedule]). [status]
+ * tells whether the process is offline and how many changes of the account signed in wait or were refused.
  */
 class OfflineLayer internal constructor(
     internal val store: OfflineStore,
@@ -88,7 +96,7 @@ class OfflineLayer internal constructor(
     timeSource: TimeSource = TimeSource.Monotonic,
     clock: QueueClock = QueueClock(::currentInstant, Random::nextDouble, ::localToday),
     newId: () -> String = ::randomId,
-) {
+) : OfflineStatusSource {
     private val state = LayerState(timeSource)
     internal val writes = OfflineWrites(store, scope, state, clock, newId)
     private val views = QueuedViews(store, clock.today)
@@ -111,6 +119,12 @@ class OfflineLayer internal constructor(
 
     /** Emits when what the screens of every window show may have changed. */
     val changes: Flow<Unit> = state.changes
+
+    /** Whether the process is offline, and what the queue of the account signed in holds, as they change. */
+    override val status: Flow<OfflineStatus> =
+        combine(state.connectivity.offlineChanges, writes.status) { offline, queue ->
+            OfflineStatus(offline, queue.waiting, queue.failures.size)
+        }.distinctUntilChanged()
 
     /**
      * Answers [request], a read of the offline set made with [session]; [transmit] sends it to the server. Every id
@@ -167,9 +181,14 @@ class OfflineLayer internal constructor(
         state.locked { state.freshness.changed() }
     }
 
+    override suspend fun forgetFailures() {
+        writes.forgetFailures()
+    }
+
     /** Removes everything kept, the queue included, as the session ended. */
     suspend fun clear() {
         store.clear()
+        writes.cleared()
         state.locked { state.freshness.clear() }
     }
 
@@ -373,7 +392,16 @@ internal class Freshness(private val timeSource: TimeSource) {
 
 /** Whether the process is offline, and when the last probe went out. */
 internal class Connectivity(private val timeSource: TimeSource) {
-    var offline = false
+    private val mutableOffline = MutableStateFlow(false)
+
+    /** [offline] as it changes. */
+    val offlineChanges: StateFlow<Boolean> = mutableOffline.asStateFlow()
+
+    var offline: Boolean
+        get() = mutableOffline.value
+        set(value) {
+            mutableOffline.value = value
+        }
     private var lastProbe: TimeMark? = null
     private var probing = false
 

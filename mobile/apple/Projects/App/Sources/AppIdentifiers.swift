@@ -10,4 +10,13 @@ enum AppIdentifiers {
     static let pendingScreen = "app.pending"
     /// The handle that closes the Semp chat; Apple-only until Android has the chat.
     static let sempGrabber = "semp.grabber"
+    /// The banner above the tabs that tells of changes not on the server yet; Apple-only, like its lines below, until
+    /// Android shows the status.
+    static let syncStatus = "sync.status"
+    /// The line of the banner while the scene is offline.
+    static let syncOffline = "sync.status.offline"
+    /// The line of the banner while changes the server refused are shown.
+    static let syncFailed = "sync.status.failed"
+    /// The button that dismisses the refused changes.
+    static let syncDismiss = "sync.status.dismiss"
 }

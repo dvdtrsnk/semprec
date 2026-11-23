@@ -79,6 +79,9 @@ private extension AppScene {
             }
         }
         .navigationRoot(rootNavigator)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SyncStatusBanner(viewModel: SyncStatusViewModel(model: composition.models.makeSyncStatus()))
+        }
         .sempOverlay(composition)
         .onAppear { composition.currentTab = selectedTab.wrappedValue }
         .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }

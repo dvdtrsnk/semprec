@@ -57,6 +57,11 @@ app sends, and the only thing the device has to make up is the answer.
   sends the change once more with its current version; every other answer drops the write. A dropped write records a
   failure that names only its route, its `FailureKind` and the time. Every success and every drop makes the kept
   answers stale and tells every window. The layer publishes the number of waiting writes and the failures.
+- **The status.** The layer is the `OfflineStatusSource` of the domain: whether the process is offline, how many writes
+  of the account signed in wait and how many were refused, and forgetting the refused ones; without a data directory
+  the status is always online with nothing waiting. A `SyncStatusViewModel` follows it, and the Apple app shows a
+  banner above the tabs of a signed-in scene while it is offline (with the number of writes that wait) and while
+  refused writes are recorded (until the person dismisses them); online with nothing refused it shows nothing.
 - **Shown in the answers.** Every answer of the offline set is returned with the writes still queued applied in
   queue order (`QueuedWriteProjection`); with nothing queued, or an answer that is not JSON, it is returned as it came.
   An item change sets its properties on every object of the item and on its timeline and agenda entries, with the
@@ -72,8 +77,8 @@ app sends, and the only thing the device has to make up is the answer.
 
 - A change made without a connection succeeds on the device and reaches the server once and in order when the
   connection is back; with a connection and nothing queued a write behaves exactly as before.
-- A change the server refuses after the device accepted it is dropped and recorded; the person learns of it only
-  once the status is shown.
+- A change the server refuses after the device accepted it is dropped and recorded; the person sees how many were
+  refused until they dismiss them, but not which ones, and cannot retry or edit them.
 - Last writer wins for a change replayed against a newer version of an item: the device sends its change again on the
   item's current version.
 - Ending the session drops what is still queued.

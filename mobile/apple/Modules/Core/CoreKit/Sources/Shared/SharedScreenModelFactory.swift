@@ -77,6 +77,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         sdk.sync.stop()
     }
 
+    public func makeSyncStatus() -> any SyncStatusScreenModel {
+        SharedSyncStatusScreenModel(sdk.sync.statusViewModel())
+    }
+
     public func makeSession() -> any SessionScreenModel {
         SharedSessionScreenModel(sdk.sessionViewModel())
     }

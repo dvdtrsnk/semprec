@@ -95,9 +95,8 @@ row change feed would be a new server protocol where the realtime decisions keep
 - A screen of the offline set opens at once from the device when nothing changed since it was last read, and without
   a connection it opens with what was kept; reads after a write, a reconnect or a frame go to the server as before.
 - A read the device neither kept nor warmed fails without a connection as it did: a collection other than tasks,
-  areas, projects and people is kept once opened. Writing offline is
-  [[2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection]]; showing the offline state
-  (`[offline-first 07/07]`) will follow.
+  areas, projects and people is kept once opened. Writing offline, and showing the offline state, are
+  [[2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection]].
 - A warm-up sends about forty requests to the server, each distinct request once; the reads it repeats (the schema,
   the databases) are answered from the device.
 - The device holds a copy of the person's data outside the Keychain, protected by the system's file protection and

@@ -27,7 +27,7 @@ import kotlinx.coroutines.sync.withLock
  * changed elsewhere meanwhile is merged three ways with the change by the repository, and the merge is shown in place,
  * the blocks it left unchanged keeping their ids; a change typed while that write was under way is merged into it and
  * written after the next pause. A change the server cannot be reached for is kept on the device and counts as saved
- * there; only a page that could not be merged is read again, and editing ends
+ * there; a page that could not be merged is read again, and editing ends
  * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md). Only the blocks a change touched are
  * written anew; the others keep the Markdown lines they were read from.
  *

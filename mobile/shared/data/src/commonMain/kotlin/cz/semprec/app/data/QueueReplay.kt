@@ -132,6 +132,11 @@ internal class OfflineWrites(
         store.queue.forgetFailures(account)?.let { mutableStatus.value = it.status() }
     }
 
+    /** The store forgot every queue: nothing waits and nothing failed any more. */
+    fun cleared() {
+        mutableStatus.value = QueueStatus(0, emptyList())
+    }
+
     private suspend fun sendDirectly(
         account: String,
         route: QueuedRoute,
