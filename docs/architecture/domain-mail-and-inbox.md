@@ -864,6 +864,11 @@ internals proven against the real library by its unit test; an upgrade must re-p
   of its own beside a Sent copy whose edge carries a UID, or when its sender is no mailbox address of the tenant and it
   is in no Sent folder. Mail to oneself is therefore received; only its Sent copy is the user's own. The list's and the
   summary's `unread` and the actions' incoming copies (Drafts copies excluded) read it.
+- The Inbox list and a folder's list are computed over a window of candidate threads (`mail/mailThreadCandidates.ts`):
+  the newest threads with a live message in an Inbox folder or that folder, keyed by their newest live message of any
+  folder, drafts included. The key is never older than the thread's place in the list, so the page's rows up to the
+  window's last key are final; a page reaching past it is computed again over a window four times larger (the first
+  holds four pages). Every other list (Flagged, Semp drafts, a thread or set of threads) reads every message.
 - `read: false` and `flagged: true` on a thread without a received message are 409 `mail_thread_no_received_message`
   and write nothing; `read: true` and `flagged: false` with nothing to change are 200.
 - An IMAP server keeps mail to oneself twice (Sent and where it was delivered) and both converge on one Emails item. An
