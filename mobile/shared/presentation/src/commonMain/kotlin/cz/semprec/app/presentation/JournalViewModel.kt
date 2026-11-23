@@ -53,6 +53,7 @@ class JournalViewModel internal constructor(
         // not interrupted.
         reloadOnChanges(changes) {
             kept.clear()
+            update { it.withNeighbours() }
             if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {
                 val period = state.value.selection.toPeriod()
                 loadJob = viewModelScope.launch {
@@ -170,15 +171,16 @@ class JournalViewModel internal constructor(
         }
     }
 
+    /** Keeps [page] and, when it lies beside the shown period, lays it out there. */
     private fun keep(period: JournalPeriod, page: JournalPeriodPage) {
         kept.remove(period)
         kept[period] = page
         while (kept.size > KEPT_PERIODS) kept.remove(kept.keys.first())
+        update { it.withNeighbours() }
     }
 
     private fun show(page: JournalPeriodPage, selection: JournalSelection) {
-        val ref = JournalPageRef(page.period.type.toKind(), page.period.key)
-        val own = if (page.period.type == JournalPeriodType.MONTH) null else pageState(ref, page.markdown)
+        val content = page.toContent(selection)
         update {
             it.copy(
                 phase = JournalPhase.CONTENT,
@@ -186,15 +188,39 @@ class JournalViewModel internal constructor(
                 shown = selection,
                 today = page.today.toString(),
                 axis = axisFor(it.selection, page.today.toString(), around),
-                page = own,
-                weeks = page.weeks.map { week -> week.toState() },
-                quarters = page.quarters.map { quarter -> quarter.toState() },
-                events = page.events.map { event -> event.toState() },
-                birthdays = page.birthdays.map { birthday -> JournalBirthdayState(birthday.id, birthday.personName) },
-                inbox = page.inbox.map { entry -> entry.toState() },
-            )
+                page = content.page,
+                weeks = content.weeks,
+                quarters = content.quarters,
+                events = content.events,
+                birthdays = content.birthdays,
+                inbox = content.inbox,
+            ).withNeighbours()
         }
     }
+
+    /** [this] with the kept periods beside the shown one, or without them where none is kept. */
+    private fun JournalState.withNeighbours(): JournalState {
+        val shown = shown ?: return copy(before = null, after = null)
+        val (after, before) = shown.neighbourStarts()
+        return copy(before = neighbour(before, shown.kind), after = neighbour(after, shown.kind))
+    }
+
+    private fun neighbour(start: CalendarDay, kind: JournalPeriodKind): JournalPeriodContent? =
+        kept[JournalPeriod.containing(kind.toType(), start)]?.toContent(JournalSelection(kind, start.toString()))
+}
+
+/** What [this] page shows for [selection]: a month has no note of its own. */
+private fun JournalPeriodPage.toContent(selection: JournalSelection): JournalPeriodContent {
+    val ref = JournalPageRef(period.type.toKind(), period.key)
+    return JournalPeriodContent(
+        shown = selection,
+        page = if (period.type == JournalPeriodType.MONTH) null else pageState(ref, markdown),
+        weeks = weeks.map { week -> week.toState() },
+        quarters = quarters.map { quarter -> quarter.toState() },
+        events = events.map { event -> event.toState() },
+        birthdays = birthdays.map { birthday -> JournalBirthdayState(birthday.id, birthday.personName) },
+        inbox = inbox.map { entry -> entry.toState() },
+    )
 }
 
 private fun initialState(initialDay: String): JournalState {
@@ -208,18 +234,21 @@ private const val KEPT_PERIODS = 9
 private const val MONTHS_IN_YEAR = 12
 
 /** The period after the selected one and the one before it, of the same kind. */
-private fun JournalSelection.neighbours(): List<JournalPeriod> {
+private fun JournalSelection.neighbours(): List<JournalPeriod> =
+    neighbourStarts().map { day -> JournalPeriod.containing(kind.toType(), day) }
+
+/** The first days of the period after the selected one and of the one before it, of the same kind. */
+private fun JournalSelection.neighbourStarts(): List<CalendarDay> {
     val type = kind.toType()
     val start = (CalendarDay.parse(start) ?: FALLBACK_DAY).startOf(type)
-    return listOf(1, -1).mapNotNull { step ->
-        val day = when (type) {
+    return listOf(1, -1).map { step ->
+        when (type) {
             JournalPeriodType.DAY -> start.plusDays(step)
             JournalPeriodType.WEEK -> start.plusDays(step * DAYS_IN_WEEK)
             JournalPeriodType.MONTH -> start.plusMonths(step)
             JournalPeriodType.QUARTER -> start.plusMonths(step * MONTHS_IN_QUARTER)
             JournalPeriodType.YEAR -> start.plusMonths(step * MONTHS_IN_YEAR)
         }
-        JournalPeriod.containing(type, day)
     }
 }
 
@@ -244,6 +273,8 @@ private fun axisFor(
 private fun loading(state: JournalState, around: CalendarDay) = state.copy(
     phase = JournalPhase.LOADING,
     shown = null,
+    before = null,
+    after = null,
     failure = null,
     axis = axisFor(state.selection, state.today, around),
     page = null,

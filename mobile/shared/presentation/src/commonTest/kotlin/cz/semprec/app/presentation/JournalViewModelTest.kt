@@ -283,6 +283,79 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `the periods read ahead lie beside the shown one once they are read`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            when (it.key) {
+                "2026-10-15" -> repository.late(gate, content(periodPage(it, markdown = "BEFORE")))
+                else -> content(periodPage(it, markdown = "PAGE ${it.key}"))
+            }
+        }
+        val vm = loaded()
+        val after = vm.state.value.after
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), after?.shown)
+        assertEquals("PAGE 2026-10-17", after?.page?.blocks?.single()?.runs?.single()?.text)
+        assertNull(vm.state.value.before)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-15"), vm.state.value.before?.shown)
+        assertEquals("BEFORE", vm.state.value.before?.page?.blocks?.single()?.runs?.single()?.text)
+        vm.close()
+    }
+
+    @Test fun `a month or a year has the months or years beside it`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(JournalAction.Select(JournalPeriodKind.MONTH, "2026-10-01"))
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.MONTH, "2026-09-01"), vm.state.value.before?.shown)
+        assertEquals(JournalSelection(JournalPeriodKind.MONTH, "2026-11-01"), vm.state.value.after?.shown)
+        assertNull(vm.state.value.after?.page)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.YEAR, "2026-01-01"))
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.YEAR, "2025-01-01"), vm.state.value.before?.shown)
+        assertEquals(JournalPageRef(JournalPeriodKind.YEAR, "2027"), vm.state.value.after?.page?.ref)
+        vm.close()
+    }
+
+    @Test fun `a new selection keeps the neighbours of the period still shown`() = runTest(dispatcher) {
+        val vm = loaded()
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = { repository.late(gate, content(periodPage(it))) }
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-20"))
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), vm.state.value.shown)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.after?.shown)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-21"), vm.state.value.after?.shown)
+        vm.close()
+    }
+
+    @Test fun `a period loading after a failure has nothing beside it`() = runTest(dispatcher) {
+        repository.onPeriod = { journalFailure() }
+        val vm = loaded()
+        assertNull(vm.state.value.before)
+        assertNull(vm.state.value.after)
+        vm.close()
+    }
+
+    @Test fun `a write elsewhere drops the periods beside the shown one until they are read again`() =
+        runTest(dispatcher) {
+            val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+            val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+            runCurrent()
+            val gate = CompletableDeferred<Unit>()
+            repository.onPeriod = { repository.late(gate, content(periodPage(it))) }
+            changes.emit(Unit)
+            runCurrent()
+            assertNull(vm.state.value.before)
+            assertNull(vm.state.value.after)
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.after?.shown)
+            vm.close()
+        }
+
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {
         val vm = loaded("2026-10-01")
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-03"))

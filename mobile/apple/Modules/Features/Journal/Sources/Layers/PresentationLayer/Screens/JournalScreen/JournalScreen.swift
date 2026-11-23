@@ -16,6 +16,8 @@ struct JournalScreen: View {
     @StateObject private var capture: JournalCaptureViewModel
     /// Set while a note is edited or its blocks are selected: the diary then shows only the page, and a check ends it.
     @StateObject private var noteFocus = NoteEditorFocus()
+    /// The focus of the notes on the pages beside the one in view, which nobody edits until they come into view.
+    @StateObject private var asideFocus = NoteEditorFocus()
     private let notes: JournalNotes
 
     // MARK: - State
@@ -38,6 +40,8 @@ struct JournalScreen: View {
     /// Set while a swipe turns the page: the new period's page is shown as soon as it comes, the axis moving or not,
     /// since the page is out of view while the axis moves.
     @State private var isTurning = false
+    /// The turn of the page a period of the selected kind picked on the axis asks for.
+    @State private var turnRequest: JournalPageTurnRequest?
     /// Counts the changes of the selected period and the presses of Today, for their haptics, as in the calendar: a
     /// new period ticks, Today taps softly, and the period Today brings does not tick again.
     @State private var selectionTicks = 0
@@ -108,18 +112,39 @@ private extension JournalScreen {
         }
     }
 
-    /// Selects the period `steps` away from the selected one, as a swipe of the page turns to it.
+    /// Selects the period `steps` away from the selected one, as a swipe of the page turns to it. The page that comes
+    /// shows the new period as soon as it comes, the axis moving or not.
     func turn(_ steps: Int) -> JournalSelection? {
         isTurning = true
         heldState = nil
         return viewModel.turn(by: steps)
     }
 
-    /// The axis started or stopped moving: the page's cards wait for it to rest, unless a swipe turns the page.
+    /// A period picked on the axis. One of the selected kind turns the page to its side, as a swipe does.
+    func pick(_ cell: JournalAxisCell) {
+        let selection = viewModel.state.selection
+        if cell.kind == selection.kind, cell.start != selection.start {
+            let leaving = pageState
+            isTurning = true
+            heldState = nil
+            turnRequest = JournalPageTurnRequest(
+                id: (turnRequest?.id ?? 0) + 1,
+                steps: cell.start > selection.start ? 1 : -1,
+                target: JournalSelection(kind: cell.kind, start: cell.start),
+                leaving: leaving
+            )
+        }
+        viewModel.select(cell)
+    }
+
+    /// The axis started or stopped moving: the page's cards wait for it to rest, unless the page turns.
     func axisMoved(_ moving: Bool) {
-        let holds = moving && !isTurning
-        heldState = holds ? viewModel.state : nil
-        if !moving { isTurning = false }
+        if moving {
+            if !isTurning, heldState == nil { heldState = viewModel.state }
+        } else {
+            heldState = nil
+            isTurning = false
+        }
     }
 
     /// How far down the page the selected row is: below the heading and the rows above it.
@@ -135,7 +160,7 @@ private extension JournalScreen {
             selectionStart: viewModel.state.selection.start,
             selectionKind: viewModel.state.selection.kind,
             materialReach: contentTop + titleHeight + Self.materialOverreach,
-            onSelect: viewModel.select,
+            onSelect: pick,
             onMove: viewModel.showAxis(around:),
             onMoving: axisMoved,
             material: { JournalHeaderMaterial() },
@@ -153,7 +178,7 @@ private extension JournalScreen {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if noteFocus.isActive {
-                        page.padding(.top, Theme.Spacing.small)
+                        page(pageState, inView: true).padding(.top, Theme.Spacing.small)
                     } else {
                         titleRow
                             .padding(.bottom, Self.axisRowSpacing)
@@ -172,9 +197,14 @@ private extension JournalScreen {
                             }
                             .zIndex(2)
                         axis.zIndex(1)
-                        page
-                            .journalPageTurn(isEnabled: true, shown: pageState.shown, onTurn: turn)
-                            .padding(.top, Theme.Spacing.medium)
+                        JournalPager(
+                            current: pageState,
+                            isEnabled: true,
+                            request: turnRequest,
+                            onTurn: turn,
+                            page: { state, inView in page(state, inView: inView) }
+                        )
+                        .padding(.top, Theme.Spacing.medium)
                     }
                 }
                 .padding(.bottom, Theme.Spacing.large)
@@ -193,207 +223,25 @@ private extension JournalScreen {
         }
     }
 
-    /// The cards of the selected period.
-    var page: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            header
-            switch shownPeriod.kind {
-            case .day: dayContent
-            case .month: monthContent
-            case .year: yearContent
-            case .quarter, .week: periodNote
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.medium)
+    /// The cards of a period, from `state`; only the page in view tells the screen when its note is edited.
+    func page(_ state: JournalState, inView: Bool) -> some View {
+        JournalPageView(
+            state: state,
+            notes: notes,
+            focus: inView ? noteFocus : asideFocus,
+            capture: capture,
+            flippedSections: $flippedSections,
+            onOpenEvent: viewModel.openEvent,
+            onOpenInbox: viewModel.openInbox,
+            onCaptured: viewModel.retry
+        )
     }
+
+    /// What the page's cards show: the diary's state, or while the axis moves the state it had when it started to.
+    var pageState: JournalState { heldState ?? viewModel.state }
 
     /// The space between two rows of the axis.
     static var axisRowSpacing: CGFloat { 2 }
     /// How far the axis's material reaches past the top of the screen, so no scroll ever shows its upper edge.
     static var materialOverreach: CGFloat { 40 }
-
-    /// What the longer periods are, under the bar; a day's heading says all in the bar.
-    @ViewBuilder var header: some View {
-        if shownPeriod.kind != .day {
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(Theme.Colors.secondaryText)
-                .padding(.horizontal, 4)
-        }
-    }
-
-    // MARK: Day
-    @ViewBuilder var dayContent: some View {
-        if let week = pageState.weeks.first {
-            weekCard(week, openByDefault: false)
-        }
-        eventsSection
-        inboxSection
-        if let page = pageState.page {
-            section(Text("journal.notes", bundle: .module)) {
-                notes.editor(page, focus: noteFocus)
-            }
-        }
-    }
-
-    var eventsSection: some View {
-        let events = pageState.events
-        let birthdays = pageState.birthdays
-        return section(Text("journal.events", bundle: .module), count: events.count) {
-            if events.isEmpty && birthdays.isEmpty {
-                Text("journal.events.none", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
-            } else {
-                ForEach(birthdays) { birthday in
-                    JournalBirthdayRow(birthday: birthday)
-                    if birthday.id != birthdays.last?.id || !events.isEmpty { rowDivider }
-                }
-                ForEach(events) { event in
-                    JournalEventRow(event: event) { viewModel.openEvent(event) }
-                    if event.id != events.last?.id { rowDivider }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder var inboxSection: some View {
-        let items = pageState.inbox
-        // Today always has the Inbox, because that is where something new is written down.
-        let isToday = shownPeriod.start == pageState.today
-        if !items.isEmpty || isToday {
-            section(Text("journal.inbox", bundle: .module), count: items.count, trailing: {
-                Button(action: viewModel.openInbox) {
-                    Text("journal.inbox.process", bundle: .module)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                }
-                .journalAccentGlass()
-                .accessibilityIdentifier(JournalIdentifiers.inboxProcess)
-            }, content: {
-                ForEach(items) { item in
-                    JournalInboxRow(item: item)
-                    if item.id != items.last?.id || isToday { rowDivider }
-                }
-                if isToday {
-                    JournalCaptureRow(viewModel: capture, day: pageState.today)
-                }
-            })
-            .onChange(of: capture.captured) { _, _ in viewModel.retry() }
-        }
-    }
-
-    // MARK: Month
-    var monthContent: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            ForEach(pageState.weeks) { week in
-                weekCard(week, openByDefault: week.contains(day: pageState.today))
-            }
-        }
-    }
-
-    // MARK: Year
-    var yearContent: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            periodNote
-            ForEach(pageState.quarters) { quarter in
-                quarterCard(quarter)
-            }
-        }
-    }
-
-    // MARK: Own note
-    @ViewBuilder var periodNote: some View {
-        if let page = pageState.page {
-            card { notes.editor(page, focus: noteFocus) }
-        }
-    }
-
-    // MARK: Pieces
-    func weekCard(_ week: JournalWeek, openByDefault: Bool) -> some View {
-        collapsibleCard(
-            page: week.page,
-            title: String(format: String(localized: "journal.week", bundle: .module), week.number),
-            span: JournalDates.weekRange(first: week.firstDay, last: week.lastDay),
-            openByDefault: openByDefault,
-            identifier: JournalIdentifiers.weekTogglePrefix + String(week.number)
-        )
-    }
-
-    /// A quarter of the shown year, open by default when it holds today.
-    func quarterCard(_ quarter: JournalQuarter) -> some View {
-        collapsibleCard(
-            page: quarter.page,
-            title: String(format: String(localized: "journal.quarter", bundle: .module), quarter.number),
-            span: JournalDates.quarterSpan(start: quarter.firstDay),
-            openByDefault: quarter.firstDay <= pageState.today && pageState.today <= quarter.lastDay,
-            identifier: JournalIdentifiers.quarterTogglePrefix + String(quarter.number)
-        )
-    }
-
-    /// A card of a week or a quarter: its title and days in a row that opens and closes its note.
-    func collapsibleCard(
-        page: JournalPage,
-        title: String,
-        span: String,
-        openByDefault: Bool,
-        identifier: String
-    ) -> some View {
-        let isOpen = flippedSections.contains(page.ref.period) != openByDefault
-        return VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            Button { toggle(page.ref.period) } label: {
-                HStack(spacing: Theme.Spacing.medium) {
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                        .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    Text(title).font(.title3.weight(.bold))
-                    Spacer(minLength: 0)
-                    Text(span)
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                }
-                .padding(.vertical, 4)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(Text(isOpen ? "journal.week.expanded" : "journal.week.collapsed", bundle: .module))
-            .accessibilityIdentifier(identifier)
-            if isOpen {
-                notes.editor(page, focus: noteFocus)
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.medium + 4)
-        .padding(.vertical, Theme.Spacing.medium)
-        .journalCard()
-    }
-
-    func toggle(_ period: String) {
-        if flippedSections.contains(period) {
-            flippedSections.remove(period)
-        } else {
-            flippedSections.insert(period)
-        }
-    }
-}
-
-// MARK: - Titles
-private extension JournalScreen {
-
-    /// The period the cards belong to: while a new selection loads, still the one shown before, so its content keeps
-    /// its own layout and subtitle.
-    var shownPeriod: JournalSelection { pageState.shown ?? pageState.selection }
-
-    /// What the page's cards show: the diary's state, or while the axis moves the state it had when it started to.
-    var pageState: JournalState { heldState ?? viewModel.state }
-
-    var subtitle: String {
-        switch shownPeriod.kind {
-        case .day, .week:
-            let year = JournalDates.year(shownPeriod.start)
-            let key = shownPeriod.start == pageState.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
-            return String(format: String(localized: String.LocalizationValue(key), bundle: .module), year)
-        case .month: return String(localized: "journal.subtitle.month", bundle: .module)
-        case .quarter: return JournalDates.quarterSpan(start: shownPeriod.start)
-        case .year: return String(localized: "journal.subtitle.year", bundle: .module)
-        }
-    }
 }

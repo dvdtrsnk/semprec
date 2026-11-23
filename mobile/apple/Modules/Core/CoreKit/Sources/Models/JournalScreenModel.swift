@@ -220,6 +220,9 @@ public struct JournalState: Equatable, Sendable {
     /// The period the page, weeks, quarters, events and Inbox belong to: right after a new selection still the previous
     /// one, until the new period arrives. `nil` while nothing is shown.
     public var shown: JournalSelection?
+    /// The periods of the same kind beside `shown`, once they have been read, to lay out beside it.
+    public var before: JournalPeriodContent?
+    public var after: JournalPeriodContent?
 
     public init(
         phase: JournalPhase,
@@ -232,7 +235,9 @@ public struct JournalState: Equatable, Sendable {
         events: [JournalEvent] = [],
         birthdays: [JournalBirthday] = [],
         inbox: [JournalInboxItem] = [],
-        shown: JournalSelection? = nil
+        shown: JournalSelection? = nil,
+        before: JournalPeriodContent? = nil,
+        after: JournalPeriodContent? = nil
     ) {
         self.phase = phase
         self.selection = selection
@@ -245,6 +250,38 @@ public struct JournalState: Equatable, Sendable {
         self.birthdays = birthdays
         self.inbox = inbox
         self.shown = shown
+        self.before = before
+        self.after = after
+    }
+}
+
+/// What the diary shows for one period, `shown`, as `JournalState` lists it for the shown period.
+public struct JournalPeriodContent: Equatable, Sendable {
+
+    public var shown: JournalSelection
+    public var page: JournalPage?
+    public var weeks: [JournalWeek]
+    public var quarters: [JournalQuarter]
+    public var events: [JournalEvent]
+    public var birthdays: [JournalBirthday]
+    public var inbox: [JournalInboxItem]
+
+    public init(
+        shown: JournalSelection,
+        page: JournalPage? = nil,
+        weeks: [JournalWeek] = [],
+        quarters: [JournalQuarter] = [],
+        events: [JournalEvent] = [],
+        birthdays: [JournalBirthday] = [],
+        inbox: [JournalInboxItem] = []
+    ) {
+        self.shown = shown
+        self.page = page
+        self.weeks = weeks
+        self.quarters = quarters
+        self.events = events
+        self.birthdays = birthdays
+        self.inbox = inbox
     }
 }
 

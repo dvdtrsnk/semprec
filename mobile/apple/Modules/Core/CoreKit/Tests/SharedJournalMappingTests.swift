@@ -36,6 +36,33 @@ final class SharedJournalMappingTests: XCTestCase {
         )
     }
 
+    func testStateMapsThePeriodsBesideTheShownOneOrTheirAbsence() {
+        let none = SharedJournalScreenModel.state(JournalKotlin.state(.content))
+        XCTAssertNil(none.before)
+        XCTAssertNil(none.after)
+        let ref = SharedSDK.JournalPageRef(kind: .day, period: "2026-10-17")
+        let after = SharedSDK.JournalPeriodContent(
+            shown: SharedSDK.JournalSelection(kind: .day, start: "2026-10-17"),
+            page: SharedSDK.JournalPageState(ref: ref, blocks: []),
+            weeks: [],
+            quarters: [],
+            events: [JournalKotlin.event(allDay: true)],
+            birthdays: [SharedSDK.JournalBirthdayState(id: "b1", personName: "Ada")],
+            inbox: []
+        )
+        let before = SharedSDK.JournalPeriodContent(
+            shown: SharedSDK.JournalSelection(kind: .day, start: "2026-10-15"),
+            page: nil, weeks: [], quarters: [], events: [], birthdays: [], inbox: []
+        )
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, before: before, after: after))
+        XCTAssertEqual(state.after?.shown, CoreKit.JournalSelection(kind: .day, start: "2026-10-17"))
+        XCTAssertEqual(state.after?.page?.ref, CoreKit.JournalPageRef(kind: .day, period: "2026-10-17"))
+        XCTAssertEqual(state.after?.events.map(\.id), ["e1"])
+        XCTAssertEqual(state.after?.birthdays.map(\.personName), ["Ada"])
+        XCTAssertEqual(state.before?.shown, CoreKit.JournalSelection(kind: .day, start: "2026-10-15"))
+        XCTAssertNil(state.before?.page)
+    }
+
     // MARK: - Content
     func testStateMapsThePageAndItsBlocks() {
         let ref = SharedSDK.JournalPageRef(kind: .day, period: "2026-10-16")

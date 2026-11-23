@@ -2,58 +2,117 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-// MARK: - Page turn
-extension View {
-
-    /// Turns the diary's page to the neighbouring period with a sideways swipe, as the calendar's day turns to the
-    /// next day: the page follows the finger, and when the finger lifts past a third of the width, or after a short
-    /// fast flick, it slides out to that side, `onTurn` selects the period one step that way (`1` the next, `-1` the
-    /// one before), and the new period's page slides in from the other side once it is shown (`shown`). Anything less
-    /// springs back. A swipe that starts along the page scrolls it instead, and one on a row of a note moves the row:
-    /// the row's own sideways drag takes the touch first.
-    func journalPageTurn(
-        isEnabled: Bool,
-        shown: JournalSelection?,
-        onTurn: @escaping (Int) -> JournalSelection?
-    ) -> some View {
-        modifier(JournalPageTurn(isEnabled: isEnabled, shown: shown, onTurn: onTurn))
-    }
-}
-
-private struct JournalPageTurn: ViewModifier {
+/// The diary's pages, turned sideways as the system Calendar turns its days: the page follows the finger, with the
+/// period beside it coming in from the side, and when the finger lifts past a third of the width, or after a short fast
+/// flick, `onTurn` selects the period one step that way (`1` the next, `-1` the one before) and the two pages move on
+/// as one. Anything less springs back. A swipe that starts along the page scrolls it instead, and one on a row of a
+/// note moves the row: the row's own sideways drag takes the touch first. A period of the same kind picked on the axis
+/// turns the page the same way (`request`).
+///
+/// Three slots of a page lie side by side, before, in and after the view, and keep their identity. The slots beside
+/// the view show the periods beside the shown one (`before` and `after`) once they have been read, so a turn to one
+/// of them starts at once with its page already drawn. A turn moves all three; the page that leaves keeps its views
+/// and the state it showed (its note stays as it was), and the page that comes shows `current` once that shows the
+/// period it came to. Once the turn ends the slots take their new places. A period not read yet waits for `current`
+/// to show it; until then the page stays as it was. The pager is as tall as the page in view.
+struct JournalPager<Page: View>: View {
 
     // MARK: - Dependencies
+    let current: JournalState
     let isEnabled: Bool
-    let shown: JournalSelection?
+    let request: JournalPageTurnRequest?
     let onTurn: (Int) -> JournalSelection?
+    /// A period's page, and whether it is the page in view (the one the person works in).
+    @ViewBuilder let page: (JournalState, Bool) -> Page
 
     // MARK: - State
+    /// How far the pages are moved from their places: by the finger, or by a turn to a width either way.
     @State private var offset: CGFloat = 0
     @State private var width: CGFloat = 0
-    /// The period a turn went to, until its page is shown and slides in.
-    @State private var awaited: JournalSelection?
+    /// The place of each slot: `-1` before the page in view, `0` in view, `1` after it.
+    @State private var places = [-1, 0, 1]
+    /// The slot that shows `current`; the others show the state they keep, or the period beside it.
+    @State private var liveSlot = 1
+    @State private var kept: [Int: JournalState] = [:]
+    /// The turn under way, until its pages come to rest.
+    @State private var turning: UUID?
+    /// A turn that waits for `current` to show the period it goes to: until then the page stays as it was.
+    @State private var pending: JournalPendingTurn?
+    /// The last `request` taken up.
+    @State private var handledRequest: Int?
     /// The last moves of the finger, for the speed it lifts at.
     @State private var samples = JournalTurnSamples()
 
     // MARK: - Body
-    func body(content: Content) -> some View {
-        content
-            .contentShape(.rect)
-            .offset(x: offset)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { width = $0 })
-            .sidewaysDrag(in: Self.space, isEnabled: isEnabled && awaited == nil, RowGestureActions(
-                changed: { value in
-                    offset = value.translation.width
-                    samples.add(value.translation.width)
-                },
-                ended: { finish() },
-                cancelled: { springBack() }
-            ))
-            .coordinateSpace(.named(Self.space))
-            .onChange(of: shown) { _, shown in
-                guard let awaited, shown == awaited else { return }
-                slideIn()
+    var body: some View {
+        JournalPagerLayout(live: liveSlot) {
+            ForEach(0..<3, id: \.self) { slot in
+                content(of: slot)
+                    // A page moves as one, as a transform of all it draws: a view the page adds while it moves goes
+                    // with it.
+                    .modifier(JournalSlide(shift: offset + CGFloat(places[slot]) * width))
+                    .allowsHitTesting(slot == liveSlot && turning == nil)
+                    .accessibilityHidden(slot != liveSlot)
             }
+        }
+        .contentShape(.rect)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { width = $0 })
+        .sidewaysDrag(in: Self.space, isEnabled: isEnabled && turning == nil, RowGestureActions(
+            changed: { value in
+                offset = value.translation.width
+                samples.add(value.translation.width)
+            },
+            ended: { finish() },
+            cancelled: { springBack() }
+        ))
+        .coordinateSpace(.named(Self.space))
+        .onChange(of: current.shown) { _, shown in
+            if let pending, shown == pending.target { start(pending) }
+        }
+        .onChange(of: request) { _, request in
+            guard let request else { return }
+            handledRequest = request.id
+            wait(for: JournalPendingTurn(
+                steps: request.steps,
+                target: request.target,
+                leaving: request.leaving,
+                from: offset,
+                speed: 0
+            ))
+        }
+    }
+
+    /// A slot's page. Every slot that shows a page shows it in one branch, so a page keeps its views whatever slot
+    /// role it takes.
+    @ViewBuilder
+    private func content(of slot: Int) -> some View {
+        if let state = state(of: slot) {
+            page(state, slot == liveSlot)
+        } else {
+            Color.clear.frame(height: 1)
+        }
+    }
+
+    private func state(of slot: Int) -> JournalState? {
+        if slot == liveSlot {
+            // The page a turn brought shows what it was drawn with until `current` catches up with it.
+            if let drawn = kept[slot], current.shown != drawn.shown { return drawn }
+            return held ?? current
+        }
+        if let kept = kept[slot] { return kept }
+        let inView = held ?? current
+        switch places[slot] {
+        case -1: return inView.before.map(inView.showing)
+        case 1: return inView.after.map(inView.showing)
+        default: return nil
+        }
+    }
+
+    /// What the page in view keeps showing before its turn starts: from the moment a turn is asked for, which may
+    /// come in the same update as the new period's state.
+    private var held: JournalState? {
+        if let request, request.id != handledRequest { return request.leaving }
+        return pending?.leaving
     }
 
     // MARK: - Turning
@@ -64,40 +123,159 @@ private struct JournalPageTurn: ViewModifier {
         let isFlick = abs(speed) > Self.flickSpeed && offset * speed > 0
         guard width > 0, isFar || isFlick else { return springBack() }
         let steps = offset < 0 ? 1 : -1
-        withAnimation(.easeIn(duration: Self.outDuration)) {
-            offset = -CGFloat(steps) * width
-        } completion: {
-            guard let target = onTurn(steps) else { return springBack() }
-            awaited = target
-            offset = CGFloat(steps) * width
-            if shown == target { slideIn() }
-            // A page that does not come (an error, a slow answer) slides in all the same, with what is there.
-            Task { @MainActor in
-                try? await Task.sleep(for: Self.waitLimit)
-                if awaited == target { slideIn() }
-            }
+        let shown = current
+        guard let target = onTurn(steps) else { return springBack() }
+        wait(for: JournalPendingTurn(steps: steps, target: target, leaving: shown, from: offset, speed: speed))
+    }
+
+    /// Starts `turn` at once when the page it goes to is drawn beside the view or `current` shows it, and otherwise
+    /// once `current` does. A page that does not come (an error, a slow answer) turns all the same, to what there is.
+    private func wait(for turn: JournalPendingTurn) {
+        guard width > 0 else { return }
+        if drawn(turn) != nil || current.shown == turn.target { return start(turn) }
+        pending = turn
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.waitLimit)
+            if pending?.id == turn.id { start(turn) }
         }
     }
 
-    private func slideIn() {
-        awaited = nil
-        withAnimation(.smooth(duration: Self.inDuration)) { offset = 0 }
+    /// The page of the period `turn` goes to, when the slot it comes from already shows it.
+    private func drawn(_ turn: JournalPendingTurn) -> JournalState? {
+        guard turning == nil, let slot = places.firstIndex(of: turn.steps), let state = state(of: slot),
+              state.shown == turn.target else { return nil }
+        return state
+    }
+
+    /// The page in view leaves to its side with the state it showed, and the slot on the other side comes in: the two
+    /// move as one.
+    private func start(_ turn: JournalPendingTurn) {
+        pending = nil
+        let ready = drawn(turn)
+        settle()
+        guard let incoming = places.firstIndex(of: turn.steps) else { return }
+        kept[liveSlot] = turn.leaving
+        kept[incoming] = ready
+        liveSlot = incoming
+        turning = turn.id
+        // The finger's speed carries on into the turn, in shares of the way left a second.
+        let target = -CGFloat(turn.steps) * width
+        let way = target - offset
+        let velocity = way == 0 ? 0 : turn.speed / way
+        let move = {
+            // Only once the pages have fully come to rest do the slots move: moved while the spring still runs, they
+            // would carry the rest of its motion to their new places.
+            withAnimation(
+                .interpolatingSpring(duration: Self.turnDuration, bounce: 0, initialVelocity: velocity),
+                completionCriteria: .removed
+            ) {
+                offset = target
+            } completion: {
+                if turning == turn.id { settle() }
+            }
+        }
+        if ready != nil { return move() }
+        // A page not drawn yet is drawn where it comes from before it moves: views added in the update that animates
+        // their page would be put straight where the page ends.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(10))
+            if turning == turn.id { move() }
+        }
+    }
+
+    /// The slots take their places after a turn: the page that came is in view, and the slots beside it show the
+    /// periods beside it.
+    private func settle() {
+        guard turning != nil, width > 0 else { return }
+        turning = nil
+        let steps = Int((-offset / width).rounded())
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            places = places.map { place in
+                let moved = place - steps
+                return moved < -1 ? moved + 3 : moved > 1 ? moved - 3 : moved
+            }
+            kept = [:]
+            offset = 0
+        }
     }
 
     private func springBack() {
         samples = JournalTurnSamples()
-        withAnimation(.smooth(duration: Self.inDuration)) { offset = 0 }
+        withAnimation(.smooth(duration: Self.turnDuration)) { offset = 0 }
     }
 
     // MARK: - Constants
-    private static let space = "journal.pageTurn"
+    private static var space: String { "journal.pageTurn" }
     /// How far the finger has to take the page, as a share of its width, and how fast a flick has to be, in points a
     /// second, as the calendar's day.
-    private static let turnShare: CGFloat = 0.35
-    private static let flickSpeed: CGFloat = 500
-    private static let outDuration = 0.18
-    private static let inDuration = 0.3
-    private static let waitLimit: Duration = .milliseconds(800)
+    private static var turnShare: CGFloat { 0.35 }
+    private static var flickSpeed: CGFloat { 500 }
+    private static var turnDuration: Double { 0.35 }
+    private static var waitLimit: Duration { .milliseconds(800) }
+}
+
+/// Lays the pager's slots over one another at its top, each as wide as the pager and as tall as its page, and is as
+/// tall as the slot `live`: the pages beside the view never make the page taller.
+private struct JournalPagerLayout: Layout {
+
+    let live: Int
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 0
+        let height = subviews.indices.contains(live)
+            ? subviews[live].sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+            : 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(
+                at: bounds.origin,
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: bounds.width, height: nil)
+            )
+        }
+    }
+}
+
+/// A turn of the page to a period already selected, from the page `leaving` showed: `steps` is `1` for a later period
+/// and `-1` for an earlier one. `id` tells two turns to the same period apart.
+struct JournalPageTurnRequest: Equatable {
+
+    let id: Int
+    let steps: Int
+    let target: JournalSelection
+    let leaving: JournalState
+}
+
+/// A turn of the page that waits for the period it goes to: the side it turns to, the state the page leaving showed,
+/// and where the finger left that page and how fast it moved it.
+private struct JournalPendingTurn {
+
+    let id = UUID()
+    let steps: Int
+    let target: JournalSelection
+    let leaving: JournalState
+    let from: CGFloat
+    let speed: CGFloat
+}
+
+/// Moves a page sideways by `shift`, as one transform of everything it draws.
+private struct JournalSlide: GeometryEffect {
+
+    var shift: CGFloat
+
+    var animatableData: CGFloat {
+        get { shift }
+        set { shift = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: shift, y: 0))
+    }
 }
 
 /// The finger's last positions with their times, for the speed it lifts at.

@@ -2,7 +2,7 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cards
-extension JournalScreen {
+extension JournalPageView {
 
     func section<Content: View>(
         _ title: Text,

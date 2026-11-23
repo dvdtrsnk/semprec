@@ -57,7 +57,9 @@ extension SharedJournalScreenModel {
             events: state.events.map(JournalEvent.init),
             birthdays: state.birthdays.map(JournalBirthday.init),
             inbox: state.inbox.map(JournalInboxItem.init),
-            shown: state.shown.map(JournalSelection.init)
+            shown: state.shown.map(JournalSelection.init),
+            before: state.before.map(JournalPeriodContent.init),
+            after: state.after.map(JournalPeriodContent.init)
         )
     }
 
