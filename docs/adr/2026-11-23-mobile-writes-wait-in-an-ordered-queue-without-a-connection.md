@@ -57,7 +57,16 @@ app sends, and the only thing the device has to make up is the answer.
   sends the change once more with its current version; every other answer drops the write. A dropped write records a
   failure that names only its route, its `FailureKind` and the time. Every success and every drop makes the kept
   answers stale and tells every window. The layer publishes the number of waiting writes and the failures.
-- `[offline-first 04/07]` (sp-a177a00b-7349-48f3-abbf-d0f02e2d78a6) will show the queued writes in the kept answers.
+- **Shown in the answers.** Every answer of the offline set is returned with the writes still queued applied in
+  queue order (`QueuedWriteProjection`); with nothing queued, or an answer that is not JSON, it is returned as it came.
+  An item change sets its properties on every object of the item and on its timeline and agenda entries, with the
+  completion and effective day the server derives for a task; a delete removes the item everywhere and its own read
+  answers `404`; a create answers its own read, joins the first page of its database's queries whose filter it matches
+  (only the filter nodes `ItemFilterMatch` knows; any other never matches, and a relative date compares with the
+  device's day) and the timeline and agenda that hold its day; relations, stored occurrences and invitation answers
+  show too. The device derives nothing more: a reminder whose item changed its time or alerts, was completed or was
+  deleted is left out until the server sends it again, a repeating event or task created offline shows only its first
+  day, and the overview, sleep and Inbox answers show the server's counts until the write reaches it.
 
 ## Consequences
 
