@@ -83,6 +83,11 @@ struct JournalScreen: View {
             }
             .sensoryFeedback(.selection, trigger: selectionTicks)
             .sensoryFeedback(.impact(flexibility: .soft), trigger: todayTaps)
+            // A turn ends once its period is shown, unless the axis still moves to it (then it ends when the axis
+            // rests): a period picked that the axis already shows moves nothing.
+            .onChange(of: viewModel.state.shown) { _, _ in
+                if axisMotion.driver == nil { isTurning = false }
+            }
             .onChange(of: viewModel.state.selection) { _, selection in
                 if selection == todayBrings { todayBrings = nil } else { selectionTicks += 1 }
             }

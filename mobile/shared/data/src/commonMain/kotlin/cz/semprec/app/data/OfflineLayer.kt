@@ -335,8 +335,11 @@ private class KeptReads(
         val first = state.locked { (!telling).also { telling = true } }
         if (!first) return
         delay(TELL_WINDOWS_AFTER)
-        state.locked { telling = false }
-        state.tellWindows()
+        // Told under the lock: an answer that arrives right after starts its own wait only once this one is done.
+        state.locked {
+            telling = false
+            state.tellWindows()
+        }
     }
 
     /** Sends [request] in [scope] to find out whether the server can be reached again. */
