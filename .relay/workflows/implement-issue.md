@@ -77,14 +77,34 @@ steps:
     uses: guard-paths
   - id: push-fix-2
     uses: push
+  # Each verify runs its pipeline only when the branch changes its area (.github/scripts/changed-areas.mjs
+  # against a freshly fetched develop); a fresh BB worktree carries no node_modules, so a needed verify installs first.
   - id: verify-backend
     uses: command
-    run: "pnpm install --frozen-lockfile && pnpm run verify"   # a fresh BB worktree carries no node_modules
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      needed=$(node ../.github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area backend)
+      if [ "$needed" = false ]; then
+        echo 'No backend change found; backend verification is not needed.'
+      else
+        pnpm install --frozen-lockfile
+        pnpm run verify
+      fi
     cwd: backend                      # timeout-minutes defaults to 120
     on-failure: { goto: fix, max-rounds: 3 }
   - id: verify-web
     uses: command
-    run: "pnpm install --frozen-lockfile && pnpm run verify"
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      needed=$(node ../.github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area web)
+      if [ "$needed" = false ]; then
+        echo 'No web change found; web verification is not needed.'
+      else
+        pnpm install --frozen-lockfile
+        pnpm run verify
+      fi
     cwd: web
     on-failure: { goto: fix, max-rounds: 3 }
   - id: verify-mobile
@@ -95,10 +115,14 @@ steps:
     run: |
       set -eu
       git fetch origin +refs/heads/develop:refs/remotes/origin/develop
-      base=$(git merge-base HEAD refs/remotes/origin/develop)
-      paths=$(git diff --name-only "$base" HEAD -- mobile/)
-      if [ -z "$paths" ]; then
-        echo 'No mobile/ change found; mobile verification is not needed.'
+      android=$(node .github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area android)
+      apple=$(node .github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area apple)
+      if [ "$android" = false ] && [ "$apple" = false ]; then
+        echo 'No Android or Apple change found; mobile verification is not needed.'
+      elif [ "$apple" = false ]; then
+        mobile/scripts/verify architecture android
+      elif [ "$android" = false ]; then
+        mobile/scripts/verify architecture shared apple
       else
         mobile/scripts/verify architecture shared android apple
       fi

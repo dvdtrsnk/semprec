@@ -43,6 +43,18 @@ whose directory is the longest prefix of its path. `mobile/` is three platforms:
   that also updates branch protection, Relay's `wait-checks` and the release command. See
   [docs/operations/required-checks.md](../operations/required-checks.md).
 
+### Area-scoped verification
+
+- `.github/scripts/changed-areas.mjs` maps a change to the areas `backend`, `web`, `android` and
+  `apple` by its paths, compared from the merge base of a pull request or the `before` commit of
+  a push. A path no rule names counts for every area, and so does a comparison git cannot make.
+- CI runs the backend jobs and the backend and web steps of `ci` for a pull request only when it
+  touches their area, and every one of them on a push to `develop` or `main`, which the release
+  check needs. `ci` fails when the detection did not succeed, so a failed detection never becomes
+  a green skip. The mobile jobs follow the detection on pull requests and pushes.
+- Relay's `verify-*` steps and an agent before opening a pull request run a pipeline only when
+  the comparison with a freshly fetched `develop` includes its area.
+
 ## Releases
 
 - The monorepo has exactly one version: a `vMAJOR.MINOR.PATCH` annotated git tag on `main`. Every

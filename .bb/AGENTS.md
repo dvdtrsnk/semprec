@@ -181,23 +181,27 @@ fixtures. Load the `testing` skill (policy: `docs/architecture/testing.md`).
 
 ## Before you open a pull request
 
-Run the same pipeline CI runs; a CI round-trip costs minutes:
+Run the pipelines CI runs for your change; a CI round-trip costs minutes. On a
+pull request, CI and Relay run a platform's pipeline only when the change
+touches its area.
+After committing, ask which areas yours touches (the comparison is between
+commits, so uncommitted work is not part of it):
 
 ```
-cd backend
-pnpm run verify
-
-cd ../web
-pnpm run verify
+node .github/scripts/changed-areas.mjs --base origin/develop --json
 ```
 
-For changes under `mobile/`, CI reports the non-required `mobile-android`
-(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
-Relay enforces the same pipeline through `verify-mobile`. Both omit device
-steps, which report NOT RUN. Before opening a pull request that touches mobile,
-run its full pipeline from the repository root with an iOS simulator and an
-Android emulator you reserved (`bb device-lab reserve --platform ios`, then
-`--platform android`) and release afterwards (`bb device-lab release --all`):
+Run `pnpm run verify` in `backend/` when `backend` is `true` and in `web/`
+when `web` is `true`.
+
+For an `android` or `apple` change, CI reports the non-required
+`mobile-android` (architecture, Android and detekt) and `mobile-apple`
+(architecture, shared Kotlin and Apple) jobs, and Relay runs the matching
+steps through `verify-mobile`. Both omit device steps, which report NOT RUN.
+Before opening a pull request that touches mobile, run its full pipeline from
+the repository root with an iOS simulator and an Android emulator you reserved
+(`bb device-lab reserve --platform ios`, then `--platform android`) and
+release afterwards (`bb device-lab release --all`):
 
 ```
 mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>

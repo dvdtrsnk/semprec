@@ -145,13 +145,12 @@ keys of both platforms (`COPY-PARITY`).
 | `./gradlew androidUnitTest` | the JVM tests of every Android module (router mappings, `FailureMessageTest`, `CollectEffectsTest`, `SceneNavigationTest`, `QueuedNavigationTest`) |
 | `./gradlew :android:app:lintDebug` | lint over the app and every module it depends on |
 | `./gradlew detektAll -PdetektAutoFix=false` | detekt with the formatting and Compose rules |
-| `mobile/scripts/verify android` | assemble debug and release, `androidUnitTest`, `lintDebug` |
+| `mobile/scripts/verify android` | assemble debug and release, `androidUnitTest`, `lintDebug`, `detektAll` |
 | `mobile/scripts/verify android --android-serial <serial>` | the same plus `connectedDebugAndroidTest` (`SmokeFlowTest`, `HomeStackTest`, `LaunchIntentTest`) on an emulator you reserved |
 
-The `android` step of `mobile/scripts/verify` does not run detekt; detekt runs
-in the `shared` step, so a Kotlin change under `mobile/android/` needs
-`mobile/scripts/verify shared android` or the default `all`. When behaviour on
-screen changes, run the instrumented test on a reserved emulator, or install
+The `android` step of `mobile/scripts/verify` runs detekt too, so
+`mobile/scripts/verify android` checks a Kotlin change under `mobile/android/`.
+When behaviour on screen changes, run the instrumented test on a reserved emulator, or install
 the APK and drive it (`mobile-verify`). A preview that compiles proves only
 that it compiles; report what you actually rendered and exercised.
 

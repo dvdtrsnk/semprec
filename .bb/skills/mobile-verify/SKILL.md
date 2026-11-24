@@ -5,9 +5,11 @@ description: "How a change under mobile/ is built, tested, linted and reported -
 
 # One command verifies mobile/. Report exactly what it ran.
 
-For changes under `mobile/`, CI reports the non-required `mobile-android`
-(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
-Relay's `verify-mobile` step runs the full pipeline after `verify-web`.
+CI reports the non-required `mobile-android` job (architecture, Android and
+detekt) for a change to Android code or to what both apps share, and
+`mobile-apple` (architecture, shared Kotlin and Apple) for a change to Apple
+code or to what both apps share. Relay's `verify-mobile` step runs the same
+steps after `verify-web`; `.github/scripts/changed-areas.mjs` decides both.
 Neither reserves devices: their device steps report NOT RUN. A local run with
 reserved devices supplies the simulator and instrumented-test evidence.
 Report each command as it ran; a step that did not run is never a pass.
@@ -33,14 +35,14 @@ next to its log.
 |---|---|
 | `architecture` | `node mobile/scripts/architecture.mjs` (the rules below) and `node --test` over `mobile/scripts/*.test.mjs` (`architecture.test.mjs` for the rules; `toolchain.test.mjs` for verify's JDK and SwiftLint checks and the `xcodebuild` calls of its `apple` step, and for `kmp-framework`'s JDK lookup, its Gradle task per SDK and configuration and its embed folder check) |
 | `shared` | `./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false`; with `--ios-simulator`, also `-Pmobile.iosSimulatorId=<UDID>`. Needs an Apple silicon Mac |
-| `android` | `./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug`; with `--android-serial`, also `connectedDebugAndroidTest` on that device |
+| `android` | `./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug detektAll -PdetektAutoFix=false`; with `--android-serial`, also `connectedDebugAndroidTest` on that device |
 | `apple` | the Tuist version must equal `mobile/apple/.tuist-version` and the SwiftLint version `swiftlint_version` in `mobile/apple/.swiftlint.yml`; `swiftlint lint --strict`; `tuist install`; `tuist generate --no-open`; `xcodebuild build` of the `Semprec` scheme, Debug and Release, for `generic/platform=iOS Simulator`, `generic/platform=iOS` (the iPhone build, which links the `iosArm64` Kotlin framework and needs no device) and `generic/platform=macOS`, with `CODE_SIGNING_ALLOWED=NO`; `xcodebuild build-for-testing` of the `SemprecUITests` scheme for `generic/platform=iOS Simulator` (no device); `xcodebuild test` of the `Semprec` scheme on `platform=macOS,arch=arm64`; with `--ios-simulator`, also `xcodebuild test` of the `Semprec` scheme and then of the `SemprecUITests` scheme (XCUITest, iOS only) on that simulator |
 
 `mobile/docs/verify.md` describes every step and prerequisite in detail.
 
-detekt runs in the `shared` step and covers `android/`, `shared/` and
-`build-logic/src`. A Kotlin change under `mobile/android/` therefore needs
-`shared android`, not `android` alone.
+detekt runs in the `shared` and `android` steps and covers `android/`, `shared/`
+and `build-logic/src`, so `android` alone checks a Kotlin change under
+`mobile/android/`.
 
 The architecture rules (`mobile/scripts/architecture.mjs`, policy in
 `mobile/scripts/architecture-policy.json`): `ARCH-GRADLE`, `ARCH-APPLE`,

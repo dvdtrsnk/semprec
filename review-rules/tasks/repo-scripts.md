@@ -41,3 +41,9 @@ repository for real with nobody watching. Report nothing for files outside
    or behavior the code contradicts — medium. The header is how a workflow
    author or an agent learns how to call the script; a wrong one gets it
    called wrongly.
+8. A `RULES` entry in `changed-areas.mjs`, or a change to how it compares
+   revisions, that leaves out an area whose pipeline reads the path — a test
+   that opens the file, a build that compiles it, a check that scans it — or
+   that turns a failed comparison into fewer areas instead of all of them —
+   high. CI, Relay and agents skip that area's required jobs and verify for
+   such a change, so a wrong rule is a check that silently stops running.

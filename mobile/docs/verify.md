@@ -44,7 +44,7 @@ PASS     shared         2s
   PASS     gradle shared tests + detekt, iOS simulator included       2s
 PASS     android        36s
   PASS     prerequisites                                              0s  JDK 21.0.13 (JAVA_HOME), Android SDK /Users/davidtresnak/Library/Android/sdk (ANDROID_HOME), Android device emulator-5554
-  PASS     gradle assemble + unit tests + lint                        1s
+  PASS     gradle assemble + unit tests + lint + detekt               1s
   PASS     connectedDebugAndroidTest on emulator-5554                35s
 PASS     apple          3m 14s
   PASS     prerequisites                                              0s  macOS 27.0.1 arm64, Xcode 27.1, JDK 21.0.13 (JAVA_HOME), Tuist 4.213.0, SwiftLint 0.65.1, iOS simulator 9A12AA8B-70CF-4D3F-82AE-3CE5AB759558 (booted)
@@ -73,7 +73,7 @@ an earlier step failed before it started.
 | --- | --- | --- |
 | `architecture` | Node.js 22 or newer | `node scripts/architecture.mjs`; `node --test` on every `scripts/*.test.mjs` (fails when there is none): `architecture.test.mjs` for the architecture rules; `toolchain.test.mjs` for the JDK and SwiftLint prerequisites of verify, the `xcodebuild` calls of verify's `apple` step against stand-in tools (the six builds in order, the build of the UI tests for the iOS Simulator, the macOS test, the simulator test and UI test runs with `--ios-simulator`, their NOT RUN rows without it, and a UI test run that passes no test failing), the JDK lookup of `kmp-framework`, the Gradle task `kmp-framework --build-only` runs for `iphoneos`, `iphonesimulator` and `macosx` in Debug and Release, its `--embed` folder check (`.app/Frameworks` against `.app/Contents/Frameworks`, a target that is no app refused) and its refusal of an SDK, configuration or architectures it builds no framework for |
 | `shared` | a JDK 17 to 23, macOS on Apple silicon, Xcode; with `--ios-simulator`, that simulator booted | `./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false`, plus `-Pmobile.iosSimulatorId=<UDID>` with `--ios-simulator` |
-| `android` | a JDK 17 to 23, Android SDK; with `--android-serial`, that device running | `./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug`; with `--android-serial`, `ANDROID_SERIAL=<serial> ./gradlew connectedDebugAndroidTest` |
+| `android` | a JDK 17 to 23, Android SDK; with `--android-serial`, that device running | `./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug detektAll -PdetektAutoFix=false`; with `--android-serial`, `ANDROID_SERIAL=<serial> ./gradlew connectedDebugAndroidTest` |
 | `apple` | macOS on Apple silicon, Xcode, a JDK 17 to 23, `tuist version` equal to `apple/.tuist-version`, `swiftlint version` equal to `swiftlint_version` in `apple/.swiftlint.yml`; with `--ios-simulator`, that simulator booted | `swiftlint lint --strict`; `tuist install`; `tuist generate --no-open`; `xcodebuild build` of the `Semprec` scheme for Debug and Release, each for `generic/platform=iOS Simulator`, `generic/platform=iOS` and `generic/platform=macOS`, with `CODE_SIGNING_ALLOWED=NO`; `xcodebuild build-for-testing` of the `SemprecUITests` scheme for `generic/platform=iOS Simulator`, with `CODE_SIGNING_ALLOWED=NO`; `xcodebuild test` of the `Semprec` scheme on `platform=macOS,arch=arm64`; with `--ios-simulator`, `xcodebuild test` of the `Semprec` scheme on `id=<UDID>`, then `xcodebuild test` of the `SemprecUITests` scheme on `id=<UDID>` |
 
 The Gradle commands run in `mobile/`, the architecture commands in `mobile/` and
@@ -82,10 +82,10 @@ the Apple commands in `mobile/apple/`.
 - `shared`: `sharedJvmTest` runs the common tests of every shared module on the
   JVM, `sharedAppleTest` runs them natively on macOS (and on the simulator with
   the property), and `detektAll` checks `android/`, `shared/` and `build-logic/src`.
-  A Kotlin change under `android/` therefore needs `shared android`, not `android`
-  alone.
 - `android`: `androidUnitTest` is `testDebugUnitTest` of every Android module. Lint
-  of the app also checks every module it depends on. `connectedDebugAndroidTest`
+  of the app also checks every module it depends on. `detektAll` runs here as well as in
+  `shared`, so `android` alone checks a Kotlin change under `android/` on a host without
+  Xcode. `connectedDebugAndroidTest`
   runs the instrumented tests of every module that has any, on the device
   `ANDROID_SERIAL` names.
 - `apple`: every `xcodebuild` uses `-workspace Semprec.xcworkspace` and
