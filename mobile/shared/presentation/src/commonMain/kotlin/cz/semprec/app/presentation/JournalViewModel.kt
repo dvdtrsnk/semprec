@@ -52,6 +52,8 @@ class JournalViewModel internal constructor(
         // events, birthdays and Inbox) is read again. The page and the axis stay as they are, and a load already running is
         // not interrupted.
         reloadOnChanges(changes) {
+            // A period still being read ahead was asked for before the write: its answer must not be kept.
+            prefetchJob?.cancel()
             kept.clear()
             update { it.withNeighbours() }
             if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {

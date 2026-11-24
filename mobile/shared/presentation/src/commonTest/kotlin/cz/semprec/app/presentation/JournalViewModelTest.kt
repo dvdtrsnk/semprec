@@ -384,6 +384,34 @@ class JournalViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
+    @Test fun `a period being read ahead when a write lands elsewhere is not kept`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            when (it.key) {
+                "2026-10-16" -> content(periodPage(it))
+                else -> repository.late(gate, content(periodPage(it, markdown = "BEFORE THE WRITE")))
+            }
+        }
+        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        runCurrent()
+        // The shown period is read again slowly, so the read ahead that began before the write ends first.
+        val reread = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            val answer = content(periodPage(it, markdown = "AFTER THE WRITE"))
+            if (it.key == "2026-10-16") repository.late(reread, answer) else answer
+        }
+        changes.emit(Unit)
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        reread.complete(Unit)
+        runCurrent()
+        assertEquals("AFTER THE WRITE", vm.state.value.after?.page?.blocks?.single()?.runs?.single()?.text)
+        assertEquals("AFTER THE WRITE", vm.state.value.before?.page?.blocks?.single()?.runs?.single()?.text)
+        vm.close()
+    }
+
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {
         val vm = loaded("2026-10-01")
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-03"))

@@ -29,13 +29,8 @@ struct JournalPager<Page: View>: View {
     /// How far the pages are moved from their places: by the finger, or by a turn to a width either way.
     @State private var offset: CGFloat = 0
     @State private var width: CGFloat = 0
-    /// The place of each slot: `-1` before the page in view, `0` in view, `1` after it.
-    @State private var places = [-1, 0, 1]
-    /// The slot that shows `current`; the others show the state they keep, or the period beside it.
-    @State private var liveSlot = 1
-    @State private var kept: [Int: JournalState] = [:]
-    /// The turn under way, until its pages come to rest.
-    @State private var turning: UUID?
+    /// The three slots: where each lies, which shows `current`, and what the others keep.
+    @State private var slots = JournalPagerSlots()
     /// A turn that waits for `current` to show the period it goes to: until then the page stays as it was.
     @State private var pending: JournalPendingTurn?
     /// The last `request` taken up.
@@ -49,19 +44,19 @@ struct JournalPager<Page: View>: View {
 
     // MARK: - Body
     var body: some View {
-        JournalPagerLayout(live: liveSlot) {
+        JournalPagerLayout(live: slots.liveSlot) {
             ForEach(0..<3, id: \.self) { slot in
                 content(of: slot)
                     // A page moves as one, as a transform of all it draws: a view the page adds while it moves goes
                     // with it.
-                    .modifier(JournalSlide(shift: offset + CGFloat(places[slot]) * width))
-                    .allowsHitTesting(slot == liveSlot && turning == nil)
-                    .accessibilityHidden(slot != liveSlot)
+                    .modifier(JournalSlide(shift: offset + CGFloat(slots.places[slot]) * width))
+                    .allowsHitTesting(slot == slots.liveSlot && slots.turning == nil)
+                    .accessibilityHidden(slot != slots.liveSlot)
             }
         }
         .contentShape(.rect)
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { width = $0 })
-        .sidewaysDrag(in: Self.space, isEnabled: isEnabled && turning == nil, RowGestureActions(
+        .sidewaysDrag(in: Self.space, isEnabled: isEnabled && slots.turning == nil, RowGestureActions(
             changed: { value in
                 offset = value.translation.width
                 samples.add(value.translation.width)
@@ -94,25 +89,10 @@ struct JournalPager<Page: View>: View {
     /// role it takes.
     @ViewBuilder
     private func content(of slot: Int) -> some View {
-        if let state = state(of: slot) {
-            page(state, slot == liveSlot)
+        if let state = slots.state(of: slot, current: current, held: held) {
+            page(state, slot == slots.liveSlot)
         } else {
             Color.clear.frame(height: 1)
-        }
-    }
-
-    private func state(of slot: Int) -> JournalState? {
-        if slot == liveSlot {
-            // The page a turn brought shows what it was drawn with until `current` catches up with it.
-            if let drawn = kept[slot], current.shown != drawn.shown { return drawn }
-            return held ?? current
-        }
-        if let kept = kept[slot] { return kept }
-        let inView = held ?? current
-        switch places[slot] {
-        case -1: return inView.before.map(inView.showing)
-        case 1: return inView.after.map(inView.showing)
-        default: return nil
         }
     }
 
@@ -139,7 +119,10 @@ struct JournalPager<Page: View>: View {
     /// once `current` does. A page that does not come (an error, a slow answer) turns all the same, to what there is.
     private func wait(for turn: JournalPendingTurn) {
         guard width > 0 else { return }
-        if drawn(turn) != nil || current.shown == turn.target { return start(turn) }
+        if slots.drawn(steps: turn.steps, target: turn.target, current: current, held: held) != nil
+            || current.shown == turn.target {
+            return start(turn)
+        }
         pending = turn
         waitTask?.cancel()
         waitTask = Task { @MainActor in
@@ -148,24 +131,13 @@ struct JournalPager<Page: View>: View {
         }
     }
 
-    /// The page of the period `turn` goes to, when the slot it comes from already shows it.
-    private func drawn(_ turn: JournalPendingTurn) -> JournalState? {
-        guard turning == nil, let slot = places.firstIndex(of: turn.steps), let state = state(of: slot),
-              state.shown == turn.target else { return nil }
-        return state
-    }
-
     /// The page in view leaves to its side with the state it showed, and the slot on the other side comes in: the two
     /// move as one.
     private func start(_ turn: JournalPendingTurn) {
         pending = nil
-        let ready = drawn(turn)
+        let ready = slots.drawn(steps: turn.steps, target: turn.target, current: current, held: held)
         settle()
-        guard let incoming = places.firstIndex(of: turn.steps) else { return }
-        kept[liveSlot] = turn.leaving
-        kept[incoming] = ready
-        liveSlot = incoming
-        turning = turn.id
+        guard slots.begin(turn.id, steps: turn.steps, leaving: turn.leaving, ready: ready) else { return }
         // The finger's speed carries on into the turn, in shares of the way left a second.
         let target = -CGFloat(turn.steps) * width
         let way = target - offset
@@ -179,7 +151,7 @@ struct JournalPager<Page: View>: View {
             ) {
                 offset = target
             } completion: {
-                if turning == turn.id { settle() }
+                if slots.turning == turn.id { settle() }
             }
         }
         if ready != nil { return move() }
@@ -188,21 +160,19 @@ struct JournalPager<Page: View>: View {
         moveTask?.cancel()
         moveTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
-            if !Task.isCancelled, turning == turn.id { move() }
+            if !Task.isCancelled, slots.turning == turn.id { move() }
         }
     }
 
     /// The slots take their places after a turn: the page that came is in view, and the slots beside it show the
     /// periods beside it.
     private func settle() {
-        guard turning != nil, width > 0 else { return }
-        turning = nil
+        guard slots.turning != nil, width > 0 else { return }
         let steps = Int((-offset / width).rounded())
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            places = JournalPagerRules.places(places, afterTurning: steps)
-            kept = [:]
+            slots.settle(movedBy: steps)
             offset = 0
         }
     }
@@ -244,6 +214,59 @@ enum JournalPagerRules {
             let moved = place - steps
             return moved < -1 ? moved + 3 : moved > 1 ? moved - 3 : moved
         }
+    }
+}
+
+/// The three slots of the pager, side by side: where each lies (`places`: `-1` before the page in view, `0` in view,
+/// `1` after it), which one shows the diary's state (`liveSlot`), what the others keep through a turn (`kept`), and
+/// the turn under way (`turning`), until its pages come to rest.
+struct JournalPagerSlots: Equatable {
+
+    var places = [-1, 0, 1]
+    var liveSlot = 1
+    var kept: [Int: JournalState] = [:]
+    var turning: UUID?
+
+    /// What `slot` shows. The live slot shows `held` (the page before a turn asked for starts) or `current`, but a page
+    /// a turn brought keeps what it was drawn with until `current` shows the same period. A slot kept through a turn
+    /// shows what it keeps; the others show the period beside the page in view, once it has been read.
+    func state(of slot: Int, current: JournalState, held: JournalState?) -> JournalState? {
+        if slot == liveSlot {
+            if let drawn = kept[slot], current.shown != drawn.shown { return drawn }
+            return held ?? current
+        }
+        if let kept = kept[slot] { return kept }
+        let inView = held ?? current
+        switch places[slot] {
+        case -1: return inView.before.map(inView.showing)
+        case 1: return inView.after.map(inView.showing)
+        default: return nil
+        }
+    }
+
+    /// The page of `target`, when no turn is under way and the slot on the side `steps` points to already shows it.
+    func drawn(steps: Int, target: JournalSelection, current: JournalState, held: JournalState?) -> JournalState? {
+        guard turning == nil, let slot = places.firstIndex(of: steps),
+              let state = state(of: slot, current: current, held: held), state.shown == target else { return nil }
+        return state
+    }
+
+    /// Starts turn `id` `steps` places on: the live slot keeps `leaving`, the slot on that side becomes the live one
+    /// and keeps `ready` (the page already drawn there, if any). `false` when there is no slot on that side.
+    mutating func begin(_ id: UUID, steps: Int, leaving: JournalState, ready: JournalState?) -> Bool {
+        guard let incoming = places.firstIndex(of: steps) else { return false }
+        kept[liveSlot] = leaving
+        kept[incoming] = ready
+        liveSlot = incoming
+        turning = id
+        return true
+    }
+
+    /// The pages came to rest `steps` places on: the slots take their new places and keep nothing.
+    mutating func settle(movedBy steps: Int) {
+        turning = nil
+        places = JournalPagerRules.places(places, afterTurning: steps)
+        kept = [:]
     }
 }
 

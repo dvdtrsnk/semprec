@@ -78,21 +78,31 @@ struct CalendarDayLine: View {
         let total = hours.reduce(0, +)
         if total > 0 {
             GeometryReader { proxy in
-                let width = min(CGFloat(total) * Self.pointsPerHour, proxy.size.width - Self.margin * 2)
+                let widths = Self.widths(hours: hours, cellWidth: proxy.size.width)
                 HStack(spacing: 0) {
                     ForEach(items.indices, id: \.self) { index in
                         Rectangle()
                             .fill(items[index].tint.opacity(Self.strength))
-                            .frame(width: width * CGFloat(hours[index] / total))
+                            .frame(width: widths[index])
                     }
                 }
-                .frame(width: width, height: Self.height)
+                .frame(width: widths.reduce(0, +), height: Self.height)
                 .clipShape(.capsule)
                 .frame(maxWidth: .infinity)
             }
             .frame(height: Self.height)
             .accessibilityHidden(true)
         }
+    }
+
+    /// The width of each item's stretch: `pointsPerHour` for every hour, the whole line no wider than the cell without
+    /// its margins, the items keeping their shares when it is cut down. Nothing for a cell with no room.
+    static func widths(hours: [Double], cellWidth: CGFloat) -> [CGFloat] {
+        let total = hours.reduce(0, +)
+        let room = max(cellWidth - margin * 2, 0)
+        guard total > 0 else { return hours.map { _ in 0 } }
+        let width = min(CGFloat(total) * pointsPerHour, room)
+        return hours.map { width * CGFloat($0 / total) }
     }
 
     /// How long an item lasts on its day, in hours, at least one.
