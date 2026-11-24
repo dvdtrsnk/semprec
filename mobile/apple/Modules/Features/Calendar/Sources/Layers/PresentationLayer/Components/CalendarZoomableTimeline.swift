@@ -5,6 +5,16 @@ import SwiftUI
 /// `topInset`, the glass header the day scrolls on under. While a zoom is under way (`pinchY`, the screen height
 /// between the fingers), the minute between the fingers stays where it is as the hour height changes, and the
 /// fingers do not also scroll the day.
+/// How the day scrolls by itself under a held item: how fast, in points a second (down is positive), and what to do
+/// after each step, for the held item to follow the day.
+struct CalendarAutoScroll {
+
+    var speed: CGFloat
+    var onStep: () -> Void
+
+    static var none: CalendarAutoScroll { CalendarAutoScroll(speed: 0, onStep: {}) }
+}
+
 struct CalendarZoomableTimeline<Content: View>: View {
 
     // MARK: - Dependencies
@@ -19,6 +29,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
     let startRequests: Int
     /// The paper whose haze this scroll moves, when the day is the one shown.
     let paper: PaperScroll?
+    /// The scroll the day makes by itself while an item is held at its edge.
+    let autoScroll: CalendarAutoScroll
     let content: (CalendarGeometry) -> Content
 
     // MARK: - Init
@@ -30,6 +42,7 @@ struct CalendarZoomableTimeline<Content: View>: View {
         topInset: CGFloat,
         startRequests: Int,
         paper: PaperScroll?,
+        autoScroll: CalendarAutoScroll,
         @ViewBuilder content: @escaping (CalendarGeometry) -> Content
     ) {
         self.hourHeight = hourHeight
@@ -38,6 +51,7 @@ struct CalendarZoomableTimeline<Content: View>: View {
         self.topInset = topInset
         self.startRequests = startRequests
         self.paper = paper
+        self.autoScroll = autoScroll
         self.content = content
         _position = State(initialValue: ScrollPosition(id: startId, anchor: .top))
     }
@@ -63,7 +77,38 @@ struct CalendarZoomableTimeline<Content: View>: View {
         .scrollEdgeEffectHidden(true, for: .top)
         .scrollPosition($position)
         .scrollDisabled(pinchY != nil)
-        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, new in place.offset = new })
+        .onScrollGeometryChange(
+            for: Extent.self,
+            of: { geometry in
+                Extent(
+                    offset: geometry.contentOffset.y,
+                    low: -geometry.contentInsets.top,
+                    high: geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom
+                )
+            },
+            action: { _, new in
+                place.offset = new.offset
+                place.range = new.low...max(new.high, new.low)
+            }
+        )
+        // A held item at the edge carries the day on, a step for every frame, until it is let go or moved away.
+        .task(id: autoScroll.speed != 0) {
+            guard autoScroll.speed != 0 else { return }
+            hasScrolled = true
+            var last = ContinuousClock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(16))
+                let now = ContinuousClock.now
+                let seconds = CGFloat((now - last) / .seconds(1))
+                last = now
+                let step = place.offset + autoScroll.speed * seconds
+                let target = min(max(step, place.range.lowerBound), place.range.upperBound)
+                // The position counts from the top of the content, which lies below the room kept for the header.
+                position.scrollTo(y: target - place.range.lowerBound)
+                place.offset = target
+                autoScroll.onStep()
+            }
+        }
         .paperScrollFollowing(paper)
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { place.viewportTop = $0 })
         .onScrollPhaseChange { _, phase in
@@ -100,6 +145,15 @@ private extension CalendarZoomableTimeline {
     final class Place {
         var offset: CGFloat = 0
         var viewportTop: CGFloat = 0
+        /// The least and the greatest offset the scroll can have.
+        var range: ClosedRange<CGFloat> = 0...0
+    }
+
+    /// Where the scroll is and how far it can go either way.
+    struct Extent: Equatable {
+        let offset: CGFloat
+        let low: CGFloat
+        let high: CGFloat
     }
 
     /// The minute of the day between the fingers when a zoom began, and its place in the visible part.

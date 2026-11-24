@@ -6,7 +6,7 @@ that run and counts as open, not as passed. Evidence names are screenshots kept 
 
 ## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 34, DIFF 6, FIXED 10, NOT RUN 250, PASS 115 of 415 scenarios.
+Summary: BLOCKED 34, DIFF 6, FIXED 11, NOT RUN 249, PASS 115 of 415 scenarios.
 
 Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", a week strip that wrapped at large text, a new-item form that closed without asking, an all-day chip without a menu, and a day that jumped to its start hour when the all-day area changed height.
 
@@ -19,6 +19,8 @@ Input tool notes: `bb device-lab swipe` sends only the start and the end of a sw
 Not reached in this run (NOT RUN): about 250 scenarios of the groups L (calendar editing), M (invitations), most of H (form fields), N, O (time zones and DST), P (data limits), Q (accessibility settings) and S. The next run walks them, and everything again.
 
 Performance, measured with Instruments (`xcrun xctrace record --template "Time Profiler"` attached to the running app, driven with axe swipes; the template also records Hangs): main-thread busy time while swiping days about 9 %, scrolling a dense day about 15 %, going year/month/day about 19 %, scrolling the month about 28 %; no hang over 250 ms in any of them. These are simulator numbers on a Mac mini, good for comparing one build with another, not frame rates of an iPhone. Animation Hitches, which would give dropped frames, does not run on a simulator.
+
+Drag scroll test (Run 1, later): about 25 drags on the old build (5 without edge contact never scrolled; every drag into an edge zone ended at 00:00), then 100 drags on the new build, all passing (down 10, up 10, small 8, wiggle 10, hold 8, top edge 10, bottom edge 10, hold at bottom 8, hold at top 8, task drags 18). The 18 task drags aimed at a 12:00 reminder partly grabbed the event above it, so they test the scroll, not the drop into an event; that drop was verified earlier by hand.
 
 ## Results of the latest run
 
@@ -163,7 +165,7 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | E07 | NOT RUN |  |
 | E08 | NOT RUN |  |
 | E09 | NOT RUN |  |
-| E10 | NOT RUN |  |
+| E10 | FIXED | FAIL reported by the owner on the iPhone: dragging scrolled the day up. Cause found with logging: the edge scroll jumped to a whole hour computed from a wrong position, and the finger at the bottom edge scrolled the day UP to midnight in 8 steps (old build, 9 of 9 edge trials reached 00:00). New: continuous scroll while the finger is within 72 pt of the header or the bottom bars, up to 340 pt/s and faster nearer the edge, stopping when the finger leaves or lifts; the held item keeps following the day. Measured on the simulator with 100 scripted drags (touch down, hold, 14-30 moves, release): moves down/up/small/wiggle/hold: no scroll at all; edge drags: smooth scroll, stops at release, no jump to the start hour; hold 2.5 s at the bottom -> 23:00, at the top -> 00:00 |
 | E11 | NOT RUN |  |
 | E12 | BLOCKED | an interrupt cannot be raised |
 | E13 | PASS | resize: the edge now follows the finger from where it was grabbed. Bottom handle dragged 63 pt: 21:27 -> 22:30 (snapped), stored on the server (g-ww2) |
