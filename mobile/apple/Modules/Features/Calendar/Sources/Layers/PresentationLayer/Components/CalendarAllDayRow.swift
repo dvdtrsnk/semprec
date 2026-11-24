@@ -50,7 +50,8 @@ private extension CalendarAllDayRow {
     }
 
     var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 4), count: items.count > 1 && !items.contains(where: hasNote) ? 2 : 1)
+        let wide = items.count > 1 && !items.contains(where: hasNote)
+        return Array(repeating: GridItem(.flexible(), spacing: 4), count: wide ? 2 : 1)
     }
 
     /// Two chips to a row, scrolling when there are more rows than the area shows.
@@ -71,6 +72,11 @@ private extension CalendarAllDayRow {
             }
         }
         .animation(.snappy(duration: 0.28), value: items.map(\.identity))
+    }
+
+    /// The note of a task that was in an event and was not done is orange, as a warning; other notes are quiet.
+    func noteStyle(_ item: CalendarItem) -> AnyShapeStyle {
+        item.hostEventTitle == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange)
     }
 
     /// A held chip is the colour of its calendar all through, with white words, as a held block of the timeline.
@@ -105,7 +111,7 @@ private extension CalendarAllDayRow {
                 Spacer(minLength: 4)
                 Text(note)
                     .font(.caption2)
-                    .foregroundStyle(item.hostEventTitle == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .foregroundStyle(noteStyle(item))
                     .lineLimit(1)
                     .layoutPriority(-1)
             }
