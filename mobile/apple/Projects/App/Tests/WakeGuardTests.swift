@@ -69,6 +69,21 @@ final class WakeGuardTests: XCTestCase {
         XCTAssertEqual(fixture.scheduler.requests.count, WakeMission.watchOffsets.count)
     }
 
+    @MainActor
+    func testARingFurtherAheadThanTheHorizonIsArmedOnlyOnceItComesClose() async throws {
+        let fixture = make()
+        let ring = start.addingTimeInterval(WakeMission.armHorizon + 3_600)
+
+        try await fixture.wakeGuard.create(title: "Up", time: .once(ring), codes: ["1"])
+        XCTAssertNil(fixture.wakeGuard.missions.first?.guardedRing)
+        XCTAssertEqual(fixture.scheduler.requests.count, 1)
+
+        fixture.clock.now = ring.addingTimeInterval(-WakeMission.armHorizon)
+        await fixture.wakeGuard.refresh()
+        XCTAssertEqual(fixture.wakeGuard.missions.first?.guardedRing, ring)
+        XCTAssertEqual(fixture.wakeGuard.missions.first?.watchIDs.count, WakeMission.watchOffsets.count)
+    }
+
     // MARK: - Ringing
     @MainActor
     func testTheMissionRingsFromItsRingEvenAfterTheSystemAlertWasStopped() async throws {
@@ -273,21 +288,5 @@ private final class TestClock: @unchecked Sendable {
 
     init(now: Date) {
         self.now = now
-    }
-}
-
-/// A store that keeps the missions in memory.
-private final class MemoryMissionStore: WakeMissionStore, @unchecked Sendable {
-
-    var missions: [WakeMission] = []
-    var loadFailure: Error?
-
-    func load() throws -> [WakeMission] {
-        if let loadFailure { throw loadFailure }
-        return missions
-    }
-
-    func save(_ missions: [WakeMission]) throws {
-        self.missions = missions
     }
 }

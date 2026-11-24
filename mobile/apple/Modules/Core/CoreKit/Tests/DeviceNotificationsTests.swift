@@ -15,6 +15,29 @@ final class DeviceNotificationsTests: XCTestCase {
     }
 
     @MainActor
+    func testASleepAlarmKeepsItsDayTimeAndPlan() {
+        let alarm = SharedSDK.DeviceSleepAlarm(
+            night: "2026-11-24",
+            wakeDay: "2026-11-25",
+            wakeMinutes: 405,
+            planName: nil
+        )
+
+        XCTAssertEqual(
+            SharedDeviceNotifications.sleepAlarm(alarm),
+            SleepAlarmTime(night: "2026-11-24", wakeDay: "2026-11-25", wakeMinutes: 405, planName: nil)
+        )
+    }
+
+    @MainActor
+    func testOnlyTheSleepResyncPushAsksForTheSleepAlarms() {
+        let notifications = SharedDeviceNotifications(sessionStore: .memory)
+
+        XCTAssertTrue(notifications.asksForSleepAlarms(["kind": "sleepResync"]))
+        XCTAssertFalse(notifications.asksForSleepAlarms(["kind": "remindersResync"]))
+    }
+
+    @MainActor
     func testEveryEnvironmentAndKindMapsBothWays() {
         XCTAssertEqual(SharedDeviceNotifications.environment(.sandbox), .sandbox)
         XCTAssertEqual(SharedDeviceNotifications.environment(.production), .production)

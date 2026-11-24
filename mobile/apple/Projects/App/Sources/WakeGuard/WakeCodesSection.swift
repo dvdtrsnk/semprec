@@ -1,10 +1,10 @@
 import DesignSystem
 import SwiftUI
 
-/// The codes a new alarm asks for before it stops: scanned with the camera or typed. With at least one, the alarm is a
+/// The codes an alarm asks for before it stops: scanned with the camera or typed. With at least one, the alarm is a
 /// wake-up mission that rings until one of them is scanned. The screen presents the camera: a sheet presented from a
-/// row of a form inside the profile sheet dismissed the profile sheet with it.
-struct DebugWakeCodesSection: View {
+/// row of a form inside another sheet dismissed that sheet with it.
+struct WakeCodesSection: View {
 
     // MARK: - Dependencies
     @Binding var codes: [String]
@@ -30,6 +30,7 @@ struct DebugWakeCodesSection: View {
             HStack {
                 TextField(text: $typed, prompt: Text("debug.wake.code.placeholder")) { Text("debug.wake.code.type") }
                     .font(.body.monospaced())
+                    .autocorrectionDisabled()
                     .onSubmit(addTyped)
                     .accessibilityIdentifier(AppIdentifiers.debugWakeCodeField)
                 Button(action: addTyped) { Image(systemName: "plus.circle.fill") }
@@ -51,7 +52,7 @@ struct DebugWakeCodesSection: View {
 }
 
 // MARK: - Private
-private extension DebugWakeCodesSection {
+private extension WakeCodesSection {
 
     func addTyped() {
         add(typed)

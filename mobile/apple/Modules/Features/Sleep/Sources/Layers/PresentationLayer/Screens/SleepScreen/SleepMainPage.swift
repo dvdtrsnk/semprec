@@ -11,6 +11,8 @@ struct SleepMainPage: View {
     let send: (SleepAction) -> Void
     /// Opens the schedule editor on a plan, or on a new schedule for nil.
     let edit: (SleepPlanItem?) -> Void
+    /// Opens how the alarms wake the person on this device; nil where the app offers no such screen.
+    var openWakeSettings: (() -> Void)?
 
     // MARK: - Body
     var body: some View {
@@ -106,6 +108,18 @@ private extension SleepMainPage {
                 )
             }
             .accessibilityIdentifier(SleepIdentifiers.snooze)
+            if let openWakeSettings {
+                Button(action: openWakeSettings) {
+                    SleepNavigationRow(row: SleepRow(
+                        symbol: "qrcode.viewfinder",
+                        tint: .indigo,
+                        title: Text("sleep.alarm.wakeCode", bundle: .module),
+                        subtitle: Text("sleep.alarm.wakeCode.sub", bundle: .module)
+                    ))
+                }
+                .listRowButton()
+                .accessibilityIdentifier(SleepIdentifiers.wakeCode)
+            }
         } header: {
             Text("sleep.alarm.header", bundle: .module)
         } footer: {

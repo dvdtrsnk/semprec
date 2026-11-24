@@ -20,6 +20,7 @@ enum SleepIdentifiers {
     static let muteSemp = "sleep.muteSemp"
     static let sound = "sleep.sound"
     static let snooze = "sleep.snooze"
+    static let wakeCode = "sleep.wakeCode"
     static let showInCalendar = "sleep.showInCalendar"
     static let goal = "sleep.goal"
     /// Followed by the picked value, e.g. `sleep.option.450` or `sleep.option.piano`.

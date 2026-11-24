@@ -117,6 +117,22 @@ class HttpSleepRepository(private val api: AuthenticatedApi) : SleepRepository {
         }
     }
 
+    override suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>> {
+        val query = listOf("from" to from.toString(), "to" to to.toString())
+        val response = api.send(HttpMethod.Get, "/api/sleep/nights", query = query)
+        return when (val nights = response.decode<SleepNightsResponse>()) {
+            is RepositoryResult.Failure -> nights
+            is RepositoryResult.Content -> {
+                val read = nights.value.nights.map { it.toDomain() }
+                if (read.any { it == null }) {
+                    RepositoryResult.Failure(FailureKind.INVALID_DATA)
+                } else {
+                    RepositoryResult.Content(read.filterNotNull())
+                }
+            }
+        }
+    }
+
     private suspend fun readNight(night: CalendarDay): RepositoryResult<SleepNight?> {
         val query = listOf("from" to night.toString(), "to" to night.toString())
         val response = api.send(HttpMethod.Get, "/api/sleep/nights", query = query)

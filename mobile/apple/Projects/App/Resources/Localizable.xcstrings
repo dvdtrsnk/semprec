@@ -17,6 +17,22 @@
         }
       }
     },
+    "alarm.sleep.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dobré ráno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Good morning"
+          }
+        }
+      }
+    },
     "alarm.stop" : {
       "localizations" : {
         "cs" : {
@@ -1021,6 +1037,150 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The server could not be reached."
+          }
+        }
+      }
+    },
+    "sleepWake.done" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hotovo"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        }
+      }
+    },
+    "sleepWake.failure.limitReached" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Systém už drží maximum budíků Semprec, některé budíky chybí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The system holds as many Semprec alarms as it allows; some alarms are missing."
+          }
+        }
+      }
+    },
+    "sleepWake.failure.notAuthorized" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budíky nejsou pro Semprec povolené, takže budíky ze spánkového plánu nezvoní. Povol je v Nastavení."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alarms are not allowed for Semprec, so the sleep plan's alarms do not ring. Allow them in Settings."
+          }
+        }
+      }
+    },
+    "sleepWake.failure.other" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Některé budíky ze spánkového plánu se na tomto zařízení nepodařilo nastavit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some alarms of the sleep plan could not be set on this device."
+          }
+        }
+      }
+    },
+    "sleepWake.noCode" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidej aspoň jeden kód. Do té doby budík vypneš systémovým tlačítkem."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add at least one code. Until then the alarm stops with the system's Stop button."
+          }
+        }
+      }
+    },
+    "sleepWake.off" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budíky ze spánkového plánu vypneš systémovým tlačítkem Vypnout."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The sleep plan's alarms stop with the system's Stop button."
+          }
+        }
+      }
+    },
+    "sleepWake.on" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík zvoní, dokud nenaskenuješ jeden z kódů – i po Vypnout a i v aplikaci. Po 10 minutách ho vypneš i 200 klepnutími."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The alarm rings until you scan one of the codes, even after Stop and inside the app. After 10 minutes you may tap 200 times instead."
+          }
+        }
+      }
+    },
+    "sleepWake.requiresCode" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vypnout budík jen kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop the alarm only with a code"
+          }
+        }
+      }
+    },
+    "sleepWake.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buzení QR kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake Up with a Code"
           }
         }
       }

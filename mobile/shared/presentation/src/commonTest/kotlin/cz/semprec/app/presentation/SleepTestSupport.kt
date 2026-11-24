@@ -66,6 +66,13 @@ class FakeSleepRepository(
         return answer
     }
 
+    var nightsAnswer: RepositoryResult<List<SleepNight>> = RepositoryResult.Content(emptyList())
+
+    override suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>> {
+        waitForGate()
+        return nightsAnswer
+    }
+
     override suspend fun updateSettings(itemId: String, change: SleepSettingsChange): RepositoryResult<Unit> {
         writes += "settings:$change"
         waitForGate()

@@ -104,7 +104,8 @@ struct InboxDestination: View {
     }
 }
 
-/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations).
+/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations), with the screen of how its
+/// alarms wake the person where the device rings alarms.
 struct SleepDestination: View {
 
     let destination: AppDestination
@@ -113,12 +114,24 @@ struct SleepDestination: View {
     var body: some View {
         switch destination {
         case .sleepPlan(let night):
-            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+            SleepScreenFactory.plan(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
+                wakeSettings: Self.wakeSettings
+            )
         case .sleepNight(let night):
-            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+            SleepScreenFactory.night(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: true) },
+                wakeSettings: Self.wakeSettings
+            )
         default:
             EmptyView()
         }
+    }
+
+    /// How the sleep plan's alarms wake the person on this device; nil where the device rings no system alarm.
+    static var wakeSettings: (@MainActor () -> AnyView)? {
+        guard SystemAlarmScheduler().isSupported, let clock = AppNotifications.shared.sleepAlarms else { return nil }
+        return { AnyView(SleepWakeScreen(clock: clock)) }
     }
 }
 

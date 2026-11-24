@@ -9,6 +9,7 @@ public final class SharedDeviceNotifications {
 
     // MARK: - Dependencies
     let notifications: SharedSDK.DeviceNotifications
+    let sleepAlarmReader: SharedSDK.DeviceSleepAlarms
     private let platform: SharedSDK.AppPlatform
 
     // MARK: - Init
@@ -27,6 +28,7 @@ public final class SharedDeviceNotifications {
             )
         }
         notifications = sdk.notifications
+        sleepAlarmReader = sdk.sleepAlarms
         platform = DeviceIdentity.current().platform
     }
 }
@@ -66,10 +68,32 @@ extension SharedDeviceNotifications: DeviceNotificationService {
     }
 }
 
+// MARK: - Protocol conformance
+extension SharedDeviceNotifications: SleepAlarmSource {
+
+    public func sleepAlarms(today: String) async -> [SleepAlarmTime]? {
+        guard let read = try? await sleepAlarmReader.alarms(today: today) else { return nil }
+        return read.map(Self.sleepAlarm)
+    }
+
+    public func asksForSleepAlarms(_ payload: [String: String]) -> Bool {
+        sleepAlarmReader.asksForSleepAlarms(payload: payload)
+    }
+}
+
 // MARK: - Mapping
 // Pure functions between the Kotlin and the Swift values, internal so that CoreKitTests check every branch with
 // Kotlin values they build.
 extension SharedDeviceNotifications {
+
+    static func sleepAlarm(_ alarm: SharedSDK.DeviceSleepAlarm) -> SleepAlarmTime {
+        SleepAlarmTime(
+            night: alarm.night,
+            wakeDay: alarm.wakeDay,
+            wakeMinutes: Int(alarm.wakeMinutes),
+            planName: alarm.planName
+        )
+    }
 
     /// The token's bytes in lower-case hex, as APNs addresses a device.
     static func hex(_ token: Data) -> String {

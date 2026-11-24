@@ -3,8 +3,9 @@ import Foundation
 // MARK: - Watch alarms
 extension WakeGuard {
 
-    /// Schedules the watch alarms of every mission that guards no ring yet, after its next ring. A mission whose single
-    /// ring has passed unguarded is removed. One pass runs at a time, so two refreshes never arm a mission twice.
+    /// Schedules the watch alarms of every mission that guards no ring yet, after its next ring, once that ring is
+    /// within `WakeMission.armHorizon`. A mission whose single ring has passed unguarded is removed. One pass runs at a
+    /// time, so two refreshes never arm a mission twice.
     func armMissions() async {
         guard !isArming else { return }
         isArming = true
@@ -16,6 +17,7 @@ extension WakeGuard {
                 missions.removeAll { $0.id == id }
                 continue
             }
+            guard ring.timeIntervalSince(now()) <= WakeMission.armHorizon else { continue }
             let watchIDs = await scheduleWatches(for: mission, after: ring)
             if let index = missions.firstIndex(where: { $0.id == id }) {
                 missions[index].guardedRing = ring
@@ -85,7 +87,7 @@ extension WakeGuard {
     }
 
     /// The codes without surrounding whitespace, blanks and repeats, in their order.
-    static func normalized(_ codes: [String]) -> [String] {
+    nonisolated static func normalized(_ codes: [String]) -> [String] {
         var seen = Set<String>()
         return codes
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

@@ -12,6 +12,9 @@ struct SemprecApp: App {
     private var appDelegate
     #endif
 
+    @Environment(\.scenePhase)
+    private var scenePhase
+
     // MARK: - Init
     init() {
         AppNotifications.shared.start()
@@ -20,5 +23,10 @@ struct SemprecApp: App {
     // MARK: - Body
     var body: some Scene {
         WindowGroup { AppScene().appAppearance().wakeGuard() }
+            // The sleep plan may have changed elsewhere while the app was away: its alarms are read again.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await AppNotifications.shared.sleepAlarms?.sync() }
+            }
     }
 }

@@ -13,10 +13,15 @@ struct SleepScreen: View {
     /// The schedule the editor sheet is open on. The sheet is presented from the screen, not from a row of its form:
     /// a sheet presented from a form row inside another sheet dismissed both.
     @State private var editing: ScheduleEditorTarget?
+    /// The screen of how the alarms wake the person, which the app provides; presented from the screen like the
+    /// editor.
+    private let wakeSettings: (@MainActor () -> AnyView)?
+    @State private var showsWakeSettings = false
 
     // MARK: - Init
-    init(viewModel: @autoclosure @escaping () -> SleepViewModel) {
+    init(viewModel: @autoclosure @escaping () -> SleepViewModel, wakeSettings: (@MainActor () -> AnyView)? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.wakeSettings = wakeSettings
     }
 
     // MARK: - Body
@@ -38,6 +43,7 @@ struct SleepScreen: View {
             message: { Text(FailureKind.sleepMessage(for: viewModel.state.saveFailure)) }
         )
         .sheet(item: $editing) { target in editor(target) }
+        .sheet(isPresented: $showsWakeSettings) { wakeSettings?() }
         .task { await viewModel.observe() }
     }
 }
@@ -82,9 +88,12 @@ private extension SleepScreen {
         switch state.page {
         // The plan page of the shared model is the schedule editor's sheet here, so the overview stands in for it.
         case .main, .plan:
-            SleepMainPage(state: state, send: send) { plan in
-                editing = plan.map { .plan($0.id) } ?? .new
-            }
+            SleepMainPage(
+                state: state,
+                send: send,
+                edit: { plan in editing = plan.map { .plan($0.id) } ?? .new },
+                openWakeSettings: wakeSettings == nil ? nil : { showsWakeSettings = true }
+            )
         case .night: SleepNightPage(state: state, send: send)
         case .remind, .sound, .goal: SleepPickerPage(state: state, send: send)
         }

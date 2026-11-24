@@ -47,4 +47,8 @@ enum AppIdentifiers {
     static let wakeGuardTapOpen = "wake.guard.tap.open"
     static let wakeGuardTap = "wake.guard.tap"
     static let wakeGuardTapBack = "wake.guard.tap.back"
+    /// The screen of how the sleep plan's alarms wake the person; Apple-only, like the alarms.
+    static let sleepWakeScreen = "sleepWake.screen"
+    static let sleepWakeToggle = "sleepWake.requiresCode"
+    static let sleepWakeDone = "sleepWake.done"
 }

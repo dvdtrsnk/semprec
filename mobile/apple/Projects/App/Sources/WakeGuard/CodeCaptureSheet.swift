@@ -2,7 +2,7 @@ import DesignSystem
 import SwiftUI
 
 /// Reads one barcode or QR code with the camera for a new wake-up alarm; the first code read is handed back.
-struct DebugCodeCaptureSheet: View {
+struct CodeCaptureSheet: View {
 
     // MARK: - Dependencies
     let captured: (String) -> Void

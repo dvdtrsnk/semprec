@@ -4,6 +4,7 @@ import XCTest
 @testable import CoreKit
 
 /// The schedule editor's actions on their way to the Kotlin sleep ViewModel.
+@MainActor
 final class SharedSleepScheduleTests: XCTestCase {
 
     func testSavingAScheduleMapsEveryField() throws {

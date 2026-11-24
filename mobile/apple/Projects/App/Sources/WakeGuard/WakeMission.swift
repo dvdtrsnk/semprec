@@ -15,6 +15,9 @@ struct WakeMission: Codable, Equatable, Identifiable, Sendable {
     var guardedRing: Date?
     /// The ids of the watch alarms after `guardedRing`.
     var watchIDs: [UUID]
+    /// What created the mission when it was not created by hand: `sleep:<wake day> <time>` for an alarm of the sleep
+    /// plan, which the sleep alarm clock replaces as the plan changes.
+    var source: String?
 }
 
 // MARK: - Rings
@@ -24,6 +27,10 @@ extension WakeMission {
     /// up to two hours. They are on the system's timers before the person sleeps, because once the alarm rings the
     /// app may never run again until the person opens it.
     static let watchOffsets: [Int] = Array(1...30) + Array(stride(from: 35, through: 120, by: 5))
+
+    /// How far ahead a ring is guarded: its watch alarms are scheduled once it is this close, so that a week of
+    /// alarms does not take more alarms than the system allows an app.
+    static let armHorizon: TimeInterval = 36 * 3_600
 
     /// How long the alarm rings before the person may tap instead of scanning.
     static let tapFallbackDelay: TimeInterval = 10 * 60

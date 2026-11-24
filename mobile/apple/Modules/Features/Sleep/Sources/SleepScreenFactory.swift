@@ -9,14 +9,21 @@ import SwiftUI
 public enum SleepScreenFactory {
 
     // MARK: - Screens
-    /// The sleep plan sheet, which opens on the plan overview. A `night` given to `makeSleep` shows that night's ring.
-    public static func plan(makeModel: @escaping @MainActor () -> any SleepScreenModel) -> some View {
-        SleepScreen(viewModel: SleepViewModel(model: makeModel()))
+    /// The sleep plan sheet, which opens on the plan overview. `wakeSettings` is the screen of how the alarms wake
+    /// the person on this device, which the overview opens over the sheet; without it the overview has no such row.
+    public static func plan(
+        makeModel: @escaping @MainActor () -> any SleepScreenModel,
+        wakeSettings: (@MainActor () -> AnyView)? = nil
+    ) -> some View {
+        SleepScreen(viewModel: SleepViewModel(model: makeModel()), wakeSettings: wakeSettings)
     }
 
     /// The sheet of one night, which opens on that night (`makeSleep(night:startOnNight: true)`); the plan overview
     /// is one step in.
-    public static func night(makeModel: @escaping @MainActor () -> any SleepScreenModel) -> some View {
-        SleepScreen(viewModel: SleepViewModel(model: makeModel()))
+    public static func night(
+        makeModel: @escaping @MainActor () -> any SleepScreenModel,
+        wakeSettings: (@MainActor () -> AnyView)? = nil
+    ) -> some View {
+        SleepScreen(viewModel: SleepViewModel(model: makeModel()), wakeSettings: wakeSettings)
     }
 }

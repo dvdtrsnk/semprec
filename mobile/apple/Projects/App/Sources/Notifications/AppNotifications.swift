@@ -13,11 +13,21 @@ final class AppNotifications {
     // MARK: - Shared
     /// The one instance of the process: the app delegate hands it what the system delivers, and every scene's
     /// composition reaches it.
-    static let shared = AppNotifications(
-        service: SharedDeviceNotifications(),
-        center: SystemNotificationCenter(),
-        environment: AppNotifications.buildEnvironment()
-    )
+    static let shared: AppNotifications = {
+        let service = SharedDeviceNotifications()
+        let notifications = AppNotifications(
+            service: service,
+            center: SystemNotificationCenter(),
+            environment: AppNotifications.buildEnvironment()
+        )
+        notifications.sleepAlarms = SleepAlarmClock(
+            source: service,
+            scheduler: SystemAlarmScheduler(),
+            wakeGuard: .shared,
+            store: DefaultsSleepAlarmStore()
+        )
+        return notifications
+    }()
 
     /// The prefix of the identifiers of the reminders this class schedules, so a new read replaces only them.
     static let reminderPrefix = "reminder."
@@ -30,6 +40,8 @@ final class AppNotifications {
     /// Asks APNs for this device's token, which arrives through `didRegister(deviceToken:)`. Nil where the app
     /// registers for no remote notifications (macOS).
     var registerForRemoteNotifications: (@MainActor () -> Void)?
+    /// Rings the sleep plan's alarms; nil where the process rings none (tests).
+    var sleepAlarms: SleepAlarmClock?
     /// The system's notification center holds its delegate weakly.
     private var centerDelegate: NotificationCenterDelegate?
 
@@ -67,17 +79,19 @@ final class AppNotifications {
         await refresh()
     }
 
-    /// Someone is signed in: when notifications are allowed, registers this device, schedules its reminders and sets
-    /// the icon's number. Asks the person nothing.
+    /// Someone is signed in: rings the sleep plan's alarms and, when notifications are allowed, registers this device,
+    /// schedules its reminders and sets the icon's number. Asks the person nothing about notifications.
     func refresh() async {
+        await sleepAlarms?.sync()
         guard await center.isAuthorized() else { return }
         registerForRemoteNotifications?()
         await resyncReminders()
         await updateBadge()
     }
 
-    /// Nobody is signed in: the reminders and the number of the person who was are removed.
+    /// Nobody is signed in: the sleep alarms, the reminders and the number of the person who was are removed.
     func signedOut() async {
+        await sleepAlarms?.signedOut()
         center.removePending(await scheduledReminders())
         await center.setBadge(0)
     }
@@ -87,8 +101,13 @@ final class AppNotifications {
         _ = await service.register(deviceToken: deviceToken, environment: environment)
     }
 
-    /// A silent push arrived; answers whether it brought new data.
+    /// A silent push arrived: a sleep resync rings the plan's alarms again, a reminders resync reads the reminders
+    /// again. Answers whether it brought new data.
     func didReceiveRemoteNotification(_ payload: [String: String]) async -> Bool {
+        if let sleepAlarms, sleepAlarms.asksForSleepAlarms(payload) {
+            await sleepAlarms.sync()
+            return true
+        }
         guard service.asksForReminders(payload) else { return false }
         return await resyncReminders()
     }

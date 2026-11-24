@@ -29,7 +29,7 @@ struct DebugAlarmScreen: View {
             permission
             if viewModel.authorization != .unsupported {
                 newAlarm
-                DebugWakeCodesSection(codes: $codes) { scanning = true }
+                WakeCodesSection(codes: $codes) { scanning = true }
                 quickTest
                 DebugWakeMissionsSection(wakeGuard: wakeGuard) { id in
                     Task { await viewModel.removeMission(id) }
@@ -39,7 +39,7 @@ struct DebugAlarmScreen: View {
         }
         .formStyle(.grouped)
         .sheet(isPresented: $scanning) {
-            DebugCodeCaptureSheet { code in
+            CodeCaptureSheet { code in
                 codes = WakeGuard.normalized(codes + [code])
                 scanning = false
             }
