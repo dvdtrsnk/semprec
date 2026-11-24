@@ -85,6 +85,7 @@ class JournalViewModel internal constructor(
             is JournalAction.Select -> select(action.kind, action.start)
             is JournalAction.ShowAxisAround -> showAxisAround(action.day)
             JournalAction.GoToday -> select(JournalPeriodKind.DAY, state.value.today)
+            is JournalAction.Turn -> state.value.selection.let { select(it.kind, it.shifted(action.steps).toString()) }
             is JournalAction.OpenEvent -> emit(JournalEffect.OpenEvent(action.id))
             JournalAction.OpenInbox -> emit(JournalEffect.OpenInbox)
         }
@@ -240,17 +241,18 @@ private fun JournalSelection.neighbours(): List<JournalPeriod> =
     neighbourStarts().map { day -> JournalPeriod.containing(kind.toType(), day) }
 
 /** The first days of the period after the selected one and of the one before it, of the same kind. */
-private fun JournalSelection.neighbourStarts(): List<CalendarDay> {
+private fun JournalSelection.neighbourStarts(): List<CalendarDay> = listOf(shifted(1), shifted(-1))
+
+/** The first day of the period of the selected kind [steps] periods after the selected one, before it when negative. */
+private fun JournalSelection.shifted(steps: Int): CalendarDay {
     val type = kind.toType()
     val start = (CalendarDay.parse(start) ?: FALLBACK_DAY).startOf(type)
-    return listOf(1, -1).map { step ->
-        when (type) {
-            JournalPeriodType.DAY -> start.plusDays(step)
-            JournalPeriodType.WEEK -> start.plusDays(step * DAYS_IN_WEEK)
-            JournalPeriodType.MONTH -> start.plusMonths(step)
-            JournalPeriodType.QUARTER -> start.plusMonths(step * MONTHS_IN_QUARTER)
-            JournalPeriodType.YEAR -> start.plusMonths(step * MONTHS_IN_YEAR)
-        }
+    return when (type) {
+        JournalPeriodType.DAY -> start.plusDays(steps)
+        JournalPeriodType.WEEK -> start.plusDays(steps * DAYS_IN_WEEK)
+        JournalPeriodType.MONTH -> start.plusMonths(steps)
+        JournalPeriodType.QUARTER -> start.plusMonths(steps * MONTHS_IN_QUARTER)
+        JournalPeriodType.YEAR -> start.plusMonths(steps * MONTHS_IN_YEAR)
     }
 }
 

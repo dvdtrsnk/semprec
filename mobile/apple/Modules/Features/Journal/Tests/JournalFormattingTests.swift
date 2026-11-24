@@ -16,26 +16,6 @@ final class JournalFormattingTests: XCTestCase {
     }
 
     // MARK: - Dates
-    @MainActor
-    func testAPeriodIsShiftedByItsOwnLengthAcrossTheEndsOfMonthsAndYears() {
-        XCTAssertEqual(JournalDates.shifted("2026-12-31", kind: .day, by: 1), "2027-01-01")
-        XCTAssertEqual(JournalDates.shifted("2026-03-01", kind: .day, by: -1), "2026-02-28")
-        // A week across the change to summer time in Europe is still seven days.
-        XCTAssertEqual(JournalDates.shifted("2026-03-23", kind: .week, by: 1), "2026-03-30")
-        XCTAssertEqual(JournalDates.shifted("2026-12-01", kind: .month, by: 1), "2027-01-01")
-        XCTAssertEqual(JournalDates.shifted("2026-01-01", kind: .month, by: -1), "2025-12-01")
-        XCTAssertEqual(JournalDates.shifted("2026-10-01", kind: .quarter, by: 1), "2027-01-01")
-        XCTAssertEqual(JournalDates.shifted("2026-01-01", kind: .quarter, by: -1), "2025-10-01")
-        XCTAssertEqual(JournalDates.shifted("2026-01-01", kind: .year, by: 1), "2027-01-01")
-        XCTAssertEqual(JournalDates.shifted("2026-01-01", kind: .year, by: -3), "2023-01-01")
-    }
-
-    @MainActor
-    func testAStartThatIsNoDayCannotBeShifted() {
-        XCTAssertNil(JournalDates.shifted("not a day", kind: .day, by: 1))
-        XCTAssertNil(JournalDates.shifted("2026-10", kind: .month, by: 1))
-    }
-
     // MARK: - Page turns
     func testTheFingerTurnsThePagePastAThirdOfTheWidthOrWithAFlickTheWayItMoved() {
         XCTAssertEqual(JournalPagerRules.turn(offset: -150, width: 400, speed: 0), 1)

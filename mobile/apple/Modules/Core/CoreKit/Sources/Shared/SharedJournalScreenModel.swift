@@ -68,6 +68,7 @@ extension SharedJournalScreenModel {
         case .retry: SharedSDK.JournalActionRetry.shared
         case .select(let kind, let start): SharedSDK.JournalActionSelect(kind: kind.shared, start: start)
         case .goToday: SharedSDK.JournalActionGoToday.shared
+        case .turn(let steps): SharedSDK.JournalActionTurn(steps: Int32(steps))
         case .showAxisAround(let day): SharedSDK.JournalActionShowAxisAround(day: day)
         case .openEvent(let id): SharedSDK.JournalActionOpenEvent(id: id)
         case .openInbox: SharedSDK.JournalActionOpenInbox.shared

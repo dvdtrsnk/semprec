@@ -37,26 +37,6 @@ enum JournalDates {
         return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 
-    /// The start of the period of `kind` `steps` periods after the one that starts on `start`: the next day, month or
-    /// year, or the ones before it for a negative `steps`.
-    static func shifted(_ start: String, kind: JournalPeriodKind, by steps: Int) -> String? {
-        guard let first = date(start) else { return nil }
-        let component: Calendar.Component
-        var amount = steps
-        switch kind {
-        case .day: component = .day
-        case .week: component = .day
-            amount = steps * 7
-        case .month: component = .month
-        case .quarter: component = .month
-            amount = steps * 3
-        case .year: component = .year
-        }
-        guard let shifted = calendar.date(byAdding: component, value: amount, to: first) else { return nil }
-        let parts = calendar.dateComponents([.year, .month, .day], from: shifted)
-        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
-    }
-
     // MARK: - Titles
     /// `pátek 16. října`, capitalized.
     static func dayTitle(_ key: String) -> String {

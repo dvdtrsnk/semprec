@@ -412,6 +412,30 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a turn selects the period of the same kind that many steps away`() = runTest(dispatcher) {
+        val vm = loaded("2026-12-31")
+        vm.onAction(JournalAction.Turn(1))
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2027-01-01"), vm.state.value.selection)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.MONTH, "2027-01-01"))
+        vm.onAction(JournalAction.Turn(-1))
+        assertEquals(JournalSelection(JournalPeriodKind.MONTH, "2026-12-01"), vm.state.value.selection)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.YEAR, "2026-01-01"))
+        vm.onAction(JournalAction.Turn(-3))
+        assertEquals(JournalSelection(JournalPeriodKind.YEAR, "2023-01-01"), vm.state.value.selection)
+        runCurrent()
+        assertEquals(1, reads("2023"))
+        vm.close()
+    }
+
+    @Test fun `a turn by no steps selects the same period and reads nothing again`() = runTest(dispatcher) {
+        val vm = loaded()
+        vm.onAction(JournalAction.Turn(0))
+        runCurrent()
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-16"), vm.state.value.selection)
+        assertEquals(1, reads())
+        vm.close()
+    }
+
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {
         val vm = loaded("2026-10-01")
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-03"))

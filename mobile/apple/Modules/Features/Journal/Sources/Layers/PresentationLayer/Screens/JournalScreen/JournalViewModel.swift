@@ -43,12 +43,14 @@ final class JournalViewModel: ObservableObject {
         model.send(.select(kind: kind, start: start))
     }
 
-    /// Selects the period `steps` away from the selected one, of the same kind, and names it; `nil` when there is none.
+    /// Asks the shared ViewModel for the period `steps` away from the selected one, of the same kind, and names the
+    /// period it selected; `nil` when the selection did not change. The shared ViewModel works out which period that
+    /// is and selects it at once.
     func turn(by steps: Int) -> JournalSelection? {
-        let selection = state.selection
-        guard let start = JournalDates.shifted(selection.start, kind: selection.kind, by: steps) else { return nil }
-        select(kind: selection.kind, start: start)
-        return JournalSelection(kind: selection.kind, start: start)
+        let before = model.state.selection
+        model.send(.turn(steps: steps))
+        let after = model.state.selection
+        return after == before ? nil : after
     }
 
     func goToday() {

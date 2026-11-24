@@ -60,27 +60,20 @@ final class JournalViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testATurnSelectsThePeriodOfTheSameKindThatManyStepsAwayAndNamesIt() {
-        let model = ScriptedJournalScreenModel(state: JournalState(
-            phase: .content, selection: JournalSelection(kind: .month, start: "2026-12-01"), today: "2026-10-16"
-        ))
+    func testATurnIsAskedOfTheSharedModelAndNamesThePeriodItSelected() {
+        let model = TurningJournalModel(selection: JournalSelection(kind: .month, start: "2026-12-01"))
         let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        model.next = JournalSelection(kind: .month, start: "2027-01-01")
         XCTAssertEqual(viewModel.turn(by: 1), JournalSelection(kind: .month, start: "2027-01-01"))
-        XCTAssertEqual(viewModel.turn(by: -2), JournalSelection(kind: .month, start: "2026-10-01"))
-        XCTAssertEqual(model.actions, [
-            .select(kind: .month, start: "2027-01-01"),
-            .select(kind: .month, start: "2026-10-01")
-        ])
+        XCTAssertEqual(model.actions, [.turn(steps: 1)])
     }
 
     @MainActor
-    func testATurnFromASelectionThatIsNoDaySelectsNothing() {
-        let model = ScriptedJournalScreenModel(state: JournalState(
-            phase: .content, selection: JournalSelection(kind: .day, start: "not a day"), today: "2026-10-16"
-        ))
+    func testATurnThatSelectsNothingNewNamesNoPeriod() {
+        let model = ScriptedJournalScreenModel(state: loading)
         let viewModel = JournalViewModel(model: model, router: RouterSpy())
-        XCTAssertNil(viewModel.turn(by: 1))
-        XCTAssertTrue(model.actions.isEmpty)
+        XCTAssertNil(viewModel.turn(by: -1))
+        XCTAssertEqual(model.actions, [.turn(steps: -1)])
     }
 
     @MainActor
@@ -179,5 +172,27 @@ extension RouterSpy: JournalRouting {
 
     func showPage(itemId: String, title: String) {
         calls.append("page \(itemId) \(title)")
+    }
+}
+
+/// A diary model that selects `next` when it is asked to turn, as the shared ViewModel selects at once.
+@MainActor
+private final class TurningJournalModel: JournalScreenModel {
+
+    private(set) var state: JournalState
+    private(set) var actions: [JournalAction] = []
+    var next: JournalSelection?
+
+    init(selection: JournalSelection) {
+        state = JournalState(phase: .content, selection: selection, today: "2026-10-16")
+    }
+
+    func states() -> AsyncStream<JournalState> { AsyncStream { $0.yield(state) } }
+
+    func effects() -> AsyncStream<JournalEffect> { AsyncStream { _ in } }
+
+    func send(_ action: JournalAction) {
+        actions.append(action)
+        if case .turn = action, let next { state.selection = next }
     }
 }

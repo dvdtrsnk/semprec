@@ -291,6 +291,8 @@ public enum JournalAction: Equatable, Sendable {
     /// Shows the period of `kind` that starts on `start` (`YYYY-MM-DD`).
     case select(kind: JournalPeriodKind, start: String)
     case goToday
+    /// Shows the period of the selected kind `steps` periods after the selected one, before it for a negative `steps`.
+    case turn(steps: Int)
     /// Moves the windows of the time axis around `day` (`YYYY-MM-DD`); the selection stays.
     case showAxisAround(day: String)
     case openEvent(id: String)

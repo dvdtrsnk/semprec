@@ -30,6 +30,8 @@ final class SharedJournalActionMappingTests: XCTestCase {
                 as? SharedSDK.JournalActionShowAxisAround
         )
         XCTAssertEqual(around.day, "2029-03-10")
+        let turn = try XCTUnwrap(SharedJournalScreenModel.action(.turn(steps: -2)) as? SharedSDK.JournalActionTurn)
+        XCTAssertEqual(turn.steps, -2)
     }
 
     func testEffectsMapEveryCase() {
