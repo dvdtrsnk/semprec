@@ -6,7 +6,7 @@ that run and counts as open, not as passed. Evidence names are screenshots kept 
 
 ## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 36, DIFF 6, FIXED 6, NOT RUN 251, PASS 116 of 415 scenarios.
+Summary: BLOCKED 34, DIFF 6, FIXED 10, NOT RUN 250, PASS 115 of 415 scenarios.
 
 Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", a week strip that wrapped at large text, a new-item form that closed without asking, an all-day chip without a menu, and a day that jumped to its start hour when the all-day area changed height.
 
@@ -122,7 +122,7 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | C16 | NOT RUN |  |
 | C17 | NOT RUN |  |
 | C18 | NOT RUN |  |
-| C19 | BLOCKED | see U02: drag-release not deliverable with the available input tools |
+| C19 | FIXED | same as U02 |
 | C20 | NOT RUN |  |
 | C21 | NOT RUN |  |
 | C22 | NOT RUN |  |
@@ -159,15 +159,15 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | E03 | NOT RUN |  |
 | E04 | PASS | s-menu2: long press selects the block and shows the menu |
 | E05 | NOT RUN |  |
-| E06 | PASS | pair-drag: slow drag moves the block, snapped to 15 minutes, preview time shown (19:15 while held) |
+| E06 | FIXED | same root cause: a dragged block was removed and redrawn as a preview, so the release was lost. Verified: a task dragged 17:00 -> 17:45 is stored (server) and an event moved by a drag is stored |
 | E07 | NOT RUN |  |
 | E08 | NOT RUN |  |
 | E09 | NOT RUN |  |
 | E10 | NOT RUN |  |
 | E11 | NOT RUN |  |
 | E12 | BLOCKED | an interrupt cannot be raised |
-| E13 | NOT RUN |  |
-| E14 | PASS | g-r2/g-r4: the bottom handle shows the live time 11:30 while dragged. The drag only ended at the next touch with this input tool, see the note |
+| E13 | PASS | resize: the edge now follows the finger from where it was grabbed. Bottom handle dragged 63 pt: 21:27 -> 22:30 (snapped), stored on the server (g-ww2) |
+| E14 | FIXED | FAIL: the resize used to end only at the next touch because the handle view was replaced by a preview. Verified with a real release (g-ww2) |
 | E15 | NOT RUN |  |
 | E16 | NOT RUN |  |
 | E17 | NOT RUN |  |
@@ -431,8 +431,8 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | T18 | NOT RUN |  |
 | T19 | NOT RUN |  |
 | T20 | NOT RUN |  |
-| U01 | PASS | g-ll (axe touch batch): while a timed task is held over the event strip the event is outlined and the task leaves the timeline |
-| U02 | BLOCKED | the release of the drag could not be delivered by the input tools (g-ll, g-nn: the drag stayed held; tools send moves as extra fingers). The same write, PUT /api/tasks/:id/host-events/:id sent as the app sends it, stored the task and the event then showed "0/1" and the row (g-hh1, g-oo1). Needs a finger or an XCUITest |
+| U01 | PASS | g-vv: held timed task follows the finger over the event |
+| U02 | FIXED | FAIL on the iPhone (reported by the owner): the block owning the finger left the screen when the drag started, so the gesture never ended and the drop was lost. Now the block stays in place while dragged. Simulator (axe touch batch with a real release): the task went into "DnD host event" (0/2 on the event, server shows both tasks) - g-vv3 |
 | U03 | PASS | g-oo1: task A in Host long 18:30-19:50 shows as a row with checkbox and count 0/1; it is no longer in the all-day area |
 | U04 | FIXED | FAIL: g-hh2 after the 17:52 end the task was back in the all-day area with no note. The server marks it missed; the chip now reads "from DnD host event · not done" in orange, as the instruction PDF (g-ii1) |
 | U05 | DIFF | the event row of a missed task is hidden when the event block is too short for rows (12 minutes, g-ii1); in a block of an hour it shows "not done" next to the task. Not run on a tall ended event, to do in Run 2 |

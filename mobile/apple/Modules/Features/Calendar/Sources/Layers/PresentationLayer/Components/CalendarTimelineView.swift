@@ -14,7 +14,8 @@ struct CalendarTimelineView: View {
     let selectedItemId: String?
     let drag: CalendarDrag?
     let handlers: CalendarItemHandlers
-    let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ location: CGPoint) -> Void
+    /// The finger has travelled `travel` points since it touched the handle.
+    let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ travel: CGFloat) -> Void
     let onResizeEnd: () -> Void
     let onOpenSleep: (String) -> Void
     let onPaste: ((CGPoint) -> Void)?
@@ -28,9 +29,6 @@ struct CalendarTimelineView: View {
                 sleepBands(width: width)
                 ForEach(timedItems, id: \.identity) { item in
                     block(item, width: width)
-                }
-                if let preview = previewItem {
-                    block(preview, width: width)
                 }
                 if isToday {
                     nowLine(width: width)
@@ -56,15 +54,11 @@ extension CalendarTimelineView {
 
 private extension CalendarTimelineView {
 
-    /// The timed items, except the one that is being dragged, which is drawn at its previewed place.
+    /// The timed items. The one that is being dragged stays among them, drawn at the place the drag would put it: the
+    /// view that owns the finger's gesture must not leave the screen while the finger is down, or the gesture is
+    /// cancelled and the drop never happens.
     var timedItems: [CalendarItem] {
-        day.items.filter { $0.startMinutes != nil && !$0.allDay && $0.id != drag?.itemId }
-    }
-
-    /// The item being dragged, shown at the place the drag would put it, when that is a time of this day.
-    var previewItem: CalendarItem? {
-        guard let drag, !drag.allDay, drag.date == day.date, drag.intoEventId == nil else { return nil }
-        return day.items.first { $0.id == drag.itemId }
+        day.items.filter { $0.startMinutes != nil && !$0.allDay }
     }
 
     func place(_ item: CalendarItem) -> (start: Int, end: Int) {
@@ -85,6 +79,9 @@ private extension CalendarTimelineView {
         let dragging = drag?.itemId == item.id
         let target = drag?.intoEventId == item.id
         let raised = dragging || selected
+        // Held over the all-day row the block gives way to the chip there, held over an event it is on its way into
+        // it; either way it stays in place so that the finger's gesture goes on.
+        let away = dragging && (drag?.allDay == true || drag?.intoEventId != nil)
         // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
         let blockWidth = selected ? width : columnWidth - stepIn
         let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
@@ -110,7 +107,9 @@ private extension CalendarTimelineView {
         .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
         .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
         .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: range.start))
+        .opacity(away ? (drag?.allDay == true ? 0 : 0.3) : 1)
         .animation(.snappy(duration: 0.24), value: selected)
+        .animation(.snappy(duration: 0.18), value: away)
         // A block that appears or goes away does so as the system Calendar's does, and the ones around it make room.
         .transition(.opacity.combined(with: .scale(scale: 0.92)))
         // A block that starts later than the one it overlaps lies over it; a held block lies over everything.
@@ -136,7 +135,7 @@ private extension CalendarTimelineView {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .calendarDay)
-                    .onChanged { onResize(item, edge, $0.location) }
+                    .onChanged { onResize(item, edge, $0.location.y - $0.startLocation.y) }
                     .onEnded { _ in onResizeEnd() }
             )
             .frame(maxWidth: .infinity, alignment: edge == .start ? .trailing : .leading)

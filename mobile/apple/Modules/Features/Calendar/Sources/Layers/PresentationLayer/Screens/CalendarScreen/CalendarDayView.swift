@@ -69,6 +69,9 @@ struct CalendarDayView: View {
         }
         // A new day ticks as moving a selected row to another place does in a note.
         .sensoryFeedback(.selection, trigger: dayTicks)
+        // A held block ticks each time it settles on another quarter hour, as in the system Calendar.
+        .sensoryFeedback(.selection, trigger: state.drag?.startMinutes)
+        .sensoryFeedback(.selection, trigger: state.drag?.endMinutes)
         .onChange(of: state.selectedDay) { old, new in
             // The chosen day is dropped when the shared state reaches it, or moves somewhere a turn towards it
             // would not pass through.
@@ -266,8 +269,11 @@ private extension CalendarDayView {
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
                 handlers: handlers(scroll, day: key),
-                onResize: { item, edge, location in
-                    viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: minutes(at: location.y)))
+                onResize: { item, edge, travel in
+                    // The edge follows the finger from where it was grabbed, rather than jumping to the finger.
+                    let from = (edge == .start ? item.startMinutes : item.endMinutes) ?? 0
+                    let moved = Int((travel / CGFloat(hourHeight) * 60).rounded())
+                    viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: from + moved))
                 },
                 onResizeEnd: { viewModel.gesture(.endDrag(commit: true)) },
                 onOpenSleep: { viewModel.open(.sleep(night: $0)) },
