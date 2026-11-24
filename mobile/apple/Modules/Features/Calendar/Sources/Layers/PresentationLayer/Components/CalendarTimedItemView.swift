@@ -85,8 +85,8 @@ extension CalendarTimedItemView {
 
         static func showsDetails(_ height: CGFloat) -> Bool { height >= 64 }
 
-        /// How many of an event's `count` tasks fit under its title: a task of the event is what the person put there, so
-        /// it is shown before the time is.
+        /// How many of an event's `count` tasks fit under its title: what the person put into the event is shown
+        /// before its time is.
         static func taskRows(_ height: CGFloat, count: Int) -> Int { min(count, max(Int((height - 25) / 18), 0)) }
 
         static func titleLines(_ height: CGFloat) -> Int { height >= 64 ? 2 : 1 }
