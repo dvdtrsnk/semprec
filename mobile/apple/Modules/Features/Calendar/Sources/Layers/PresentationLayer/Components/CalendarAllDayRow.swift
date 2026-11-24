@@ -1,8 +1,10 @@
 import CoreKit
 import SwiftUI
 
-/// The row above the timeline for what has no time: holidays, birthdays, events of the whole day and tasks without a
-/// time. Each can be held and pulled into the timeline to give it a time.
+/// The area above the timeline for what has no time: holidays, birthdays, events of the whole day and tasks without a
+/// time. It is not there on a day with none. The chips stand in two columns, or one when there is a single chip, and
+/// the area stops growing at two rows and a half, scrolling inside itself, so a day with many never pushes the
+/// timeline off the screen. Each chip can be held and pulled into the timeline to give it a time.
 struct CalendarAllDayRow: View {
 
     // MARK: - Dependencies
@@ -11,31 +13,58 @@ struct CalendarAllDayRow: View {
     let drag: CalendarDrag?
     let handlers: CalendarItemHandlers
 
+    // MARK: - State
+    /// The height of all the chips, from which the area takes its own.
+    @State private var contentHeight: CGFloat = 27
+
+    // MARK: - Constants
+    /// The tallest the area gets: two rows of chips and half of the third, which shows there is more to scroll to.
+    static let maximumHeight: CGFloat = 70
+
     // MARK: - Body
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text("calendar.allDay", bundle: .module)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: CalendarGeometry.gutter, alignment: .trailing)
-                .padding(.trailing, 8)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(items, id: \.identity) { item in
-                    chip(item)
-                }
+        if !items.isEmpty {
+            HStack(alignment: .top, spacing: 0) {
+                Text("calendar.allDay", bundle: .module)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: CalendarGeometry.gutter, alignment: .trailing)
+                    .padding(.trailing, 8)
+                    .padding(.top, 5)
+                chips
+                    .padding(.trailing, 8)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.trailing, 8)
+            .padding(.vertical, 6)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(CalendarIdentifiers.allDayRow)
         }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(CalendarIdentifiers.allDayRow)
     }
 }
 
 // MARK: - Subviews
 private extension CalendarAllDayRow {
+
+    var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 4), count: items.count > 1 ? 2 : 1)
+    }
+
+    /// Two chips to a row, scrolling when there are more rows than the area shows.
+    var chips: some View {
+        ScrollView {
+            grid.onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { contentHeight = $0 })
+        }
+        .scrollIndicators(.hidden)
+        .scrollDisabled(contentHeight <= Self.maximumHeight)
+        .frame(height: min(contentHeight, Self.maximumHeight))
+    }
+
+    var grid: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+            ForEach(items, id: \.identity) { item in
+                chip(item)
+            }
+        }
+    }
 
     @ViewBuilder
     func chip(_ item: CalendarItem) -> some View {

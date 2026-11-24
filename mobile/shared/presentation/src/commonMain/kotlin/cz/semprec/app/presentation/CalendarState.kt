@@ -46,7 +46,8 @@ data class CalendarSleep(
 /**
  * One item of one day. [startMinutes] is `null` for an all-day item; [endMinutes] is where a timed item is drawn to
  * (a short block when it has no end of its own, [hasEnd] `false`). [column] and [columns] place a timed item next
- * to the ones it overlaps. [color] is the colour of its calendar, `#RRGGBB`. [editable] tells whether it can be
+ * to the ones it overlaps, [depth] steps it in from the left of its column when it starts well after one it overlaps
+ * (drawn over it). [color] is the colour of its calendar, `#RRGGBB`. [editable] tells whether it can be
  * moved, finished or removed.
  */
 data class CalendarItem(
@@ -67,6 +68,7 @@ data class CalendarItem(
     val editable: Boolean,
     val column: Int,
     val columns: Int,
+    val depth: Int,
     val tasks: List<CalendarEventTask>,
     val hostEventTitle: String?,
     val carriedFrom: String?,

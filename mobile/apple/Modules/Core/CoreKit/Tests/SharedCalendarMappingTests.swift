@@ -71,6 +71,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(item?.endMinutes, 660)
         XCTAssertEqual(item?.column, 1)
         XCTAssertEqual(item?.columns, 3)
+        XCTAssertEqual(item?.depth, 2)
         XCTAssertEqual(item?.place, "Office")
         XCTAssertEqual(item?.hostEventTitle, "Review")
         XCTAssertEqual(item?.carriedFrom, "2026-10-14")

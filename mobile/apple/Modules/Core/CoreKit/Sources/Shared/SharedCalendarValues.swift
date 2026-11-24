@@ -141,6 +141,7 @@ extension CalendarItem {
             editable: item.editable,
             column: Int(item.column),
             columns: Int(item.columns),
+            depth: Int(item.depth),
             tasks: item.tasks.map(CalendarEventTask.init),
             hostEventTitle: item.hostEventTitle,
             carriedFrom: item.carriedFrom,

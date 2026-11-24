@@ -32,6 +32,7 @@ enum CalendarKotlin {
             editable: false,
             column: 1,
             columns: 3,
+            depth: 2,
             tasks: tasks,
             hostEventTitle: "Review",
             carriedFrom: "2026-10-14",

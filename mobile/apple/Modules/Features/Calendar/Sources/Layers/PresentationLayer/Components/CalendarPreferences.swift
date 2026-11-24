@@ -9,3 +9,13 @@ struct CalendarEventFramesKey: PreferenceKey {
         value.merge(nextValue()) { _, new in new }
     }
 }
+
+/// Where the selected block is in the day view's space, which the menu of its actions is placed beside.
+struct CalendarSelectedFrameKey: PreferenceKey {
+
+    static let defaultValue: CGRect? = nil
+
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}

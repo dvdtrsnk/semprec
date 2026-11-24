@@ -50,8 +50,8 @@ final class CalendarItemCopyTests: XCTestCase {
 
     // MARK: - Copy
     func testTheTimeTextShowsTheRangeOrJustTheStart() {
-        XCTAssertEqual(item().timeText, "14:00–15:30")
-        XCTAssertEqual(item(end: 870, hasEnd: false).timeText, "14:00")
+        XCTAssertEqual(item().timeText, CalendarDates.range(from: 840, to: 930))
+        XCTAssertEqual(item(end: 870, hasEnd: false).timeText, CalendarDates.clock(minutes: 840))
         XCTAssertNil(item(start: nil, end: nil).timeText)
     }
 

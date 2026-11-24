@@ -19,6 +19,9 @@ struct CalendarDayView: View {
     /// Where the shown day's timeline is, read by gestures and followed by the header's backdrop.
     @State private var frames = CalendarDayFrames()
     @State private var eventFrames: [String: CGRect] = [:]
+    /// Where the selected block is, which its menu is placed by.
+    @State private var selectedFrame: CGRect?
+    @State private var menuSize = CGSize(width: 280, height: 44)
     @State private var lastAutoScroll = Date.distantPast
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
@@ -39,6 +42,7 @@ struct CalendarDayView: View {
     /// is: the paper the header shows is a screen tall, as the page's.
     @State private var topBarsHeight: CGFloat = 0
     @State private var dayHeight: CGFloat = 0
+    @State private var dayWidth: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
@@ -60,6 +64,7 @@ struct CalendarDayView: View {
                 headerBackdrop
                 header(scroll)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
+                editMenu
             }
         }
         // A new day ticks as moving a selected row to another place does in a note.
@@ -79,14 +84,49 @@ struct CalendarDayView: View {
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { dayHeight = $0 })
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { dayWidth = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
+        .onPreferenceChange(CalendarSelectedFrameKey.self) { selectedFrame = $0 }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
     }
 }
 
 // MARK: - Subviews
 private extension CalendarDayView {
+
+    /// The menu of the selected item, a capsule beside it that comes out of it; it is there while the item is held and
+    /// not being dragged.
+    @ViewBuilder var editMenu: some View {
+        ZStack(alignment: .topLeading) {
+            if let item = selectedItem, let anchor = selectedFrame, state.drag == nil {
+                let origin = CalendarMenuPlacement.origin(
+                    menu: menuSize,
+                    anchor: anchor,
+                    container: CGSize(width: dayWidth, height: dayHeight),
+                    top: headerHeight + Self.menuInset,
+                    bottom: dayHeight - Self.menuInset
+                )
+                CalendarEditMenu { menu($0, item) }
+                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { menuSize = $0 })
+                    .offset(x: origin.x, y: origin.y)
+                    .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(.spring(duration: 0.3, bounce: 0.2), value: state.selectedItemId)
+        .animation(.spring(duration: 0.3, bounce: 0.2), value: state.drag == nil)
+        .zIndex(10)
+    }
+
+    /// The item that is selected on the shown day.
+    var selectedItem: CalendarItem? {
+        guard let id = state.selectedItemId else { return nil }
+        return dayState(shownDay).items.first { $0.id == id }
+    }
+
+    /// The room the menu keeps from the header and from the bars at the bottom.
+    static var menuInset: CGFloat { 4 }
 
     /// Whether `day` lies strictly between `start` and `end`, in either order.
     static func lies(_ day: String, between start: String, and end: String) -> Bool {
@@ -226,8 +266,6 @@ private extension CalendarDayView {
                     viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: minutes(at: location.y)))
                 },
                 onResizeEnd: { viewModel.gesture(.endDrag(commit: true)) },
-                onMenu: menu,
-                onDeselect: { viewModel.gesture(.tapBackground) },
                 onOpenSleep: { viewModel.open(.sleep(night: $0)) },
                 onPaste: state.clipboard == nil ? nil : { location in
                     viewModel.edit(.paste(day: key, rawStart: minutes(at: location.y), allDay: false))

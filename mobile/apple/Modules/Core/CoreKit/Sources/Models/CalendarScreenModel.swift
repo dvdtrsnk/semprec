@@ -96,7 +96,8 @@ public struct CalendarSleep: Equatable, Sendable {
 }
 
 /// One item of one day. A timed item has `startMinutes` and `endMinutes` (minutes of the day, `endMinutes` a short
-/// block after the start when `hasEnd` is false); `column` of `columns` places it next to the ones it overlaps.
+/// block after the start when `hasEnd` is false); `column` of `columns` places it next to the ones it overlaps, and
+/// `depth` steps it in from the left of its column when it starts well after one it overlaps and is drawn over it.
 public struct CalendarItem: Equatable, Sendable {
 
     public let id: String
@@ -117,6 +118,7 @@ public struct CalendarItem: Equatable, Sendable {
     public let editable: Bool
     public let column: Int
     public let columns: Int
+    public let depth: Int
     public let tasks: [CalendarEventTask]
     public let hostEventTitle: String?
     public let carriedFrom: String?
@@ -141,6 +143,7 @@ public struct CalendarItem: Equatable, Sendable {
         editable: Bool = true,
         column: Int = 0,
         columns: Int = 1,
+        depth: Int = 0,
         tasks: [CalendarEventTask] = [],
         hostEventTitle: String? = nil,
         carriedFrom: String? = nil,
@@ -164,6 +167,7 @@ public struct CalendarItem: Equatable, Sendable {
         self.editable = editable
         self.column = column
         self.columns = columns
+        self.depth = depth
         self.tasks = tasks
         self.hostEventTitle = hostEventTitle
         self.carriedFrom = carriedFrom

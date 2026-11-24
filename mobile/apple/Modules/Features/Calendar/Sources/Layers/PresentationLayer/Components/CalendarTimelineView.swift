@@ -16,8 +16,6 @@ struct CalendarTimelineView: View {
     let handlers: CalendarItemHandlers
     let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ location: CGPoint) -> Void
     let onResizeEnd: () -> Void
-    let onMenu: (CalendarEditAction, CalendarItem) -> Void
-    let onDeselect: () -> Void
     let onOpenSleep: (String) -> Void
     let onPaste: ((CGPoint) -> Void)?
 
@@ -49,6 +47,12 @@ struct CalendarTimelineView: View {
 }
 
 // MARK: - Items
+extension CalendarTimelineView {
+
+    /// How far each step of a cascade is drawn in from the left edge of its column, as the system Calendar does.
+    static let cascadeStep: CGFloat = 11
+}
+
 private extension CalendarTimelineView {
 
     /// The timed items, except the one that is being dragged, which is drawn at its previewed place.
@@ -74,21 +78,26 @@ private extension CalendarTimelineView {
         let range = place(item)
         let columns = max(item.columns, 1)
         let columnWidth = width / CGFloat(columns)
+        let stepIn = CGFloat(item.depth) * Self.cascadeStep
         let height = geometry.blockHeight(start: range.start, end: range.end)
         let selected = selectedItemId == item.id
         let dragging = drag?.itemId == item.id
         let target = drag?.intoEventId == item.id
         let raised = dragging || selected
+        // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
+        let blockWidth = selected ? width : columnWidth - stepIn
+        let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
         CalendarTimedItemView(
             item: item,
             selected: selected,
             dropTarget: target,
             dragging: dragging,
             range: range,
+            height: height,
             onToggle: handlers.toggle,
             onOpenTask: handlers.openTask
         )
-        .frame(width: max(columnWidth - 2, 0), height: height)
+        .frame(width: max(blockWidth - 2, 0), height: height)
         .calendarItemGestures(
             enabled: item.editable,
             onTap: { handlers.tap(item) },
@@ -96,18 +105,13 @@ private extension CalendarTimelineView {
             onMove: { handlers.move(item, $0, $1) },
             onEnd: { handlers.end(item, $0) }
         )
-        .calendarItemMenu(
-            isPresented: selected && drag == nil,
-            onAction: { onMenu($0, item) },
-            onDismiss: onDeselect
-        )
         .overlay { handles(item, height: height, selected: selected) }
         .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
-        .offset(
-            x: CalendarGeometry.gutter + CGFloat(item.column) * columnWidth,
-            y: geometry.y(minutes: range.start)
-        )
-        .zIndex(raised ? 2 : 1)
+        .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
+        .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: range.start))
+        .animation(.snappy(duration: 0.24), value: selected)
+        // A block that starts later than the one it overlaps lies over it; a held block lies over everything.
+        .zIndex(raised ? 100 : Double(1 + item.depth))
     }
 
     @ViewBuilder
@@ -145,6 +149,16 @@ private extension CalendarTimelineView {
             .onEnded { value in
                 if case .second(true, let drag?) = value { onPaste?(drag.location) }
             }
+    }
+}
+
+/// Reports the frame of the block that is selected, which the menu of its actions is placed by.
+private struct SelectedFrameReporter: View {
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: CalendarSelectedFrameKey.self, value: proxy.frame(in: .calendarDay))
+        }
     }
 }
 
@@ -225,6 +239,7 @@ private extension CalendarTimelineView {
 
     func sleepBand(_ sleep: CalendarSleep, from start: Int, to end: Int, width: CGFloat) -> some View {
         let evening = start == sleep.bedMinutes
+        let labelTop = evening ? geometry.y(minutes: start) : geometry.y(minutes: end) - Self.labelHeight
         return Button { onOpenSleep(sleep.night) } label: {
             HStack(spacing: 4) {
                 Image(systemName: evening ? "moon.fill" : "alarm").font(.caption2)
@@ -232,6 +247,7 @@ private extension CalendarTimelineView {
                     .font(.caption2.weight(.semibold))
             }
             .foregroundStyle(sleepTint)
+            .opacity(isLabelCovered(top: labelTop, width: width) ? 0 : 1)
             .padding(6)
             .frame(width: width, height: max(geometry.y(minutes: end) - geometry.y(minutes: start), 0),
                 alignment: evening ? .topLeading : .bottomLeading)
@@ -255,12 +271,30 @@ private extension CalendarTimelineView {
                 .font(.caption2)
             }
             .foregroundStyle(sleepTint)
+            .opacity(isLabelCovered(top: geometry.y(minutes: minutes) - 9, width: width) ? 0 : 1)
             .padding(.horizontal, 6)
             .frame(width: width, height: 18, alignment: .leading)
         }
         .buttonStyle(.plain)
         .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: minutes) - 9)
     }
+
+    /// Whether a block of an item lies where a label at the leading edge of the sleep band would be written, so the label
+    /// gives way to it rather than being drawn over its words.
+    func isLabelCovered(top: CGFloat, width: CGFloat) -> Bool {
+        let labelWidth: CGFloat = 190
+        return timedItems.contains { item in
+            let range = place(item)
+            let columnWidth = width / CGFloat(max(item.columns, 1))
+            let left = CGFloat(item.column) * columnWidth + CGFloat(item.depth) * Self.cascadeStep
+            let blockTop = geometry.y(minutes: range.start)
+            let blockBottom = blockTop + geometry.blockHeight(start: range.start, end: range.end)
+            return left < labelWidth && blockTop < top + Self.labelHeight && blockBottom > top
+        }
+    }
+
+    /// How tall the label of a sleep band is.
+    static var labelHeight: CGFloat { 18 }
 
     var sleepTint: Color { Theme.Colors.sleep }
 }

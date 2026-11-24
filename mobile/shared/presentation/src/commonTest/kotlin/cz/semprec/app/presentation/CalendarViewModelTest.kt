@@ -29,6 +29,11 @@ private val STANDUP =
     entry("series@2026-10-16", schedule = schedule("09:00", "09:30"), readOnly = true, seriesId = "series")
 private val HOLIDAY = entry("holiday", CalendarEntryKind.HOLIDAY, schedule(null, null), readOnly = true)
 private val TRIP = entry("trip", schedule = schedule(null, null, endDay = DAY_ZERO.plusDays(2)))
+private val LATE = entry("late", schedule = schedule("23:00", "00:30", endDay = DAY_ZERO.plusDays(1)))
+private val LONG_STAY = entry("stay", schedule = schedule("12:00", "13:00", endDay = DAY_ZERO.plusDays(1)))
+private val BLINK = entry("blink", schedule = schedule("08:00", "08:05"))
+private val AFTER_BLINK = entry("after", schedule = schedule("08:10", "08:40"))
+private val CASCADED = entry("cascaded", schedule = schedule("10:45", "11:45"))
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarViewModelTest : MainDispatcherTest() {
@@ -118,6 +123,47 @@ class CalendarViewModelTest : MainDispatcherTest() {
         assertEquals(14 * 60, invoice.startMinutes)
         assertEquals(14 * 60 + 30, invoice.endMinutes)
         assertFalse(invoice.hasEnd)
+        vm.close()
+    }
+
+    @Test fun `an item that starts well after one it overlaps is stepped in over it`() = runTest(dispatcher) {
+        serve(MEETING, CASCADED)
+        val vm = loaded()
+        val cascaded = vm.item("cascaded")
+        assertEquals(listOf(0, 1), listOf(vm.item("meeting").depth, cascaded.depth))
+        assertEquals(0 to 1, cascaded.column to cascaded.columns)
+        vm.close()
+    }
+
+    @Test fun `a short item keeps its real end and the next one is laid out beside it`() = runTest(dispatcher) {
+        serve(BLINK, AFTER_BLINK)
+        val vm = loaded()
+        val blink = vm.item("blink")
+        assertEquals(8 * 60 to 8 * 60 + 5, blink.startMinutes to blink.endMinutes)
+        assertEquals(listOf(0, 1), listOf(blink.column, vm.item("after").column))
+        vm.close()
+    }
+
+    @Test fun `an event over midnight is drawn to midnight on its first day and from it on its last`() =
+        runTest(dispatcher) {
+            serve(LATE)
+            val vm = loaded()
+            val first = vm.day("2026-10-16").items.single()
+            val last = vm.day("2026-10-17").items.single()
+            assertFalse(first.allDay)
+            assertEquals(23 * 60 to 24 * 60, first.startMinutes to first.endMinutes)
+            assertFalse(first.hasEnd)
+            assertFalse(last.allDay)
+            assertEquals(0 to 30, last.startMinutes to last.endMinutes)
+            assertTrue(last.hasEnd)
+            vm.close()
+        }
+
+    @Test fun `an event that lasts longer than a day with times stays in the all day row`() = runTest(dispatcher) {
+        serve(LONG_STAY)
+        val vm = loaded()
+        assertTrue(vm.day("2026-10-16").items.single().allDay)
+        assertTrue(vm.day("2026-10-17").items.single().allDay)
         vm.close()
     }
 

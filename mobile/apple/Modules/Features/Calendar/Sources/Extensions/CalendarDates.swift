@@ -14,6 +14,8 @@ enum CalendarDates {
         return calendar
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    private static var clocks: [Int: String] = [:]
+    private static let minutesPerDay = 24 * 60
 
     // MARK: - Parsing
     /// The device's current day. The server answers with its own today, which the calendar adopts once loaded.
@@ -159,9 +161,16 @@ enum CalendarDates {
         return "\(weekday) \(parts.day ?? 0). \(parts.month ?? 0)."
     }
 
-    /// `9:05` for minutes since midnight; 24:00 closes a day.
+    /// A time of day for minutes since midnight, written as the person's region writes it (`09:05`, or `9:05 AM`);
+    /// 24:00 closes a day and reads as midnight.
     static func clock(minutes: Int) -> String {
-        String(format: "%d:%02d", minutes / 60, minutes % 60)
+        let time = minutes % minutesPerDay
+        if let cached = clocks[time] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: time / 60, minute: time % 60)
+        let written = calendar.date(from: parts).map { formatted($0, template: "jmm") }
+            ?? String(format: "%02d:%02d", time / 60, time % 60)
+        clocks[time] = written
+        return written
     }
 
     /// `14:00–15:30`.

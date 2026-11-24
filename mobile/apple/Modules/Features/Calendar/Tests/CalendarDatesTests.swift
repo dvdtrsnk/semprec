@@ -50,10 +50,17 @@ final class CalendarDatesTests: XCTestCase {
     }
 
     // MARK: - Titles
-    func testClockAndRangeFormatMinutes() {
-        XCTAssertEqual(CalendarDates.clock(minutes: 545), "9:05")
-        XCTAssertEqual(CalendarDates.clock(minutes: 1440), "24:00")
-        XCTAssertEqual(CalendarDates.range(from: 840, to: 930), "14:00–15:30")
+    func testClockWritesATimeAsTheRegionDoesAndMidnightClosesTheDay() {
+        let nineFive = CalendarDates.clock(minutes: 545)
+        XCTAssertTrue(nineFive.contains("9"), nineFive)
+        XCTAssertTrue(nineFive.contains("05"), nineFive)
+        XCTAssertEqual(CalendarDates.clock(minutes: 1440), CalendarDates.clock(minutes: 0))
+        XCTAssertNotEqual(CalendarDates.clock(minutes: 0), CalendarDates.clock(minutes: 720))
+    }
+
+    func testRangeJoinsTwoClocksWithAnEnDash() {
+        let expected = "\(CalendarDates.clock(minutes: 840))–\(CalendarDates.clock(minutes: 930))"
+        XCTAssertEqual(CalendarDates.range(from: 840, to: 930), expected)
     }
 
     func testTheDeviceTodayIsAWellFormedDay() {

@@ -6,12 +6,13 @@ import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.EventTaskEntry
 import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.SleepNightEntry
+import cz.semprec.app.domain.TimelineLane
 import cz.semprec.app.domain.TraceOutcome
 import cz.semprec.app.domain.isEditable
 
-internal fun CalendarEntry.toItem(day: CalendarDay, color: String, column: Int, columns: Int): CalendarItem {
-    val timedHere = isTimedOn(day)
-    val range = if (timedHere) minutes() else null
+internal fun CalendarEntry.toItem(day: CalendarDay, color: String, lane: TimelineLane?): CalendarItem {
+    val range = timedRange(day)
+    val timedHere = range != null
     return CalendarItem(
         id = id,
         kind = kind.toItemKind(),
@@ -22,14 +23,15 @@ internal fun CalendarEntry.toItem(day: CalendarDay, color: String, column: Int, 
         allDay = !timedHere,
         startMinutes = range?.first,
         endMinutes = range?.last,
-        hasEnd = timeTo != null,
+        hasEnd = timeTo != null && !continuesAfter(day),
         done = isDone,
         missed = isMissed,
         place = place,
         tentative = tentative,
         editable = isEditable,
-        column = column,
-        columns = columns,
+        column = lane?.column ?: 0,
+        columns = lane?.columns ?: 1,
+        depth = lane?.depth ?: 0,
         tasks = tasks.map { it.toState() },
         hostEventTitle = hostEventTitle,
         carriedFrom = carriedFrom?.toString(),

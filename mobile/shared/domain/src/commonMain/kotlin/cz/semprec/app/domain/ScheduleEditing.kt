@@ -83,35 +83,56 @@ object ScheduleEditing {
         if (kind == CalendarEntryKind.EVENT) DEFAULT_EVENT_MINUTES else null
 }
 
-/** One block of a day's timeline laid out next to the blocks it overlaps. */
-data class TimelineLane(val column: Int, val columns: Int)
+/**
+ * One block of a day's timeline. It sits in [column] of the [columns] its group of overlapping blocks is divided
+ * into, and [depth] steps in from the left edge of that column when a block that started well before it lies under
+ * it (a cascade), zero otherwise.
+ */
+data class TimelineLane(val column: Int, val columns: Int, val depth: Int = 0)
+
+/** The shortest a block counts for when blocks are laid out, so a one-minute event still claims a readable chip. */
+const val MIN_BLOCK_MINUTES: Int = 24
 
 /**
- * Places blocks, given as `start..end` minutes in the order they should be drawn, in as few columns as keep every
- * block clear of the ones it overlaps; [TimelineLane.columns] is the number of columns of the group a block
- * belongs to, so each group of overlapping blocks is divided evenly. Blocks that only touch do not overlap.
+ * How much later than an overlapped block a block starts to be drawn over it, indented, rather than beside it. A block
+ * that starts sooner than this after another leaves the other's title and time uncovered only beside it.
+ */
+const val CASCADE_AFTER_MINUTES: Int = 33
+
+/**
+ * Places blocks, given as `start..end` minutes in the order they should be drawn, as the system Calendar does: blocks
+ * that overlap and start within [CASCADE_AFTER_MINUTES] of each other stand side by side in columns; a block that
+ * starts later than that over one it overlaps shares its column and is drawn over it, one [TimelineLane.depth] step
+ * further in than the deepest block under it. [TimelineLane.columns] is the number of columns of the group a block
+ * belongs to, so each group of overlapping blocks is divided evenly. Blocks that only touch do not overlap, and a
+ * block shorter than [MIN_BLOCK_MINUTES] is laid out as if it were that long.
  */
 fun layoutTimeline(blocks: List<IntRange>): List<TimelineLane> {
+    val laidOut = blocks.map { it.first..maxOf(it.last, it.first + MIN_BLOCK_MINUTES) }
+    val order = laidOut.indices.sortedWith(compareBy({ laidOut[it].first }, { -laidOut[it].last }))
     val columnOf = IntArray(blocks.size)
+    val depthOf = IntArray(blocks.size)
     val groupOf = IntArray(blocks.size)
+    val placed = mutableListOf<Int>()
     var groupEnd = Int.MIN_VALUE
     var group = -1
-    val columnEnds = mutableListOf<Int>()
-    val order = blocks.indices.sortedWith(compareBy({ blocks[it].first }, { blocks[it].last }))
     for (index in order) {
-        val block = blocks[index]
+        val block = laidOut[index]
         if (block.first >= groupEnd) {
             group += 1
-            columnEnds.clear()
+            placed.clear()
         }
-        val free = columnEnds.indexOfFirst { it <= block.first }
-        val column = if (free >= 0) free else columnEnds.size
-        if (column == columnEnds.size) columnEnds.add(block.last) else columnEnds[column] = block.last
+        val overlapped = placed.filter { laidOut[it].last > block.first }
+        val beside = overlapped.filter { block.first - laidOut[it].first < CASCADE_AFTER_MINUTES }
+        var column = 0
+        while (beside.any { columnOf[it] == column }) column += 1
         columnOf[index] = column
+        depthOf[index] = overlapped.filter { columnOf[it] == column }.maxOfOrNull { depthOf[it] + 1 } ?: 0
         groupOf[index] = group
+        placed.add(index)
         groupEnd = if (block.first >= groupEnd) block.last else maxOf(groupEnd, block.last)
     }
     val widest = IntArray(group + 1)
     for (index in blocks.indices) widest[groupOf[index]] = maxOf(widest[groupOf[index]], columnOf[index] + 1)
-    return blocks.indices.map { TimelineLane(columnOf[it], widest[groupOf[it]]) }
+    return blocks.indices.map { TimelineLane(columnOf[it], widest[groupOf[it]], depthOf[it]) }
 }

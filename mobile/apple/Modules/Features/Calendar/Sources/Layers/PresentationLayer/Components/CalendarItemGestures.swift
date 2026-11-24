@@ -25,6 +25,9 @@ struct CalendarItemGestures: ViewModifier {
     // MARK: - State
     @State private var selected = false
     @State private var moved = false
+    /// True while a finger holds the item after the long press; it falls back to false when the finger lifts and
+    /// also when the system takes the touch away (a scroll, a call), which gives `onEnded` no call.
+    @GestureState private var isHeld = false
 
     // MARK: - Body
     func body(content: Content) -> some View {
@@ -32,6 +35,14 @@ struct CalendarItemGestures: ViewModifier {
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
             .gesture(moveGesture, isEnabled: enabled)
+            .onChange(of: isHeld) { _, held in
+                // A touch the system took away leaves the shared state dragging; end it without writing anything.
+                if !held, selected {
+                    selected = false
+                    moved = false
+                    onEnd(false)
+                }
+            }
     }
 }
 
@@ -41,6 +52,9 @@ private extension CalendarItemGestures {
     var moveGesture: some Gesture {
         LongPressGesture(minimumDuration: Self.pressDuration)
             .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .calendarDay))
+            .updating($isHeld) { value, held, _ in
+                if case .second = value { held = true }
+            }
             .onChanged { value in
                 switch value {
                 case .first:
