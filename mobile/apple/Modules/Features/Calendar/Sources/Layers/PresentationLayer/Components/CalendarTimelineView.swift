@@ -175,7 +175,7 @@ private extension CalendarTimelineView {
         VStack(spacing: 0) {
             ForEach(0..<24, id: \.self) { hour in
                 HStack(alignment: .top, spacing: 6) {
-                    Text(CalendarDates.clock(minutes: hour * 60))
+                    Text(CalendarDates.hourLabel(hour))
                         .font(.caption2)
                         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                         .lineLimit(1)
@@ -203,6 +203,8 @@ private extension CalendarTimelineView {
         HStack(spacing: 0) {
             Text(CalendarDates.clock(minutes: nowMinutes))
                 .font(.caption2.weight(.bold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)

@@ -173,6 +173,22 @@ enum CalendarDates {
         return written
     }
 
+    /// The label of an hour line in the gutter: `14:00` where the region writes 24 hours, `2 PM` where it writes 12.
+    static func hourLabel(_ hour: Int) -> String {
+        guard uses12Hours else { return clock(minutes: hour * 60) }
+        let key = -1 - hour
+        if let cached = clocks[key] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: hour % 24)
+        let written = calendar.date(from: parts).map { formatted($0, template: "j") } ?? clock(minutes: hour * 60)
+        clocks[key] = written
+        return written
+    }
+
+    /// Whether the person's region writes times with AM and PM.
+    private static var uses12Hours: Bool {
+        (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
+    }
+
     /// `14:00–15:30`.
     static func range(from start: Int, to end: Int) -> String {
         "\(clock(minutes: start))–\(clock(minutes: end))"
