@@ -104,8 +104,9 @@ While iterating, run the narrowest command that exercises your change, from
 `mobile/` (or `mobile/apple/` for Tuist and Xcode). The shared Kotlin tests are
 where the screen logic is tested, so a change to shared code and the Swift that
 renders it is checked during the work with `./gradlew sharedJvmTest` (plus
-`detektAll -PdetektAutoFix=false`) and an iOS build; the Apple test bundles run
-in the full pipeline before the pull request, not after every edit:
+`detektAll -PdetektAutoFix=false`) and an iOS build; `sharedAppleTest` and the
+Apple test bundles run in the full pipeline before the pull request (below), not
+after every edit, as `kmp-shared` §6 says too:
 
 | Change | Fast check |
 |---|---|

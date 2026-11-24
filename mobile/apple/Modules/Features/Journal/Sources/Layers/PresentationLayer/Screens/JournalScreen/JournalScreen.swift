@@ -34,12 +34,8 @@ struct JournalScreen: View {
     @State private var contentTop: CGFloat = 0
     /// How far the page is scrolled and how large it is, for the background and the band behind the pinned row.
     @State private var pageScroll = PaperScroll()
-    /// The state the page's cards show while the axis moves: the cards of a new selection are built once the axis
-    /// comes to rest, so building them never takes a frame from the axis's scroll.
-    @State private var heldState: JournalState?
-    /// Set while a swipe turns the page: the new period's page is shown as soon as it comes, the axis moving or not,
-    /// since the page is out of view while the axis moves.
-    @State private var isTurning = false
+    /// The state the page's cards keep while the axis moves, and whether a turn of the page is under way.
+    @State private var hold = JournalPageHold()
     /// The turn of the page a period of the selected kind picked on the axis asks for.
     @State private var turnRequest: JournalPageTurnRequest?
     /// Counts the changes of the selected period and the presses of Today, for their haptics, as in the calendar: a
@@ -86,7 +82,7 @@ struct JournalScreen: View {
             // A turn ends once its period is shown, unless the axis still moves to it (then it ends when the axis
             // rests): a period picked that the axis already shows moves nothing.
             .onChange(of: viewModel.state.shown) { _, _ in
-                if axisMotion.driver == nil { isTurning = false }
+                hold.periodShown(axisMoving: axisMotion.driver != nil)
             }
             .onChange(of: viewModel.state.selection) { _, selection in
                 if selection == todayBrings { todayBrings = nil } else { selectionTicks += 1 }
@@ -121,8 +117,7 @@ private extension JournalScreen {
     /// shows the new period as soon as it comes, the axis moving or not.
     func turn(_ steps: Int) -> JournalSelection? {
         guard let target = viewModel.turn(by: steps) else { return nil }
-        isTurning = true
-        heldState = nil
+        hold.turnStarted()
         return target
     }
 
@@ -134,8 +129,7 @@ private extension JournalScreen {
             after: turnRequest,
             leaving: pageState
         ) {
-            isTurning = true
-            heldState = nil
+            hold.turnStarted()
             turnRequest = request
         }
         viewModel.select(cell)
@@ -143,12 +137,7 @@ private extension JournalScreen {
 
     /// The axis started or stopped moving: the page's cards wait for it to rest, unless the page turns.
     func axisMoved(_ moving: Bool) {
-        if moving {
-            if !isTurning, heldState == nil { heldState = viewModel.state }
-        } else {
-            heldState = nil
-            isTurning = false
-        }
+        hold.axisMoved(moving, showing: viewModel.state)
     }
 
     /// How far down the page the selected row is: below the heading and the rows above it.
@@ -245,7 +234,7 @@ private extension JournalScreen {
     }
 
     /// What the page's cards show: the diary's state, or while the axis moves the state it had when it started to.
-    var pageState: JournalState { heldState ?? viewModel.state }
+    var pageState: JournalState { hold.held ?? viewModel.state }
 
     /// The space between two rows of the axis.
     static var axisRowSpacing: CGFloat { 2 }
