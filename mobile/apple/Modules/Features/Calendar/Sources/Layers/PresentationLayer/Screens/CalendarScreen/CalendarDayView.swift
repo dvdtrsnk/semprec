@@ -169,6 +169,8 @@ private extension CalendarDayView {
             headerDivider
             Text(CalendarDates.dayTitle(shownDay))
                 .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .leading) { weekNumber(shownDay) }
                 .padding(.horizontal, 16)
@@ -183,6 +185,8 @@ private extension CalendarDayView {
             // Ends the header: below it is the timeline itself.
             headerDivider
         }
+        // The header keeps its shape at the largest text sizes, as the system Calendar's: a week still fits a line.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 
     /// The colours of the shown day's timeline that lie under the header and the bars above it, blurred until only the

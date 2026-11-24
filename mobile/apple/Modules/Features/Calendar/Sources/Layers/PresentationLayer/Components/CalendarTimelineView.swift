@@ -187,6 +187,9 @@ private extension CalendarTimelineView {
                 HStack(alignment: .top, spacing: 6) {
                     Text(CalendarDates.clock(minutes: hour * 60))
                         .font(.caption2)
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .foregroundStyle(.secondary)
                         .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
                         .offset(y: -7)
