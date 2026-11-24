@@ -305,6 +305,27 @@ struct JournalPageTurnRequest: Equatable {
     let leaving: JournalState
 }
 
+// MARK: - Picking on the axis
+extension JournalPageTurnRequest {
+
+    /// The turn a period picked on the axis asks for: to its side of `selection`, from the page `leaving` showed, with
+    /// an id after `previous`'s. `nil` for a period of another kind (the page changes in place) or the selected one.
+    init?(
+        picking cell: JournalAxisCell,
+        from selection: JournalSelection,
+        after previous: Self?,
+        leaving: JournalState
+    ) {
+        guard cell.kind == selection.kind, cell.start != selection.start else { return nil }
+        self.init(
+            id: (previous?.id ?? 0) + 1,
+            steps: cell.start > selection.start ? 1 : -1,
+            target: JournalSelection(kind: cell.kind, start: cell.start),
+            leaving: leaving
+        )
+    }
+}
+
 /// A turn of the page that waits for the period it goes to: the side it turns to, the state the page leaving showed,
 /// and where the finger left that page and how fast it moved it.
 private struct JournalPendingTurn {

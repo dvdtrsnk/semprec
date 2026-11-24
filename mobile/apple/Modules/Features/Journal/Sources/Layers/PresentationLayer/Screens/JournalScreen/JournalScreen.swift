@@ -128,17 +128,15 @@ private extension JournalScreen {
 
     /// A period picked on the axis. One of the selected kind turns the page to its side, as a swipe does.
     func pick(_ cell: JournalAxisCell) {
-        let selection = viewModel.state.selection
-        if cell.kind == selection.kind, cell.start != selection.start {
-            let leaving = pageState
+        if let request = JournalPageTurnRequest(
+            picking: cell,
+            from: viewModel.state.selection,
+            after: turnRequest,
+            leaving: pageState
+        ) {
             isTurning = true
             heldState = nil
-            turnRequest = JournalPageTurnRequest(
-                id: (turnRequest?.id ?? 0) + 1,
-                steps: cell.start > selection.start ? 1 : -1,
-                target: JournalSelection(kind: cell.kind, start: cell.start),
-                leaving: leaving
-            )
+            turnRequest = request
         }
         viewModel.select(cell)
     }
