@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-24
-area: [mobile]
+area: [mobile, cross-cutting]
 supersedes: [2026-10-25-conditional-mobile-verification-in-ci-and-relay]
 superseded-by: null
 ---
