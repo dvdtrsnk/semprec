@@ -2,15 +2,16 @@ import DesignSystem
 import SwiftUI
 
 /// The codes a new alarm asks for before it stops: scanned with the camera or typed. With at least one, the alarm is a
-/// wake-up mission that rings until one of them is scanned.
+/// wake-up mission that rings until one of them is scanned. The screen presents the camera: a sheet presented from a
+/// row of a form inside the profile sheet dismissed the profile sheet with it.
 struct DebugWakeCodesSection: View {
 
     // MARK: - Dependencies
     @Binding var codes: [String]
+    let scan: () -> Void
 
     // MARK: - State
     @State private var typed = ""
-    @State private var scanning = false
 
     // MARK: - Body
     var body: some View {
@@ -36,7 +37,7 @@ struct DebugWakeCodesSection: View {
                     .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
                     .accessibilityLabel(Text("debug.wake.code.add"))
             }
-            Button { scanning = true } label: {
+            Button(action: scan) {
                 Label { Text("debug.wake.code.scan") } icon: { Image(systemName: "qrcode.viewfinder") }
             }
             .listRowButton()
@@ -45,12 +46,6 @@ struct DebugWakeCodesSection: View {
             Text("debug.wake.codes")
         } footer: {
             Text("debug.wake.codes.footer")
-        }
-        .sheet(isPresented: $scanning) {
-            DebugCodeCaptureSheet { code in
-                add(code)
-                scanning = false
-            }
         }
     }
 }

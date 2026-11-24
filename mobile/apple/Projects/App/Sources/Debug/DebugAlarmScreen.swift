@@ -14,6 +14,7 @@ struct DebugAlarmScreen: View {
     @State private var repeatsDaily = false
     @State private var time = Date().addingTimeInterval(120)
     @State private var codes: [String] = []
+    @State private var scanning = false
 
     // MARK: - Init
     /// `viewModel` runs once per screen, when SwiftUI creates the state object.
@@ -28,7 +29,7 @@ struct DebugAlarmScreen: View {
             permission
             if viewModel.authorization != .unsupported {
                 newAlarm
-                DebugWakeCodesSection(codes: $codes)
+                DebugWakeCodesSection(codes: $codes) { scanning = true }
                 quickTest
                 DebugWakeMissionsSection(wakeGuard: wakeGuard) { id in
                     Task { await viewModel.removeMission(id) }
@@ -37,6 +38,12 @@ struct DebugAlarmScreen: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $scanning) {
+            DebugCodeCaptureSheet { code in
+                codes = WakeGuard.normalized(codes + [code])
+                scanning = false
+            }
+        }
         .navigationTitle(Text("debug.alarm.title"))
         .inlineNavigationTitle()
         .alert(
