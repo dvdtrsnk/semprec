@@ -37,4 +37,14 @@ enum AppIdentifiers {
     /// Followed by the alarm's id.
     static let debugAlarmCancelPrefix = "debug.alarm.cancel."
     static let debugAlarmCancelAll = "debug.alarm.cancelAll"
+    static let debugWakeCodeField = "debug.wake.code.field"
+    static let debugWakeCodeScan = "debug.wake.code.scan"
+    static let debugWakeCapture = "debug.wake.capture"
+    /// Followed by the mission's id.
+    static let debugWakeRemovePrefix = "debug.wake.remove."
+    /// The wake-up guard that covers the app while a wake-up alarm rings; Apple-only, like the alarms.
+    static let wakeGuard = "wake.guard"
+    static let wakeGuardTapOpen = "wake.guard.tap.open"
+    static let wakeGuardTap = "wake.guard.tap"
+    static let wakeGuardTapBack = "wake.guard.tap.back"
 }

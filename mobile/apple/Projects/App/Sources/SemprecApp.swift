@@ -19,6 +19,6 @@ struct SemprecApp: App {
 
     // MARK: - Body
     var body: some Scene {
-        WindowGroup { AppScene().appAppearance() }
+        WindowGroup { AppScene().appAppearance().wakeGuard() }
     }
 }

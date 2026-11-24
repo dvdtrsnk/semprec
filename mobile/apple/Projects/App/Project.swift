@@ -37,6 +37,7 @@ let project = Project(
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 "NSAlarmKitUsageDescription": "Semprec rings your alarms even in silent mode and through a Focus.",
+                "NSCameraUsageDescription": "Semprec reads the barcode or QR code that turns off your wake-up alarm.",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 // `remote-notification` lets a silent push wake the app to read its reminders again.

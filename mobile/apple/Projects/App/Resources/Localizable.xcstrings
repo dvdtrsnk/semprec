@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "alarm.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vypnout kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn off with code"
+          }
+        }
+      }
+    },
     "alarm.stop" : {
       "localizations" : {
         "cs" : {
@@ -657,6 +673,246 @@
         }
       }
     },
+    "debug.wake.capture.cancel" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        }
+      }
+    },
+    "debug.wake.capture.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Namiř fotoaparát na čárový kód zubní pasty, cereálií nebo na QR kód v jiné místnosti."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Point the camera at the barcode of your toothpaste, cereal or a QR code in another room."
+          }
+        }
+      }
+    },
+    "debug.wake.capture.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan code"
+          }
+        }
+      }
+    },
+    "debug.wake.code.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add code"
+          }
+        }
+      }
+    },
+    "debug.wake.code.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadej kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Type a code"
+          }
+        }
+      }
+    },
+    "debug.wake.code.remove" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odebrat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove code"
+          }
+        }
+      }
+    },
+    "debug.wake.code.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat čárový nebo QR kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan a barcode or QR code"
+          }
+        }
+      }
+    },
+    "debug.wake.code.type" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Code"
+          }
+        }
+      }
+    },
+    "debug.wake.codes" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kódy pro vypnutí"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codes that stop the alarm"
+          }
+        }
+      }
+    },
+    "debug.wake.codes.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "S kódem budík zvoní, dokud ho nenaskenuješ – i po Vypnout a i v aplikaci. Po 10 minutách můžeš místo toho 200× klepnout."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "With a code, the alarm keeps ringing until you scan it — even after Stop and inside the app. After 10 minutes you may tap 200 times instead."
+          }
+        }
+      }
+    },
+    "debug.wake.missions" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budíky s kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake-up alarms with a code"
+          }
+        }
+      }
+    },
+    "debug.wake.missions.detail" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zvoní %1$@ · kódy: %2$lld · hlídací budíky: %3$lld"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rings %1$@ · %2$lld codes · %3$lld watch alarms"
+          }
+        }
+      }
+    },
+    "debug.wake.missions.empty" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Žádný budík s kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No alarm with a code"
+          }
+        }
+      }
+    },
+    "debug.wake.missions.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Každý jistí hlídací budíky každou minutu po půl hodiny, pak každých pět minut až do dvou hodin."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Each one is backed by watch alarms every minute for half an hour, then every five minutes up to two hours."
+          }
+        }
+      }
+    },
+    "debug.wake.missions.unarmed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zatím nenastaveno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "not armed yet"
+          }
+        }
+      }
+    },
     "pending.finance" : {
       "localizations" : {
         "cs" : {
@@ -949,6 +1205,198 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Overview"
+          }
+        }
+      }
+    },
+    "wake.camera.denied" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec potřebuje fotoaparát, aby přečetl tvůj kód."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec needs the camera to read your code."
+          }
+        }
+      }
+    },
+    "wake.camera.settings" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít Nastavení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Settings"
+          }
+        }
+      }
+    },
+    "wake.camera.unavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotoaparát není k dispozici."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The camera is not available."
+          }
+        }
+      }
+    },
+    "wake.scan.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenuj jeden ze svých kódů (%lld) a budík ztichne."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan one of your %lld codes to stop the alarm."
+          }
+        }
+      }
+    },
+    "wake.scan.wrong" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tohle není tvůj kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That is not your code"
+          }
+        }
+      }
+    },
+    "wake.tap.back" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zpět ke skenování"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Back to scanning"
+          }
+        }
+      }
+    },
+    "wake.tap.later" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nejde to naskenovat? Za %@ můžeš místo toho 200× klepnout."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Can't scan? In %@ you can tap 200 times instead."
+          }
+        }
+      }
+    },
+    "wake.tap.left" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "klepnutí zbývá"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "taps left"
+          }
+        }
+      }
+    },
+    "wake.tap.open" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Místo toho 200× klepnout"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap 200 times instead"
+          }
+        }
+      }
+    },
+    "wake.tap.subtitle" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klepej kamkoli na obrazovku, dokud se kruh nezaplní."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap anywhere on the screen until the ring is full."
+          }
+        }
+      }
+    },
+    "wake.tap.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klepej, ať se probudíš"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to wake up"
+          }
+        }
+      }
+    },
+    "wake.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vstávej"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Time to get up"
           }
         }
       }

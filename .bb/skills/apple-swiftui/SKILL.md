@@ -52,6 +52,10 @@ machine does not grant; give no other target its own destinations.
   (`Projects/App/Sources/Alarms/`) imports AlarmKit on iOS and reports
   `unsupported` on macOS
   (`docs/adr/2026-11-24-apple-app-rings-system-alarms-through-alarmkit.md`).
+  The wake-up guard's audio session (`WakeAlarmSound`) and system volume
+  slider (`VolumeEnforcer`, reached by key-value coding without importing
+  UIKit) follow the same shape
+  (`docs/adr/2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned.md`).
 - No `import UIKit` and no `import AppKit` in any module or in the app; use
   SwiftUI and Foundation. Why: either import breaks the other platform's
   build, and every type in a shared module must compile for both. `ARCH-APPLE`

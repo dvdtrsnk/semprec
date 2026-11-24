@@ -97,6 +97,13 @@ private extension AppScene {
             composition.preparedTabs.prepare(today: AppScene.deviceToday())
         }
         .onReceive(composition.notificationArrivals) { composition.openTappedNotification() }
+        // A ringing wake-up mission covers the window; the sheets open over the tabs close, because they would stay
+        // above the guard.
+        .onReceive(WakeGuard.shared.$ringing) { mission in
+            guard mission != nil else { return }
+            // A locked navigation keeps its sheet; the guard still covers the tabs under it.
+            _ = try? rootNavigator.dismissAny()
+        }
     }
 
     /// The device's current day, `YYYY-MM-DD`, as the tabs' screens are given it.

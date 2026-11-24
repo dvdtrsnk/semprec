@@ -75,7 +75,10 @@ extension ProfileSheet {
         case .debug:
             DebugMenuScreen()
         case .debugAlarms:
-            DebugAlarmScreen(viewModel: DebugAlarmViewModel(scheduler: SystemAlarmScheduler()))
+            DebugAlarmScreen(
+                viewModel: DebugAlarmViewModel(scheduler: SystemAlarmScheduler(), wakeGuard: .shared),
+                wakeGuard: .shared
+            )
         }
     }
 

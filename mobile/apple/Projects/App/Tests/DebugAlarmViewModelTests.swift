@@ -23,13 +23,13 @@ final class DebugAlarmViewModelTests: XCTestCase {
     @MainActor
     func testAFailedPermissionRequestIsShownAndKeepsTheState() async {
         let scheduler = SchedulerSpy(authorization: .notDetermined)
-        scheduler.requestFailure = SchedulerFailure()
+        scheduler.requestFailure = ScriptedAlarmFailure()
         let viewModel = DebugAlarmViewModel(scheduler: scheduler)
 
         await viewModel.requestAuthorization()
 
         XCTAssertEqual(viewModel.authorization, .notDetermined)
-        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: SchedulerFailure())))
+        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: ScriptedAlarmFailure())))
     }
 
     func testTheAppExplainsWhyItAsksForAlarms() {
@@ -62,7 +62,9 @@ final class DebugAlarmViewModelTests: XCTestCase {
 
         await viewModel.schedule(title: "  Wake up  ", time: .once(date))
 
-        XCTAssertEqual(scheduler.requests, [AlarmRequest(title: "Wake up", schedule: .once(date))])
+        XCTAssertEqual(scheduler.requests.map(\.title), ["Wake up"])
+        XCTAssertEqual(scheduler.requests.map(\.schedule), [.once(date)])
+        XCTAssertEqual(scheduler.requests.map(\.opensWakeGuard), [false])
         XCTAssertEqual(viewModel.alarms.map(\.time), [.once(date)])
         XCTAssertNil(viewModel.failure)
         XCTAssertFalse(viewModel.isScheduling)
@@ -134,12 +136,12 @@ final class DebugAlarmViewModelTests: XCTestCase {
     @MainActor
     func testAnUnexpectedRefusalShowsTheSystemsDescription() async {
         let scheduler = SchedulerSpy(authorization: .authorized)
-        scheduler.scheduleFailure = SchedulerFailure()
+        scheduler.scheduleFailure = ScriptedAlarmFailure()
         let viewModel = DebugAlarmViewModel(scheduler: scheduler)
 
         await viewModel.schedule(title: "x", time: .once(Date()))
 
-        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: SchedulerFailure())))
+        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: ScriptedAlarmFailure())))
     }
 
     @MainActor
@@ -156,12 +158,12 @@ final class DebugAlarmViewModelTests: XCTestCase {
     @MainActor
     func testAFailedReadOfTheAlarmsIsShown() async {
         let scheduler = SchedulerSpy(authorization: .authorized)
-        scheduler.readFailure = SchedulerFailure()
+        scheduler.readFailure = ScriptedAlarmFailure()
         let viewModel = DebugAlarmViewModel(scheduler: scheduler)
 
         await viewModel.observe()
 
-        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: SchedulerFailure())))
+        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: ScriptedAlarmFailure())))
     }
 
     @MainActor
@@ -195,11 +197,11 @@ final class DebugAlarmViewModelTests: XCTestCase {
         let scheduler = SchedulerSpy(authorization: .authorized)
         let viewModel = DebugAlarmViewModel(scheduler: scheduler)
         await viewModel.schedule(title: "x", time: .once(Date()))
-        scheduler.cancelFailure = SchedulerFailure()
+        scheduler.cancelFailure = ScriptedAlarmFailure()
 
         viewModel.cancel(viewModel.alarms[0].id)
 
-        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: SchedulerFailure())))
+        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: ScriptedAlarmFailure())))
         XCTAssertEqual(viewModel.alarms.count, 1)
     }
 
@@ -223,77 +225,11 @@ final class DebugAlarmViewModelTests: XCTestCase {
         let viewModel = DebugAlarmViewModel(scheduler: scheduler)
         await viewModel.schedule(title: "a", time: .once(Date()))
         await viewModel.schedule(title: "b", time: .daily(hour: 7, minute: 0))
-        scheduler.cancelFailure = SchedulerFailure()
+        scheduler.cancelFailure = ScriptedAlarmFailure()
 
         viewModel.cancelAll()
 
-        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: SchedulerFailure())))
+        XCTAssertEqual(viewModel.failure, .unexpected(String(describing: ScriptedAlarmFailure())))
         XCTAssertEqual(viewModel.alarms.count, 2)
-    }
-}
-
-// MARK: - Doubles
-private struct SchedulerFailure: Error, CustomStringConvertible {
-
-    var description: String { "scripted failure" }
-}
-
-/// A scheduler that holds its alarms in memory and fails where a test scripts it to.
-private final class SchedulerSpy: AlarmScheduler, @unchecked Sendable {
-
-    var authorizationState: AlarmAuthorization
-    var grantedAuthorization: AlarmAuthorization?
-    var authorizationAfterSchedule: AlarmAuthorization?
-    var requestFailure: Error?
-    var scheduleFailure: Error?
-    var readFailure: Error?
-    var cancelFailure: Error?
-    var held: [ScheduledAlarm] = []
-    var updateBatches: [[ScheduledAlarm]] = []
-    private(set) var requests: [AlarmRequest] = []
-    private(set) var cancelled: [UUID] = []
-    private(set) var authorizationRequests = 0
-
-    init(authorization: AlarmAuthorization) {
-        authorizationState = authorization
-    }
-
-    var isSupported: Bool { authorizationState != .unsupported }
-
-    func authorization() -> AlarmAuthorization { authorizationState }
-
-    func requestAuthorization() async throws -> AlarmAuthorization {
-        authorizationRequests += 1
-        if let requestFailure { throw requestFailure }
-        authorizationState = grantedAuthorization ?? authorizationState
-        return authorizationState
-    }
-
-    func alarms() throws -> [ScheduledAlarm] {
-        if let readFailure { throw readFailure }
-        return held
-    }
-
-    func schedule(_ request: AlarmRequest) async throws -> ScheduledAlarm {
-        requests.append(request)
-        if let authorizationAfterSchedule { authorizationState = authorizationAfterSchedule }
-        if let scheduleFailure { throw scheduleFailure }
-        let alarm = ScheduledAlarm(id: UUID(), time: request.schedule, phase: .scheduled)
-        held.append(alarm)
-        return alarm
-    }
-
-    func cancel(id: UUID) throws {
-        if let cancelFailure { throw cancelFailure }
-        cancelled.append(id)
-        held.removeAll { $0.id == id }
-    }
-
-    func updates() -> AsyncStream<[ScheduledAlarm]> {
-        let batches = updateBatches
-        return AsyncStream { continuation in
-            for batch in batches { continuation.yield(batch) }
-            continuation.finish()
-        }
     }
 }

@@ -17,6 +17,22 @@
         }
       }
     },
+    "NSCameraUsageDescription" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec čte čárový nebo QR kód, kterým vypneš budík."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec reads the barcode or QR code that turns off your wake-up alarm."
+          }
+        }
+      }
+    },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
         "cs" : {

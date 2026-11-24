@@ -9,6 +9,8 @@ final class DebugAlarmViewModel: ObservableObject {
 
     // MARK: - Dependencies
     private let scheduler: any AlarmScheduler
+    /// Schedules the alarms that only a code ends; nil where the screen offers none.
+    private let wakeGuard: WakeGuard?
     private let now: @MainActor () -> Date
 
     // MARK: - Published Properties
@@ -19,8 +21,13 @@ final class DebugAlarmViewModel: ObservableObject {
     @Published private(set) var isScheduling = false
 
     // MARK: - Init
-    init(scheduler: any AlarmScheduler, now: @escaping @MainActor () -> Date = { Date() }) {
+    init(
+        scheduler: any AlarmScheduler,
+        wakeGuard: WakeGuard? = nil,
+        now: @escaping @MainActor () -> Date = { Date() }
+    ) {
         self.scheduler = scheduler
+        self.wakeGuard = wakeGuard
         self.now = now
         authorization = scheduler.authorization()
     }
@@ -43,15 +50,20 @@ final class DebugAlarmViewModel: ObservableObject {
         }
     }
 
-    /// Schedules one alarm; a blank `title` becomes the default title.
-    func schedule(title: String, time: AlarmTime) async {
+    /// Schedules one alarm; a blank `title` becomes the default title. With `codes`, it is a wake-up mission that
+    /// rings until one of them is scanned.
+    func schedule(title: String, time: AlarmTime, codes: [String] = []) async {
         guard !isScheduling else { return }
         isScheduling = true
         defer { isScheduling = false }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let request = AlarmRequest(title: trimmed.isEmpty ? Self.defaultTitle : trimmed, schedule: time)
+        let title = trimmed.isEmpty ? Self.defaultTitle : trimmed
         do {
-            try await scheduler.schedule(request)
+            if let wakeGuard, !WakeGuard.normalized(codes).isEmpty {
+                try await wakeGuard.create(title: title, time: time, codes: codes)
+            } else {
+                try await scheduler.schedule(AlarmRequest(title: title, schedule: time))
+            }
         } catch let error as AlarmSchedulingError {
             failure = DebugAlarmFailure(error)
         } catch {
@@ -62,8 +74,14 @@ final class DebugAlarmViewModel: ObservableObject {
     }
 
     /// Schedules one alarm `seconds` from now, for a quick test with the phone locked.
-    func schedule(title: String, in seconds: TimeInterval) async {
-        await schedule(title: title, time: .once(now().addingTimeInterval(seconds)))
+    func schedule(title: String, in seconds: TimeInterval, codes: [String] = []) async {
+        await schedule(title: title, time: .once(now().addingTimeInterval(seconds)), codes: codes)
+    }
+
+    /// Removes a wake-up mission that is not ringing, with its alarms.
+    func removeMission(_ id: UUID) async {
+        await wakeGuard?.remove(id)
+        reload()
     }
 
     func cancel(_ id: UUID) {

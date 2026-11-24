@@ -7,16 +7,19 @@ struct DebugAlarmScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: DebugAlarmViewModel
+    @ObservedObject private var wakeGuard: WakeGuard
 
     // MARK: - State
     @State private var title = ""
     @State private var repeatsDaily = false
     @State private var time = Date().addingTimeInterval(120)
+    @State private var codes: [String] = []
 
     // MARK: - Init
     /// `viewModel` runs once per screen, when SwiftUI creates the state object.
-    init(viewModel: @autoclosure @escaping () -> DebugAlarmViewModel) {
+    init(viewModel: @autoclosure @escaping () -> DebugAlarmViewModel, wakeGuard: WakeGuard) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.wakeGuard = wakeGuard
     }
 
     // MARK: - Body
@@ -25,7 +28,11 @@ struct DebugAlarmScreen: View {
             permission
             if viewModel.authorization != .unsupported {
                 newAlarm
+                DebugWakeCodesSection(codes: $codes)
                 quickTest
+                DebugWakeMissionsSection(wakeGuard: wakeGuard) { id in
+                    Task { await viewModel.removeMission(id) }
+                }
                 scheduled
             }
         }
@@ -88,7 +95,7 @@ private extension DebugAlarmScreen {
                 Text("debug.alarm.time")
             }
             .accessibilityIdentifier(AppIdentifiers.debugAlarmTime)
-            Button { Task { await viewModel.schedule(title: title, time: alarmTime) } } label: {
+            Button { Task { await viewModel.schedule(title: title, time: alarmTime, codes: codes) } } label: {
                 Text("debug.alarm.schedule")
             }
             .listRowButton()
@@ -142,7 +149,7 @@ private extension DebugAlarmScreen {
     }
 
     func quickButton(_ key: LocalizedStringKey, seconds: TimeInterval, identifier: String) -> some View {
-        Button { Task { await viewModel.schedule(title: title, in: seconds) } } label: { Text(key) }
+        Button { Task { await viewModel.schedule(title: title, in: seconds, codes: codes) } } label: { Text(key) }
             .listRowButton()
             .disabled(viewModel.isScheduling)
             .accessibilityIdentifier(identifier)

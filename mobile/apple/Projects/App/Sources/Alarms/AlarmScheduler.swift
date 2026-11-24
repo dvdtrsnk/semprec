@@ -20,7 +20,11 @@ protocol AlarmScheduler: Sendable {
     @discardableResult
     func schedule(_ request: AlarmRequest) async throws -> ScheduledAlarm
 
+    /// Removes an alarm that has not rung yet; it does nothing to a ringing one.
     func cancel(id: UUID) throws
+
+    /// Silences an alarm that is ringing.
+    func stop(id: UUID) throws
 
     /// Every change of this app's alarms, starting with the current ones, until the caller stops listening.
     func updates() -> AsyncStream<[ScheduledAlarm]>
@@ -36,15 +40,25 @@ enum AlarmAuthorization: Equatable, Sendable {
     case unsupported
 }
 
-/// One alarm to schedule: its title in the alert and when it rings.
+/// One alarm to schedule: its id, its title in the alert, when it rings, and whether its alert offers a button that
+/// opens the app on the wake-up guard.
 struct AlarmRequest: Equatable, Sendable {
 
+    let id: UUID
     let title: String
     let schedule: AlarmTime
+    let opensWakeGuard: Bool
+
+    init(id: UUID = UUID(), title: String, schedule: AlarmTime, opensWakeGuard: Bool = false) {
+        self.id = id
+        self.title = title
+        self.schedule = schedule
+        self.opensWakeGuard = opensWakeGuard
+    }
 }
 
 /// When an alarm rings.
-enum AlarmTime: Equatable, Sendable {
+enum AlarmTime: Codable, Equatable, Sendable {
 
     /// Once, at this moment; a change of time zone does not move it.
     case once(Date)

@@ -1,12 +1,13 @@
 #if os(iOS)
 import AlarmKit
+import AppIntents
 #endif
 import Foundation
 import SwiftUI
 
 /// The `AlarmScheduler` of the system: AlarmKit on iOS and iPadOS, nothing on macOS, which has no AlarmKit. An alarm
-/// has no countdown, so it needs no Live Activity and the app no widget extension; stopping it is the system's
-/// button alone.
+/// has no countdown, so it needs no Live Activity and the app no widget extension. The system's Stop button always
+/// silences the alert; a wake-up alarm adds a second button that opens the app on the wake-up guard.
 struct SystemAlarmScheduler: AlarmScheduler {
 
     // MARK: - Protocol conformance
@@ -31,12 +32,13 @@ struct SystemAlarmScheduler: AlarmScheduler {
         let configuration = AlarmManager.AlarmConfiguration<SemprecAlarmMetadata>.alarm(
             schedule: Self.schedule(request.schedule),
             attributes: AlarmAttributes(
-                presentation: AlarmPresentation(alert: Self.alert(title: request.title)),
+                presentation: AlarmPresentation(alert: Self.alert(request)),
                 tintColor: .accentColor
-            )
+            ),
+            secondaryIntent: request.opensWakeGuard ? OpenWakeGuardIntent() : nil
         )
         do {
-            return Self.alarm(try await AlarmManager.shared.schedule(id: UUID(), configuration: configuration))
+            return Self.alarm(try await AlarmManager.shared.schedule(id: request.id, configuration: configuration))
         } catch AlarmManager.AlarmError.maximumLimitReached {
             throw AlarmSchedulingError.limitReached
         }
@@ -44,6 +46,10 @@ struct SystemAlarmScheduler: AlarmScheduler {
 
     func cancel(id: UUID) throws {
         try AlarmManager.shared.cancel(id: id)
+    }
+
+    func stop(id: UUID) throws {
+        try AlarmManager.shared.stop(id: id)
     }
 
     func updates() -> AsyncStream<[ScheduledAlarm]> {
@@ -74,6 +80,10 @@ struct SystemAlarmScheduler: AlarmScheduler {
         throw AlarmSchedulingError.unsupported
     }
 
+    func stop(id: UUID) throws {
+        throw AlarmSchedulingError.unsupported
+    }
+
     func updates() -> AsyncStream<[ScheduledAlarm]> {
         AsyncStream { $0.finish() }
     }
@@ -83,6 +93,17 @@ struct SystemAlarmScheduler: AlarmScheduler {
 #if os(iOS)
 /// The metadata of this app's alarms. They carry none yet; AlarmKit requires the type to exist.
 struct SemprecAlarmMetadata: AlarmMetadata {}
+
+/// The alert's second button of a wake-up alarm: opens the app, where the wake-up guard asks for the code.
+struct OpenWakeGuardIntent: LiveActivityIntent {
+
+    static let title: LocalizedStringResource = "alarm.scan"
+    static let openAppWhenRun = true
+
+    func perform() async throws -> some IntentResult {
+        .result()
+    }
+}
 
 // MARK: - Private
 private extension SystemAlarmScheduler {
@@ -140,16 +161,37 @@ private extension SystemAlarmScheduler {
         }
     }
 
-    /// The alert's title is the person's own text, which the string catalog does not hold, so it is a resource whose
-    /// only content is that text.
-    static func alert(title: String) -> AlarmPresentation.Alert {
-        let title = LocalizedStringResource("\(title)")
+    /// The system draws the alert in another process, which does not look strings up in this app's catalog, so every
+    /// text is resolved here and handed over as finished text.
+    static func finished(_ text: String) -> LocalizedStringResource {
+        LocalizedStringResource(stringLiteral: text)
+    }
+
+    static func alert(_ request: AlarmRequest) -> AlarmPresentation.Alert {
+        let title = finished(request.title)
+        let scan: AlarmButton? = request.opensWakeGuard ? scanButton : nil
+        let behavior: AlarmPresentation.Alert.SecondaryButtonBehavior? = request.opensWakeGuard ? .custom : nil
         if #available(iOS 26.1, *) {
-            return AlarmPresentation.Alert(title: title)
+            return AlarmPresentation.Alert(title: title, secondaryButton: scan, secondaryButtonBehavior: behavior)
         }
+        let stop = AlarmButton(
+            text: finished(String(localized: "alarm.stop")),
+            textColor: .white,
+            systemImageName: "stop.circle"
+        )
         return AlarmPresentation.Alert(
             title: title,
-            stopButton: AlarmButton(text: "alarm.stop", textColor: .white, systemImageName: "stop.circle")
+            stopButton: stop,
+            secondaryButton: scan,
+            secondaryButtonBehavior: behavior
+        )
+    }
+
+    static var scanButton: AlarmButton {
+        AlarmButton(
+            text: finished(String(localized: "alarm.scan")),
+            textColor: .white,
+            systemImageName: "qrcode.viewfinder"
         )
     }
 }
