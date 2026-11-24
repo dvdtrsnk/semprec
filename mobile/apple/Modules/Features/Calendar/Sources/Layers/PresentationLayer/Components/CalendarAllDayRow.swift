@@ -44,8 +44,13 @@ struct CalendarAllDayRow: View {
 // MARK: - Subviews
 private extension CalendarAllDayRow {
 
+    /// Whether a chip says where its item came from, which needs the width of the whole area.
+    func hasNote(_ item: CalendarItem) -> Bool {
+        item.trace != nil || item.hostEventTitle != nil || item.carriedFrom != nil
+    }
+
     var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 4), count: items.count > 1 ? 2 : 1)
+        Array(repeating: GridItem(.flexible(), spacing: 4), count: items.count > 1 && !items.contains(where: hasNote) ? 2 : 1)
     }
 
     /// Two chips to a row, scrolling when there are more rows than the area shows.
@@ -96,8 +101,13 @@ private extension CalendarAllDayRow {
             if item.isTask {
                 Text("calendar.item.task", bundle: .module).font(.caption2).foregroundStyle(.secondary)
             }
-            if let note = item.traceDescription ?? item.carriedDescription {
-                Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            if let note = item.traceDescription ?? item.hostedDescription ?? item.carriedDescription {
+                Spacer(minLength: 4)
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(item.hostEventTitle == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .lineLimit(1)
+                    .layoutPriority(-1)
             }
         }
     }

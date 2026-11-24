@@ -537,3 +537,16 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | T18 | tap on an empty place of the timeline | nothing, a held item is deselected |
 | T19 | double tap on the timeline | nothing |
 | T20 | keyboard open in the new item sheet, then save | the keyboard goes down with the sheet, the new item shows at once |
+
+## U. Tasks in events
+
+| ID | Scenario | Expected |
+|----|----------|----------|
+| U01 | hold a timed task and drag it over an event | the event is outlined as the place it would go and the task leaves the timeline while held |
+| U02 | release the task over an event | the task is stored in the event, the event shows a count `0/1` and a row with the task and its checkbox |
+| U03 | a task in an event that has not started | the row sits in the event and the task is not in the all-day area |
+| U04 | the event ends and the task is not done | the task is in the all-day area again with the note "from <event> · not done" in orange |
+| U05 | the same event after it ended | its row keeps the task with the note "not done" |
+| U06 | release the task beside the event | it becomes a timed task at that time, not a task of the event |
+| U07 | drag an all-day task over an event | the same as U01 and U02 |
+| U08 | drop a task on an event that cannot be edited | the task is not accepted |

@@ -209,6 +209,22 @@
         }
       }
     },
+    "calendar.hostedFrom" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "z %@ · nesplněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "from %@ · not done"
+          }
+        }
+      }
+    },
     "calendar.invitations" : {
       "localizations" : {
         "cs" : {

@@ -6,7 +6,7 @@ that run and counts as open, not as passed. Evidence names are screenshots kept 
 
 ## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 34, DIFF 5, FIXED 5, NOT RUN 249, PASS 114 of 407 scenarios.
+Summary: BLOCKED 35, DIFF 5, FIXED 5, NOT RUN 248, PASS 114 of 407 scenarios.
 
 Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", a week strip that wrapped at large text, a new-item form that closed without asking, an all-day chip without a menu, and a day that jumped to its start hour when the all-day area changed height.
 
@@ -122,7 +122,7 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | C16 | NOT RUN |  |
 | C17 | NOT RUN |  |
 | C18 | NOT RUN |  |
-| C19 | NOT RUN |  |
+| C19 | BLOCKED | see U02: drag-release not deliverable with the available input tools |
 | C20 | NOT RUN |  |
 | C21 | NOT RUN |  |
 | C22 | NOT RUN |  |
