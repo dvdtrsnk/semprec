@@ -19,4 +19,22 @@ enum AppIdentifiers {
     static let syncFailed = "sync.status.failed"
     /// The button that dismisses the refused changes.
     static let syncDismiss = "sync.status.dismiss"
+
+    /// The debug menu and its alarm tool; Apple-only, because they try Apple's platform features.
+    static let debugOpen = "debug.open"
+    static let debugMenu = "debug.menu"
+    static let debugAlarmsRow = "debug.row.alarms"
+    static let debugAlarmScreen = "debug.alarm"
+    static let debugAlarmPermission = "debug.alarm.permission"
+    static let debugAlarmRequestPermission = "debug.alarm.permission.request"
+    static let debugAlarmTitle = "debug.alarm.title"
+    static let debugAlarmRepeat = "debug.alarm.repeat"
+    static let debugAlarmTime = "debug.alarm.time"
+    static let debugAlarmSchedule = "debug.alarm.schedule"
+    static let debugAlarmIn10s = "debug.alarm.in10s"
+    static let debugAlarmIn1m = "debug.alarm.in1m"
+    static let debugAlarmIn5m = "debug.alarm.in5m"
+    /// Followed by the alarm's id.
+    static let debugAlarmCancelPrefix = "debug.alarm.cancel."
+    static let debugAlarmCancelAll = "debug.alarm.cancelAll"
 }

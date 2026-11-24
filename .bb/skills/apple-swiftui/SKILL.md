@@ -1,6 +1,6 @@
 ---
 name: apple-swiftui
-description: "How the Apple app under mobile/apple is written - one SwiftUI codebase building native iOS/iPadOS and macOS apps (not Catalyst) from the same targets, platform conditionals only where they differ, no UIKit or AppKit, CoreKit as the only door to Kotlin, feature ViewModels created once in the @StateObject autoclosure, String Catalogs, accessibility identifiers, the Tuist module recipe, SwiftLint and both destinations verified. Load this BEFORE changing Swift, a Tuist manifest, a String Catalog or SwiftLint config under mobile/apple. Triggers on: mobile/apple/, @StateObject, ObservableObject, @Observable, @State, #Preview, .task, #if os(, UIKit, AppKit, ScreenModel, ScriptedScreenModel, *ScreenFactory, *Routing, *Identifiers, accessibilityIdentifier, StatusView, listRowButton, XCUITest, Localizable.xcstrings, Project.swift, Workspace.swift, SemprecProject, ProjectConfiguration.swift, tuist, xcodebuild, FactoryKit, NavigatorUI, swiftlint. Skip only when nothing in mobile/apple/ changes."
+description: "How the Apple app under mobile/apple is written - one SwiftUI codebase building native iOS/iPadOS and macOS apps (not Catalyst) from the same targets, platform conditionals only where they differ, no UIKit or AppKit, CoreKit as the only door to Kotlin, feature ViewModels created once in the @StateObject autoclosure, String Catalogs, accessibility identifiers, the Tuist module recipe, SwiftLint and both destinations verified. Load this BEFORE changing Swift, a Tuist manifest, a String Catalog or SwiftLint config under mobile/apple. Triggers on: mobile/apple/, AlarmKit, @StateObject, ObservableObject, @Observable, @State, #Preview, .task, #if os(, UIKit, AppKit, ScreenModel, ScriptedScreenModel, *ScreenFactory, *Routing, *Identifiers, accessibilityIdentifier, StatusView, listRowButton, XCUITest, Localizable.xcstrings, Project.swift, Workspace.swift, SemprecProject, ProjectConfiguration.swift, tuist, xcodebuild, FactoryKit, NavigatorUI, swiftlint. Skip only when nothing in mobile/apple/ changes."
 ---
 
 # One SwiftUI codebase, two native apps. Shared unless they truly differ.
@@ -47,6 +47,11 @@ machine does not grant; give no other target its own destinations.
   through `import SwiftUI` alone, and `AppSceneNavigationTests` branches only
   for what one platform can show: the About sheet's title on iOS (a macOS
   sheet window has none) and a click beside a row's label on macOS.
+- A system service that exists on one platform only keeps its `#if os(...)`
+  inside its one adapter behind an app protocol: `SystemAlarmScheduler`
+  (`Projects/App/Sources/Alarms/`) imports AlarmKit on iOS and reports
+  `unsupported` on macOS
+  (`docs/adr/2026-11-24-apple-app-rings-system-alarms-through-alarmkit.md`).
 - No `import UIKit` and no `import AppKit` in any module or in the app; use
   SwiftUI and Foundation. Why: either import breaks the other platform's
   build, and every type in a shared module must compile for both. `ARCH-APPLE`

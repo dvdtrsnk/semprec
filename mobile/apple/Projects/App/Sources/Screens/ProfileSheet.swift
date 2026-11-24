@@ -40,6 +40,14 @@ struct ProfileSheet: View {
         )
         NavigationStack(path: $path.pages) {
             AccountScreenFactory.profile(makeModel: { [models] in models.makeProfile() }, router: router)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Button { [path] in path.pages.append(.debug) } label: {
+                            Label { Text("debug.title") } icon: { Image(systemName: "ladybug") }
+                        }
+                        .accessibilityIdentifier(AppIdentifiers.debugOpen)
+                    }
+                }
                 .navigationDestination(for: ProfileSheetPage.self) { [models] page in
                     Self.destination(page, models, router: router)
                 }
@@ -64,6 +72,10 @@ extension ProfileSheet {
                 makeModel: { models.makeInternetAccount(accountId: accountId) },
                 router: router
             )
+        case .debug:
+            DebugMenuScreen()
+        case .debugAlarms:
+            DebugAlarmScreen(viewModel: DebugAlarmViewModel(scheduler: SystemAlarmScheduler()))
         }
     }
 

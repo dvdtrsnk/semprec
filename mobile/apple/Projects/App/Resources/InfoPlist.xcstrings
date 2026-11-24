@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "NSAlarmKitUsageDescription" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec zvoní vašimi budíky i v tichém režimu a přes soustředění."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec rings your alarms even in silent mode and through a Focus."
+          }
+        }
+      }
+    },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
         "cs" : {
