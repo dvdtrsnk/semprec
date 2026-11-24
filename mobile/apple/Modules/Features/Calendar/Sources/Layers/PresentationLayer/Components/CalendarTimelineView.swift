@@ -155,16 +155,6 @@ private extension CalendarTimelineView {
     }
 }
 
-/// Reports the frame of the block that is selected, which the menu of its actions is placed by.
-private struct SelectedFrameReporter: View {
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(key: CalendarSelectedFrameKey.self, value: proxy.frame(in: .calendarDay))
-        }
-    }
-}
-
 /// Reports the frame of an event block under its id.
 private struct EventFrameReporter: View {
 

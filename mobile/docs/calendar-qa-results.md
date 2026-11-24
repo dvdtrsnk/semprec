@@ -6,9 +6,9 @@ that run and counts as open, not as passed. Evidence names are screenshots kept 
 
 ## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 10, DIFF 3, FIXED 2, NOT RUN 322, PASS 70 of 407 scenarios.
+Summary: BLOCKED 10, DIFF 3, FIXED 5, NOT RUN 314, PASS 75 of 407 scenarios.
 
-Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", and a week strip that wrapped at large text.
+Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", a week strip that wrapped at large text, a new-item form that closed without asking, an all-day chip without a menu, and a day that jumped to its start hour when the all-day area changed height.
 
 Open differences: events that start at the same minute are ordered differently from the system Calendar (A17); the vertical scroll position is not kept when changing day (A53, to be confirmed against the system Calendar).
 
@@ -91,12 +91,12 @@ Not performed because the tools cannot: pinch, haptics and motion. Everything no
 | B11 | NOT RUN |  |
 | B12 | NOT RUN |  |
 | B13 | NOT RUN |  |
-| B14 | NOT RUN |  |
-| B15 | NOT RUN |  |
+| B14 | FIXED | FAIL: holding an all-day chip selected it but showed no menu and no held style. Now the chip turns solid and the capsule menu opens below it (s-chipmenu-s) |
+| B15 | PASS | p-b15: a chip held for a long time and pulled down becomes a one-hour block at the finger (preview 02:00-03:00 red block), and a drop makes it a timed event |
 | B16 | NOT RUN |  |
 | B17 | NOT RUN |  |
 | B18 | NOT RUN |  |
-| B19 | NOT RUN |  |
+| B19 | FIXED | FAIL: after dropping an all-day chip into the timeline the day jumped back to its start hour (p-b15 right); the header changing height no longer moves a day that was scrolled. Verified by deleting an all-day chip while scrolled to 17:00: the chips reflow and the day stays (s-b19c-s) |
 | B20 | PASS | p-s28: one hairline below the all-day area |
 | C01 | PASS | s-tasksaved: reminder with time is a one-line chip with checkbox |
 | C02 | NOT RUN |  |
@@ -215,19 +215,19 @@ Not performed because the tools cannot: pinch, haptics and motion. Everything no
 | G11 | NOT RUN |  |
 | G12 | NOT RUN |  |
 | G13 | NOT RUN |  |
-| G14 | NOT RUN |  |
+| G14 | PASS | s-b19c-s: Delete of a held all-day chip removes it at once, no alert, the remaining chips reflow |
 | G15 | NOT RUN |  |
 | H01 | PASS | s-new1/s-new2: sheet, disabled check without a title, date row expands |
 | H02 | NOT RUN |  |
 | H03 | NOT RUN |  |
 | H04 | NOT RUN |  |
 | H05 | PASS | s-new1/s-new2: sheet, disabled check without a title, date row expands |
-| H06 | NOT RUN |  |
+| H06 | PASS | p-h: a title of three spaces leaves the check disabled |
 | H07 | NOT RUN |  |
 | H08 | NOT RUN |  |
-| H09 | PASS | s-new1/s-new2: sheet, disabled check without a title, date row expands |
+| H09 | PASS | p-h: the date row opens Starts / Ends / All-day / Repeat |
 | H10 | NOT RUN |  |
-| H11 | NOT RUN |  |
+| H11 | PASS | s-h-wheel2-s: moving the start from 17:00 to 00:00 moved the end to 01:00, the duration is kept |
 | H12 | PASS | s-new-allday: all-day toggle hides the times; multi-day end date picker |
 | H13 | PASS | s-new-allday: all-day toggle hides the times; multi-day end date picker |
 | H14 | NOT RUN |  |
@@ -244,8 +244,8 @@ Not performed because the tools cannot: pinch, haptics and motion. Everything no
 | H25 | PASS | s-newtask2: Task form with date, time, repeat, flag |
 | H26 | PASS | s-newtask2: Task form with date, time, repeat, flag |
 | H27 | NOT RUN |  |
-| H28 | NOT RUN |  |
-| H29 | NOT RUN |  |
+| H28 | FIXED | FAIL: cancel with typed text closed the sheet at once (s-h28-s); the system Calendar asks "Discard Changes". Now a dialog out of the cancel button, a swipe down is blocked while the form holds something (s-disc2-s, s-disc3-s) |
+| H29 | PASS | s-h28-s earlier build and s-disc3: cancel on an untouched form closes at once |
 | H30 | NOT RUN |  |
 | H31 | NOT RUN |  |
 | H32 | PASS | s-tasksaved/s-created1: the new item appears on its day at once |

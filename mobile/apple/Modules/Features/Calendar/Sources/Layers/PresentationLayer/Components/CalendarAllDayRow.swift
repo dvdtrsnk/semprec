@@ -68,9 +68,14 @@ private extension CalendarAllDayRow {
         .animation(.snappy(duration: 0.28), value: items.map(\.identity))
     }
 
-    @ViewBuilder
-    func chip(_ item: CalendarItem) -> some View {
-        let dragged = drag?.itemId == item.id
+    /// A held chip is the colour of its calendar all through, with white words, as a held block of the timeline.
+    func titleStyle(_ item: CalendarItem, held: Bool) -> AnyShapeStyle {
+        if held { return AnyShapeStyle(Color.white) }
+        return item.done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary)
+    }
+
+    /// What a chip says: its checkbox or icon, its title and what notes it carries.
+    func chipContent(_ item: CalendarItem, held: Bool) -> some View {
         HStack(spacing: 6) {
             if item.isTask {
                 CalendarTaskCheckbox(
@@ -86,7 +91,7 @@ private extension CalendarAllDayRow {
             Text(item.displayTitle)
                 .font(.caption.weight(.semibold))
                 .strikethrough(item.done)
-                .foregroundStyle(item.done ? .secondary : .primary)
+                .foregroundStyle(titleStyle(item, held: held))
                 .lineLimit(1)
             if item.isTask {
                 Text("calendar.item.task", bundle: .module).font(.caption2).foregroundStyle(.secondary)
@@ -95,16 +100,25 @@ private extension CalendarAllDayRow {
                 Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+    }
+
+    @ViewBuilder
+    func chip(_ item: CalendarItem) -> some View {
+        let dragged = drag?.itemId == item.id
+        let held = selectedItemId == item.id && drag == nil
+        chipContent(item, held: held)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(item.tint.opacity(item.isTask ? 0.08 : 0.18), in: RoundedRectangle(cornerRadius: 6))
+        .background(
+            held ? item.tint : item.tint.opacity(item.isTask ? 0.08 : 0.18),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .background(held ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
         .overlay {
             if item.isGhost {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(Color.orange, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            } else if selectedItemId == item.id {
-                RoundedRectangle(cornerRadius: 6).strokeBorder(item.tint, lineWidth: 2)
             }
         }
         .opacity(dragged ? 0.4 : 1)

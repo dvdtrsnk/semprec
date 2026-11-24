@@ -48,7 +48,8 @@ struct CalendarZoomableTimeline<Content: View>: View {
     /// scroll and are read only when a zoom begins.
     @State private var place = Place()
     @State private var anchor: Anchor?
-    /// Set once the person scrolled the day, after which a new header height no longer moves it to its start.
+    /// Set once the day was scrolled, after which a new header height (an all-day item gone or come) no longer moves it
+    /// to its start.
     @State private var hasScrolled = false
 
     // MARK: - Body
@@ -66,7 +67,9 @@ struct CalendarZoomableTimeline<Content: View>: View {
         .paperScrollFollowing(paper)
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { place.viewportTop = $0 })
         .onScrollPhaseChange { _, phase in
-            if phase == .interacting { hasScrolled = true }
+            // A scroll by a finger, by its momentum or by the day moving itself (an item dragged to the edge) all
+            // count: the day stays where it was put when the header changes height afterwards.
+            if phase == .interacting || phase == .decelerating || phase == .animating { hasScrolled = true }
         }
         .onAppear { scrollToStart() }
         // The header is measured after the first page appears; its start then moves below the header.

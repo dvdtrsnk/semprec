@@ -19,3 +19,13 @@ struct CalendarSelectedFrameKey: PreferenceKey {
         value = nextValue() ?? value
     }
 }
+
+/// Reports the frame of the block that is selected, which the menu of its actions is placed by.
+struct SelectedFrameReporter: View {
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: CalendarSelectedFrameKey.self, value: proxy.frame(in: .calendarDay))
+        }
+    }
+}
