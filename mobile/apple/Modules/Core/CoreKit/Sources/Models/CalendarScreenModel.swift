@@ -259,20 +259,6 @@ public struct CalendarClipboard: Equatable, Sendable {
     }
 }
 
-/// The delete a person has to confirm.
-public struct CalendarDeleteRequest: Equatable, Sendable {
-
-    public let itemId: String
-    public let title: String
-    public let kind: CalendarItemKind
-
-    public init(itemId: String, title: String, kind: CalendarItemKind) {
-        self.itemId = itemId
-        self.title = title
-        self.kind = kind
-    }
-}
-
 /// The calendar. `days` are the days of the loaded window (the six weeks of the selected month and a week on each
 /// side), `monthGrid` the 42 days of the month view in order, `months` the twelve months of the selected year.
 /// `nowMinutes` is the time of day on `today`. `problem` is true after a write that failed, with `problemFailure`.
@@ -290,7 +276,6 @@ public struct CalendarState: Equatable, Sendable {
     public var selectedItemId: String?
     public var drag: CalendarDrag?
     public var clipboard: CalendarClipboard?
-    public var pendingDelete: CalendarDeleteRequest?
     public var busy: Bool
     public var problem: Bool
     public var problemFailure: FailureKind?
@@ -308,7 +293,6 @@ public struct CalendarState: Equatable, Sendable {
         selectedItemId: String? = nil,
         drag: CalendarDrag? = nil,
         clipboard: CalendarClipboard? = nil,
-        pendingDelete: CalendarDeleteRequest? = nil,
         busy: Bool = false,
         problem: Bool = false,
         problemFailure: FailureKind? = nil
@@ -325,7 +309,6 @@ public struct CalendarState: Equatable, Sendable {
         self.selectedItemId = selectedItemId
         self.drag = drag
         self.clipboard = clipboard
-        self.pendingDelete = pendingDelete
         self.busy = busy
         self.problem = problem
         self.problemFailure = problemFailure
@@ -365,9 +348,8 @@ public enum CalendarEdit: Equatable, Sendable {
     case copy(itemId: String)
     case duplicate(itemId: String)
     case paste(day: String, rawStart: Int, allDay: Bool)
-    case requestDelete(itemId: String)
-    case confirmDelete
-    case cancelDelete
+    /// Deletes the item at once, as the system Calendar does.
+    case delete(itemId: String)
     case dismissProblem
 }
 

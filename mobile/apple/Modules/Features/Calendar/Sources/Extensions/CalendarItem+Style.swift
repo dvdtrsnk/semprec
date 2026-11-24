@@ -15,6 +15,11 @@ extension CalendarItem {
     /// Whether a person can tick the item off: a task that is not a read-only trace.
     var canToggle: Bool { kind == .task && editable }
 
+    /// The title as one line, as the system Calendar shows it: a line break in a stored title reads as a space.
+    var displayTitle: String {
+        title.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
+
     /// The identity of the item on one day: a multi-day event is drawn on every day it spans.
     var identity: String { "\(id)@\(date)" }
 

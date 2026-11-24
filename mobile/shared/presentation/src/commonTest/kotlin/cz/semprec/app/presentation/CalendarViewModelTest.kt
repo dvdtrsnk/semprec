@@ -605,30 +605,21 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `delete closes the menu and asks a confirmation that can be given or refused`() = runTest(dispatcher) {
+    @Test fun `delete closes the menu and removes the item at once`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
         act(vm, CalendarAction.Gesture.Select("meeting"))
-        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
+        act(vm, CalendarAction.Edit.Delete("meeting"))
         assertNull(vm.state.value.selectedItemId)
-        val request = CalendarDeleteRequest("meeting", "Title meeting", CalendarItemKind.EVENT)
-        assertEquals(request, vm.state.value.pendingDelete)
-        act(vm, CalendarAction.Edit.CancelDelete)
-        assertNull(vm.state.value.pendingDelete)
-        assertTrue(repository.calls.none { it.startsWith("delete") })
-        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
-        act(vm, CalendarAction.Edit.ConfirmDelete)
         assertTrue("delete meeting" in repository.calls)
-        assertNull(vm.state.value.pendingDelete)
         vm.close()
     }
 
-    @Test fun `a holiday cannot be deleted and a confirm without a request does nothing`() = runTest(dispatcher) {
+    @Test fun `a holiday cannot be deleted and an unknown item changes nothing`() = runTest(dispatcher) {
         serve(HOLIDAY)
         val vm = loaded()
-        act(vm, CalendarAction.Edit.RequestDelete("holiday"))
-        assertNull(vm.state.value.pendingDelete)
-        act(vm, CalendarAction.Edit.ConfirmDelete)
+        act(vm, CalendarAction.Edit.Delete("holiday"))
+        act(vm, CalendarAction.Edit.Delete("nothing"))
         assertEquals(listOf("window"), repository.calls)
         vm.close()
     }

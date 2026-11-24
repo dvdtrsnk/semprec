@@ -124,8 +124,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         let state = SharedCalendarScreenModel.state(CalendarKotlin.state(
             .content,
             drag: drag,
-            clipboard: SharedSDK.CalendarClipboard(mode: .copied, title: "Meeting"),
-            pendingDelete: SharedSDK.CalendarDeleteRequest(itemId: "e1", title: "Meeting", kind: .task)
+            clipboard: SharedSDK.CalendarClipboard(mode: .copied, title: "Meeting")
         ))
         XCTAssertEqual(
             state.drag,
@@ -135,7 +134,6 @@ final class SharedCalendarMappingTests: XCTestCase {
             )
         )
         XCTAssertEqual(state.clipboard, CoreKit.CalendarClipboard(mode: .copied, title: "Meeting"))
-        XCTAssertEqual(state.pendingDelete, CoreKit.CalendarDeleteRequest(itemId: "e1", title: "Meeting", kind: .task))
     }
 
     func testTheCutClipboardMode() {
@@ -144,7 +142,6 @@ final class SharedCalendarMappingTests: XCTestCase {
         ))
         XCTAssertEqual(state.clipboard?.mode, .cut)
         XCTAssertNil(state.drag)
-        XCTAssertNil(state.pendingDelete)
     }
 
     // MARK: - Actions
@@ -239,13 +236,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual([paste.day], ["2026-10-17"])
         XCTAssertEqual(paste.rawStart, 540)
         XCTAssertTrue(paste.allDay)
-        XCTAssertEqual(
-            (
-                Model.action(.edit(.requestDelete(itemId: "d"))) as? SharedSDK.CalendarActionEditRequestDelete
-            )?.itemId, "d"
-        )
-        XCTAssertTrue(Model.action(.edit(.confirmDelete)) is SharedSDK.CalendarActionEditConfirmDelete)
-        XCTAssertTrue(Model.action(.edit(.cancelDelete)) is SharedSDK.CalendarActionEditCancelDelete)
+        XCTAssertEqual((Model.action(.edit(.delete(itemId: "d"))) as? SharedSDK.CalendarActionEditDelete)?.itemId, "d")
         XCTAssertTrue(Model.action(.edit(.dismissProblem)) is SharedSDK.CalendarActionEditDismissProblem)
     }
 

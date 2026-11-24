@@ -100,7 +100,7 @@ private extension CalendarTimedItemView {
 
     var header: some View {
         HStack(spacing: 4) {
-            Text(item.title)
+            Text(item.displayTitle)
                 .font(.caption.weight(.semibold))
                 .strikethrough(item.done)
                 .foregroundStyle(titleStyle)

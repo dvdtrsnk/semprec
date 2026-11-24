@@ -33,7 +33,6 @@ internal fun initialCalendarState(initialDay: String): CalendarState {
         selectedItemId = null,
         drag = null,
         clipboard = null,
-        pendingDelete = null,
         busy = false,
         problem = false,
         problemFailure = null,

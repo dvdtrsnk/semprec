@@ -65,11 +65,8 @@ sealed interface CalendarAction {
         /** Pastes the clipboard on [day], at [rawStart] unless [allDay]. */
         data class Paste(val day: String, val rawStart: Int, val allDay: Boolean) : Edit
 
-        data class RequestDelete(val itemId: String) : Edit
-
-        data object ConfirmDelete : Edit
-
-        data object CancelDelete : Edit
+        /** Deletes the item at once, as the system Calendar does; the server keeps it restorable for 30 days. */
+        data class Delete(val itemId: String) : Edit
 
         data object DismissProblem : Edit
     }

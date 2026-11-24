@@ -105,9 +105,6 @@ data class CalendarDrag(
 /** What the clipboard holds: the [title] of the cut or copied item. */
 data class CalendarClipboard(val mode: CalendarClipboardMode, val title: String)
 
-/** The delete a person has to confirm. */
-data class CalendarDeleteRequest(val itemId: String, val title: String, val kind: CalendarItemKind)
-
 /**
  * The calendar. [days] are the days of the loaded window, the six weeks of the selected month and a week before and
  * after (57 days), [monthGrid] the 42 days of the month view in order. [months] are the twelve months of the year of
@@ -128,7 +125,6 @@ data class CalendarState(
     val selectedItemId: String?,
     val drag: CalendarDrag?,
     val clipboard: CalendarClipboard?,
-    val pendingDelete: CalendarDeleteRequest?,
     val busy: Boolean,
     val problem: Boolean,
     val problemFailure: FailureKind?,

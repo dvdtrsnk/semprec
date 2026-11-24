@@ -201,14 +201,6 @@ extension CalendarClipboard {
     }
 }
 
-// MARK: - CalendarDeleteRequest
-extension CalendarDeleteRequest {
-
-    init(_ request: SharedSDK.CalendarDeleteRequest) {
-        self.init(itemId: request.itemId, title: request.title, kind: CalendarItemKind(request.kind))
-    }
-}
-
 // MARK: - Invitations
 extension InvitationsPhase {
 

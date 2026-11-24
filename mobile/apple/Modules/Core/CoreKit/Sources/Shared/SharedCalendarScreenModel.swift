@@ -59,7 +59,6 @@ extension SharedCalendarScreenModel {
             selectedItemId: state.selectedItemId,
             drag: state.drag.map(CalendarDrag.init),
             clipboard: state.clipboard.map(CalendarClipboard.init),
-            pendingDelete: state.pendingDelete.map(CalendarDeleteRequest.init),
             busy: state.busy,
             problem: state.problem,
             problemFailure: state.problemFailure.map(FailureKind.init)
@@ -129,9 +128,7 @@ private extension SharedCalendarScreenModel {
         case .duplicate(let id): SharedSDK.CalendarActionEditDuplicate(itemId: id)
         case .paste(let day, let rawStart, let allDay):
             SharedSDK.CalendarActionEditPaste(day: day, rawStart: Int32(rawStart), allDay: allDay)
-        case .requestDelete(let id): SharedSDK.CalendarActionEditRequestDelete(itemId: id)
-        case .confirmDelete: SharedSDK.CalendarActionEditConfirmDelete.shared
-        case .cancelDelete: SharedSDK.CalendarActionEditCancelDelete.shared
+        case .delete(let id): SharedSDK.CalendarActionEditDelete(itemId: id)
         case .dismissProblem: SharedSDK.CalendarActionEditDismissProblem.shared
         }
     }

@@ -87,7 +87,9 @@ class CalendarAgendaViewModel internal constructor(
         val added = page.entries.mapNotNull { entry -> entry.toAgenda()?.let { entry.date.toString() to it } }
         entryDays = entryDays + added.associate { (day, entry) -> entry.id to day }
         entries = entries + added.map { it.second }
-        val days = entries.groupBy { entryDays.getValue(it.id) }.map { (day, list) -> CalendarAgendaDay(day, list) }
+        val days = entries.groupBy { entryDays.getValue(it.id) }.map { (day, list) ->
+            CalendarAgendaDay(day, list.sortedWith(compareBy<CalendarAgendaEntry> { it.timeFrom != null }.thenBy { it.timeFrom }))
+        }
         update {
             it.copy(
                 phase = CalendarAgendaPhase.CONTENT,

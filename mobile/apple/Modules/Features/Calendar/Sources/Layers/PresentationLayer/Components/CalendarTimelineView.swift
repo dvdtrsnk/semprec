@@ -37,6 +37,7 @@ struct CalendarTimelineView: View {
                 }
             }
             .frame(width: proxy.size.width, height: geometry.height, alignment: .topLeading)
+            .animation(.snappy(duration: 0.28), value: timedItems.map(\.identity))
             .contentShape(Rectangle())
             .gesture(pasteGesture)
         }
@@ -110,6 +111,8 @@ private extension CalendarTimelineView {
         .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
         .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: range.start))
         .animation(.snappy(duration: 0.24), value: selected)
+        // A block that appears or goes away does so as the system Calendar's does, and the ones around it make room.
+        .transition(.opacity.combined(with: .scale(scale: 0.92)))
         // A block that starts later than the one it overlaps lies over it; a held block lies over everything.
         .zIndex(raised ? 100 : Double(1 + item.depth))
     }
@@ -279,8 +282,8 @@ private extension CalendarTimelineView {
         .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: minutes) - 9)
     }
 
-    /// Whether a block of an item lies where a label at the leading edge of the sleep band would be written, so the label
-    /// gives way to it rather than being drawn over its words.
+    /// Whether a block of an item lies where a label at the leading edge of the sleep band would be written, so the
+    /// label gives way to it rather than being drawn over its words.
     func isLabelCovered(top: CGFloat, width: CGFloat) -> Bool {
         let labelWidth: CGFloat = 190
         return timedItems.contains { item in

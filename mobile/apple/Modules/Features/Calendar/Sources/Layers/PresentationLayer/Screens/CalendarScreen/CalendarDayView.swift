@@ -311,7 +311,7 @@ private extension CalendarDayView {
         case .cut: viewModel.edit(.cut(itemId: item.id))
         case .copy: viewModel.edit(.copy(itemId: item.id))
         case .duplicate: viewModel.edit(.duplicate(itemId: item.id))
-        case .delete: viewModel.edit(.requestDelete(itemId: item.id))
+        case .delete: viewModel.edit(.delete(itemId: item.id))
         }
     }
 

@@ -59,7 +59,6 @@ enum CalendarKotlin {
         days: [SharedSDK.CalendarDayState] = [],
         drag: SharedSDK.CalendarDrag? = nil,
         clipboard: SharedSDK.CalendarClipboard? = nil,
-        pendingDelete: SharedSDK.CalendarDeleteRequest? = nil,
         problemFailure: SharedSDK.FailureKind? = nil
     ) -> SharedSDK.CalendarState {
         SharedSDK.CalendarState(
@@ -76,7 +75,6 @@ enum CalendarKotlin {
             selectedItemId: "e1",
             drag: drag,
             clipboard: clipboard,
-            pendingDelete: pendingDelete,
             busy: true,
             problem: true,
             problemFailure: problemFailure

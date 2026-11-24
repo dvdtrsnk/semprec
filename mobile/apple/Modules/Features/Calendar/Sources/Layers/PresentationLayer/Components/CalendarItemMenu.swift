@@ -66,15 +66,15 @@ enum CalendarMenuPlacement {
     static func origin(menu: CGSize, anchor: CGRect, container: CGSize, top: CGFloat, bottom: CGFloat) -> CGPoint {
         let farthestLeft = margin
         let farthestRight = max(container.width - margin - menu.width, farthestLeft)
-        let x = min(max(anchor.midX - menu.width / 2, farthestLeft), farthestRight)
+        let left = min(max(anchor.midX - menu.width / 2, farthestLeft), farthestRight)
         let below = anchor.maxY + gap
-        if below + menu.height <= bottom { return CGPoint(x: x, y: below) }
+        if below + menu.height <= bottom { return CGPoint(x: left, y: below) }
         let above = anchor.minY - gap - menu.height
-        if above >= top { return CGPoint(x: x, y: above) }
+        if above >= top { return CGPoint(x: left, y: above) }
         // The item fills the free part: the menu sits over the middle of what shows of it.
         let visible = CGRect(x: anchor.minX, y: max(anchor.minY, top), width: anchor.width, height: 0)
             .union(CGRect(x: anchor.minX, y: min(anchor.maxY, bottom), width: anchor.width, height: 0))
-        let y = min(max(visible.midY - menu.height / 2, top), max(bottom - menu.height, top))
-        return CGPoint(x: x, y: y)
+        let inside = min(max(visible.midY - menu.height / 2, top), max(bottom - menu.height, top))
+        return CGPoint(x: left, y: inside)
     }
 }

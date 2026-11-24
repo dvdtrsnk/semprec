@@ -62,8 +62,10 @@ private extension CalendarAllDayRow {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
             ForEach(items, id: \.identity) { item in
                 chip(item)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
         }
+        .animation(.snappy(duration: 0.28), value: items.map(\.identity))
     }
 
     @ViewBuilder
@@ -81,7 +83,7 @@ private extension CalendarAllDayRow {
             } else if item.kind == .birthday {
                 Image(systemName: "gift").font(.caption).foregroundStyle(item.tint)
             }
-            Text(item.title)
+            Text(item.displayTitle)
                 .font(.caption.weight(.semibold))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
