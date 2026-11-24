@@ -2,7 +2,9 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SleepPlanChange
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -395,6 +397,95 @@ class SleepViewModelTest : MainDispatcherTest() {
         assertEquals(1, vm.state.value.plans.size)
         vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p1"))
         vm.onAction(SleepAction.DeletePlan)
+        runCurrent()
+        assertEquals(1, repository.writes.size)
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        vm.close()
+    }
+
+    @Test fun `saving a new schedule creates it with its days times and alarm in one write`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SavePlan(null, "Weekend", listOf(6, 7), 23 * 60 + 45, 7 * 60 + 15, alarm = false))
+        runCurrent()
+        assertEquals("create:Weekend:[6, 7]", repository.writes.single())
+        assertEquals(SleepScreen.MAIN, vm.state.value.screen)
+        assertFalse(vm.state.value.saving)
+        vm.close()
+    }
+
+    @Test fun `saving an existing schedule writes all its fields to that plan`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SavePlan("p2", "ignored", listOf(5, 6, 7), 22 * 60, 6 * 60, alarm = true))
+        runCurrent()
+        val expected = SleepPlanChange(
+            wakeDays = setOf(5, 6, 7),
+            bed = ClockTime(22 * 60),
+            wake = ClockTime(6 * 60),
+            alarm = true,
+        )
+        assertEquals("plan:p2:$expected", repository.writes.single())
+        vm.close()
+    }
+
+    @Test fun `a schedule without days outside the week or at the end of day is refused`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SavePlan("p1", "x", emptyList(), 23 * 60, 7 * 60, alarm = true))
+        runCurrent()
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        vm.onAction(SleepAction.DismissSaveFailure)
+        vm.onAction(SleepAction.SavePlan("p1", "x", listOf(8), 23 * 60, 7 * 60, alarm = true))
+        runCurrent()
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        vm.onAction(SleepAction.DismissSaveFailure)
+        vm.onAction(SleepAction.SavePlan("p1", "x", listOf(1), 23 * 60, 24 * 60, alarm = true))
+        runCurrent()
+        assertTrue(repository.writes.isEmpty())
+        vm.close()
+    }
+
+    @Test fun `saving an unknown plan or a new one without a name is refused`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SavePlan("gone", "x", listOf(1), 23 * 60, 7 * 60, alarm = true))
+        runCurrent()
+        assertEquals(FailureKind.NOT_FOUND, vm.state.value.saveFailure)
+        vm.onAction(SleepAction.DismissSaveFailure)
+        vm.onAction(SleepAction.SavePlan(null, " ", listOf(1), 23 * 60, 7 * 60, alarm = true))
+        runCurrent()
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        assertTrue(repository.writes.isEmpty())
+        vm.close()
+    }
+
+    @Test fun `a refused schedule write is reported`() = runTest(dispatcher) {
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+        val repository = FakeSleepRepository(sleepContent(), writeAnswer = refused)
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SavePlan(null, "New", listOf(6), 23 * 60, 7 * 60, alarm = false))
+        runCurrent()
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        assertEquals(1, repository.writes.size)
+        vm.close()
+    }
+
+    @Test fun `removing a plan from the editor deletes it unless it is the last`() = runTest(dispatcher) {
+        val afterDelete = sleepContent(sleepOverview(plans = listOf(sleepWeekdayPlan())))
+        val repository = FakeSleepRepository(sleepContent(), afterDelete)
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.RemovePlan("p2"))
+        runCurrent()
+        assertEquals("delete:p2", repository.writes.single())
+        assertEquals(SleepScreen.MAIN, vm.state.value.screen)
+        vm.onAction(SleepAction.RemovePlan("p1"))
         runCurrent()
         assertEquals(1, repository.writes.size)
         assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)

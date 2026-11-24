@@ -86,6 +86,16 @@ extension SharedSleepScreenModel {
         case .toggleDay(let day): SharedSDK.SleepActionToggleDay(day: Int32(day))
         case .addPlan(let name): SharedSDK.SleepActionAddPlan(name: name)
         case .deletePlan: SharedSDK.SleepActionDeletePlan.shared
+        case let .savePlan(planID, name, wakeDays, bedMinutes, wakeMinutes, alarm):
+            SharedSDK.SleepActionSavePlan(
+                planId: planID,
+                name: name,
+                wakeDays: wakeDays.map { KotlinInt(int: Int32($0)) },
+                bedMinutes: Int32(bedMinutes),
+                wakeMinutes: Int32(wakeMinutes),
+                alarm: alarm
+            )
+        case .removePlan(let planID): SharedSDK.SleepActionRemovePlan(planId: planID)
         case .resetNight: SharedSDK.SleepActionResetNight.shared
         case .dismissSaveFailure: SharedSDK.SleepActionDismissSaveFailure.shared
         }

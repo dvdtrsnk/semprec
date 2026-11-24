@@ -227,6 +227,11 @@ public enum SleepAction: Equatable, Sendable {
     /// Adds a plan for the free days under `name`, which the screen writes in the person's language.
     case addPlan(name: String)
     case deletePlan
+    /// Writes one schedule from the schedule editor in one write: a new plan named `name` when `planID` is nil, else
+    /// that plan. `wakeDays` are ISO weekdays; the days it takes leave the plans that held them.
+    case savePlan(planID: String?, name: String, wakeDays: [Int], bedMinutes: Int, wakeMinutes: Int, alarm: Bool)
+    /// Deletes the plan from the schedule editor, unless it is the last one.
+    case removePlan(planID: String)
     case resetNight
     case dismissSaveFailure
 }

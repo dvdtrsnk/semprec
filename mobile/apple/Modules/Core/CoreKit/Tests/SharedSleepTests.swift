@@ -154,6 +154,7 @@ final class SharedSleepTests: XCTestCase {
             SharedSleepScreenModel.action(.addPlan(name: "Other")) as? SharedSDK.SleepActionAddPlan
         )
         XCTAssertEqual(add.name, "Other")
+
     }
 
     // MARK: - The real Kotlin ViewModel

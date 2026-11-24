@@ -2,13 +2,15 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The overview of the sleep sheet: the ring, the plan switch and the plans, the preparation reminder, the alarm
-/// settings and what the calendar shows.
+/// The overview of the sleep sheet: the ring, the plan switch, the full schedule with its further details, the
+/// preparation reminder, the alarm settings and what the calendar shows.
 struct SleepMainPage: View {
 
     // MARK: - Dependencies
     let state: SleepState
     let send: (SleepAction) -> Void
+    /// Opens the schedule editor on a plan, or on a new schedule for nil.
+    let edit: (SleepPlanItem?) -> Void
 
     // MARK: - Body
     var body: some View {
@@ -17,7 +19,7 @@ struct SleepMainPage: View {
                 SleepRingSection(ring: ring, isEnabled: state.enabled, send: send)
             }
             enabledSection
-            plansSection
+            SleepScheduleSections(state: state, send: send, edit: edit)
             preparationSection
             alarmSection
             calendarSection
@@ -47,44 +49,6 @@ private extension SleepMainPage {
         state.enabled ? Text("sleep.plan.on", bundle: .module) : Text("sleep.plan.off", bundle: .module)
     }
 
-    var plansSection: some View {
-        Section {
-            ForEach(state.plans) { plan in
-                Button { send(.open(.plan, planID: plan.id)) } label: { SleepNavigationRow(row: row(for: plan)) }
-                    .listRowButton()
-                    .accessibilityLabel(Text(String(
-                        format: String(localized: "sleep.plans.a11y", bundle: .module),
-                        locale: .current,
-                        plan.name
-                    )))
-                    .accessibilityIdentifier(SleepIdentifiers.planPrefix + plan.id)
-            }
-            if state.canAddPlan {
-                Button { send(.addPlan(name: String(localized: "sleep.plans.newName", bundle: .module))) } label: {
-                    Label { Text("sleep.plans.add", bundle: .module) } icon: { Image(systemName: "plus.circle.fill") }
-                }
-                .listRowButton()
-                .accessibilityIdentifier(SleepIdentifiers.addPlan)
-            }
-        } header: {
-            Text("sleep.plans.header", bundle: .module)
-        } footer: {
-            Text("sleep.plans.footer", bundle: .module)
-        }
-    }
-
-    func row(for plan: SleepPlanItem) -> SleepRow {
-        let alarmKey: String.LocalizationValue = plan.alarm ? "sleep.plans.alarmOn" : "sleep.plans.alarmOff"
-        let alarm = String(localized: alarmKey, bundle: .module)
-        let times = "\(SleepFormat.time(plan.bedMinutes)) – \(SleepFormat.time(plan.wakeMinutes))"
-        return SleepRow(
-            symbol: "bed.double.fill",
-            tint: Theme.Colors.sleep,
-            title: Text(verbatim: "\(plan.name) · \(SleepFormat.days(plan.wakeDays))"),
-            subtitle: Text(verbatim: "\(times) · \(SleepFormat.duration(plan.durationMinutes)) · \(alarm)")
-        )
-    }
-
     var preparationSection: some View {
         Section {
             Toggle(isOn: SleepBindings.isOn(state.prepReminder) { send(.setSwitch(.prepReminder, isOn: $0)) }) {
@@ -96,16 +60,6 @@ private extension SleepMainPage {
                 )
             }
             .accessibilityIdentifier(SleepIdentifiers.prepReminder)
-            Button { send(.open(.remind, planID: nil)) } label: {
-                SleepNavigationRow(row: SleepRow(
-                    symbol: "clock.fill",
-                    tint: .gray,
-                    title: Text("sleep.prep.when", bundle: .module),
-                    subtitle: Text(SleepFormat.lead(state.prepReminderMinutes))
-                ))
-            }
-            .listRowButton()
-            .accessibilityIdentifier(SleepIdentifiers.reminderLead)
             Toggle(isOn: SleepBindings.isOn(state.muteSemp) { send(.setSwitch(.muteSemp, isOn: $0)) }) {
                 SleepRow(
                     symbol: "bell.slash.fill",
@@ -173,21 +127,11 @@ private extension SleepMainPage {
                 )
             }
             .accessibilityIdentifier(SleepIdentifiers.showInCalendar)
-            Button { send(.open(.goal, planID: nil)) } label: {
-                SleepNavigationRow(row: SleepRow(
-                    symbol: "target",
-                    tint: .green,
-                    title: Text("sleep.goal.title", bundle: .module),
-                    subtitle: Text(SleepFormat.duration(state.goalMinutes))
-                ))
-            }
-            .listRowButton()
-            .accessibilityIdentifier(SleepIdentifiers.goal)
         }
     }
 }
 
 // MARK: - Preview
 #Preview("Overview") {
-    SleepMainPage(state: .previewReady, send: { _ in })
+    SleepMainPage(state: .previewReady, send: { _ in }, edit: { _ in })
 }

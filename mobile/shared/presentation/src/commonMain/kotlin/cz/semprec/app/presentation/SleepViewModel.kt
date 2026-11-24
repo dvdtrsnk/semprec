@@ -45,9 +45,8 @@ class SleepViewModel internal constructor(
             is SleepAction.PickMinutes -> session.pick(action.toChange())
             is SleepAction.PickSound -> session.pick(SleepSettingsChange(alarmSound = action.sound.toDomain()))
             is SleepAction.SetTime -> session.setTime(action.field, action.minutes)
-            is SleepAction.ToggleDay -> session.toggleDay(action.day)
-            is SleepAction.AddPlan -> session.addPlan(action.name)
-            SleepAction.DeletePlan -> session.deletePlan()
+            is SleepAction.ToggleDay, is SleepAction.AddPlan, SleepAction.DeletePlan, is SleepAction.SavePlan,
+            is SleepAction.RemovePlan -> session.editPlans(action)
             SleepAction.ResetNight -> session.resetNight()
             SleepAction.DismissSaveFailure -> session.dismissSaveFailure()
         }

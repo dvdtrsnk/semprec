@@ -50,4 +50,59 @@ class EditSleepPlans(private val repository: SleepRepository) {
         } else {
             RepositoryResult.Failure(FailureKind.REJECTED)
         }
+
+    /**
+     * Writes a whole schedule at once: creates a plan named [name] after the last one when [planId] is null, else
+     * changes the plan [planId]. It needs at least one weekday of the week and two start times; anything else is a
+     * refusal. The days it takes leave the plans that held them on the server.
+     */
+    suspend fun save(
+        plans: List<SleepPlan>,
+        planId: String?,
+        name: String,
+        schedule: SleepSchedule,
+    ): RepositoryResult<Unit> {
+        val valid = schedule.wakeDays.isNotEmpty() &&
+            schedule.wakeDays.all { it in SleepRules.WEEK } &&
+            SleepRules.isSleepTime(schedule.bed) &&
+            SleepRules.isSleepTime(schedule.wake)
+        return when {
+            !valid -> RepositoryResult.Failure(FailureKind.REJECTED)
+            planId == null -> create(plans, name, schedule)
+            plans.none { it.id == planId } -> RepositoryResult.Failure(FailureKind.NOT_FOUND)
+            else -> repository.updatePlan(
+                planId,
+                SleepPlanChange(
+                    wakeDays = schedule.wakeDays,
+                    bed = schedule.bed,
+                    wake = schedule.wake,
+                    alarm = schedule.alarm,
+                ),
+            )
+        }
+    }
+
+    private suspend fun create(plans: List<SleepPlan>, name: String, schedule: SleepSchedule): RepositoryResult<Unit> {
+        if (name.isBlank()) return RepositoryResult.Failure(FailureKind.REJECTED)
+        val plan = NewSleepPlan(
+            name = name,
+            wakeDays = schedule.wakeDays,
+            bed = schedule.bed,
+            wake = schedule.wake,
+            alarm = schedule.alarm,
+            position = (plans.maxOfOrNull { it.position } ?: -1) + 1,
+        )
+        return when (val created = repository.createPlan(plan)) {
+            is RepositoryResult.Content -> RepositoryResult.Content(Unit)
+            is RepositoryResult.Failure -> created
+        }
+    }
 }
+
+/** The days and times of one schedule as the schedule editor writes them. */
+data class SleepSchedule(
+    val wakeDays: Set<Int>,
+    val bed: ClockTime,
+    val wake: ClockTime,
+    val alarm: Boolean,
+)

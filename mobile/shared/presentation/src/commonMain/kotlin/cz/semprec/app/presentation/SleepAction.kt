@@ -32,6 +32,23 @@ sealed interface SleepAction {
     /** Adds a plan for the free days under [name], which the native side writes in its language. */
     data class AddPlan(val name: String) : SleepAction
     data object DeletePlan : SleepAction
+
+    /**
+     * Writes one schedule as the schedule editor shows it, in one write: a new plan named [name] when [planId] is
+     * null, else the plan [planId]. [wakeDays] are ISO weekdays; the days it takes leave the plans that held them.
+     * Goes back to the overview.
+     */
+    data class SavePlan(
+        val planId: String?,
+        val name: String,
+        val wakeDays: List<Int>,
+        val bedMinutes: Int,
+        val wakeMinutes: Int,
+        val alarm: Boolean,
+    ) : SleepAction
+
+    /** Deletes the plan [planId] from the schedule editor, unless it is the last one. */
+    data class RemovePlan(val planId: String) : SleepAction
     data object ResetNight : SleepAction
     data object DismissSaveFailure : SleepAction
 }

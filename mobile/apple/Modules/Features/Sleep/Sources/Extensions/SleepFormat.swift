@@ -28,6 +28,28 @@ enum SleepFormat {
         )
     }
 
+    /// A length as the schedule editor writes it: `45 min`, `8 hod`, `7 hod 30 min`.
+    static func longDuration(_ minutes: Int) -> String {
+        let hours = minutes / 60
+        let rest = minutes % 60
+        if hours == 0 {
+            return String(format: String(localized: "sleep.duration.minutes", bundle: .module), locale: .current, rest)
+        }
+        if rest == 0 {
+            return String(
+                format: String(localized: "sleep.duration.long.hours", bundle: .module),
+                locale: .current,
+                hours
+            )
+        }
+        return String(
+            format: String(localized: "sleep.duration.long.both", bundle: .module),
+            locale: .current,
+            hours,
+            rest
+        )
+    }
+
     /// A reminder lead: `30 min before bedtime`, `1 h before bedtime`.
     static func lead(_ minutes: Int) -> String {
         if minutes == 60 {
@@ -49,6 +71,11 @@ enum SleepFormat {
     /// `Mon`, `Po`: the short name of an ISO weekday, 1 for Monday up to 7 for Sunday.
     static func weekdayShort(_ isoDay: Int) -> String {
         symbol(isoDay, from: calendar.shortStandaloneWeekdaySymbols).localizedCapitalized
+    }
+
+    /// `P`, `Ú`, `M`: the one-letter name of an ISO weekday, as the days picker shows it.
+    static func weekdayInitial(_ isoDay: Int) -> String {
+        symbol(isoDay, from: calendar.veryShortStandaloneWeekdaySymbols).localizedUppercase
     }
 
     static func weekdayLong(_ isoDay: Int) -> String {

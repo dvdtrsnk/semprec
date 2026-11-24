@@ -10,6 +10,9 @@ struct SleepScreen: View {
     @StateObject private var viewModel: SleepViewModel
     @Environment(\.dismiss)
     private var dismiss
+    /// The schedule the editor sheet is open on. The sheet is presented from the screen, not from a row of its form:
+    /// a sheet presented from a form row inside another sheet dismissed both.
+    @State private var editing: ScheduleEditorTarget?
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> SleepViewModel) {
@@ -34,7 +37,22 @@ struct SleepScreen: View {
             },
             message: { Text(FailureKind.sleepMessage(for: viewModel.state.saveFailure)) }
         )
+        .sheet(item: $editing) { target in editor(target) }
         .task { await viewModel.observe() }
+    }
+}
+
+/// Which schedule the editor sheet changes: an existing plan, or a new one.
+private enum ScheduleEditorTarget: Identifiable, Hashable {
+
+    case plan(String)
+    case new
+
+    var id: String {
+        switch self {
+        case .plan(let id): "plan." + id
+        case .new: "new"
+        }
     }
 }
 
@@ -62,11 +80,41 @@ private extension SleepScreen {
 
     @ViewBuilder var page: some View {
         switch state.page {
-        case .main: SleepMainPage(state: state, send: send)
+        case .main:
+            SleepMainPage(state: state, send: send) { plan in
+                editing = plan.map { .plan($0.id) } ?? .new
+            }
         case .plan: SleepPlanPage(state: state, send: send)
         case .night: SleepNightPage(state: state, send: send)
         case .remind, .sound, .goal: SleepPickerPage(state: state, send: send)
         }
+    }
+
+    func editor(_ target: ScheduleEditorTarget) -> some View {
+        let plan: SleepPlanItem? = switch target {
+        case .plan(let id): state.plans.first { $0.id == id }
+        case .new: nil
+        }
+        let otherDays = Set(state.plans.filter { $0.id != plan?.id }.flatMap(\.wakeDays))
+        return SleepScheduleEditor(
+            plan: plan,
+            template: state.plans.first,
+            otherDays: otherDays,
+            goalMinutes: state.goalMinutes,
+            canDelete: state.plans.count > 1,
+            save: { draft in
+                let days = draft.days.sorted()
+                send(.savePlan(
+                    planID: plan?.id,
+                    name: plan?.name ?? SleepFormat.days(days),
+                    wakeDays: days,
+                    bedMinutes: draft.bedMinutes,
+                    wakeMinutes: draft.wakeMinutes,
+                    alarm: draft.alarm
+                ))
+            },
+            delete: { if let plan { send(.removePlan(planID: plan.id)) } }
+        )
     }
 
     var saveFailed: Binding<Bool> {

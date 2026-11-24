@@ -26,4 +26,8 @@ enum SleepIdentifiers {
     static let goal = "sleep.goal"
     /// Followed by the picked value, e.g. `sleep.option.450` or `sleep.option.piano`.
     static let optionPrefix = "sleep.option."
+    static let dial = "sleep.dial"
+    static let editor = "sleep.editor"
+    static let editorClose = "sleep.editor.close"
+    static let editorConfirm = "sleep.editor.confirm"
 }
