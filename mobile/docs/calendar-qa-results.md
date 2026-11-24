@@ -157,7 +157,7 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | E01 | PASS | s-detail: tap on an event opens Details |
 | E02 | PASS | g-r4: a tap beside the held block deselects it |
 | E03 | NOT RUN |  |
-| E04 | PASS | s-menu2: long press selects the block and shows the menu |
+| E04 | PASS | held block, release without moving (axe touch 1 s): handles and the capsule menu show, the details do NOT open (g-yy1). FAIL reported by the owner on the iPhone before: the lift counted as a tap; now the tap after a press is ignored and a tap on a held item only lets go of it |
 | E05 | NOT RUN |  |
 | E06 | FIXED | same root cause: a dragged block was removed and redrawn as a preview, so the release was lost. Verified: a task dragged 17:00 -> 17:45 is stored (server) and an event moved by a drag is stored |
 | E07 | NOT RUN |  |
@@ -432,7 +432,7 @@ Performance, measured with Instruments (`xcrun xctrace record --template "Time P
 | T19 | NOT RUN |  |
 | T20 | NOT RUN |  |
 | U01 | PASS | g-vv: held timed task follows the finger over the event |
-| U02 | FIXED | FAIL on the iPhone (reported by the owner): the block owning the finger left the screen when the drag started, so the gesture never ended and the drop was lost. Now the block stays in place while dragged. Simulator (axe touch batch with a real release): the task went into "DnD host event" (0/2 on the event, server shows both tasks) - g-vv3 |
+| U02 | FIXED | also: the event now shows its task rows before its time line (build 72 showed only "0/1" because rows needed 70 pt). g-xx1: "Host 1h 0/2" with the row "Hosted timed" |
 | U03 | PASS | g-oo1: task A in Host long 18:30-19:50 shows as a row with checkbox and count 0/1; it is no longer in the all-day area |
 | U04 | FIXED | FAIL: g-hh2 after the 17:52 end the task was back in the all-day area with no note. The server marks it missed; the chip now reads "from DnD host event · not done" in orange, as the instruction PDF (g-ii1) |
 | U05 | DIFF | the event row of a missed task is hidden when the event block is too short for rows (12 minutes, g-ii1); in a block of an hour it shows "not done" next to the task. Not run on a tall ended event, to do in Run 2 |

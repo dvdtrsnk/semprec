@@ -28,12 +28,14 @@ struct CalendarItemGestures: ViewModifier {
     /// True while a finger holds the item after the long press; it falls back to false when the finger lifts and
     /// also when the system takes the touch away (a scroll, a call), which gives `onEnded` no call.
     @GestureState private var isHeld = false
+    /// Set from the long press until just after the finger lifts, so that the lift does not also count as a tap.
+    @State private var isAfterPress = false
 
     // MARK: - Body
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
-            .onTapGesture(perform: onTap)
+            .onTapGesture { if !isAfterPress { onTap() } }
             .gesture(moveGesture, isEnabled: enabled)
             .onChange(of: isHeld) { _, held in
                 // A touch the system took away leaves the shared state dragging; end it without writing anything.
@@ -42,6 +44,7 @@ struct CalendarItemGestures: ViewModifier {
                     moved = false
                     onEnd(false)
                 }
+                if !held { releasePress() }
             }
     }
 }
@@ -62,6 +65,7 @@ private extension CalendarItemGestures {
                 case .second(_, let drag):
                     if !selected {
                         selected = true
+                        isAfterPress = true
                         onSelect()
                     }
                     guard let drag else { return }
@@ -79,7 +83,16 @@ private extension CalendarItemGestures {
                 if case .second = value { onEnd(moved) }
                 selected = false
                 moved = false
+                releasePress()
             }
+    }
+
+    /// The tap of the lift comes with the end of the press; the flag goes a moment after it, not before.
+    func releasePress() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            isAfterPress = false
+        }
     }
 }
 

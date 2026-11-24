@@ -35,7 +35,7 @@ struct CalendarTimedItemView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 header
-                if let time = timeText, Layout.showsTime(height) {
+                if let time = timeText, Layout.showsTime(height, taskRows: shownTasks) {
                     Text(time).font(.caption2).foregroundStyle(secondaryStyle).lineLimit(1)
                 }
                 if let place = item.place, Layout.showsDetails(height) {
@@ -44,7 +44,7 @@ struct CalendarTimedItemView: View {
                 if let carried = item.carriedDescription, Layout.showsDetails(height) {
                     Text(carried).font(.caption2).foregroundStyle(secondaryStyle)
                 }
-                ForEach(item.tasks.prefix(Layout.taskRows(height))) { task in
+                ForEach(item.tasks.prefix(shownTasks)) { task in
                     taskRow(task)
                 }
                 if dropTarget {
@@ -80,12 +80,14 @@ extension CalendarTimedItemView {
     /// Calendar's does, one with room for a second line adds the time, and a tall one the place and the tasks.
     enum Layout {
 
-        static func showsTime(_ height: CGFloat) -> Bool { height >= 38 }
+        /// The time goes under the title when there is room left after the task rows, which come first.
+        static func showsTime(_ height: CGFloat, taskRows: Int = 0) -> Bool { height >= 40 + CGFloat(taskRows) * 18 }
 
         static func showsDetails(_ height: CGFloat) -> Bool { height >= 64 }
 
-        /// How many of an event's tasks fit under its title and time.
-        static func taskRows(_ height: CGFloat) -> Int { max(Int((height - 54) / 16), 0) }
+        /// How many of an event's `count` tasks fit under its title: a task of the event is what the person put there, so
+        /// it is shown before the time is.
+        static func taskRows(_ height: CGFloat, count: Int) -> Int { min(count, max(Int((height - 25) / 18), 0)) }
 
         static func titleLines(_ height: CGFloat) -> Int { height >= 64 ? 2 : 1 }
 
@@ -97,6 +99,8 @@ extension CalendarTimedItemView {
 
 // MARK: - Subviews
 private extension CalendarTimedItemView {
+
+    var shownTasks: Int { Layout.taskRows(height, count: item.tasks.count) }
 
     var header: some View {
         HStack(spacing: 4) {

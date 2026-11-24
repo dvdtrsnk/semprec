@@ -31,12 +31,11 @@ abstract class CalendarGestureViewModel internal constructor(
     private var dragSchedule: CalendarSchedule? = null
 
     internal fun tap(itemId: String) {
-        val selected = state.value.selectedItemId
-        if (selected != null && selected != itemId) {
+        // A tap while an item is held only lets go of it; opening is for a tap on an item nothing holds.
+        if (state.value.selectedItemId != null) {
             update { it.copy(selectedItemId = null) }
             return
         }
-        update { it.copy(selectedItemId = null) }
         entryOf(itemId)?.let { emit(CalendarEffect.OpenDetails(itemId, it.kind.toItemKind(), it.date.toString())) }
     }
 

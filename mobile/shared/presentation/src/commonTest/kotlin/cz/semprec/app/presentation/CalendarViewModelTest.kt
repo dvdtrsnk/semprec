@@ -345,14 +345,14 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a tap on the selected item opens it and deselects`() = runTest(dispatcher) {
+    @Test fun `a tap on the selected item only lets go of it`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
         val effects = effectsOf(vm)
         act(vm, CalendarAction.Gesture.Select("meeting"))
         act(vm, CalendarAction.Gesture.Tap("meeting"))
         assertNull(vm.state.value.selectedItemId)
-        assertEquals(1, effects.size)
+        assertTrue(effects.isEmpty())
         vm.close()
     }
 
