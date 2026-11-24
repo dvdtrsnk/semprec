@@ -78,7 +78,7 @@ import kotlinx.coroutines.flow.emptyFlow
  * connection; every window of the process that names it shares what is kept there, and every end of the session
  * empties it as well. The window reads that set ahead of its screens ([OfflineWarmup]) when it starts with a session
  * and when the connection comes back. `null` keeps nothing and every request goes to the server
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
  *

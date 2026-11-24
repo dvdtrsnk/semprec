@@ -115,9 +115,10 @@ private extension JournalScreen {
     /// Selects the period `steps` away from the selected one, as a swipe of the page turns to it. The page that comes
     /// shows the new period as soon as it comes, the axis moving or not.
     func turn(_ steps: Int) -> JournalSelection? {
+        guard let target = viewModel.turn(by: steps) else { return nil }
         isTurning = true
         heldState = nil
-        return viewModel.turn(by: steps)
+        return target
     }
 
     /// A period picked on the axis. One of the selected kind turns the page to its side, as a swipe does.

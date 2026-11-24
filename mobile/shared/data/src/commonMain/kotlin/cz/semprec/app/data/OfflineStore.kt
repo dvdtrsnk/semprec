@@ -41,7 +41,7 @@ internal data class KeptAnswer(val status: Int, val body: String, val etag: Stri
  * What the device keeps for the signed-in account, in a directory the system does not empty: under
  * `directory/offline/<account>`, one directory per account named by [accountKey] (a SHA-1 of the server and the
  * session token), JSON files written with [writeCacheFile]
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). [answers] holds the answers of the offline
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). [answers] holds the answers of the offline
  * set, [people] the person the server last confirmed for the session, [queue] the writes waiting for the server
  * (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection.md), [pages] the note pages
  * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md).

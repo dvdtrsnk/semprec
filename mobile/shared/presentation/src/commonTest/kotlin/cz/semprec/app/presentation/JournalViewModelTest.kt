@@ -229,6 +229,34 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a neighbour that cannot be read is left out and the other one is still kept`() = runTest(dispatcher) {
+        repository.onPeriod = {
+            if (it.key == "2026-10-17") journalFailure() else content(periodPage(it, markdown = "PAGE ${it.key}"))
+        }
+        val vm = loaded()
+        assertNull(vm.state.value.after)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-15"), vm.state.value.before?.shown)
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertNull(vm.state.value.failure)
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-15"))
+        runCurrent()
+        assertEquals("PAGE 2026-10-15", vm.state.value.page?.blocks?.single()?.runs?.single()?.text)
+        // Read ahead once, then once more behind the kept page shown at once.
+        assertEquals(2, reads("2026-10-15"))
+        vm.close()
+    }
+
+    @Test fun `a neighbour whose read throws is left out and the other one is still kept`() = runTest(dispatcher) {
+        repository.onPeriod = {
+            if (it.key == "2026-10-15") error("broken") else content(periodPage(it))
+        }
+        val vm = loaded()
+        assertNull(vm.state.value.before)
+        assertEquals(JournalSelection(JournalPeriodKind.DAY, "2026-10-17"), vm.state.value.after?.shown)
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
     @Test fun `a period read ahead shows at once and its own answer then replaces it`() = runTest(dispatcher) {
         val gate = CompletableDeferred<Unit>()
         repository.onPeriod = {

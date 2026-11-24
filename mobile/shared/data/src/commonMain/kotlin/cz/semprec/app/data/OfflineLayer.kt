@@ -72,7 +72,7 @@ internal data class ApiRequest(
 
 /**
  * Answers the reads of the offline set ([OfflineRoutes]) from what the device keeps in [store], keeps what the server
- * answers (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md), and queues the writes of the offline
+ * answers (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md), and queues the writes of the offline
  * set made without a connection ([writes], docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-
  * connection.md). Every window of the process shares the layer of its directory ([shared]); [AuthenticatedApi] hands
  * it each such request.

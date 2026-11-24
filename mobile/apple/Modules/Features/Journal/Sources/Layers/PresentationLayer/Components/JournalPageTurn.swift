@@ -42,6 +42,10 @@ struct JournalPager<Page: View>: View {
     @State private var handledRequest: Int?
     /// The last moves of the finger, for the speed it lifts at.
     @State private var samples = JournalTurnSamples()
+    /// The waits a turn starts: for a page that does not come, and for a new page to be drawn before it moves. Both
+    /// end with the pager.
+    @State private var waitTask: Task<Void, Never>?
+    @State private var moveTask: Task<Void, Never>?
 
     // MARK: - Body
     var body: some View {
@@ -66,6 +70,10 @@ struct JournalPager<Page: View>: View {
             cancelled: { springBack() }
         ))
         .coordinateSpace(.named(Self.space))
+        .onDisappear {
+            waitTask?.cancel()
+            moveTask?.cancel()
+        }
         .onChange(of: current.shown) { _, shown in
             if let pending, shown == pending.target { start(pending) }
         }
@@ -119,10 +127,9 @@ struct JournalPager<Page: View>: View {
     private func finish() {
         let speed = samples.speed
         samples = JournalTurnSamples()
-        let isFar = abs(offset) > width * Self.turnShare
-        let isFlick = abs(speed) > Self.flickSpeed && offset * speed > 0
-        guard width > 0, isFar || isFlick else { return springBack() }
-        let steps = offset < 0 ? 1 : -1
+        guard let steps = JournalPagerRules.turn(offset: offset, width: width, speed: speed) else {
+            return springBack()
+        }
         let shown = current
         guard let target = onTurn(steps) else { return springBack() }
         wait(for: JournalPendingTurn(steps: steps, target: target, leaving: shown, from: offset, speed: speed))
@@ -134,9 +141,10 @@ struct JournalPager<Page: View>: View {
         guard width > 0 else { return }
         if drawn(turn) != nil || current.shown == turn.target { return start(turn) }
         pending = turn
-        Task { @MainActor in
+        waitTask?.cancel()
+        waitTask = Task { @MainActor in
             try? await Task.sleep(for: Self.waitLimit)
-            if pending?.id == turn.id { start(turn) }
+            if !Task.isCancelled, pending?.id == turn.id { start(turn) }
         }
     }
 
@@ -177,9 +185,10 @@ struct JournalPager<Page: View>: View {
         if ready != nil { return move() }
         // A page not drawn yet is drawn where it comes from before it moves: views added in the update that animates
         // their page would be put straight where the page ends.
-        Task { @MainActor in
+        moveTask?.cancel()
+        moveTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(10))
-            if turning == turn.id { move() }
+            if !Task.isCancelled, turning == turn.id { move() }
         }
     }
 
@@ -192,10 +201,7 @@ struct JournalPager<Page: View>: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            places = places.map { place in
-                let moved = place - steps
-                return moved < -1 ? moved + 3 : moved > 1 ? moved - 3 : moved
-            }
+            places = JournalPagerRules.places(places, afterTurning: steps)
             kept = [:]
             offset = 0
         }
@@ -208,12 +214,37 @@ struct JournalPager<Page: View>: View {
 
     // MARK: - Constants
     private static var space: String { "journal.pageTurn" }
-    /// How far the finger has to take the page, as a share of its width, and how fast a flick has to be, in points a
-    /// second, as the calendar's day.
-    private static var turnShare: CGFloat { 0.35 }
-    private static var flickSpeed: CGFloat { 500 }
     private static var turnDuration: Double { 0.35 }
     private static var waitLimit: Duration { .milliseconds(800) }
+}
+
+/// The decisions of the pager that depend on nothing but numbers.
+enum JournalPagerRules {
+
+    /// How far the finger has to take the page, as a share of its width, and how fast a flick has to be, in points a
+    /// second, as the calendar's day.
+    static let turnShare: CGFloat = 0.35
+    static let flickSpeed: CGFloat = 500
+
+    /// The turn a finger that lifts with the page moved by `offset` at `speed` asks for: `1` to the next period (the
+    /// page moved left), `-1` to the one before, `nil` to spring back. It turns past `turnShare` of `width`, or after
+    /// a flick faster than `flickSpeed` the way the page moved.
+    static func turn(offset: CGFloat, width: CGFloat, speed: CGFloat) -> Int? {
+        guard width > 0, offset != 0 else { return nil }
+        let isFar = abs(offset) > width * turnShare
+        let isFlick = abs(speed) > flickSpeed && offset * speed > 0
+        guard isFar || isFlick else { return nil }
+        return offset < 0 ? 1 : -1
+    }
+
+    /// The places of the three slots (`-1`, `0` and `1`) once the pages moved `steps` places on: the slot that came is
+    /// in view, and the one that left the view on one side goes round to the other.
+    static func places(_ places: [Int], afterTurning steps: Int) -> [Int] {
+        places.map { place in
+            let moved = place - steps
+            return moved < -1 ? moved + 3 : moved > 1 ? moved - 3 : moved
+        }
+    }
 }
 
 /// Lays the pager's slots over one another at its top, each as wide as the pager and as tall as its page, and is as

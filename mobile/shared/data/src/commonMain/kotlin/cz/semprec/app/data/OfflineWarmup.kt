@@ -17,7 +17,7 @@ private val WARMUP_MONTHS = -1..2
 /**
  * Reads the offline set ahead of the screens of a window, with the requests those screens send, so that the answers
  * are kept under them and the screens open without a connection
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). In order: the schema and the databases, the
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). In order: the schema and the databases, the
  * task lists of every [TaskScope], the areas, projects and people, the calendars, the invitations, the calendar
  * windows of the current month, the one before and the two after, the agenda's first page from today, the diary's days
  * from [WARMUP_DIARY_DAYS] back to as many ahead with their pages, the overview, the sleep of tonight, and the Inbox

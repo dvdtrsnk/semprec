@@ -43,7 +43,7 @@ interface CatalogRepository {
  * (docs/adr/2026-11-16-open-mobile-screens-reload-after-any-write-of-their-window.md). Every window has its own
  * instance. [elsewhere] adds the changes the window learns of from outside itself: the offline layer every window of
  * the process shares emits when the connection came back
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md).
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md).
  */
 class ItemChanges(elsewhere: Flow<Unit> = emptyFlow()) {
     private val mutable = MutableSharedFlow<Unit>(extraBufferCapacity = 1)

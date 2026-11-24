@@ -60,6 +60,38 @@ final class JournalViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testATurnSelectsThePeriodOfTheSameKindThatManyStepsAwayAndNamesIt() {
+        let model = ScriptedJournalScreenModel(state: JournalState(
+            phase: .content, selection: JournalSelection(kind: .month, start: "2026-12-01"), today: "2026-10-16"
+        ))
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        XCTAssertEqual(viewModel.turn(by: 1), JournalSelection(kind: .month, start: "2027-01-01"))
+        XCTAssertEqual(viewModel.turn(by: -2), JournalSelection(kind: .month, start: "2026-10-01"))
+        XCTAssertEqual(model.actions, [
+            .select(kind: .month, start: "2027-01-01"),
+            .select(kind: .month, start: "2026-10-01")
+        ])
+    }
+
+    @MainActor
+    func testATurnFromASelectionThatIsNoDaySelectsNothing() {
+        let model = ScriptedJournalScreenModel(state: JournalState(
+            phase: .content, selection: JournalSelection(kind: .day, start: "not a day"), today: "2026-10-16"
+        ))
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        XCTAssertNil(viewModel.turn(by: 1))
+        XCTAssertTrue(model.actions.isEmpty)
+    }
+
+    @MainActor
+    func testSelectingByKindAndStartIsForwardedAsASelection() {
+        let model = ScriptedJournalScreenModel(state: loading)
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        viewModel.select(kind: .year, start: "2027-01-01")
+        XCTAssertEqual(model.actions, [.select(kind: .year, start: "2027-01-01")])
+    }
+
+    @MainActor
     func testEffectsBecomeRouterCallsIncludingOnesRaisedBeforeObservation() async throws {
         let model = ScriptedJournalScreenModel(state: loading, effects: [.openEvent(id: "e1")])
         let router = RouterSpy()
