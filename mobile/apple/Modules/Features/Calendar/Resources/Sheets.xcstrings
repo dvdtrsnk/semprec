@@ -1580,6 +1580,22 @@
         }
       }
     },
+    "newItem.discard" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zahodit změny"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Discard Changes"
+          }
+        }
+      }
+    },
     "newItem.end" : {
       "localizations" : {
         "cs" : {
@@ -1609,6 +1625,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Vlajka"
+          }
+        }
+      }
+    },
+    "newItem.keepEditing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokračovat v úpravách"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep Editing"
           }
         }
       }
