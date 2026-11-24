@@ -12,7 +12,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
     func testTheDiaryOpensOnTheGivenDayAndWithoutASessionEndsUnauthorized() async {
         let model = isolatedFactory().makeJournal(initialDay: "2026-10-14")
         XCTAssertEqual(model.state.selection, JournalSelection(kind: .day, start: "2026-10-14"))
-        XCTAssertEqual(model.state.axis.map(\.kind), [.year, .quarter, .month, .day])
+        XCTAssertEqual(model.state.axis.map(\.kind), [.year, .month, .day])
         let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         XCTAssertNotNil(failed)
     }

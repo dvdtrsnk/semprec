@@ -48,21 +48,6 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testTheJournalRowSelectsTheJournalTabAndPushesNothing() {
-        let context = NavigationContext()
-        let overview = OverviewStackSpy()
-        context.register(overview, for: .overview)
-        var selected: [AppTab] = []
-        let subscription = context.tabRequests.sink { selected.append($0) }
-        AppOverviewRouter(context: context).show(.journal(itemId: "j1"))
-        AppOverviewRouter(context: context).show(.journal(itemId: nil))
-        subscription.cancel()
-        XCTAssertEqual(selected, [.journal, .journal])
-        XCTAssertTrue(overview.pushed.isEmpty)
-        XCTAssertTrue(overview.sheets.isEmpty)
-    }
-
-    @MainActor
     func testAPinnedProjectRowPushesTheProjectOntoTheOverviewStack() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()

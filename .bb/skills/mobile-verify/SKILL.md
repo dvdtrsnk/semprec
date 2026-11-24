@@ -101,15 +101,20 @@ runs the instrumented tests on one device.
 ## 4. A focused loop, then the full run
 
 While iterating, run the narrowest command that exercises your change, from
-`mobile/` (or `mobile/apple/` for Tuist and Xcode):
+`mobile/` (or `mobile/apple/` for Tuist and Xcode). The shared Kotlin tests are
+where the screen logic is tested, so a change to shared code and the Swift that
+renders it is checked during the work with `./gradlew sharedJvmTest` (plus
+`detektAll -PdetektAutoFix=false`) and an iOS build; `sharedAppleTest` and the
+Apple test bundles run in the full pipeline before the pull request (below), not
+after every edit, as `kmp-shared` §6 says too:
 
 | Change | Fast check |
 |---|---|
-| shared Kotlin | `./gradlew sharedJvmTest`, then `./gradlew sharedAppleTest` |
-| exported shared API | add `./gradlew :shared:umbrella:linkDebugFrameworkIosSimulatorArm64 :shared:umbrella:linkDebugFrameworkMacosArm64` and the `apple` step |
+| shared Kotlin | `./gradlew sharedJvmTest` |
+| exported shared API | add an iOS build: `tuist generate --no-open`, then `xcodebuild build -workspace Semprec.xcworkspace -scheme Semprec -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO` |
 | Android Kotlin or resources | `./gradlew androidUnitTest :android:app:lintDebug` |
 | any Kotlin formatting | `./gradlew detektAll` corrects formatting in place (read `git diff` afterwards and keep only what you would have written); `./gradlew detektAll -PdetektAutoFix=false` only reports, as `verify` does |
-| Swift | `swiftlint lint --strict`, then `tuist generate --no-open` and `xcodebuild test -workspace Semprec.xcworkspace -scheme Semprec -destination 'platform=macOS,arch=arm64' -derivedDataPath build/DerivedData` |
+| Swift | `swiftlint lint --strict`, then `tuist generate --no-open` and the iOS build above |
 | Apple UI flows | `xcodebuild test -workspace Semprec.xcworkspace -scheme SemprecUITests -destination id=<UDID> -derivedDataPath build/DerivedData` on a simulator you reserved; the `Semprec` scheme neither builds nor runs `SemprecUITests` |
 | a module, a manifest or the policy | `mobile/scripts/verify architecture` |
 

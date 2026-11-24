@@ -16,6 +16,11 @@ public enum Theme {
         /// The accent colour every control of the app tints with: the deep blue of the design's primary buttons, a
         /// lighter shade of it in dark appearance.
         public static let appAccent = Color(light: 0x164A78, dark: 0x4A82BA)
+        /// The selected period wherever the app picks a day, a month or a year: the diary's axis, the calendar's week
+        /// strip. It is the app's accent, on a flat capsule.
+        public static let selection = appAccent
+        /// Today's date (its day, month and year) wherever the app shows dates to pick from, in the diary's gold.
+        public static let today = Color(light: 0xB08D45, dark: 0xD6B36B)
         /// A refused or destructive state.
         public static let destructive = Color.red
         /// The page behind grouped cards.

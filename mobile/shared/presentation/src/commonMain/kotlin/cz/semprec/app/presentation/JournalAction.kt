@@ -10,6 +10,12 @@ sealed interface JournalAction {
     data object GoToday : JournalAction
 
     /**
+     * Shows the period of the selected kind [steps] periods after the selected one (before it for a negative
+     * [steps]), as a turn of the page does.
+     */
+    data class Turn(val steps: Int) : JournalAction
+
+    /**
      * Moves the windows of the time axis around [day] (`YYYY-MM-DD`), which the person dragged the axis to; the
      * selection and what the page shows stay as they are.
      */

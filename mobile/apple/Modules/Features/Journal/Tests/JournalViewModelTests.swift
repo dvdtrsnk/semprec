@@ -60,6 +60,31 @@ final class JournalViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testATurnIsAskedOfTheSharedModelAndNamesThePeriodItSelected() {
+        let model = TurningJournalModel(selection: JournalSelection(kind: .month, start: "2026-12-01"))
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        model.next = JournalSelection(kind: .month, start: "2027-01-01")
+        XCTAssertEqual(viewModel.turn(by: 1), JournalSelection(kind: .month, start: "2027-01-01"))
+        XCTAssertEqual(model.actions, [.turn(steps: 1)])
+    }
+
+    @MainActor
+    func testATurnThatSelectsNothingNewNamesNoPeriod() {
+        let model = ScriptedJournalScreenModel(state: loading)
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        XCTAssertNil(viewModel.turn(by: -1))
+        XCTAssertEqual(model.actions, [.turn(steps: -1)])
+    }
+
+    @MainActor
+    func testSelectingByKindAndStartIsForwardedAsASelection() {
+        let model = ScriptedJournalScreenModel(state: loading)
+        let viewModel = JournalViewModel(model: model, router: RouterSpy())
+        viewModel.select(kind: .year, start: "2027-01-01")
+        XCTAssertEqual(model.actions, [.select(kind: .year, start: "2027-01-01")])
+    }
+
+    @MainActor
     func testEffectsBecomeRouterCallsIncludingOnesRaisedBeforeObservation() async throws {
         let model = ScriptedJournalScreenModel(state: loading, effects: [.openEvent(id: "e1")])
         let router = RouterSpy()
@@ -147,5 +172,27 @@ extension RouterSpy: JournalRouting {
 
     func showPage(itemId: String, title: String) {
         calls.append("page \(itemId) \(title)")
+    }
+}
+
+/// A diary model that selects `next` when it is asked to turn, as the shared ViewModel selects at once.
+@MainActor
+private final class TurningJournalModel: JournalScreenModel {
+
+    private(set) var state: JournalState
+    private(set) var actions: [JournalAction] = []
+    var next: JournalSelection?
+
+    init(selection: JournalSelection) {
+        state = JournalState(phase: .content, selection: selection, today: "2026-10-16")
+    }
+
+    func states() -> AsyncStream<JournalState> { AsyncStream { $0.yield(state) } }
+
+    func effects() -> AsyncStream<JournalEffect> { AsyncStream { _ in } }
+
+    func send(_ action: JournalAction) {
+        actions.append(action)
+        if case .turn = action, let next { state.selection = next }
     }
 }

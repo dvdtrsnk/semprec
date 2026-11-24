@@ -11,10 +11,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
 
@@ -56,6 +58,13 @@ class OfflineLayerTest {
     private suspend fun OfflineLayer.read(server: ScriptedServer, request: ApiRequest = overview) =
         read(SESSION, request) { server.transmit() }
 
+    /** Runs the layer's work in the background to its end, the windows told included. */
+    private fun TestScope.settleBackground() {
+        runCurrent()
+        advanceTimeBy(1.seconds)
+        runCurrent()
+    }
+
     /** Counts what [OfflineLayer.changes] emits while the test runs. */
     private fun TestScope.emissions(layer: OfflineLayer): () -> Int {
         var count = 0
@@ -69,7 +78,7 @@ class OfflineLayerTest {
     private suspend fun TestScope.offlineWithKept(layer: OfflineLayer, server: ScriptedServer) {
         server.next(answered("a"))
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(NO_ANSWER)
         layer.read(server)
         runCurrent()
@@ -101,34 +110,129 @@ class OfflineLayerTest {
         assertEquals(2, server.sent)
     }
 
-    @Test fun `a socket connect makes every kept answer stale`() = runTest {
+    @Test fun `after a socket connect a kept answer is answered at once and read again`() = runTest {
         val server = ScriptedServer(answered("a"), answered("b"))
         val layer = layer()
         layer.read(server)
         layer.connected()
-        assertEquals(answered("b"), layer.read(server))
-    }
-
-    @Test fun `a socket frame makes every kept answer stale`() = runTest {
-        val server = ScriptedServer(answered("a"), answered("b"))
-        val layer = layer()
-        layer.read(server)
-        layer.frameArrived()
-        assertEquals(answered("b"), layer.read(server))
-    }
-
-    @Test fun `an answer stays fresh for five minutes and no longer`() = runTest {
-        val server = ScriptedServer(answered("a"), answered("b"))
-        val layer = layer()
-        layer.read(server)
-        time += KEPT_ANSWER_FRESH_FOR - 1.seconds
         assertEquals(answered("a"), layer.read(server))
-        time += 1.seconds
+        settleBackground()
+        assertEquals(2, server.sent)
         assertEquals(answered("b"), layer.read(server))
         assertEquals(2, server.sent)
     }
 
-    @Test fun `a change signal while a request is out leaves its answer stale`() = runTest {
+    @Test fun `after a socket frame a kept answer is answered at once and read again`() = runTest {
+        val server = ScriptedServer(answered("a"), answered("b"))
+        val layer = layer()
+        val told = emissions(layer)
+        layer.read(server)
+        layer.frameArrived()
+        assertEquals(answered("a"), layer.read(server))
+        settleBackground()
+        assertEquals(1, told())
+        assertEquals(answered("b"), layer.read(server))
+        assertEquals(2, server.sent)
+    }
+
+    @Test fun `an answer stays fresh for five minutes and is then answered at once and read again`() = runTest {
+        val server = ScriptedServer(answered("a"), answered("b"))
+        val layer = layer()
+        val told = emissions(layer)
+        layer.read(server)
+        time += KEPT_ANSWER_FRESH_FOR - 1.seconds
+        assertEquals(answered("a"), layer.read(server))
+        assertEquals(1, server.sent)
+        time += 1.seconds
+        assertEquals(answered("a"), layer.read(server))
+        settleBackground()
+        assertEquals(2, server.sent)
+        assertEquals(1, told())
+        assertEquals(answered("b"), layer.read(server))
+        assertEquals(2, server.sent)
+    }
+
+    @Test fun `an answer read again that did not change tells nobody`() = runTest {
+        val server = ScriptedServer(answered("a"))
+        val layer = layer()
+        val told = emissions(layer)
+        layer.read(server)
+        time += KEPT_ANSWER_FRESH_FOR
+        layer.read(server)
+        settleBackground()
+        assertEquals(2, server.sent)
+        assertEquals(0, told())
+    }
+
+    @Test fun `answers read again together tell the windows once`() = runTest {
+        val server = ScriptedServer(answered("a"), answered("b"), answered("c"), answered("d"))
+        val layer = layer()
+        val told = emissions(layer)
+        layer.read(server, overview)
+        layer.read(server, timeline)
+        time += KEPT_ANSWER_FRESH_FOR
+        layer.read(server, overview)
+        layer.read(server, timeline)
+        settleBackground()
+        assertEquals(4, server.sent)
+        assertEquals(1, told())
+    }
+
+    @Test fun `an answer is read again behind it only once at a time`() = runTest {
+        val release = CompletableDeferred<Unit>()
+        var sent = 0
+        val layer = layer()
+        layer.read(SESSION, overview) { answered("a") }
+        time += KEPT_ANSWER_FRESH_FOR
+        repeat(2) {
+            assertEquals(
+                answered("a"),
+                layer.read(SESSION, overview) {
+                    sent += 1
+                    release.await()
+                    answered("b")
+                },
+            )
+        }
+        runCurrent()
+        assertEquals(1, sent)
+        release.complete(Unit)
+        settleBackground()
+        assertEquals(1, sent)
+    }
+
+    @Test fun `an answer read again that is gone is forgotten and the windows are told`() = runTest {
+        val server = ScriptedServer(answered("a"))
+        val layer = layer()
+        val told = emissions(layer)
+        layer.read(server)
+        time += KEPT_ANSWER_FRESH_FOR
+        server.next(ApiResponse.Failure(FailureKind.NOT_FOUND, 404))
+        assertEquals(answered("a"), layer.read(server))
+        settleBackground()
+        assertEquals(1, told())
+        server.next(NO_ANSWER)
+        assertEquals(NO_ANSWER, layer.read(server))
+    }
+
+    @Test fun `an answer a write made stale is not answered at once`() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val layer = layer()
+        layer.read(SESSION, overview) { answered("a") }
+        layer.wrote()
+        val read = async {
+            layer.read(SESSION, overview) {
+                release.await()
+                answered("b")
+            }
+        }
+        runCurrent()
+        assertTrue(read.isActive)
+        release.complete(Unit)
+        assertEquals(answered("b"), read.await())
+    }
+
+    @Test fun `a write while a request is out leaves its answer stale`() = runTest {
         val release = CompletableDeferred<Unit>()
         var sent = 0
         val layer = layer()
@@ -140,7 +244,7 @@ class OfflineLayerTest {
             }
         }
         runCurrent()
-        layer.frameArrived()
+        layer.wrote()
         release.complete(Unit)
         first.await()
         layer.read(SESSION, overview) {
@@ -192,7 +296,7 @@ class OfflineLayerTest {
         val server = ScriptedServer(answered("a"))
         val layer = layer()
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(notFound)
         assertEquals(notFound, layer.read(server))
         server.next(NO_ANSWER)
@@ -204,7 +308,7 @@ class OfflineLayerTest {
         val server = ScriptedServer(answered("a"))
         val layer = layer()
         layer.read(server)
-        layer.frameArrived()
+        layer.wrote()
         server.next(refused)
         assertEquals(refused, layer.read(server))
         server.next(NO_ANSWER)
@@ -266,6 +370,8 @@ class OfflineLayerTest {
         runCurrent()
         assertEquals(1, emitted())
         server.next(answered("c"))
+        assertEquals(answered("b"), layer.read(server))
+        settleBackground()
         assertEquals(answered("c"), layer.read(server))
     }
 
@@ -300,6 +406,7 @@ class OfflineLayerTest {
         layer.connected()
         assertEquals(1, emitted())
         server.next(answered("b"))
+        // The kept answer was asked for before a write: its read waits.
         assertEquals(answered("b"), layer.read(server))
     }
 
@@ -340,10 +447,16 @@ class OfflineLayerTest {
         assertEquals(answered("b"), layer.read(server))
     }
 
-    @Test fun `kept answers are found again after a restart but are not fresh`() = runTest {
+    @Test fun `kept answers are answered at once after a restart and read again behind`() = runTest {
         layer().read(ScriptedServer(answered("a")))
         val online = ScriptedServer(answered("b"))
-        assertEquals(answered("b"), layer().read(online))
+        val restarted = layer()
+        val told = emissions(restarted)
+        assertEquals(answered("a"), restarted.read(online))
+        settleBackground()
+        assertEquals(1, online.sent)
+        assertEquals(1, told())
+        assertEquals(answered("b"), restarted.read(online))
         assertEquals(1, online.sent)
         assertEquals(answered("b"), layer().read(ScriptedServer(NO_ANSWER)))
     }

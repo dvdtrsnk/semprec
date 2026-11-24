@@ -25,6 +25,8 @@ final class AppComposition: ObservableObject {
     let dropTargets = DropTargetRegistry()
     /// The tab the person is on, which the pages the chat opens appear in.
     var currentTab = AppTab.overview
+    /// The models of the tabs not opened yet, made ahead so that they open on their content.
+    let preparedTabs: PreparedTabModels
 
     // MARK: - Init
     convenience init() {
@@ -37,6 +39,7 @@ final class AppComposition: ObservableObject {
         self.models = models
         self.notifications = notifications
         self.navigation = navigation
+        preparedTabs = PreparedTabModels(models: models)
         overviewRouter = AppOverviewRouter(context: navigation)
         collectionsRouter = AppCollectionsRouter(context: navigation, tab: .overview)
         calendarRouter = AppCalendarRouter(context: navigation)

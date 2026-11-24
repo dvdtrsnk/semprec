@@ -50,7 +50,7 @@ internal fun nextReconnectDelayMillis(attempt: Int, random: () -> Double): Long 
  * ([AuthenticatedApi.openSocket] signs the window out), and nor does one started while nobody is signed in. [start] and [stop] are called on one thread, the main thread of the app.
  *
  * With [offline], every connect and every text frame tells the offline layer that what it keeps may have changed
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). A frame that a page changed raises its item
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). A frame that a page changed raises its item
  * on [pages], so an open note reads it again
  * (docs/adr/2026-11-23-note-edits-merge-three-ways-and-wait-on-the-device.md).
  */

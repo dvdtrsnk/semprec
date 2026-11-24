@@ -38,6 +38,21 @@ final class JournalViewModel: ObservableObject {
         model.send(.select(kind: cell.kind, start: cell.start))
     }
 
+    /// Selects the period of `kind` that starts on `start`, as a tap on it on the axis does.
+    func select(kind: JournalPeriodKind, start: String) {
+        model.send(.select(kind: kind, start: start))
+    }
+
+    /// Asks the shared ViewModel for the period `steps` away from the selected one, of the same kind, and names the
+    /// period it selected; `nil` when the selection did not change. The shared ViewModel works out which period that
+    /// is and selects it at once.
+    func turn(by steps: Int) -> JournalSelection? {
+        let before = model.state.selection
+        model.send(.turn(steps: steps))
+        let after = model.state.selection
+        return after == before ? nil : after
+    }
+
     func goToday() {
         model.send(.goToday)
     }

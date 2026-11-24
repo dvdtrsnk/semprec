@@ -179,7 +179,7 @@ class SyncSocketTest {
         assertNull(withTimeoutOrNull(QUIET_MILLIS) { server.connections.receive() })
     }
 
-    @Test fun `a connect and every frame make what the offline layer keeps stale`() = runBlocking<Unit> {
+    @Test fun `a connect and every frame make what the offline layer keeps read again`() = runBlocking<Unit> {
         val layer = OfflineLayer(OfflineStore(newTestDirectory()), scope)
         val api = AuthenticatedApi(ApiClient(), storage, offline = layer) { rejected += 1 }
         val offlineSocket = SyncSocket(api, changes, scope, { 50L }, 200L, layer)
@@ -192,16 +192,22 @@ class SyncSocketTest {
         offlineSocket.start()
         val session = connection()
         everyTopicRaised()
-        // The socket read the schema after it connected, which made the kept one stale, and kept the new answer.
-        assertEquals(2, server.schemaReads.get())
+        // The socket read the schema after it connected, which made the kept one stale: it was answered at once and
+        // read again behind, and the new answer is kept.
+        schemaReadsReach(2)
         api.send(HttpMethod.Get, "/api/schema")
         assertEquals(2, server.schemaReads.get())
 
         session.send(Frame.Text(itemFrame("db-events")))
         raised(SyncTopic.CALENDAR)
         api.send(HttpMethod.Get, "/api/schema")
-        assertEquals(3, server.schemaReads.get())
+        schemaReadsReach(3)
         offlineSocket.stop()
+    }
+
+    private suspend fun schemaReadsReach(count: Int) {
+        withTimeout(WAIT_MILLIS) { while (server.schemaReads.get() < count) delay(10) }
+        assertEquals(count, server.schemaReads.get())
     }
 
     @Test fun `a frame that a page changed raises its item and no topic`() = runBlocking<Unit> {

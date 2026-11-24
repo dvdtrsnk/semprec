@@ -147,7 +147,7 @@ internal class OfflineWrites(
         val response = transmit(request)
         state.answered(response)
         if (response.waitsInQueue()) return enqueue(account, route, request, made, wait = false)
-        if (response is ApiResponse.Success) state.locked { state.freshness.changed() }
+        if (response is ApiResponse.Success) state.locked { state.freshness.wrote() }
         return response
     }
 

@@ -17,7 +17,7 @@ import io.ktor.http.HttpMethod
  * except those that only read or only save the text of a page, which [announces] lists.
  *
  * With [offline], a read of the offline set ([OfflineRoutes]) is answered by that layer, from what the device keeps
- * or from the server (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md), and a write of a queued
+ * or from the server (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md), and a write of a queued
  * route ([QueuedRoute]) is sent or queued by it (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-
  * connection.md); the window's [AuthenticatedApi] sends what the layer replays. Every other request still goes to the
  * server, and the layer learns from its outcome whether the server was reached and whether a write may have changed

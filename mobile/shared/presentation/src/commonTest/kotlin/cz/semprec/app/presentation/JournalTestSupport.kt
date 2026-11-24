@@ -9,6 +9,7 @@ import cz.semprec.app.domain.JournalInboxEntry
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodPage
 import cz.semprec.app.domain.JournalPeriodType
+import cz.semprec.app.domain.JournalQuarterPage
 import cz.semprec.app.domain.JournalRepository
 import cz.semprec.app.domain.JournalWeekPage
 import cz.semprec.app.domain.PageDocument
@@ -78,13 +79,17 @@ fun <T> content(value: T): RepositoryResult<T> = RepositoryResult.Content(value)
 fun journalFailure(kind: FailureKind = FailureKind.UNAVAILABLE): RepositoryResult.Failure =
     RepositoryResult.Failure(kind)
 
-/** The answer for [period]: a day with an event, a birthday and an Inbox item, a month with two weeks, else a page. */
+/**
+ * The answer for [period]: a day with an event, a birthday and an Inbox item, a month with two weeks, a year with its
+ * four quarters (the fourth written with [quarterMarkdown]), else a page.
+ */
 fun periodPage(
     period: JournalPeriod,
     markdown: String? = "Hello",
     itemId: String? = "item-${period.key}",
     weekMarkdown: String? = null,
     weekItemId: String? = null,
+    quarterMarkdown: String? = null,
 ): JournalPeriodPage {
     val dayKey = period.key.takeIf { it.length == DAY_KEY_LENGTH }.orEmpty()
     val first = CalendarDay.parse(dayKey) ?: monthOrWiderStart(period)
@@ -103,6 +108,7 @@ fun periodPage(
         itemId = itemId,
         markdown = markdown,
         weeks = weeks,
+        quarters = if (period.type == JournalPeriodType.YEAR) quartersOf(first.year, quarterMarkdown) else emptyList(),
         inbox = if (isDay) listOf(inboxEntry()) else emptyList(),
         events = if (isDay) listOf(event()) else emptyList(),
         birthdays = if (isDay) listOf(JournalBirthday("b1", "Jana Kovarova")) else emptyList(),
@@ -122,6 +128,18 @@ private fun monthOrWiderStart(period: JournalPeriod): CalendarDay {
 }
 
 private const val YEAR_DIGITS = 4
+
+private fun quartersOf(year: Int, fourthMarkdown: String?): List<JournalQuarterPage> = (1..4).map { quarter ->
+    val start = CalendarDay(year, (quarter - 1) * 3 + 1, 1)
+    JournalQuarterPage(
+        period = "$year-Q$quarter",
+        quarter = quarter,
+        from = start,
+        to = start.endOf(JournalPeriodType.QUARTER),
+        itemId = if (quarter == 4) "item-$year-Q4" else null,
+        markdown = if (quarter == 4) fourthMarkdown else null,
+    )
+}
 
 private fun weekOf(day: CalendarDay, markdown: String?, itemId: String?): JournalWeekPage {
     val iso = day.isoWeek()

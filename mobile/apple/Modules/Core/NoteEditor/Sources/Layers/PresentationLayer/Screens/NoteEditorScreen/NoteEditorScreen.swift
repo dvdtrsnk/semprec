@@ -51,7 +51,13 @@ struct NoteEditorScreen: View {
                 if hasAppeared { viewModel.send(.refresh) }
                 hasAppeared = true
             }
-            .onDisappear { viewModel.finish() }
+            .onDisappear {
+                // A note that goes while it is edited or its blocks are selected no longer holds the focus it set: the
+                // screen around it would otherwise stay focused with nothing left to end.
+                if viewModel.editingBlockId != nil { focus.isEditing = false }
+                if interaction.selecting { focus.isSelecting = false }
+                viewModel.finish()
+            }
             .onChange(of: viewModel.editingBlockId) { _, id in
                 focus.isEditing = id != nil
                 reveal(id)

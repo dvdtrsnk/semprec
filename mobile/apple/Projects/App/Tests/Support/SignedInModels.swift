@@ -11,6 +11,9 @@ final class SignedInModels: ScreenModelFactory {
     // MARK: - Properties
     /// Every call of `startLiveUpdates()` (`true`) and `stopLiveUpdates()` (`false`), in order.
     private(set) var liveUpdateCalls: [Bool] = []
+    /// The days the calendar's and the diary's models were made for, in order.
+    private(set) var calendarDays: [String] = []
+    private(set) var journalDays: [String] = []
 
     // MARK: - Protocol conformance
     func startLiveUpdates() {
@@ -43,7 +46,10 @@ final class SignedInModels: ScreenModelFactory {
         real.makeItem(itemId: itemId, databaseKey: databaseKey)
     }
 
-    func makeJournal(initialDay: String) -> any JournalScreenModel { real.makeJournal(initialDay: initialDay) }
+    func makeJournal(initialDay: String) -> any JournalScreenModel {
+        journalDays.append(initialDay)
+        return real.makeJournal(initialDay: initialDay)
+    }
 
     func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel { real.makeNoteEditor(source: source) }
 
@@ -55,7 +61,10 @@ final class SignedInModels: ScreenModelFactory {
         real.makeSleep(night: night, startOnNight: startOnNight)
     }
 
-    func makeCalendar(initialDay: String) -> any CalendarScreenModel { real.makeCalendar(initialDay: initialDay) }
+    func makeCalendar(initialDay: String) -> any CalendarScreenModel {
+        calendarDays.append(initialDay)
+        return real.makeCalendar(initialDay: initialDay)
+    }
 
     func makeCalendarList() -> any CalendarListScreenModel { real.makeCalendarList() }
 

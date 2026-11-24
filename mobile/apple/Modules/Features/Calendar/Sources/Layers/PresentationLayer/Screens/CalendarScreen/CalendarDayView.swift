@@ -12,6 +12,8 @@ struct CalendarDayView: View {
     let viewModel: CalendarViewModel
     /// Changes with each tap on Today, which overrides a day this view chose ahead of the shared state.
     let todayRequests: Int
+    /// The paper behind the calendar, whose haze goes up and down with the shown day's timeline.
+    let paper: PaperScroll
 
     // MARK: - State
     /// Where the shown day's timeline is, read by gestures and followed by the header's backdrop.
@@ -33,8 +35,10 @@ struct CalendarDayView: View {
     @State private var chosenDay: String?
     /// The height of the glass header, which the timeline starts below and scrolls on under.
     @State private var headerHeight: CGFloat = 0
-    /// How far the day view sits below the top of the screen, under the status and navigation bars.
+    /// How far the day view sits below the top of the screen, under the status and navigation bars, and how tall it
+    /// is: the paper the header shows is a screen tall, as the page's.
     @State private var topBarsHeight: CGFloat = 0
+    @State private var dayHeight: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
@@ -74,6 +78,7 @@ struct CalendarDayView: View {
             if state.selectedDay != state.today { tickedDay = state.today }
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { dayHeight = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
@@ -154,7 +159,8 @@ private extension CalendarDayView {
             )
         )
         .frame(height: topBarsHeight + headerHeight + Self.backdropBleed, alignment: .top)
-        .background(.background)
+        // On the paper the page shows, so the header glows with its haze as with the items it covers.
+        .background(alignment: .top) { CalendarPaperHaze(paper: paper, pageHeight: topBarsHeight + dayHeight) }
         .clipped()
         .blur(radius: 24, opaque: true)
         .saturation(1.8)
@@ -204,7 +210,9 @@ private extension CalendarDayView {
             startId: CalendarGeometry.hourId(startHour(day: key), day: key),
             topInset: headerHeight,
             // Today brings today's timeline back to the current time.
-            startRequests: key == state.today ? todayRequests : 0
+            startRequests: key == state.today ? todayRequests : 0,
+            // Only the shown day's timeline moves the haze; the pages beside it are laid out but not looked at.
+            paper: key == shownDay ? paper : nil
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
@@ -310,5 +318,17 @@ private extension CalendarDayView {
         withAnimation(.linear(duration: 0.25)) {
             scroll.scrollTo(CalendarGeometry.hourId(target, day: key), anchor: anchor)
         }
+    }
+}
+
+/// The paper under the day's header, where the page's haze is: a view of its own, so only it redraws as the haze moves.
+private struct CalendarPaperHaze: View {
+
+    let paper: PaperScroll
+    let pageHeight: CGFloat
+
+    var body: some View {
+        PaperPattern(scrolled: paper.offset, pageHeight: pageHeight)
+            .frame(height: pageHeight, alignment: .top)
     }
 }

@@ -3,8 +3,8 @@ import DesignSystem
 import SwiftUI
 
 // MARK: - Cell
-/// One period on the axis: the selection on a glass capsule tinted in the deep accent, the day, month, quarter and
-/// year of today's date in gold, weekends greyed.
+/// One period on the axis: the selection on a flat capsule in the deep accent, drawn as the calendar's week strip
+/// draws its selected day, the day, month, quarter and year of today's date in gold, weekends greyed.
 struct JournalAxisCellLabel: View {
 
     // MARK: - Dependencies
@@ -17,20 +17,35 @@ struct JournalAxisCellLabel: View {
             .fontWeight(emphasized ? .bold : .semibold)
             .foregroundStyle(color)
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .frame(width: cell.kind.width - Self.gap, height: cell.kind.height - Self.gap)
+            .fixedSize()
+            // The capsule leaves room on both sides of the text, and is never narrower than the cell's own room.
+            .padding(.horizontal, Self.pillPadding)
+            .frame(minWidth: cell.kind.width - Self.gap)
+            .frame(height: cell.kind.height - Self.gap)
             .background { pill }
+            // The cell keeps its width on the axis; a capsule wider than it reaches into the gaps beside it.
+            .frame(width: cell.kind.width - Self.gap)
             .padding(Self.gap / 2)
             .contentShape(.capsule)
     }
 
-    /// Only the selected period sits on a capsule of liquid glass tinted in the accent; the others are bare text.
-    @ViewBuilder private var pill: some View {
-        if cell.current {
-            Color.clear
-                .glassEffect(.regular.tint(Theme.Colors.appAccent.opacity(0.85)), in: .capsule)
-                .shadow(color: Theme.Colors.appAccent.opacity(0.3), radius: 6, y: 3)
-        }
+    /// The capsule behind the selected period, as the calendar's circle behind its selected day: whole on the
+    /// selection, shrunk and hidden on the other periods. It grows from that size when its period is selected and
+    /// shrinks to it when another one is; it fades out over the first half of the shrinking and in over the second
+    /// half of the growing, so it is gone while still half its size.
+    private var pill: some View {
+        let isSelected = cell.current
+        return Capsule()
+            .fill(Theme.Colors.selection)
+            .scaleEffect(isSelected ? 1 : Self.shrunk)
+            .animation(.easeInOut(duration: Self.duration), value: isSelected)
+            .opacity(isSelected ? 1 : 0)
+            .animation(
+                isSelected
+                    ? .easeOut(duration: Self.duration / 2).delay(Self.duration / 2)
+                    : .easeIn(duration: Self.duration / 2),
+                value: isSelected
+            )
     }
 
     private var emphasized: Bool { cell.current || cell.today }
@@ -38,13 +53,19 @@ struct JournalAxisCellLabel: View {
     /// The periods that hold today's date, the day, its month, quarter and year, are in gold whatever is selected.
     private var color: Color {
         if cell.current { return .white }
-        if cell.today { return JournalColors.gold }
+        if cell.today { return Theme.Colors.today }
         return weekend ? Theme.Colors.secondaryText : .primary
     }
     private var font: Font { cell.kind == .year ? .title3 : .subheadline }
 
     /// The space between two neighbouring pills.
     private static let gap: CGFloat = 6
+    /// The room between the text and the ends of its capsule.
+    private static let pillPadding: CGFloat = 12
+    /// How long the capsule takes to grow or shrink, and how small it is on a period that is not selected: as the
+    /// calendar's week strip.
+    private static let duration = 0.25
+    private static let shrunk = 0.2
 }
 
 // MARK: - Labels
@@ -55,7 +76,7 @@ extension JournalAxisCell {
         switch kind {
         case .year: String(year)
         case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
-        case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
+        case .month: JournalDates.monthShort(month)
         case .day, .week: "\(JournalDates.weekdayShort(weekday)) \(day)"
         }
     }
@@ -91,8 +112,8 @@ extension JournalPeriodKind {
         switch self {
         case .year: 92
         case .quarter: 74
-        case .month: 64
-        case .week, .day: 62
+        case .month: 70
+        case .week, .day: 68
         }
     }
 

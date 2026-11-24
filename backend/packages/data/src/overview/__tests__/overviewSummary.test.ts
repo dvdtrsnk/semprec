@@ -14,7 +14,6 @@ import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../../db/pool.js";
 import { createInboxCardsCountRouteHandler } from "../../inbox/inboxRouteHandlers.js";
-import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import { ensureFolderItem } from "../../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../../mail/ingest.js";
@@ -29,16 +28,12 @@ import { createPendingApprovalRequest } from "../../mcp/approvalRequestsStore.js
 import { seedSystem } from "../../seed/seedSystem.js";
 import { raiseProblem } from "../../semp/sempProblemsStore.js";
 import { createSempStatusSummaryRouteHandler } from "../../semp/sempStatusRouteHandler.js";
-import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createOverviewRouteHandler, overviewSummarySchema } from "../overviewRouteHandler.js";
 import { getOverviewSummary, type OverviewSummary } from "../overviewSummary.js";
 
 /** Friday 16 October 2026, 12:00 in Europe/Prague, the zone of a seeded tenant. */
 const NOW = new Date("2026-10-16T10:00:00.000Z");
-const TODAY = "2026-10-16";
-const YESTERDAY = "2026-10-15";
-const TOMORROW = "2026-10-17";
 
 interface Tenant {
   id: string;
@@ -66,50 +61,8 @@ async function newTenant(): Promise<Tenant> {
   return { id, userId: user.id };
 }
 
-async function databaseId(owner: Tenant, moduleId: string): Promise<string> {
-  const database = await inTenant(owner, (client) => getDatabaseByModuleId(client, moduleId));
-  if (!database) throw new Error(`No ${moduleId} database in tenant ${owner.id}`);
-  return database.id;
-}
-
 function summaryOf(owner: Tenant, userId: string = owner.userId): Promise<OverviewSummary> {
-  return runInTenant(owner.id, () => getOverviewSummary(runtime, { ownerUserId: userId, now: NOW }));
-}
-
-async function createRecord(owner: Tenant, moduleId: string, properties: Record<string, unknown>): Promise<string> {
-  const item = await runInTenant(owner.id, async () =>
-    cp.createItem({ databaseId: await databaseId(owner, moduleId), properties }),
-  );
-  return item.id;
-}
-
-/** A task dated `date`; with `done` it is completed at the current (faked) instant, as the user's tick does. */
-async function task(owner: Tenant, date: string, done = false): Promise<string> {
-  const id = await createRecord(owner, "tasks", { name: "Task", date });
-  if (done) {
-    await runInTenant(owner.id, async () =>
-      cp.updateItem({
-        databaseId: await databaseId(owner, "tasks"),
-        itemId: id,
-        propertiesPatch: { status: "done" },
-      }),
-    );
-  }
-  return id;
-}
-
-async function project(owner: Tenant, areaId: string | null, properties: Record<string, unknown>): Promise<string> {
-  const id = await createRecord(owner, "projects", { name: "Project", ...properties });
-  if (areaId !== null) {
-    await runInTenant(owner.id, async () => {
-      const databaseIdOfProjects = await databaseId(owner, "projects");
-      const properties = await cp.listProperties(databaseIdOfProjects);
-      const area = properties.find((candidate) => candidate.key === "area");
-      if (!area) throw new Error("Projects has no area relation");
-      await cp.setRelation({ relationPropertyId: area.id, callerItemId: id, targetItemId: areaId });
-    });
-  }
-  return id;
+  return runInTenant(owner.id, () => getOverviewSummary(runtime, { ownerUserId: userId }));
 }
 
 /** A pending approval request of a tick run of `userId`; the Inbox counts it for that user only. */
@@ -192,34 +145,6 @@ async function unreadMessages(owner: Tenant, count: number): Promise<void> {
   });
 }
 
-async function setZone(owner: Tenant, timezone: string): Promise<void> {
-  await runInTenant(owner.id, async () => {
-    const settingsDatabaseId = await withTransaction(runtime, (client) => getSystemSettingsDatabaseId(client));
-    const itemId = await withTransaction(runtime, (client) => getSystemSettingsItemId(client));
-    await cp.updateItem({ databaseId: settingsDatabaseId, itemId, propertiesPatch: { timezone } });
-  });
-}
-
-async function todayList(owner: Tenant): Promise<{ all: string[]; open: string[] }> {
-  const tasksId = await databaseId(owner, "tasks");
-  const views = await runInTenant(owner.id, () => cp.listViewsByDatabase(tasksId));
-  const view = views.find((candidate) => candidate.config.systemKey === "today");
-  if (!view) throw new Error("The Today view is missing");
-  const page = await runInTenant(owner.id, () => cp.queryView(view.id));
-  return {
-    all: page.items.map((item) => item.id),
-    open: page.items.filter((item) => item.properties.status === "notDone").map((item) => item.id),
-  };
-}
-
-const ACTIVE_PROJECTS = {
-  type: "and",
-  nodes: [
-    { type: "is_empty", property: "systemActive" },
-    { type: "in", property: "status", value: ["inProgress", "longTerm"] },
-  ],
-};
-
 beforeAll(async () => {
   admin = getTestPool();
   runtime = await createRuntimeRolePool(admin, "semprec_data");
@@ -259,9 +184,6 @@ describe("getOverviewSummary (issue gh-1837)", () => {
     await proposalCard(tenant);
     await pendingApproval(tenant, tenant.userId);
     await unreadMessages(tenant, 2);
-    await task(tenant, TODAY);
-    await task(tenant, YESTERDAY);
-    await task(tenant, TOMORROW);
     await inTenant(tenant, (client) =>
       raiseProblem(client, {
         userId: tenant.userId,
@@ -276,10 +198,10 @@ describe("getOverviewSummary (issue gh-1837)", () => {
 
     const summary = await summaryOf(tenant);
 
-    const inbox = (userId: string) =>
-      runInTenant(tenant.id, () => createInboxCardsCountRouteHandler(runtime)({ identity: { user: { id: userId } } }));
-    const ownInbox = await inbox(tenant.userId);
-    expect(ownInbox).toEqual({ status: 200, body: { total: 3 } });
+    const inbox = await runInTenant(tenant.id, () =>
+      createInboxCardsCountRouteHandler(runtime)({ identity: { user: { id: tenant.userId } } }),
+    );
+    expect(inbox).toEqual({ status: 200, body: { total: 3 } });
     expect(summary.inboxPending).toBe(3);
 
     const mail = await runInTenant(tenant.id, () => createMailSummaryRouteHandler(runtime)());
@@ -290,10 +212,6 @@ describe("getOverviewSummary (issue gh-1837)", () => {
     // The stored mail problem and the missing AI budget of a fresh tenant.
     expect(semp.body.activeCount).toBe(2);
     expect(summary.problemCount).toBe(semp.body.activeCount);
-
-    // The task of today and the overdue one are open in the Today list; the task of tomorrow is not in it.
-    expect(summary.tasksToday).toBe(2);
-    expect((await todayList(tenant)).open).toHaveLength(summary.tasksToday);
   });
 
   it("reads every figure on one pool connection", async () => {
@@ -317,24 +235,9 @@ describe("getOverviewSummary (issue gh-1837)", () => {
         return Reflect.get(target, key, receiver);
       },
     });
-    const summary = await runInTenant(tenant.id, () =>
-      getOverviewSummary(counting, { ownerUserId: tenant.userId, now: NOW }),
-    );
+    const summary = await runInTenant(tenant.id, () => getOverviewSummary(counting, { ownerUserId: tenant.userId }));
     expect(summary.mailUnread).toBe(1);
     expect({ connections, poolQueries }).toEqual({ connections: 1, poolQueries: 0 });
-  });
-
-  it("counts only the open tasks of the Today list: 7 open and 1 completed today give 7", async () => {
-    for (let n = 0; n < 5; n += 1) await task(tenant, TODAY);
-    for (let n = 0; n < 2; n += 1) await task(tenant, YESTERDAY);
-    const completed = await task(tenant, TODAY, true);
-
-    const list = await todayList(tenant);
-
-    expect(list.all).toHaveLength(8);
-    expect(list.all).toContain(completed);
-    expect(list.open).toHaveLength(7);
-    expect((await summaryOf(tenant)).tasksToday).toBe(7);
   });
 
   it("counts the approvals of the user it is given and not of another user", async () => {
@@ -344,39 +247,19 @@ describe("getOverviewSummary (issue gh-1837)", () => {
     expect((await summaryOf(tenant, randomUUID())).inboxPending).toBe(0);
   });
 
-  it("lists one entry per client-visible system database, each counted like item.count with its collection filter", async () => {
-    const area = await createRecord(tenant, "areas", { name: "Area" });
-    await project(tenant, area, { status: "inProgress" });
-    await project(tenant, area, { status: "done" });
-    // A system project stores `systemActive`; a collection leaves it out. Raw write: no API stores that key for a user.
-    const system = await project(tenant, null, { status: "inProgress" });
-    await admin.query("UPDATE items SET properties = properties || '{\"systemActive\": true}'::jsonb WHERE id = $1", [
-      system,
-    ]);
+  it("lists every client-visible system database in database order, without counts", async () => {
     const userDatabase = await runInTenant(tenant.id, () => cp.createDatabase({ name: "Mine" }));
 
     const { collections } = await summaryOf(tenant);
 
     const databases = await inTenant(tenant, (client) => listAllDatabases(client));
-    const expected = databases.filter(
-      (database) => database.ownerModuleId !== null && resolver.resolve(database).clientVisible,
+    const expected = databases.flatMap((database) =>
+      database.ownerModuleId !== null && resolver.resolve(database).clientVisible
+        ? [{ databaseId: database.id, ownerModuleId: database.ownerModuleId }]
+        : [],
     );
-    expect(collections.map((collection) => collection.databaseId).sort()).toEqual(
-      expected.map((database) => database.id).sort(),
-    );
-    for (const database of expected) {
-      const [counted] = await runInTenant(tenant.id, () =>
-        cp.countItemsBatch([{ databaseId: database.id, collection: true }], { resolver, now: NOW }),
-      );
-      expect(collections.find((collection) => collection.databaseId === database.id)).toEqual({
-        databaseId: database.id,
-        ownerModuleId: database.ownerModuleId,
-        itemCount: counted?.count,
-      });
-    }
-    const projects = collections.find((collection) => collection.ownerModuleId === "projects");
-    // Two user projects; the system project is not counted.
-    expect(projects?.itemCount).toBe(2);
+    expect(expected.length).toBeGreaterThan(0);
+    expect(collections).toEqual(expected);
     expect(collections.map((collection) => collection.databaseId)).not.toContain(userDatabase.id);
     // A system database that no client lists is not a collection.
     const excluded = databases.filter(
@@ -387,152 +270,28 @@ describe("getOverviewSummary (issue gh-1837)", () => {
     expect(excluded.filter((database) => listed.includes(database.id))).toEqual([]);
   });
 
-  it("lists each area with its active projects only, and leaves out an area without one", async () => {
-    const [first, second, third] = [
-      await createRecord(tenant, "areas", { name: "First" }),
-      await createRecord(tenant, "areas", { name: "Second" }),
-      await createRecord(tenant, "areas", { name: "Third" }),
-    ];
-    await project(tenant, first, { status: "inProgress" });
-    await project(tenant, first, { status: "longTerm" });
-    await project(tenant, first, { status: "done" });
-    await project(tenant, second, { status: "inProgress" });
-    await project(tenant, second, { status: "archived" });
-    await project(tenant, third, { status: "done" });
-    await project(tenant, null, { status: "inProgress" });
-    const system = await project(tenant, second, { status: "inProgress" });
-    await admin.query("UPDATE items SET properties = properties || '{\"systemActive\": true}'::jsonb WHERE id = $1", [
-      system,
-    ]);
-
-    const { areas } = await summaryOf(tenant);
-
-    // The grouped item.count with the same filter, read by the choke point on its own.
-    const [counted] = await runInTenant(tenant.id, async () =>
-      cp.countItemsBatch(
-        [{ databaseId: await databaseId(tenant, "projects"), filter: ACTIVE_PROJECTS, groupBy: "area" }],
-        { resolver, now: NOW },
-      ),
-    );
-    const expected = (counted?.groups ?? []).flatMap((group) =>
-      group.key === null ? [] : [{ id: group.key, activeProjectCount: group.count }],
-    );
-    expect(areas).toEqual(expected);
-    expect([...areas].sort((left, right) => (left.id < right.id ? -1 : 1))).toEqual(
-      [
-        { id: first, activeProjectCount: 2 },
-        { id: second, activeProjectCount: 1 },
-      ].sort((left, right) => (left.id < right.id ? -1 : 1)),
-    );
-    expect(areas.map((area) => area.id)).not.toContain(third);
-  });
-
-  it("answers no areas and zero counts for a tenant that has no rows of its own", async () => {
+  it("answers zero counts for a tenant that has no rows of its own", async () => {
     const summary = await summaryOf(tenant);
 
-    expect(summary).toMatchObject({
-      inboxPending: 0,
-      mailUnread: 0,
-      tasksToday: 0,
-      areas: [],
-      journalTodayItemId: null,
-    });
-    expect(summary.collections.every((collection) => Number.isInteger(collection.itemCount))).toBe(true);
-  });
-
-  describe("journalTodayItemId", () => {
-    const journalItem = (owner: Tenant, type: "day" | "week", reference: Date, timezone: string) =>
-      inTenant(owner, async (client) => {
-        const journal = await getDatabaseByModuleId(client, "journal");
-        if (!journal) throw new Error("Journal not seeded");
-        return getOrCreateJournalItem(client, journal.id, type, reference, timezone);
-      });
-
-    it("is null while today's day item does not exist, and does not create it", async () => {
-      await journalItem(tenant, "day", new Date("2026-10-15T10:00:00Z"), "Europe/Prague");
-      await journalItem(tenant, "week", NOW, "Europe/Prague");
-      const countJournal = async (): Promise<number> => {
-        const { rows } = await admin.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM items WHERE tenant_id = $1 AND database_id = $2",
-          [tenant.id, await databaseId(tenant, "journal")],
-        );
-        return rows[0]?.n ?? -1;
-      };
-      const before = await countJournal();
-
-      expect((await summaryOf(tenant)).journalTodayItemId).toBeNull();
-      expect(await countJournal()).toBe(before);
-    });
-
-    it("is the id of today's live day item", async () => {
-      const today = await journalItem(tenant, "day", NOW, "Europe/Prague");
-      await journalItem(tenant, "day", new Date("2026-10-15T10:00:00Z"), "Europe/Prague");
-
-      expect((await summaryOf(tenant)).journalTodayItemId).toBe(today.id);
-    });
-
-    it("does not return a trashed day item", async () => {
-      const today = await journalItem(tenant, "day", NOW, "Europe/Prague");
-      const databaseIdOfJournal = await databaseId(tenant, "journal");
-      const trashed = await runInTenant(tenant.id, () => cp.softDeleteItem(databaseIdOfJournal, today.id));
-      expect(trashed?.deletedAt).not.toBeNull();
-
-      expect((await summaryOf(tenant)).journalTodayItemId).toBeNull();
-    });
-
-    it("uses today's date in the tenant time zone near midnight", async () => {
-      await setZone(tenant, "America/New_York");
-      // 23:30 on 12 November in New York is already 13 November in UTC.
-      const instant = new Date("2026-11-13T04:30:00Z");
-      const newYorkDay = await journalItem(tenant, "day", instant, "America/New_York");
-      const utcDay = await journalItem(tenant, "day", instant, "UTC");
-      expect(newYorkDay.properties.period).toBe("2026-11-12");
-      expect(utcDay.properties.period).toBe("2026-11-13");
-
-      const summary = await runInTenant(tenant.id, () =>
-        getOverviewSummary(runtime, { ownerUserId: tenant.userId, now: instant }),
-      );
-
-      expect(summary.journalTodayItemId).toBe(newYorkDay.id);
-    });
+    // The one problem is the missing AI budget of a fresh tenant.
+    expect(summary).toEqual({ inboxPending: 0, mailUnread: 0, problemCount: 1, collections: summary.collections });
+    expect(summary.collections.length).toBeGreaterThan(0);
   });
 
   it("throws without a tenant scope and in a system scope, and reads nothing", async () => {
     const message = "getOverviewSummary requires an active tenant scope";
 
-    await expect(getOverviewSummary(runtime, { ownerUserId: tenant.userId, now: NOW })).rejects.toThrow(message);
+    await expect(getOverviewSummary(runtime, { ownerUserId: tenant.userId })).rejects.toThrow(message);
     await expect(
-      runAsSystem("overview summary test", () => getOverviewSummary(runtime, { ownerUserId: tenant.userId, now: NOW })),
+      runAsSystem("overview summary test", () => getOverviewSummary(runtime, { ownerUserId: tenant.userId })),
     ).rejects.toThrow(message);
-  });
-
-  it.each([
-    ["journal", "The Journal database is missing"],
-    ["projects", "The Projects database is missing"],
-  ])("fails for a tenant whose %s database is missing, not with an empty overview", async (moduleId, message) => {
-    // A state the seed never leaves: the database loses its owning module, so no module lookup finds it.
-    await admin.query("UPDATE databases SET owner_module_id = NULL WHERE tenant_id = $1 AND owner_module_id = $2", [
-      tenant.id,
-      moduleId,
-    ]);
-
-    await expect(summaryOf(tenant)).rejects.toThrow(message);
   });
 
   it("shows nothing of another tenant in any field", async () => {
     const foreign = await newTenant();
-    const foreignArea = await createRecord(foreign, "areas", { name: "Foreign area" });
-    await project(foreign, foreignArea, { status: "inProgress" });
-    await task(foreign, TODAY);
-    await task(foreign, TODAY);
     await proposalCard(foreign);
     await pendingApproval(foreign, foreign.userId);
     await unreadMessages(foreign, 3);
-    const foreignDay = await inTenant(foreign, async (client) => {
-      const journal = await getDatabaseByModuleId(client, "journal");
-      if (!journal) throw new Error("Journal not seeded");
-      return getOrCreateJournalItem(client, journal.id, "day", NOW, "Europe/Prague");
-    });
     await inTenant(foreign, (client) =>
       raiseProblem(client, {
         userId: foreign.userId,
@@ -547,24 +306,14 @@ describe("getOverviewSummary (issue gh-1837)", () => {
 
     // The other tenant sees its own rows, so they exist and are countable.
     const ofForeign = await summaryOf(foreign);
-    expect(ofForeign).toMatchObject({
-      inboxPending: 2,
-      mailUnread: 3,
-      tasksToday: 2,
-      problemCount: 2,
-      journalTodayItemId: foreignDay.id,
-      areas: [{ id: foreignArea, activeProjectCount: 1 }],
-    });
+    expect(ofForeign).toMatchObject({ inboxPending: 2, mailUnread: 3, problemCount: 2 });
 
     const own = await summaryOf(tenant);
     expect(own).toMatchObject({
       inboxPending: 0,
       mailUnread: 0,
-      tasksToday: 0,
       // The missing AI budget of a fresh tenant; the other tenant's stored problem is not counted.
       problemCount: 1,
-      areas: [],
-      journalTodayItemId: null,
     });
     const foreignDatabaseIds = ofForeign.collections.map((collection) => collection.databaseId);
     expect(
@@ -578,7 +327,6 @@ describe("createOverviewRouteHandler (issue gh-1837)", () => {
   it("answers 200 with the summary of the session user, in the shape the schema declares", async () => {
     await proposalCard(tenant);
     await pendingApproval(tenant, tenant.userId);
-    await task(tenant, TODAY);
 
     const answer = await runInTenant(tenant.id, () =>
       createOverviewRouteHandler(runtime)({ identity: { user: { id: tenant.userId } } }),
@@ -587,16 +335,7 @@ describe("createOverviewRouteHandler (issue gh-1837)", () => {
     expect(answer.status).toBe(200);
     const body = overviewSummarySchema.parse(answer.body);
     expect(body.inboxPending).toBe(2);
-    expect(body.tasksToday).toBe(1);
-    expect(Object.keys(body).sort()).toEqual([
-      "areas",
-      "collections",
-      "inboxPending",
-      "journalTodayItemId",
-      "mailUnread",
-      "problemCount",
-      "tasksToday",
-    ]);
+    expect(Object.keys(body).sort()).toEqual(["collections", "inboxPending", "mailUnread", "problemCount"]);
   });
 
   it("counts the approvals of the session user and not of another user", async () => {
@@ -612,20 +351,15 @@ describe("createOverviewRouteHandler (issue gh-1837)", () => {
   });
 
   it("rejects a body with a field the schema does not declare, a negative count and a malformed id", async () => {
-    const valid: OverviewSummary = {
-      inboxPending: 0,
-      mailUnread: 0,
-      tasksToday: 0,
-      areas: [{ id: randomUUID(), activeProjectCount: 1 }],
-      collections: [{ databaseId: randomUUID(), ownerModuleId: "tasks", itemCount: 0 }],
-      problemCount: 0,
-      journalTodayItemId: randomUUID(),
-    };
+    const collection = { databaseId: randomUUID(), ownerModuleId: "tasks" };
+    const valid: OverviewSummary = { inboxPending: 0, mailUnread: 0, collections: [collection], problemCount: 0 };
     expect(overviewSummarySchema.safeParse(valid).success).toBe(true);
     expect(overviewSummarySchema.safeParse({ ...valid, extra: 1 }).success).toBe(false);
     expect(overviewSummarySchema.safeParse({ ...valid, mailUnread: -1 }).success).toBe(false);
-    expect(overviewSummarySchema.safeParse({ ...valid, journalTodayItemId: "today" }).success).toBe(false);
-    expect(overviewSummarySchema.safeParse({ ...valid, areas: [{ id: "x", activeProjectCount: 1 }] }).success).toBe(
+    expect(
+      overviewSummarySchema.safeParse({ ...valid, collections: [{ ...collection, databaseId: "x" }] }).success,
+    ).toBe(false);
+    expect(overviewSummarySchema.safeParse({ ...valid, collections: [{ ...collection, itemCount: 0 }] }).success).toBe(
       false,
     );
   });

@@ -27,7 +27,6 @@ extension AppOverviewRouter: OverviewRouting {
         case .recordings: context.push(.recordings(tab: .overview), in: .overview)
         case .tasks: context.showTasks(TasksStart(), in: .overview)
         case .finance: pending(String(localized: "pending.finance"))
-        case .journal: context.select(.journal)
         case .area(let id): context.push(.area(areaId: id, tab: .overview), in: .overview)
         case .project(let id): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
         case .collection(_, let databaseId):

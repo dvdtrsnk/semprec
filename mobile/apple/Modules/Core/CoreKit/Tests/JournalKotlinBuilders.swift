@@ -29,11 +29,14 @@ enum JournalKotlin {
         failure: SharedSDK.FailureKind? = nil,
         page: SharedSDK.JournalPageState? = nil,
         weeks: [SharedSDK.JournalWeekState] = [],
+        quarters: [SharedSDK.JournalQuarterState] = [],
         events: [SharedSDK.JournalEventState] = [],
         birthdays: [SharedSDK.JournalBirthdayState] = [],
         inbox: [SharedSDK.JournalInboxState] = [],
         axis: [SharedSDK.JournalAxisRowState] = [],
-        shown: SharedSDK.JournalSelection? = nil
+        shown: SharedSDK.JournalSelection? = nil,
+        before: SharedSDK.JournalPeriodContent? = nil,
+        after: SharedSDK.JournalPeriodContent? = nil
     ) -> SharedSDK.JournalState {
         SharedSDK.JournalState(
             phase: phase,
@@ -43,10 +46,13 @@ enum JournalKotlin {
             failure: failure,
             page: page,
             weeks: weeks,
+            quarters: quarters,
             events: events,
             birthdays: birthdays,
             inbox: inbox,
-            shown: shown
+            shown: shown,
+            before: before,
+            after: after
         )
     }
 

@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
- * The overview: counts, areas, pinned projects and collections. A row raises its [OverviewTarget] as the effect.
+ * The overview: what waits in the Inbox and the mail, areas, pinned projects and collections. A row raises its [OverviewTarget] as the effect.
  * Expected failures are state, cancellation is not; a retry or a refresh supersedes the load before it.
  */
 class OverviewViewModel internal constructor(
@@ -84,12 +84,10 @@ private fun Overview.toState(account: SessionUser?) = OverviewState(
     accountName = account?.displayName,
     inboxPending = summary.inboxPending,
     mailUnread = summary.mailUnread,
-    tasksToday = summary.tasksToday,
     problemCount = summary.problemCount,
-    journalTodayItemId = summary.journalTodayItemId,
-    areas = areas.map { OverviewAreaItem(it.id, it.name, it.color, it.icon, it.activeProjectCount) },
+    areas = areas.map { OverviewAreaItem(it.id, it.name, it.color, it.icon) },
     projects = projects.map { OverviewProjectItem(it.id, it.name, it.color, it.areaName, it.status) },
     collections = collections.map {
-        OverviewCollectionItem(it.databaseId, it.ownerModuleId, it.name, it.icon, it.color, it.itemCount)
+        OverviewCollectionItem(it.databaseId, it.ownerModuleId, it.name, it.icon, it.color)
     },
 )

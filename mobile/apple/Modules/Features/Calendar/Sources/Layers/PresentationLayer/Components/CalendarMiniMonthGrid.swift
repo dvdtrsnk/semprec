@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The days of a small month of the year view, drawn in one canvas rather than as a view per day: a year shows
@@ -23,13 +24,9 @@ struct CalendarMiniMonthGrid: View {
                         y: CGFloat(row) * (Self.rowHeight + Self.rowSpacing) + Self.rowHeight / 2
                     )
                     let isToday = day == today
-                    if isToday {
-                        let circle = CGRect(x: center.x - 6.5, y: center.y - 6.5, width: 13, height: 13)
-                        context.fill(Path(ellipseIn: circle), with: .color(.red))
-                    }
                     let number = Text(verbatim: "\(day)")
                         .font(.system(size: 8.5, weight: isToday ? .bold : .medium))
-                        .foregroundStyle(isToday ? Color.white : Color.primary)
+                        .foregroundStyle(isToday ? Theme.Colors.today : Color.primary)
                     context.draw(context.resolve(number), at: center)
                 }
             }

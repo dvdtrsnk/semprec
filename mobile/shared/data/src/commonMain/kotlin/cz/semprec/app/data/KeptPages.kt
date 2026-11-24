@@ -294,7 +294,7 @@ private class PageSync(private val store: OfflineStore, private val state: Layer
     private suspend fun saved(account: String, page: KeptPage, text: String, etag: String): Attempt {
         store.pages.keep(account, page.copy(base = text, etag = etag, local = null))
         state.locked {
-            state.freshness.changed()
+            state.freshness.wrote()
             state.freshness.kept(account, pageKey(page.itemId), state.freshness.signal)
         }
         return Attempt.Saved(etag, text)

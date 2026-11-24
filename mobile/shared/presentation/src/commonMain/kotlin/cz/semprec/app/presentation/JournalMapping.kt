@@ -4,6 +4,7 @@ import cz.semprec.app.domain.InlineRun
 import cz.semprec.app.domain.JournalAxisRow
 import cz.semprec.app.domain.JournalEvent
 import cz.semprec.app.domain.JournalInboxEntry
+import cz.semprec.app.domain.JournalQuarterPage
 import cz.semprec.app.domain.JournalWeekPage
 import cz.semprec.app.domain.PageBlock
 import cz.semprec.app.domain.PageBlockType
@@ -47,6 +48,13 @@ internal fun JournalWeekPage.toState() = JournalWeekState(
     from = from.toString(),
     to = to.toString(),
     page = pageState(JournalPageRef(JournalPeriodKind.WEEK, period), markdown),
+)
+
+internal fun JournalQuarterPage.toState() = JournalQuarterState(
+    number = quarter,
+    from = from.toString(),
+    to = to.toString(),
+    page = pageState(JournalPageRef(JournalPeriodKind.QUARTER, period), markdown),
 )
 
 internal fun JournalEvent.toState() = JournalEventState(

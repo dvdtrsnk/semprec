@@ -4,7 +4,7 @@ import io.ktor.http.HttpMethod
 
 /**
  * The reads of the offline set: the requests whose answers [OfflineLayer] keeps on the device
- * (docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md). Mail, files, recordings, transcripts, search,
+ * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). Mail, files, recordings, transcripts, search,
  * Semp, the account and the session are not among them, so their reads always go to the server.
  */
 internal object OfflineRoutes {

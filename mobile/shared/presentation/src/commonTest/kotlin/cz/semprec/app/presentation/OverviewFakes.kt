@@ -81,15 +81,15 @@ class ScriptedSearchRepository(vararg steps: ScriptedStep<List<SearchGroup>>) : 
 /** A search call as the fake records it, typed so that tests compare like with like. */
 fun searchCall(query: String, scope: SearchGroupType?, limit: Int) = Triple(query, scope, limit)
 
-val overviewSummary = OverviewSummary(9, 5, 4, 2, "journal-1")
+val overviewSummary = OverviewSummary(9, 5, 2)
 
 /** Deliberately out of order and with an inactive area, an unpinned project and a hidden collection. */
 val overviewData = Overview(
     summary = overviewSummary,
     areas = listOf(
-        OverviewArea("health", "Health", "#FF2D55", "heart", 2.0, true, 2),
-        OverviewArea("work", "Work", "#5856D6", "briefcase", 1.0, true, 6),
-        OverviewArea("old", "Old", null, null, 3.0, false, 0),
+        OverviewArea("health", "Health", "#FF2D55", "heart", 2.0, true),
+        OverviewArea("work", "Work", "#5856D6", "briefcase", 1.0, true),
+        OverviewArea("old", "Old", null, null, 3.0, false),
     ),
     projects = listOf(
         OverviewProject("p2", "Půlmaraton", "#FF3B30", "Health", "inProgress", true, 2.0),
@@ -97,9 +97,9 @@ val overviewData = Overview(
         OverviewProject("p3", "Not pinned", null, null, null, false, null),
     ),
     collections = listOf(
-        OverviewCollection("d2", "people", "People", "person", "#30B0C7", 48, 2, true, false),
-        OverviewCollection("d1", "events", "Events", "calendar", "#FF3B30", 214, 1, true, false),
-        OverviewCollection("d3", "files", "Files", null, null, 132, 3, true, true),
+        OverviewCollection("d2", "people", "People", "person", "#30B0C7", 2, true, false),
+        OverviewCollection("d1", "events", "Events", "calendar", "#FF3B30", 1, true, false),
+        OverviewCollection("d3", "files", "Files", null, null, 3, true, true),
     ),
 )
 

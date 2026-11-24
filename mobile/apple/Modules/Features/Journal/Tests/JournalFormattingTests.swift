@@ -16,6 +16,27 @@ final class JournalFormattingTests: XCTestCase {
     }
 
     // MARK: - Dates
+    // MARK: - Page turns
+    func testTheFingerTurnsThePagePastAThirdOfTheWidthOrWithAFlickTheWayItMoved() {
+        XCTAssertEqual(JournalPagerRules.turn(offset: -150, width: 400, speed: 0), 1)
+        XCTAssertEqual(JournalPagerRules.turn(offset: 150, width: 400, speed: 0), -1)
+        XCTAssertNil(JournalPagerRules.turn(offset: -130, width: 400, speed: 0))
+        XCTAssertEqual(JournalPagerRules.turn(offset: -40, width: 400, speed: -800), 1)
+        XCTAssertEqual(JournalPagerRules.turn(offset: 40, width: 400, speed: 800), -1)
+        // A flick against the way the page moved springs back.
+        XCTAssertNil(JournalPagerRules.turn(offset: -40, width: 400, speed: 800))
+        XCTAssertNil(JournalPagerRules.turn(offset: -40, width: 400, speed: -400), "Too slow for a flick")
+        XCTAssertNil(JournalPagerRules.turn(offset: 0, width: 400, speed: -900))
+        XCTAssertNil(JournalPagerRules.turn(offset: -300, width: 0, speed: 0), "No width, no turn")
+    }
+
+    func testTheSlotThatLeftTheViewGoesRoundToTheOtherSide() {
+        XCTAssertEqual(JournalPagerRules.places([-1, 0, 1], afterTurning: 1), [1, -1, 0])
+        XCTAssertEqual(JournalPagerRules.places([1, -1, 0], afterTurning: -1), [-1, 0, 1])
+        XCTAssertEqual(JournalPagerRules.places([-1, 0, 1], afterTurning: -1), [0, 1, -1])
+        XCTAssertEqual(JournalPagerRules.places([-1, 0, 1], afterTurning: 0), [-1, 0, 1])
+    }
+
     @MainActor
     func testTheDeviceDayIsWrittenAsAnIsoDay() throws {
         var parts = DateComponents()
@@ -42,7 +63,7 @@ final class JournalFormattingTests: XCTestCase {
         XCTAssertEqual(JournalDates.monthTitle("2026-10-01"), "October 2026")
         XCTAssertEqual(JournalDates.quarterTitle(start: "2026-10-01"), "Q4 2026")
         XCTAssertEqual(JournalDates.quarterTitle(start: "2026-01-01"), "Q1 2026")
-        XCTAssertEqual(JournalDates.quarterSpan(start: "2026-10-01"), "October – December 2026")
+        XCTAssertEqual(JournalDates.quarterSpan(start: "2026-10-01"), "October – December")
         XCTAssertEqual(JournalDates.dayTitle("soon"), "soon")
     }
 

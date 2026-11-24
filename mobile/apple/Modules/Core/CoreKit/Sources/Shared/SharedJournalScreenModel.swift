@@ -53,10 +53,13 @@ extension SharedJournalScreenModel {
             axis: state.axis.map(JournalAxisRow.init),
             page: state.page.map(JournalPage.init),
             weeks: state.weeks.map(JournalWeek.init),
+            quarters: state.quarters.map(JournalQuarter.init),
             events: state.events.map(JournalEvent.init),
             birthdays: state.birthdays.map(JournalBirthday.init),
             inbox: state.inbox.map(JournalInboxItem.init),
-            shown: state.shown.map(JournalSelection.init)
+            shown: state.shown.map(JournalSelection.init),
+            before: state.before.map(JournalPeriodContent.init),
+            after: state.after.map(JournalPeriodContent.init)
         )
     }
 
@@ -65,6 +68,7 @@ extension SharedJournalScreenModel {
         case .retry: SharedSDK.JournalActionRetry.shared
         case .select(let kind, let start): SharedSDK.JournalActionSelect(kind: kind.shared, start: start)
         case .goToday: SharedSDK.JournalActionGoToday.shared
+        case .turn(let steps): SharedSDK.JournalActionTurn(steps: Int32(steps))
         case .showAxisAround(let day): SharedSDK.JournalActionShowAxisAround(day: day)
         case .openEvent(let id): SharedSDK.JournalActionOpenEvent(id: id)
         case .openInbox: SharedSDK.JournalActionOpenInbox.shared

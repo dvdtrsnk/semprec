@@ -10,7 +10,6 @@ data class OverviewAreaItem(
     val name: String,
     val color: String?,
     val icon: String?,
-    val activeProjectCount: Int,
 )
 
 /** A pinned project row; [status] is the stored key (`inProgress`, `longTerm`, `done`, `archived`). */
@@ -29,7 +28,6 @@ data class OverviewCollectionItem(
     val name: String,
     val icon: String?,
     val color: String?,
-    val itemCount: Int,
 )
 
 /**
@@ -46,9 +44,7 @@ data class OverviewState(
     val accountName: String? = null,
     val inboxPending: Int = 0,
     val mailUnread: Int = 0,
-    val tasksToday: Int = 0,
     val problemCount: Int = 0,
-    val journalTodayItemId: String? = null,
     val areas: List<OverviewAreaItem> = emptyList(),
     val projects: List<OverviewProjectItem> = emptyList(),
     val collections: List<OverviewCollectionItem> = emptyList(),

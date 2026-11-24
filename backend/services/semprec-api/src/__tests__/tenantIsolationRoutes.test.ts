@@ -4319,46 +4319,36 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // B reads nothing of A first while only A has rows, then with rows of its own; A reads its own
-  // rows, so B's answers are isolation and not an empty fixture.
+  // B lists only its own collections and counts only its own cards; A's counts move by A's cards, so
+  // B's answers are isolation and not an empty fixture. The cards are rejected at the end, so the
+  // "inbox cards" case never counts them.
   "overview summary": async () => {
     const overviewBody = z.object({
-      areas: z.array(z.object({ id: z.string(), activeProjectCount: z.number() })),
+      inboxPending: z.number(),
       collections: z.array(z.object({ databaseId: z.string() })),
-      journalTodayItemId: z.string().nullable(),
     });
     const request: Request = GET("/api/overview");
-    const seed = async (tenant: TenantFixture): Promise<{ areaId: string; projectId: string; dayItemId: string }> => {
-      const create = (moduleId: string, properties: Record<string, unknown>) =>
-        createItemAs(tenant, moduleId, properties);
-      const areaId = await create("areas", { name: "Overview probe" });
-      const projectId = await create("projects", { name: "Overview probe project", status: "inProgress" });
-      await sendOk(tenant.member, PUT(`/api/items/${projectId}/relations/area/${areaId}`, {}));
-      const day = await inTenantTransaction(tenant.tenantId, async (client) => {
-        const journal = await moduleDatabase(client, "journal");
-        // The seeded time zone of a tenant; the route reads the same setting.
-        return getOrCreateJournalItem(client, journal.id, "day", new Date(), "Europe/Prague");
-      });
-      return { areaId, projectId, dayItemId: day.id };
-    };
-    const foreign = await seed(a);
-    const tasksOfB = await databaseIdFor(b.tenantId, "tasks");
-    const beforeOwn = await expectExcludesA(b.member, request, [tasksOfB]);
-    expectNoneOf(beforeOwn.text, Object.values(foreign), "B's overview before B has rows of its own");
-    expect(overviewBody.parse(JSON.parse(beforeOwn.text)).journalTodayItemId).toBeNull();
+    const read = async (caller: Caller) => overviewBody.parse(JSON.parse(await sendOk(caller, request)));
+    const databaseIdsOf = (body: z.infer<typeof overviewBody>) =>
+      body.collections.map((collection) => collection.databaseId);
+    const [tasksOfA, tasksOfB] = [await databaseIdFor(a.tenantId, "tasks"), await databaseIdFor(b.tenantId, "tasks")];
+    const beforeOfA = await read(a.member);
+    expect(databaseIdsOf(beforeOfA)).toContain(tasksOfA);
+    const beforeOfB = overviewBody.parse(
+      JSON.parse((await expectExcludesA(b.member, request, [tasksOfB], databaseIdsOf(beforeOfA))).text),
+    );
+    expectNoneOf(JSON.stringify(beforeOfA), databaseIdsOf(beforeOfB), "A's overview");
 
-    const own = await seed(b);
-    const afterOwn = await expectExcludesA(b.member, request, [tasksOfB, own.areaId, own.dayItemId]);
-    expectNoneOf(afterOwn.text, Object.values(foreign), "B's overview");
-    const bodyOfB = overviewBody.parse(JSON.parse(afterOwn.text));
-    expect(bodyOfB.journalTodayItemId).toBe(own.dayItemId);
-    expect(bodyOfB.areas).toContainEqual({ id: own.areaId, activeProjectCount: 1 });
+    const foreignCards = [await seedProposalCard(a), await seedProposalCard(a)];
+    const ownCard = await seedProposalCard(b);
+    const afterOfB = overviewBody.parse(
+      JSON.parse((await expectExcludesA(b.member, request, [tasksOfB], databaseIdsOf(beforeOfA))).text),
+    );
+    expect(afterOfB.inboxPending).toBe(beforeOfB.inboxPending + 1);
+    expect((await read(a.member)).inboxPending).toBe(beforeOfA.inboxPending + foreignCards.length);
 
-    const asA = await sendOk(a.member, request);
-    expect(
-      [foreign.areaId, foreign.dayItemId, await databaseIdFor(a.tenantId, "tasks")].filter((id) => !asA.includes(id)),
-    ).toEqual([]);
-    expectNoneOf(asA, Object.values(own), "A's overview");
+    for (const cardId of foreignCards) await rejectProposalCard(a, cardId);
+    await rejectProposalCard(b, ownCard);
   },
   // Each tenant finds its own Task and never the other's, so an empty answer cannot pass for
   // isolation. A refused input answers 400 without repeating the query.

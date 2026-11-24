@@ -121,3 +121,9 @@ export function weeksOfMonth(monthKey: string): JournalPeriodRange[] {
   }
   return weeks;
 }
+
+/** The four quarters of a year, in order. */
+export function quartersOfYear(yearKey: string): JournalPeriodRange[] {
+  const { reference } = parseJournalPeriodKey("year", yearKey);
+  return [0, 3, 6, 9].map((months) => rangeOf("quarter", reference.plus({ months })));
+}

@@ -1,4 +1,5 @@
 import CoreKit
+import DesignSystem
 import SwiftUI
 
 /// Years one after another in a vertical scroll, as the system Calendar shows them: each year its title and twelve
@@ -8,6 +9,8 @@ struct CalendarYearView: View {
     // MARK: - Dependencies
     let state: CalendarState
     let viewModel: CalendarViewModel
+    /// The paper behind the calendar, whose haze goes up and down with this scroll.
+    let paper: PaperScroll
 
     /// Where a change of zoom finds the places it moves between.
     @Environment(\.calendarZoomMeasures)
@@ -22,9 +25,10 @@ struct CalendarYearView: View {
     @State private var isScrolledByFinger = false
 
     // MARK: - Init
-    init(state: CalendarState, viewModel: CalendarViewModel) {
+    init(state: CalendarState, viewModel: CalendarViewModel, paper: PaperScroll) {
         self.state = state
         self.viewModel = viewModel
+        self.paper = paper
         let year = CalendarDates.year(state.selectedDay)
         _topYear = State(initialValue: year)
         _anchor = State(initialValue: year)
@@ -41,6 +45,7 @@ struct CalendarYearView: View {
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
+        .paperScrollFollowing(paper)
         .scrollPosition(id: $topYear, anchor: .top)
         .onScrollPhaseChange { _, phase in
             isScrolledByFinger = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -72,7 +77,7 @@ private extension CalendarYearView {
         VStack(spacing: 12) {
             Text(verbatim: "\(year)")
                 .font(.largeTitle.bold())
-                .foregroundStyle(year == CalendarDates.year(state.today) ? Color.red : .primary)
+                .foregroundStyle(year == CalendarDates.year(state.today) ? Theme.Colors.today : .primary)
                 .frame(maxWidth: .infinity)
                 .accessibilityAddTraits(.isHeader)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 12) {
@@ -92,7 +97,7 @@ private extension CalendarYearView {
         VStack(alignment: .leading, spacing: 4) {
             Text(CalendarDates.monthShortName(first))
                 .font(.headline)
-                .foregroundStyle(isCurrent(first) ? Color.red : .primary)
+                .foregroundStyle(isCurrent(first) ? Theme.Colors.today : .primary)
             CalendarMiniMonthGrid(
                 weeks: CalendarDates.weeks(ofMonth: first).map { week in week.map { $0.map(CalendarDates.dayNumber) } },
                 today: isCurrent(first) ? CalendarDates.dayNumber(state.today) : nil

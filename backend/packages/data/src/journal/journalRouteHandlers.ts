@@ -15,7 +15,14 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
-import { describeJournalPeriods, JOURNAL_PERIOD_TYPES, parseJournalPeriodKey, weeksOfMonth } from "./journalPeriods.js";
+import {
+  describeJournalPeriods,
+  JOURNAL_PERIOD_TYPES,
+  parseJournalPeriodKey,
+  quartersOfYear,
+  type JournalPeriodRange,
+  weeksOfMonth,
+} from "./journalPeriods.js";
 import type { CustomRouteResult, RouteParams } from "../customRoute.js";
 
 interface JournalPeriodEntry {
@@ -152,9 +159,17 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
         "week",
         weeks.map((week) => week.period),
       );
-      const itemIds = [entry?.item.id, ...[...weekEntries.values()].map((value) => value.item.id)].filter(
-        (id): id is string => id !== undefined,
+      const quarters = type.data === "year" ? quartersOfYear(key) : [];
+      const quarterEntries = await findJournalPeriodEntries(
+        client,
+        journal.id,
+        "quarter",
+        quarters.map((quarter) => quarter.period),
       );
+      const itemIds = [
+        entry?.item.id,
+        ...[...weekEntries.values(), ...quarterEntries.values()].map((value) => value.item.id),
+      ].filter((id): id is string => id !== undefined);
       const pages = new Map(
         (await readPageStatesForItems(client, itemIds)).map((page) => [page.itemId, pageMarkdown(page)]),
       );
@@ -171,16 +186,17 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
         docId: entry?.docId ?? null,
         markdown: markdown(entry),
       };
-      const weekBody = (week: { period: string; from: string; to: string }) => {
-        const weekEntry = weekEntries.get(week.period);
+      const embeddedBody = (entries: Map<string, JournalPeriodEntry>) => (value: JournalPeriodRange) => {
+        const embedded = entries.get(value.period);
         return {
-          period: week.period,
-          range: range(week),
-          itemId: weekEntry?.item.id ?? null,
-          docId: weekEntry?.docId ?? null,
-          markdown: markdown(weekEntry),
+          period: value.period,
+          range: range(value),
+          itemId: embedded?.item.id ?? null,
+          docId: embedded?.docId ?? null,
+          markdown: markdown(embedded),
         };
       };
+      const weekBody = embeddedBody(weekEntries);
       if (type.data === "day") {
         result.week = weekBody(path.week);
         const inbox = entry?.item.computed.inboxItems;
@@ -190,6 +206,7 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
         result.birthdays = birthdays;
       }
       if (type.data === "month") result.weeks = weeks.map(weekBody);
+      if (type.data === "year") result.quarters = quarters.map(embeddedBody(quarterEntries));
       return { status: 200, body: result };
     });
   };

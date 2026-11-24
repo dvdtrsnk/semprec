@@ -29,6 +29,7 @@ import kotlin.test.assertTrue
 
 private val DAY = JournalPeriod(JournalPeriodType.DAY, "2026-10-16")
 private val MONTH = JournalPeriod(JournalPeriodType.MONTH, "2026-10")
+private val YEAR = JournalPeriod(JournalPeriodType.YEAR, "2026")
 
 private const val DAY_BODY = """{
   "type":"day","period":"2026-10-16","range":{"from":"2026-10-16","to":"2026-10-16"},
@@ -56,6 +57,17 @@ private const val MONTH_BODY = """{
   "weeks":[
     {"period":"2026-W40","range":{"from":"2026-09-28","to":"2026-10-04"},"itemId":"w40","docId":"d","markdown":"Dovolena"},
     {"period":"2026-W41","range":{"from":"2026-10-05","to":"2026-10-11"},"itemId":null,"docId":null,"markdown":null}
+  ]
+}"""
+
+private const val YEAR_BODY = """{
+  "type":"year","period":"2026","range":{"from":"2026-01-01","to":"2026-12-31"},"today":"2026-10-16",
+  "item":{"id":"item-year"},"markdown":"Year goals",
+  "quarters":[
+    {"period":"2026-Q1","range":{"from":"2026-01-01","to":"2026-03-31"},"itemId":null,"docId":null,"markdown":null},
+    {"period":"2026-Q2","range":{"from":"2026-04-01","to":"2026-06-30"},"itemId":null,"docId":null,"markdown":null},
+    {"period":"2026-Q3","range":{"from":"2026-07-01","to":"2026-09-30"},"itemId":null,"docId":null,"markdown":null},
+    {"period":"2026-Q4","range":{"from":"2026-10-01","to":"2026-12-31"},"itemId":"q4","docId":"d","markdown":"Ship"}
   ]
 }"""
 
@@ -118,6 +130,34 @@ class HttpJournalRepositoryTest {
         assertEquals("Dovolena", page.weeks.first().markdown)
         assertEquals("w40", page.weeks.first().itemId)
         assertEquals(CalendarDay(2026, 9, 28), page.weeks.first().from)
+    }
+
+    @Test fun `a year is read with its page and its four quarters`() = runTest {
+        val repo = repository { json(YEAR_BODY) }
+
+        val page = assertIs<RepositoryResult.Content<cz.semprec.app.domain.JournalPeriodPage>>(repo.period(YEAR)).value
+
+        assertEquals("https://s.example/api/journal/periods/year/2026", requests.single().url.toString())
+        assertEquals("Year goals", page.markdown)
+        assertEquals(listOf(1, 2, 3, 4), page.quarters.map { it.quarter })
+        assertNull(page.quarters.first().itemId)
+        assertEquals("q4", page.quarters.last().itemId)
+        assertEquals("Ship", page.quarters.last().markdown)
+        assertEquals(CalendarDay(2026, 10, 1), page.quarters.last().from)
+        assertEquals(CalendarDay(2026, 12, 31), page.quarters.last().to)
+        assertTrue(page.weeks.isEmpty())
+    }
+
+    @Test fun `a quarter that is not named by its number is invalid data`() = runTest {
+        val repo = repository { json(YEAR_BODY.replace("\"2026-Q4\"", "\"2026-Q5\"")) }
+
+        assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(repo.period(YEAR)).kind)
+    }
+
+    @Test fun `a quarter with an unreadable date is invalid data`() = runTest {
+        val repo = repository { json(YEAR_BODY.replace("\"to\":\"2026-03-31\"", "\"to\":\"later\"")) }
+
+        assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(repo.period(YEAR)).kind)
     }
 
     @Test fun `an answer with an unreadable date is invalid data`() = runTest {

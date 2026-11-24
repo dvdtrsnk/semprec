@@ -3,10 +3,12 @@ import DesignSystem
 import NoteEditor
 import SwiftUI
 
-/// The diary: a time axis of years, quarters, months and days, and below it the note of the selected period. A day
-/// also shows its week, events, Inbox and note; a month lists its weeks. Each note is edited in the light note
-/// editor, which writes it itself. The whole page scrolls over the diary's gradient, the heading and the Today button
-/// with it; only the axis row of the selected level stays at the top, on glass, with the page passing under it.
+/// The diary: a time axis of years, months and days, and below it the note of the selected period. A day also shows
+/// its week, events, Inbox and note; a month lists its weeks; a year shows its note and lists its quarters. Each note
+/// is edited in the light note editor, which writes it itself. The whole page scrolls over the diary's gradient, the
+/// heading and the Today button with it; the axis lies on a solid material that ends in a divider, and only the axis
+/// row of the selected level stays at the top, with the page passing under it. While the page scrolls, only the
+/// background redraws: it reads the scroll from `pageScroll`, which the screen itself never reads.
 struct JournalScreen: View {
 
     // MARK: - Dependencies
@@ -14,25 +16,33 @@ struct JournalScreen: View {
     @StateObject private var capture: JournalCaptureViewModel
     /// Set while a note is edited or its blocks are selected: the diary then shows only the page, and a check ends it.
     @StateObject private var noteFocus = NoteEditorFocus()
+    /// The focus of the notes on the pages beside the one in view, which nobody edits until they come into view.
+    @StateObject private var asideFocus = NoteEditorFocus()
     private let notes: JournalNotes
 
     // MARK: - State
-    /// Weeks whose open state the person flipped from what the screen shows by default.
-    @State private var flippedWeeks: Set<Int> = []
-    /// Where the axis stands, shared by its rows that scroll and its row that stays.
+    /// The weeks and quarters, by their period key, whose open state the person flipped from what the screen shows by
+    /// default.
+    @State private var flippedSections: Set<String> = []
+    /// Where the axis stands, shared by its three rows.
     @State private var axisMotion = JournalAxisMotion()
-    /// How tall the heading and the rows above the selected level are, and the visible height of the page: the page
-    /// is at least so tall that it scrolls far enough for the selected row to reach the top.
-    @State private var aboveHeight: CGFloat = 0
+    /// How tall the heading is and the visible height of the page: the page is at least so tall that it scrolls far
+    /// enough for the selected row to reach the top. The axis's material reaches up over the heading and the top inset
+    /// of the content.
+    @State private var titleHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
-    /// The size of the whole page, the top of its safe area and the frame of the selected axis row, on screen: the
-    /// band behind that row shows as the row comes up to the top.
-    @State private var pageSize: CGSize = .zero
-    @State private var safeTop: CGFloat = 0
-    @State private var pinnedFrame: CGRect = .zero
-    /// How far the page is scrolled from its top, up to a screen's height: the gradient at the top of the page moves
-    /// with it and is gone beyond that.
-    @State private var scrolled: CGFloat = 0
+    @State private var contentTop: CGFloat = 0
+    /// How far the page is scrolled and how large it is, for the background and the band behind the pinned row.
+    @State private var pageScroll = PaperScroll()
+    /// The state the page's cards keep while the axis moves, and whether a turn of the page is under way.
+    @State private var hold = JournalPageHold()
+    /// The turn of the page a period of the selected kind picked on the axis asks for.
+    @State private var turnRequest: JournalPageTurnRequest?
+    /// Counts the changes of the selected period and the presses of Today, for their haptics, as in the calendar: a
+    /// new period ticks, Today taps softly, and the period Today brings does not tick again.
+    @State private var selectionTicks = 0
+    @State private var todayTaps = 0
+    @State private var todayBrings: JournalSelection?
 
     // MARK: - Init
     init(
@@ -49,12 +59,7 @@ struct JournalScreen: View {
     var body: some View {
         content
             .background {
-                JournalBackground(scrolled: scrolled)
-                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { pageSize = $0 })
-            }
-            .background {
-                Color.clear
-                    .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { safeTop = $0 })
+                PaperBackground(scroll: pageScroll)
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(JournalIdentifiers.screen)
@@ -68,6 +73,20 @@ struct JournalScreen: View {
             }
             .animation(.snappy(duration: 0.3), value: noteFocus.isActive)
             .noteFormatBar(noteFocus)
+            // Today floats at the bottom leading edge, where the calendar has its own.
+            .safeAreaInset(edge: .bottom) {
+                if case .content = viewModel.state.phase, !noteFocus.isActive { todayBar }
+            }
+            .sensoryFeedback(.selection, trigger: selectionTicks)
+            .sensoryFeedback(.impact(flexibility: .soft), trigger: todayTaps)
+            // A turn ends once its period is shown, unless the axis still moves to it (then it ends when the axis
+            // rests): a period picked that the axis already shows moves nothing.
+            .onChange(of: viewModel.state.shown) { _, _ in
+                hold.periodShown(axisMoving: axisMotion.driver != nil)
+            }
+            .onChange(of: viewModel.state.selection) { _, selection in
+                if selection == todayBrings { todayBrings = nil } else { selectionTicks += 1 }
+            }
             .task { await viewModel.observe() }
     }
 }
@@ -75,57 +94,71 @@ struct JournalScreen: View {
 // MARK: - Subviews
 private extension JournalScreen {
 
-    var titleRow: some View {
-        HStack(alignment: .center, spacing: Theme.Spacing.medium) {
-            Spacer(minLength: 0)
-            Button {
+    /// The room above the axis, under the top of the screen.
+    var titleRow: some View { Color.clear.frame(height: Theme.Spacing.small) }
+
+    /// Today, as the calendar's, at the bottom leading edge.
+    var todayBar: some View {
+        JournalTodayBar {
+            todayTaps += 1
+            // Today on today only scrolls back to it; another day scrolls there once it is selected.
+            let state = viewModel.state
+            let today = JournalSelection(kind: .day, start: state.today)
+            if state.selection == today {
                 axisMotion.centerRequests += 1
-                viewModel.goToday()
-            } label: {
-                Text("journal.today", bundle: .module)
-                    .font(.headline)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 12)
+            } else {
+                todayBrings = today
             }
-            .journalAccentGlass()
-            .accessibilityIdentifier(JournalIdentifiers.today)
+            viewModel.goToday()
         }
-        .padding(.horizontal, Theme.Spacing.medium + 4)
-        .padding(.top, Theme.Spacing.small)
-        .padding(.bottom, Theme.Spacing.small)
     }
 
-    /// The axis rows above, of and below the selected level.
-    var axisLevels: (upper: [JournalAxisRow], selected: [JournalAxisRow], lower: [JournalAxisRow]) {
+    /// Selects the period `steps` away from the selected one, as a swipe of the page turns to it. The page that comes
+    /// shows the new period as soon as it comes, the axis moving or not.
+    func turn(_ steps: Int) -> JournalSelection? {
+        guard let target = viewModel.turn(by: steps) else { return nil }
+        hold.turnStarted()
+        return target
+    }
+
+    /// A period picked on the axis. One of the selected kind turns the page to its side, as a swipe does.
+    func pick(_ cell: JournalAxisCell) {
+        if let request = JournalPageTurnRequest(
+            picking: cell,
+            from: viewModel.state.selection,
+            after: turnRequest,
+            leaving: pageState
+        ) {
+            hold.turnStarted()
+            turnRequest = request
+        }
+        viewModel.select(cell)
+    }
+
+    /// The axis started or stopped moving: the page's cards wait for it to rest, unless the page turns.
+    func axisMoved(_ moving: Bool) {
+        hold.axisMoved(moving, showing: viewModel.state)
+    }
+
+    /// How far down the page the selected row is: below the heading and the rows above it.
+    var pinnedOffset: CGFloat {
         let rows = viewModel.state.axis
-        guard let index = rows.firstIndex(where: { $0.kind == viewModel.state.selection.kind }) else {
-            return (rows, [], [])
-        }
-        return (Array(rows[..<index]), [rows[index]], Array(rows[(index + 1)...]))
+        let above = rows.prefix { $0.kind != viewModel.state.selection.kind }
+        return titleHeight + above.reduce(0) { $0 + $1.kind.height + Self.axisRowSpacing }
     }
 
-    func axis(_ shown: [JournalAxisRow]) -> some View {
+    var axis: some View {
         JournalAxisView(
             rows: viewModel.state.axis,
-            shown: shown,
             selectionStart: viewModel.state.selection.start,
             selectionKind: viewModel.state.selection.kind,
-            onSelect: viewModel.select,
+            materialReach: contentTop + titleHeight + Self.materialOverreach,
+            onSelect: pick,
             onMove: viewModel.showAxis(around:),
+            onMoving: axisMoved,
+            material: { JournalHeaderMaterial() },
             motion: $axisMotion
         )
-    }
-
-    /// The selected level's row: its glass capsules stay at the top while the page passes under them.
-    var pinnedRow: some View {
-        axis(axisLevels.selected)
-            .padding(.vertical, Self.axisRowSpacing)
-            .background(alignment: .top) {
-                JournalTopBand(pageSize: pageSize, solidHeight: pinnedFrame.maxY, scrolled: scrolled)
-                    .offset(y: -pinnedFrame.minY)
-                    .opacity(bandOpacity)
-            }
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }, action: { pinnedFrame = $0 })
     }
 
     @ViewBuilder var content: some View {
@@ -136,220 +169,75 @@ private extension JournalScreen {
             StatusView(.failure(message: Text(FailureKind.message(for: failure)), retry: viewModel.retry))
         case .content:
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
-                    if noteFocus.isActive {
-                        page.padding(.top, Theme.Spacing.small)
-                    } else {
-                        VStack(spacing: Self.axisRowSpacing) {
-                            titleRow
-                            axis(axisLevels.upper)
-                        }
-                        .onGeometryChange(
-                            for: CGFloat.self,
-                            of: { $0.size.height },
-                            action: { aboveHeight = $0 }
-                        )
-                        Section {
-                            axis(axisLevels.lower)
-                            page.padding(.top, Theme.Spacing.medium)
-                        } header: {
-                            pinnedRow
-                        }
+                VStack(alignment: .leading, spacing: 0) {
+                    // While a note is focused only the page stays; it stays the same view, so the note being edited
+                    // is never made again under the person's cursor.
+                    if !noteFocus.isActive {
+                        titleRow
+                            .padding(.bottom, Self.axisRowSpacing)
+                            .onGeometryChange(
+                                for: CGFloat.self,
+                                of: { $0.size.height },
+                                action: { titleHeight = $0 }
+                            )
+                            // The material over the top of the screen, above the content's top inset: what scrolls up
+                            // there goes under it, as under a bar.
+                            .overlay(alignment: .top) {
+                                JournalHeaderMaterial()
+                                    .frame(height: contentTop + Self.materialOverreach)
+                                    .alignmentGuide(.top) { $0[.bottom] }
+                                    .keptAtTop()
+                            }
+                            .zIndex(2)
+                        axis.zIndex(1)
                     }
+                    JournalPager(
+                        current: pageState,
+                        isEnabled: !noteFocus.isActive,
+                        request: turnRequest,
+                        onTurn: turn,
+                        page: { state, inView in page(state, inView: inView) }
+                    )
+                    .padding(.top, noteFocus.isActive ? Theme.Spacing.small : Theme.Spacing.medium)
                 }
                 .padding(.bottom, Theme.Spacing.large)
-                .frame(minHeight: viewportHeight + aboveHeight, alignment: .top)
+                // Room for the selected row to reach the top; a focused note has no axis to pin.
+                .frame(minHeight: noteFocus.isActive ? 0 : viewportHeight + pinnedOffset, alignment: .top)
             }
+            // As in Notes, the page pulled down takes the keyboard with it, which ends writing in the note.
+            .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(
                 for: CGFloat.self,
-                of: { $0.containerSize.height - $0.contentInsets.top - $0.contentInsets.bottom },
+                // The container is already the visible height, inside the bars' insets.
+                of: { $0.containerSize.height },
                 action: { _, height in viewportHeight = height }
             )
-            .onScrollGeometryChange(
-                for: CGFloat.self,
-                of: { min(max($0.contentOffset.y + $0.contentInsets.top, 0), $0.containerSize.height) },
-                action: { _, offset in scrolled = offset }
-            )
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentInsets.top }, action: { _, top in
+                contentTop = top
+            })
+            .paperScroll(pageScroll)
         }
     }
 
-    /// The band behind the selected row comes in over the last row's height before the row reaches the top, so the
-    /// rows passing above it go under the band and the page never shows through the row once it stays there.
-    var bandOpacity: Double {
-        guard pinnedFrame.height > 0 else { return 0 }
-        let distance = pinnedFrame.minY - safeTop
-        return min(max(1 - distance / pinnedFrame.height, 0), 1)
+    /// The cards of a period, from `state`; only the page in view tells the screen when its note is edited.
+    func page(_ state: JournalState, inView: Bool) -> some View {
+        JournalPageView(
+            state: state,
+            notes: notes,
+            focus: inView ? noteFocus : asideFocus,
+            capture: capture,
+            flippedSections: $flippedSections,
+            onOpenEvent: viewModel.openEvent,
+            onOpenInbox: viewModel.openInbox,
+            onCaptured: viewModel.retry
+        )
     }
 
-    /// The cards of the selected period.
-    var page: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            header
-            switch shownPeriod.kind {
-            case .day: dayContent
-            case .month: monthContent
-            case .quarter, .year, .week: periodNote
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.medium)
-    }
+    /// What the page's cards show: the diary's state, or while the axis moves the state it had when it started to.
+    var pageState: JournalState { hold.held ?? viewModel.state }
 
     /// The space between two rows of the axis.
     static var axisRowSpacing: CGFloat { 2 }
-
-    /// What the longer periods are, under the bar; a day's heading says all in the bar.
-    @ViewBuilder var header: some View {
-        if shownPeriod.kind != .day {
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(Theme.Colors.secondaryText)
-                .padding(.horizontal, 4)
-        }
-    }
-
-    // MARK: Day
-    @ViewBuilder var dayContent: some View {
-        if let week = viewModel.state.weeks.first {
-            weekCard(week, openByDefault: false)
-        }
-        eventsSection
-        inboxSection
-        if let page = viewModel.state.page {
-            section(Text("journal.notes", bundle: .module)) {
-                notes.editor(page, focus: noteFocus)
-            }
-        }
-    }
-
-    var eventsSection: some View {
-        let events = viewModel.state.events
-        let birthdays = viewModel.state.birthdays
-        return section(Text("journal.events", bundle: .module), count: events.count) {
-            if events.isEmpty && birthdays.isEmpty {
-                Text("journal.events.none", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
-            } else {
-                ForEach(birthdays) { birthday in
-                    JournalBirthdayRow(birthday: birthday)
-                    if birthday.id != birthdays.last?.id || !events.isEmpty { rowDivider }
-                }
-                ForEach(events) { event in
-                    JournalEventRow(event: event) { viewModel.openEvent(event) }
-                    if event.id != events.last?.id { rowDivider }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder var inboxSection: some View {
-        let items = viewModel.state.inbox
-        // Today always has the Inbox, because that is where something new is written down.
-        let isToday = shownPeriod.start == viewModel.state.today
-        if !items.isEmpty || isToday {
-            section(Text("journal.inbox", bundle: .module), count: items.count, trailing: {
-                Button(action: viewModel.openInbox) {
-                    Text("journal.inbox.process", bundle: .module)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                }
-                .journalAccentGlass()
-                .accessibilityIdentifier(JournalIdentifiers.inboxProcess)
-            }, content: {
-                ForEach(items) { item in
-                    JournalInboxRow(item: item)
-                    if item.id != items.last?.id || isToday { rowDivider }
-                }
-                if isToday {
-                    JournalCaptureRow(viewModel: capture, day: viewModel.state.today)
-                }
-            })
-            .onChange(of: capture.captured) { _, _ in viewModel.retry() }
-        }
-    }
-
-    // MARK: Month
-    var monthContent: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            ForEach(viewModel.state.weeks) { week in
-                weekCard(week, openByDefault: week.contains(day: viewModel.state.today))
-            }
-        }
-    }
-
-    // MARK: Quarter and year
-    @ViewBuilder var periodNote: some View {
-        if let page = viewModel.state.page {
-            card { notes.editor(page, focus: noteFocus) }
-        }
-    }
-
-    // MARK: Pieces
-    func weekCard(_ week: JournalWeek, openByDefault: Bool) -> some View {
-        let isOpen = flippedWeeks.contains(week.number) != openByDefault
-        return VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            Button { toggle(week) } label: {
-                HStack(spacing: Theme.Spacing.medium) {
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                        .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    Text(weekTitle(week)).font(.title3.weight(.bold))
-                    Spacer(minLength: 0)
-                    Text(JournalDates.weekRange(first: week.firstDay, last: week.lastDay))
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                }
-                .padding(.vertical, 4)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(Text(isOpen ? "journal.week.expanded" : "journal.week.collapsed", bundle: .module))
-            .accessibilityIdentifier(JournalIdentifiers.weekTogglePrefix + String(week.number))
-            if isOpen {
-                notes.editor(week.page, focus: noteFocus)
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.medium + 4)
-        .padding(.vertical, Theme.Spacing.medium)
-        .journalCard()
-    }
-
-    func toggle(_ week: JournalWeek) {
-        if flippedWeeks.contains(week.number) {
-            flippedWeeks.remove(week.number)
-        } else {
-            flippedWeeks.insert(week.number)
-        }
-    }
-
-    func weekTitle(_ week: JournalWeek) -> String {
-        String(format: String(localized: "journal.week", bundle: .module), week.number)
-    }
-}
-
-// MARK: - Titles
-private extension JournalScreen {
-
-    /// The period the cards belong to: while a new selection loads, still the one shown before, so its content keeps
-    /// its own layout and subtitle.
-    var shownPeriod: JournalSelection { viewModel.state.shown ?? viewModel.state.selection }
-
-    var subtitle: String {
-        switch shownPeriod.kind {
-        case .day, .week:
-            let year = JournalDates.year(shownPeriod.start)
-            let key = shownPeriod.start == viewModel.state.today ? "journal.subtitle.dayToday" : "journal.subtitle.day"
-            return String(format: String(localized: String.LocalizationValue(key), bundle: .module), year)
-        case .month: return String(localized: "journal.subtitle.month", bundle: .module)
-        case .quarter: return JournalDates.quarterSpan(start: shownPeriod.start)
-        case .year: return String(localized: "journal.subtitle.year", bundle: .module)
-        }
-    }
-}
-
-private extension JournalWeek {
-
-    /// Whether `day` (`YYYY-MM-DD`) is one of the week's days; days in this form order as text.
-    func contains(day: String) -> Bool {
-        firstDay <= day && day <= lastDay
-    }
+    /// How far the axis's material reaches past the top of the screen, so no scroll ever shows its upper edge.
+    static var materialOverreach: CGFloat { 40 }
 }

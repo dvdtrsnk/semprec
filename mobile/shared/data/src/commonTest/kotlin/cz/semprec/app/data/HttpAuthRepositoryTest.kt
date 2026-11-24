@@ -128,6 +128,52 @@ class HttpAuthRepositoryTest {
     }
 
     @Test
+    fun aRestoreWithAKeptPersonIsSignedInBeforeTheServerAnswers() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+        lateinit var repo: HttpAuthRepository
+        var seenWhileSent: SessionStatus? = null
+        repo = offlineRepository(storage, layer()) {
+            seenWhileSent = repo.status.value
+            json("""{"user":${USER_JSON.replace("a@b.cz", "new@b.cz")}}""")
+        }
+
+        repo.restore()
+
+        assertEquals("a@b.cz", assertIs<SessionStatus.SignedIn>(seenWhileSent).session.user.email)
+        assertEquals("new@b.cz", assertIs<SessionStatus.SignedIn>(repo.status.value).session.user.email)
+    }
+
+    @Test
+    fun aRestoreOpenedWithAKeptPersonIsSignedOutWhenTheServerRefusesTheSession() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+        lateinit var repo: HttpAuthRepository
+        var seenWhileSent: SessionStatus? = null
+        repo = offlineRepository(storage, layer()) {
+            seenWhileSent = repo.status.value
+            json("{}", HttpStatusCode.Unauthorized)
+        }
+
+        repo.restore()
+
+        assertIs<SessionStatus.SignedIn>(seenWhileSent)
+        assertEquals(SessionStatus.SignedOut, repo.status.value)
+        assertNull(storage.load())
+    }
+
+    @Test
+    fun aRestoreOpenedWithAKeptPersonStaysOpenWhenTheAnswerIsNoSession() = runTest {
+        val storage = stored()
+        offlineRepository(storage, layer()) { json("""{"user":$USER_JSON}""") }.restore()
+        val repo = offlineRepository(storage, layer()) { json("""{"unexpected":true}""") }
+
+        repo.restore()
+
+        assertEquals("a@b.cz", assertIs<SessionStatus.SignedIn>(repo.status.value).session.user.email)
+    }
+
+    @Test
     fun aPersonKeptForAnotherSessionIsNotUsed() = runTest {
         offlineRepository(stored("old"), layer()) { json("""{"user":$USER_JSON}""") }.restore()
 

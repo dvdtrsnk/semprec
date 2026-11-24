@@ -6,6 +6,7 @@ import {
   describeJournalPeriods,
   JOURNAL_PERIOD_TYPES,
   parseJournalPeriodKey,
+  quartersOfYear,
   weeksOfMonth,
   type JournalPeriodType,
 } from "../journalPeriods.js";
@@ -199,5 +200,21 @@ describe("weeksOfMonth", () => {
   it("rejects a malformed month key", () => {
     expect(() => weeksOfMonth("2026-13")).toThrow(ValidationError);
     expect(() => weeksOfMonth("2026-1")).toThrow(ValidationError);
+  });
+});
+
+describe("quartersOfYear", () => {
+  it("returns the four quarters of 2026 in order with their first and last days", () => {
+    expect(quartersOfYear("2026")).toEqual([
+      { period: "2026-Q1", from: "2026-01-01", to: "2026-03-31" },
+      { period: "2026-Q2", from: "2026-04-01", to: "2026-06-30" },
+      { period: "2026-Q3", from: "2026-07-01", to: "2026-09-30" },
+      { period: "2026-Q4", from: "2026-10-01", to: "2026-12-31" },
+    ]);
+  });
+
+  it("rejects a malformed year key", () => {
+    expect(() => quartersOfYear("26")).toThrow(ValidationError);
+    expect(() => quartersOfYear("2026-Q1")).toThrow(ValidationError);
   });
 });

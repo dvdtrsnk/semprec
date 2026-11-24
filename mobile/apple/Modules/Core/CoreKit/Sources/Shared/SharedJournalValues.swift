@@ -139,6 +139,16 @@ extension JournalWeek {
     }
 }
 
+// MARK: - JournalQuarter
+extension JournalQuarter {
+
+    init(_ quarter: SharedSDK.JournalQuarterState) {
+        self.init(
+            number: Int(quarter.number), firstDay: quarter.from, lastDay: quarter.to, page: JournalPage(quarter.page)
+        )
+    }
+}
+
 // MARK: - JournalEvent
 extension JournalEvent {
 
@@ -194,6 +204,22 @@ extension JournalInboxItem {
             status: JournalInboxStatus(item.status),
             attachmentName: item.attachmentName,
             attachmentCount: Int(item.attachmentCount)
+        )
+    }
+}
+
+// MARK: - JournalPeriodContent
+extension JournalPeriodContent {
+
+    init(_ content: SharedSDK.JournalPeriodContent) {
+        self.init(
+            shown: JournalSelection(content.shown),
+            page: content.page.map(JournalPage.init),
+            weeks: content.weeks.map(JournalWeek.init),
+            quarters: content.quarters.map(JournalQuarter.init),
+            events: content.events.map(JournalEvent.init),
+            birthdays: content.birthdays.map(JournalBirthday.init),
+            inbox: content.inbox.map(JournalInboxItem.init)
         )
     }
 }

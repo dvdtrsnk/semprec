@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-23
 area: [mobile]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind
 ---
 
 # The mobile apps keep the answers of the offline set and serve them without a connection

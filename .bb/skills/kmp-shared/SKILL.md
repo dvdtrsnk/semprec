@@ -171,8 +171,8 @@ From `mobile/`, with `eval "$(bb device-lab env)"` on this Mac (it exports
 
 | Command | Proves |
 |---|---|
-| `./gradlew sharedJvmTest` | every shared module's tests on the JVM, the fast loop |
-| `./gradlew sharedAppleTest` | the same tests natively, `macosArm64Test` of every shared module; fails on a host that is not an Apple silicon Mac |
+| `./gradlew sharedJvmTest` | every shared module's tests on the JVM, the fast loop run while iterating (`mobile-verify` §4) |
+| `./gradlew sharedAppleTest` | the same tests natively, `macosArm64Test` of every shared module; fails on a host that is not an Apple silicon Mac. Run once before the pull request (the `shared` step of `mobile/scripts/verify` runs it), not after every edit |
 | `./gradlew sharedAppleTest -Pmobile.iosSimulatorId=<UDID>` | adds `iosSimulatorArm64Test` on a simulator you reserved (`mobile-verify`) |
 | `./gradlew :shared:umbrella:linkDebugFrameworkIosSimulatorArm64 :shared:umbrella:linkDebugFrameworkMacosArm64` | the framework links for the iOS simulator and macOS; `linkDebugFrameworkIosArm64` adds the iPhone slice, which the `apple` step of `mobile/scripts/verify` builds through its `generic/platform=iOS` builds |
 | `./gradlew detektAll -PdetektAutoFix=false` | detekt over shared, Android and build-logic Kotlin |
@@ -204,5 +204,7 @@ after three runs that bring no new evidence.
       rethrown before any broad catch.
 - [ ] The CoreKit bridge, the Android screens, the scripted previews and the
       tests on both platforms changed with the exported type.
-- [ ] `sharedJvmTest`, `sharedAppleTest` and, for an export change, the
-      Android and Apple steps ran, and the report names what did not run.
+- [ ] `sharedJvmTest` ran while iterating; before the pull request,
+      `sharedAppleTest` and, for an export change, the Android and Apple
+      steps ran too (`mobile/scripts/verify`), and the report names what did
+      not run.

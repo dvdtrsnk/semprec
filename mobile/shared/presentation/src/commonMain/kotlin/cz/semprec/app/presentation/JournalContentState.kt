@@ -1,6 +1,6 @@
 package cz.semprec.app.presentation
 
-/** The kinds of period the Journal keeps a page for; the time axis shows every kind but [WEEK]. */
+/** The kinds of period the Journal keeps a page for; the time axis shows every kind but [QUARTER] and [WEEK]. */
 enum class JournalPeriodKind { YEAR, QUARTER, MONTH, WEEK, DAY }
 
 /** Which page of the diary: the period it belongs to, named by its canonical key (`2026-Q4`, `2026-W42`). */
@@ -36,6 +36,9 @@ data class JournalPageState(val ref: JournalPageRef, val blocks: List<JournalBlo
 
 /** A week of the diary. [from] and [to] are `YYYY-MM-DD`; [page] is its note. */
 data class JournalWeekState(val number: Int, val from: String, val to: String, val page: JournalPageState)
+
+/** A quarter of the diary, 1 to 4. [from] and [to] are `YYYY-MM-DD`; [page] is its note. */
+data class JournalQuarterState(val number: Int, val from: String, val to: String, val page: JournalPageState)
 
 /** An event of the selected day; the times are minutes since midnight and `null` for an all-day event. */
 data class JournalEventState(

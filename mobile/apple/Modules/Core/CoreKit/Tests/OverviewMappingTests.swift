@@ -34,7 +34,7 @@ final class OverviewMappingTests: XCTestCase {
             refreshing: true,
             areas: [
                 SharedSDK.OverviewAreaItem(
-                    id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
+                    id: "a", name: "Work", color: "#5856D6", icon: "briefcase"
                 )
             ],
             projects: [
@@ -45,7 +45,7 @@ final class OverviewMappingTests: XCTestCase {
             collections: [
                 SharedSDK.OverviewCollectionItem(
                     databaseId: "d", ownerModuleId: "events", name: "Events",
-                    icon: nil, color: "#FF3B30", itemCount: 214
+                    icon: nil, color: "#FF3B30"
                 )
             ]
         )
@@ -57,12 +57,10 @@ final class OverviewMappingTests: XCTestCase {
                     accountEmail: "a@b.cz",
                     inboxPending: 9,
                     mailUnread: 5,
-                    tasksToday: 4,
                     problemCount: 2,
-                    journalTodayItemId: "j1",
                     areas: [
                         OverviewArea(
-                            id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
+                            id: "a", name: "Work", color: "#5856D6", icon: "briefcase"
                         )
                     ],
                     projects: [
@@ -73,7 +71,7 @@ final class OverviewMappingTests: XCTestCase {
                     collections: [
                         OverviewCollection(
                             databaseId: "d", ownerModuleId: "events", name: "Events",
-                            icon: nil, color: "#FF3B30", itemCount: 214
+                            icon: nil, color: "#FF3B30"
                         )
                     ]
                 )
@@ -94,7 +92,6 @@ final class OverviewMappingTests: XCTestCase {
     func testEveryOverviewTargetMapsBothWays() {
         let targets: [CoreKit.OverviewTarget] = [
             .inbox, .mail, .recordings, .tasks, .finance, .profile,
-            .journal(itemId: "j1"), .journal(itemId: nil),
             .area(id: "a"), .project(id: "p"), .collection(ownerModuleId: "events", databaseId: "d")
         ]
         for target in targets {
@@ -271,9 +268,7 @@ private extension OverviewMappingTests {
             accountName: accountName,
             inboxPending: 9,
             mailUnread: 5,
-            tasksToday: 4,
             problemCount: 2,
-            journalTodayItemId: "j1",
             areas: areas,
             projects: projects,
             collections: collections

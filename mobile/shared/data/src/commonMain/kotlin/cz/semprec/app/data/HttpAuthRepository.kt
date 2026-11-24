@@ -32,9 +32,10 @@ import kotlinx.serialization.encodeToString
  *
  * [changes] and [offline] are those of [api]: the window's change events and the offline layer its reads of the
  * offline set go through, if the device keeps any. With [offline], the person of every session the server confirms
- * (a restore it answered, a sign-in) is kept on the device, and a restore that cannot reach the server reports the
- * session signed in with the person kept for it, so the app opens without a connection; without a kept person it
- * reports [SessionStatus.Unreachable].
+ * (a restore it answered, a sign-in) is kept on the device, and a restore reports the session signed in with the
+ * person kept for it before the server answers, so the app opens at once and without a connection; the answer then
+ * signs the device out (a refused session) or confirms the person. Without a kept person the restore waits for the
+ * answer, and one that does not come reports [SessionStatus.Unreachable].
  */
 class HttpAuthRepository(
     private val client: ApiClient,
@@ -57,13 +58,18 @@ class HttpAuthRepository(
             mutableStatus.value = SessionStatus.SignedOut
             return
         }
+        // With a person kept for the stored session the app opens at once, signed in as that person; the server's
+        // answer follows and decides as before.
+        val kept = keptSession(stored)
+        if (kept is SessionStatus.SignedIn) mutableStatus.value = kept
         val response = client.send(stored.serverUrl, HttpMethod.Get, AuthenticatedApi.SESSION_PATH, stored.token)
         offline?.observed(response)
         when (response) {
             is ApiResponse.Success -> {
                 val restored = response.readSession(stored.serverUrl)
                 if (restored is SessionStatus.SignedIn) keepPerson(stored, restored.session)
-                mutableStatus.value = restored
+                // An answer that does not read as a session leaves an app already open as it is.
+                mutableStatus.value = if (restored is SessionStatus.SignedIn) restored else kept
             }
             is ApiResponse.Failure -> when (response.kind) {
                 FailureKind.UNAVAILABLE -> mutableStatus.value = keptSession(stored)
