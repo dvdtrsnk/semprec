@@ -41,4 +41,14 @@ final class SharedSleepScheduleTests: XCTestCase {
         )
         XCTAssertEqual(remove.planId, "p2")
     }
+
+    func testSavingTheNightMapsItsTimesAndAlarm() throws {
+        let night = try XCTUnwrap(
+            SharedSleepScreenModel.action(.saveNight(bedMinutes: 1_410, wakeMinutes: 420, alarm: true))
+                as? SharedSDK.SleepActionSaveNight
+        )
+        XCTAssertEqual(night.bedMinutes, 1_410)
+        XCTAssertEqual(night.wakeMinutes, 420)
+        XCTAssertTrue(night.alarm)
+    }
 }

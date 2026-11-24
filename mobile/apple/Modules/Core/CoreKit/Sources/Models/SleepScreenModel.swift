@@ -232,6 +232,8 @@ public enum SleepAction: Equatable, Sendable {
     case savePlan(planID: String?, name: String, wakeDays: [Int], bedMinutes: Int, wakeMinutes: Int, alarm: Bool)
     /// Deletes the plan from the schedule editor, unless it is the last one.
     case removePlan(planID: String)
+    /// Sets bedtime, wake time and the alarm of the shown night in one write.
+    case saveNight(bedMinutes: Int, wakeMinutes: Int, alarm: Bool)
     case resetNight
     case dismissSaveFailure
 }

@@ -5,8 +5,6 @@ enum SleepIdentifiers {
     static let close = "sleep.closeButton"
     static let done = "sleep.doneButton"
     static let back = "sleep.backButton"
-    static let bed = "sleep.bed"
-    static let wake = "sleep.wake"
     static let enabled = "sleep.enabled"
     /// Followed by the plan id, e.g. `sleep.plan.3f2a`.
     static let planPrefix = "sleep.plan."
@@ -27,6 +25,7 @@ enum SleepIdentifiers {
     /// Followed by the picked value, e.g. `sleep.option.450` or `sleep.option.piano`.
     static let optionPrefix = "sleep.option."
     static let dial = "sleep.dial"
+    static let nightTimes = "sleep.night.times"
     static let editor = "sleep.editor"
     static let editorClose = "sleep.editor.close"
     static let editorConfirm = "sleep.editor.confirm"

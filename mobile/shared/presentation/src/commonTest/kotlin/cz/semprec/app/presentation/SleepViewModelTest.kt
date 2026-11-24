@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SleepNightChange
 import cz.semprec.app.domain.SleepPlanChange
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -489,6 +490,30 @@ class SleepViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(1, repository.writes.size)
         assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        vm.close()
+    }
+
+    @Test fun `saving the night writes its times and alarm in one change`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository, startOnNight = true)
+        runCurrent()
+        vm.onAction(SleepAction.SaveNight(23 * 60 + 30, 7 * 60, alarm = false))
+        runCurrent()
+        val expected = SleepNightChange(bed = ClockTime(23 * 60 + 30), wake = ClockTime(7 * 60), alarm = false)
+        assertEquals("night:2026-10-16:$expected", repository.writes.single())
+        assertEquals(SleepScreen.NIGHT, vm.state.value.screen)
+        vm.close()
+    }
+
+    @Test fun `saving the night does nothing outside the night view or out of the day`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.SaveNight(23 * 60, 7 * 60, alarm = true))
+        vm.onAction(SleepAction.Open(SleepScreen.NIGHT))
+        vm.onAction(SleepAction.SaveNight(24 * 60, 7 * 60, alarm = true))
+        runCurrent()
+        assertTrue(repository.writes.isEmpty())
         vm.close()
     }
 

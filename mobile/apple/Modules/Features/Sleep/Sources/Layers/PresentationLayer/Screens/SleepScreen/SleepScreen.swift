@@ -80,11 +80,11 @@ private extension SleepScreen {
 
     @ViewBuilder var page: some View {
         switch state.page {
-        case .main:
+        // The plan page of the shared model is the schedule editor's sheet here, so the overview stands in for it.
+        case .main, .plan:
             SleepMainPage(state: state, send: send) { plan in
                 editing = plan.map { .plan($0.id) } ?? .new
             }
-        case .plan: SleepPlanPage(state: state, send: send)
         case .night: SleepNightPage(state: state, send: send)
         case .remind, .sound, .goal: SleepPickerPage(state: state, send: send)
         }
@@ -126,8 +126,7 @@ private extension SleepScreen {
 
     var title: Text {
         switch state.page {
-        case .main: Text("sleep.title", bundle: .module)
-        case .plan: Text(state.plans.first { $0.id == state.selectedPlanID }?.name ?? "")
+        case .main, .plan: Text("sleep.title", bundle: .module)
         case .night: nightTitle
         case .remind: Text("sleep.remind.title", bundle: .module)
         case .sound: Text("sleep.sound.title", bundle: .module)
@@ -179,10 +178,6 @@ private extension SleepScreen {
 // MARK: - Preview
 #Preview("Overview") {
     SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady)))
-}
-
-#Preview("Plan") {
-    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady.opening(.plan))))
 }
 
 #Preview("Night") {

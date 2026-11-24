@@ -58,15 +58,6 @@ enum SleepFormat {
         return String(format: String(localized: "sleep.remind.minutes", bundle: .module), locale: .current, minutes)
     }
 
-    /// How a night compares with the goal: `exactly the goal`, `+30 min over the goal`, `15 min under the goal`.
-    static func goalDifference(_ minutes: Int) -> String {
-        if minutes == 0 {
-            return String(localized: "sleep.ring.goal.exact", bundle: .module)
-        }
-        let key: String.LocalizationValue = minutes > 0 ? "sleep.ring.goal.above" : "sleep.ring.goal.below"
-        return String(format: String(localized: key, bundle: .module), locale: .current, duration(abs(minutes)))
-    }
-
     // MARK: - Weekdays
     /// `Mon`, `Po`: the short name of an ISO weekday, 1 for Monday up to 7 for Sunday.
     static func weekdayShort(_ isoDay: Int) -> String {

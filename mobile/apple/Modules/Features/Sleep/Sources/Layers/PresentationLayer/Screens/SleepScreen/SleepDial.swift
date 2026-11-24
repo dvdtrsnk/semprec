@@ -10,6 +10,8 @@ struct SleepDial: View {
     // MARK: - Dependencies
     @Binding var draft: SleepScheduleDraft
     let meetsGoal: Bool
+    /// Runs when a drag that moved the snake ends.
+    var onEnd: () -> Void = {}
 
     // MARK: - State
     @State private var drag: DialDrag?
@@ -113,7 +115,10 @@ private extension SleepDial {
                 case .body: draft.moveAll(bedTo: target)
                 }
             }
-            .onEnded { _ in drag = nil }
+            .onEnded { _ in
+                if drag != nil { onEnd() }
+                drag = nil
+            }
     }
 }
 

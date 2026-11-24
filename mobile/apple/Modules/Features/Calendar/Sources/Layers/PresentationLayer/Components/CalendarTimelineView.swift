@@ -210,21 +210,32 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
+    /// The parts of the evening's and the morning's nights that fall on this day, as the shared layer cut them, and
+    /// the bedtime reminder where it comes on this day.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
         if let evening = day.sleepEvening {
-            sleepBand(evening, from: evening.bedMinutes, to: CalendarGeometry.minutesPerDay, width: width)
+            if evening.toMinutes > evening.fromMinutes {
+                sleepBand(evening, evening: true, width: width)
+            }
             if let prep = evening.prepMinutes {
                 prepMarker(evening, minutes: prep, width: width)
             }
         }
         if let morning = day.sleepMorning {
-            sleepBand(morning, from: 0, to: morning.wakeMinutes, width: width)
+            if morning.toMinutes > morning.fromMinutes {
+                sleepBand(morning, evening: false, width: width)
+            }
+            if let prep = morning.prepMinutes {
+                prepMarker(morning, minutes: prep, width: width)
+            }
         }
     }
 
-    func sleepBand(_ sleep: CalendarSleep, from start: Int, to end: Int, width: CGFloat) -> some View {
-        let evening = start == sleep.bedMinutes
+    /// An evening band is labelled with its bedtime at the top, a morning band with its wake time at the bottom.
+    func sleepBand(_ sleep: CalendarSleep, evening: Bool, width: CGFloat) -> some View {
+        let start = sleep.fromMinutes
+        let end = sleep.toMinutes
         return Button { onOpenSleep(sleep.night) } label: {
             HStack(spacing: 4) {
                 Image(systemName: evening ? "moon.fill" : "alarm").font(.caption2)

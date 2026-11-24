@@ -49,6 +49,9 @@ sealed interface SleepAction {
 
     /** Deletes the plan [planId] from the schedule editor, unless it is the last one. */
     data class RemovePlan(val planId: String) : SleepAction
+
+    /** Sets bedtime, wake time and the alarm of the shown night in one write; outside the night view it does nothing. */
+    data class SaveNight(val bedMinutes: Int, val wakeMinutes: Int, val alarm: Boolean) : SleepAction
     data object ResetNight : SleepAction
     data object DismissSaveFailure : SleepAction
 }

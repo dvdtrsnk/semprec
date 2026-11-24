@@ -23,7 +23,7 @@ struct SleepScheduleSections: View {
             } header: {
                 if index == 0 { largeHeader("sleep.schedule.title") }
             }
-            .listSectionSpacing(Self.cardSpacing)
+            .sectionSpacing(Self.cardSpacing)
         }
         Section {
             Button { edit(nil) } label: { Text("sleep.schedule.add", bundle: .module) }
@@ -32,7 +32,7 @@ struct SleepScheduleSections: View {
         } header: {
             if state.plans.isEmpty { largeHeader("sleep.schedule.title") }
         }
-        .listSectionSpacing(Self.cardSpacing)
+        .sectionSpacing(Self.cardSpacing)
         Section {
             detailRow("sleep.schedule.windDown", value: SleepFormat.duration(state.prepReminderMinutes)) {
                 send(.open(.remind, planID: nil))
@@ -41,7 +41,7 @@ struct SleepScheduleSections: View {
         } header: {
             largeHeader("sleep.schedule.details")
         }
-        .listSectionSpacing(Self.cardSpacing)
+        .sectionSpacing(Self.cardSpacing)
         Section {
             detailRow("sleep.schedule.goal", value: SleepFormat.longDuration(state.goalMinutes)) {
                 send(.open(.goal, planID: nil))

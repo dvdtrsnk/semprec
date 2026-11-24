@@ -30,12 +30,6 @@ final class SleepFormatTests: XCTestCase {
         XCTAssertEqual(SleepFormat.lead(60), "1 h before bedtime")
     }
 
-    func testTheGoalDifferenceTellsAboveBelowAndExact() {
-        XCTAssertEqual(SleepFormat.goalDifference(0), "exactly the goal")
-        XCTAssertEqual(SleepFormat.goalDifference(30), "+30 min over the goal")
-        XCTAssertEqual(SleepFormat.goalDifference(-15), "15 min under the goal")
-    }
-
     // MARK: - Days
     func testTheDaysOfAPlanAreNamedWhenTheyAreTheCommonSets() {
         XCTAssertEqual(SleepFormat.days([5, 4, 3, 2, 1]), "Mon–Fri")

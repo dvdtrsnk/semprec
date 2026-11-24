@@ -96,6 +96,8 @@ extension SharedSleepScreenModel {
                 alarm: alarm
             )
         case .removePlan(let planID): SharedSDK.SleepActionRemovePlan(planId: planID)
+        case let .saveNight(bedMinutes, wakeMinutes, alarm):
+            SharedSDK.SleepActionSaveNight(bedMinutes: Int32(bedMinutes), wakeMinutes: Int32(wakeMinutes), alarm: alarm)
         case .resetNight: SharedSDK.SleepActionResetNight.shared
         case .dismissSaveFailure: SharedSDK.SleepActionDismissSaveFailure.shared
         }

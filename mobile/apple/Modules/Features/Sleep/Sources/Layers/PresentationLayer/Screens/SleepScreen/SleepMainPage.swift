@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The overview of the sleep sheet: the ring, the plan switch, the full schedule with its further details, the
+/// The overview of the sleep sheet: the plan switch, the full schedule with its further details, the
 /// preparation reminder, the alarm settings and what the calendar shows.
 struct SleepMainPage: View {
 
@@ -15,9 +15,6 @@ struct SleepMainPage: View {
     // MARK: - Body
     var body: some View {
         Form {
-            if let ring = state.ring {
-                SleepRingSection(ring: ring, isEnabled: state.enabled, send: send)
-            }
             enabledSection
             SleepScheduleSections(state: state, send: send, edit: edit)
             preparationSection

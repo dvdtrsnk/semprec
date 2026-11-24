@@ -47,7 +47,9 @@ enum CalendarKotlin {
             wakeMinutes: 405,
             alarm: true,
             changed: true,
-            prepMinutes: KotlinInt(int: 1350)
+            prepMinutes: KotlinInt(int: 1350),
+            fromMinutes: 1380,
+            toMinutes: 1440
         )
     }
 

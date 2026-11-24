@@ -2,79 +2,116 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One night: its ring, whether the alarm rings that night, going back to the plan, and the way to the plan overview.
+/// One night, edited like a schedule: bedtime and wake-up on the dial, its length against the goal, whether the alarm
+/// rings that night, going back to the schedule, and the way to the full schedule. A change is written once, when a
+/// drag on the dial ends or the alarm switches, and only that night changes.
 struct SleepNightPage: View {
 
     // MARK: - Dependencies
     let state: SleepState
     let send: (SleepAction) -> Void
 
+    // MARK: - State
+    @State private var draft: SleepScheduleDraft
+
+    // MARK: - Init
+    init(state: SleepState, send: @escaping (SleepAction) -> Void) {
+        self.state = state
+        self.send = send
+        _draft = State(initialValue: Self.draft(state))
+    }
+
     // MARK: - Body
     var body: some View {
-        Form {
-            if let ring = state.ring {
-                SleepRingSection(ring: ring, isEnabled: state.enabled, send: send)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
+                header("sleep.editor.times")
+                SleepTimesCard(draft: $draft, goalMinutes: state.goalMinutes, isNight: true, onCommit: commit)
+                    .accessibilityIdentifier(SleepIdentifiers.nightTimes)
+                header("sleep.editor.alarmOptions")
+                Toggle(isOn: alarm) { Text("sleep.editor.alarmToggle", bundle: .module) }
+                    .padding(Theme.Spacing.medium)
+                    .background(Theme.Colors.card, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .accessibilityIdentifier(SleepIdentifiers.alarm)
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.Colors.secondaryText)
+                    .padding(.horizontal, Theme.Spacing.medium)
+                if state.night?.changed == true { resetButton }
+                plansButton
             }
-            alarmSection
-            if state.night?.changed == true {
-                Section {
-                    Button { send(.resetNight) } label: {
-                        Text("sleep.night.reset", bundle: .module).frame(maxWidth: .infinity)
-                    }
-                    .accessibilityIdentifier(SleepIdentifiers.resetNight)
-                }
-            }
-            Section {
-                Button { send(.open(.main, planID: nil)) } label: {
-                    SleepNavigationRow(row: SleepRow(
-                        symbol: "moon.stars.fill",
-                        tint: Theme.Colors.sleep,
-                        title: Text("sleep.night.openPlans", bundle: .module)
-                    ))
-                }
-                .listRowButton()
-                .accessibilityIdentifier(SleepIdentifiers.openPlans)
-            }
+            .padding(.horizontal, Theme.Spacing.medium)
+            .padding(.bottom, Theme.Spacing.large)
         }
-        .formStyle(.grouped)
+        .background(Theme.Colors.groupedBackground)
+        .onChange(of: state.night) { _, _ in draft = Self.draft(state) }
     }
 }
 
 // MARK: - Subviews
 private extension SleepNightPage {
 
-    var alarmOn: Bool {
-        state.night?.alarm ?? state.ring?.alarm ?? false
+    /// The night's times and alarm, or the plan's ring while the night is not read yet.
+    static func draft(_ state: SleepState) -> SleepScheduleDraft {
+        SleepScheduleDraft(
+            days: [],
+            bedMinutes: state.night?.bedMinutes ?? state.ring?.bedMinutes ?? 23 * 60,
+            wakeMinutes: state.night?.wakeMinutes ?? state.ring?.wakeMinutes ?? 7 * 60,
+            alarm: state.night?.alarm ?? state.ring?.alarm ?? false
+        )
     }
 
-    var wakeMinutes: Int {
-        state.night?.wakeMinutes ?? state.ring?.wakeMinutes ?? 0
-    }
-
-    var alarmSection: some View {
-        Section {
-            Toggle(isOn: SleepBindings.isOn(alarmOn) { send(.setSwitch(.alarm, isOn: $0)) }) {
-                SleepRow(
-                    symbol: "bell.fill",
-                    tint: .orange,
-                    title: Text("sleep.night.alarm", bundle: .module),
-                    subtitle: alarmSubtitle
-                )
+    var alarm: Binding<Bool> {
+        Binding(
+            get: { draft.alarm },
+            set: {
+                draft.alarm = $0
+                commit()
             }
-            .accessibilityIdentifier(SleepIdentifiers.alarm)
-        } footer: {
-            Text(hint)
-        }
+        )
     }
 
-    var alarmSubtitle: Text {
-        guard alarmOn else { return Text("sleep.night.alarm.off", bundle: .module) }
-        return Text(String(
-            format: String(localized: "sleep.plan.alarm.on", bundle: .module),
-            locale: .current,
-            SleepFormat.time(wakeMinutes),
-            state.alarmSound.name
-        ))
+    /// Writes the night as the dial shows it, unless nothing changed.
+    func commit() {
+        guard draft != Self.draft(state) else { return }
+        send(.saveNight(bedMinutes: draft.bedMinutes, wakeMinutes: draft.wakeMinutes, alarm: draft.alarm))
+    }
+
+    func header(_ key: LocalizedStringKey) -> some View {
+        Text(key, bundle: .module)
+            .font(.headline)
+            .foregroundStyle(Theme.Colors.secondaryText)
+            .padding(.horizontal, Theme.Spacing.medium)
+            .padding(.top, Theme.Spacing.small)
+    }
+
+    var resetButton: some View {
+        Button { send(.resetNight) } label: {
+            Text("sleep.night.reset", bundle: .module)
+                .frame(maxWidth: .infinity)
+                .padding(Theme.Spacing.medium)
+                .background(Theme.Colors.card, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.Colors.appAccent)
+        .accessibilityIdentifier(SleepIdentifiers.resetNight)
+    }
+
+    var plansButton: some View {
+        Button { send(.open(.main, planID: nil)) } label: {
+            HStack {
+                Text("sleep.night.openPlans", bundle: .module).foregroundStyle(Color.primary)
+                Spacer(minLength: Theme.Spacing.small)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(Theme.Spacing.medium)
+            .background(Theme.Colors.card, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(SleepIdentifiers.openPlans)
     }
 
     /// Whether the night follows its plan, differs from it or has none, and when the reminder fires.

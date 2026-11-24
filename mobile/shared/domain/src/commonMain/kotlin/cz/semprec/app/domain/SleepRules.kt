@@ -30,8 +30,14 @@ object SleepRules {
      * midnight, an earlier one is on the morning of the wake day and never counts below zero.
      */
     fun durationMinutes(bed: ClockTime, wake: ClockTime): Int =
-        if (bed.minutes >= NOON_MINUTES) ClockTime.DAY_MINUTES - bed.minutes + wake.minutes
+        if (bed.minutes >= EVENING_FROM_MINUTES) ClockTime.DAY_MINUTES - bed.minutes + wake.minutes
         else maxOf(0, wake.minutes - bed.minutes)
+
+    /**
+     * The first bedtime of a night that starts on the evening before the wake day, as the server counts it: a bedtime
+     * of noon or later does, an earlier one is on the morning of the wake day.
+     */
+    const val EVENING_FROM_MINUTES: Int = NOON_MINUTES
 
     /** Positive when [duration] is longer than the [goal], negative when it is shorter. */
     fun goalDifference(duration: Int, goal: Int): Int = duration - goal
