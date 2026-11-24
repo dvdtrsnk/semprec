@@ -175,8 +175,11 @@ Steps 1–4 in this order, because each is cheaper than the one after it:
    callers. A false sentence is executed by the next agent that reads it.
 3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
-4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
-   is the same sequence CI runs, in the same order. The host is shared — read
+4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`, for
+   each of the two that `node .github/scripts/changed-areas.mjs --base
+   origin/develop --json` reports as `true` after you commit. On a pull
+   request, CI and Relay run each pipeline only when the change touches its
+   area, in this order. The host is shared — read
    `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
    `implement-issue` run, run a partial check instead, because Relay reviews
    the draft pull request first and then runs the full verify itself, so a
@@ -197,8 +200,8 @@ Steps 1–4 in this order, because each is cheaper than the one after it:
    `bb device-lab` (load `mobile-verify`):
    `mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>`.
    CI reports the non-required `mobile-android` and `mobile-apple` jobs for
-   changes under `mobile/`. Relay runs `verify-mobile` after `verify-web`,
-   with the full mobile pipeline but without devices. In a Relay worker,
+   the app areas your change touches. Relay runs `verify-mobile` after
+   `verify-web`, with the steps of those areas but without devices. In a Relay worker,
    leave that device-free run to Relay instead of duplicating it. Before a
    manual pull request, run the full pipeline with reserved devices as above.
    Report any device step you could not run as NOT RUN.

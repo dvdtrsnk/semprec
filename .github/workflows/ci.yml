@@ -20,17 +20,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  mobile-changes:
+  # Which platform pipelines this change needs: `backend`, `web`, `android` and `apple`, each
+  # `true` or `false` (.github/scripts/changed-areas.mjs compares a pull request with its merge
+  # base and a push with its `before` commit). A comparison git cannot make sets every area to
+  # `true`. On a push every backend job and the backend and web steps of `ci` run whatever this
+  # job says, because a release tag needs every push-triggered required job to have succeeded
+  # on the exact SHA; the mobile jobs follow the detection on pushes too. `ci` fails when this
+  # job did not succeed, so a failed detection cannot turn into skipped jobs that report success.
+  changes:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
-      changed: ${{ steps.paths.outputs.changed }}
+      backend: ${{ steps.areas.outputs.backend }}
+      web: ${{ steps.areas.outputs.web }}
+      android: ${{ steps.areas.outputs.android }}
+      apple: ${{ steps.areas.outputs.apple }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Detect mobile changes
-        id: paths
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Detect the areas this change touches
+        id: areas
         env:
           EVENT: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -40,26 +53,20 @@ jobs:
         run: |
           set -eu
           if [ "$EVENT" = pull_request ]; then
-            base=$(git merge-base "$PR_BASE" "$PR_HEAD")
+            base=$PR_BASE
             head=$PR_HEAD
           else
             base=$PUSH_BASE
             head=$PUSH_HEAD
-            if [ "$base" = 0000000000000000000000000000000000000000 ]; then
-              base=$(git hash-object -t tree /dev/null)
-            fi
           fi
-          paths=$(git diff --name-only "$base" "$head" -- mobile/)
-          if [ -n "$paths" ]; then
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-          fi
+          node .github/scripts/changed-areas.mjs --base "$base" --head "$head" --github-output
 
-  # Reported but not required; device tests remain a local, reserved-device run.
+  # Reported but not required; device tests remain a local, reserved-device run. The android
+  # step includes detekt, so a change to Android code alone needs no macOS job; a change to
+  # what both apps share runs both mobile jobs.
   mobile-android:
-    needs: mobile-changes
-    if: needs.mobile-changes.outputs.changed == 'true'
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -71,6 +78,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # Restores the Gradle User Home, its local build cache included, from runs on the default
+      # branch, so tasks whose inputs did not change come from the cache instead of running again.
+      # `basic` is the MIT provider built on the GitHub Actions cache.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Verify mobile architecture and Android
         run: mobile/scripts/verify architecture android
       - name: Upload mobile failure logs
@@ -81,9 +94,11 @@ jobs:
           path: mobile/build/verify/
           if-no-files-found: warn
 
+  # The architecture step runs here too, so a change to Apple code alone, which skips the
+  # Android job, still gets the mobile architecture rules.
   mobile-apple:
-    needs: mobile-changes
-    if: needs.mobile-changes.outputs.changed == 'true'
+    needs: changes
+    if: needs.changes.outputs.apple == 'true'
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -97,6 +112,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # Restores the Gradle User Home, its local build cache included, from runs on the default
+      # branch, so tasks whose inputs did not change come from the cache instead of running again.
+      # `basic` is the MIT provider built on the GitHub Actions cache.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Check Apple runner
         run: |
           test "$(uname -m)" = arm64
@@ -119,8 +140,8 @@ jobs:
           unzip -q "$tools_dir/swiftlint.zip" -d "$tools_dir/swiftlint"
           echo "$tools_dir/tuist" >> "$GITHUB_PATH"
           echo "$tools_dir/swiftlint" >> "$GITHUB_PATH"
-      - name: Verify shared Kotlin and Apple apps
-        run: mobile/scripts/verify shared apple
+      - name: Verify mobile architecture, shared Kotlin and Apple apps
+        run: mobile/scripts/verify architecture shared apple
       - name: Upload mobile failure logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -162,11 +183,37 @@ jobs:
   # The job id is a required status check context on both `develop` and `main`
   # (docs/operations/required-checks.md) — renaming it would leave `ci` permanently
   # pending on every pull request. It carries every check that is not one of the named
-  # tiers below: repository scans, lint, format, the build and the web workspace.
+  # tiers below: repository scans, lint, format, the build and the web workspace. The
+  # repository scans run on every change; the backend and web steps run on every push and
+  # on a pull request that touches their area. It runs whatever `changes` concluded and
+  # fails first when area detection did not succeed, which is what keeps a failed detection
+  # from leaving every area-conditioned job skipped and green.
   ci:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Area detection succeeded
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND: ${{ needs.changes.outputs.backend }}
+          WEB: ${{ needs.changes.outputs.web }}
+          ANDROID: ${{ needs.changes.outputs.android }}
+          APPLE: ${{ needs.changes.outputs.apple }}
+        run: |
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo "::error::The changes job finished with result '${CHANGES_RESULT}'; without area detection the area-conditioned jobs cannot be trusted."
+            exit 1
+          fi
+          for value in "$BACKEND" "$WEB" "$ANDROID" "$APPLE"; do
+            if [ "$value" != true ] && [ "$value" != false ]; then
+              echo "::error::The changes job reported an area value '${value}' that is neither true nor false."
+              exit 1
+            fi
+          done
+          echo "Areas: backend=$BACKEND web=$WEB android=$ANDROID apple=$APPLE"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
@@ -198,6 +245,7 @@ jobs:
       # No dependency on `node_modules`, so it runs before install alongside the other
       # dependency-free repo scan above.
       - name: Backend — check write safety
+        if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
         working-directory: backend
         run: pnpm run check:write-safety
 
@@ -218,38 +266,47 @@ jobs:
       # Backend static checks and the build. Every test tier and the boundary check
       # run as their own jobs below.
       - name: Backend — install
+        if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
         working-directory: backend
         run: pnpm install --frozen-lockfile
 
       - name: Backend — lint
+        if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
         working-directory: backend
         run: pnpm run lint
 
       - name: Backend — format check
+        if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
         working-directory: backend
         run: pnpm run format:check
 
       - name: Backend — build
+        if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
         working-directory: backend
         run: pnpm -r run build
 
       - name: Web — install
+        if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
         working-directory: web
         run: pnpm install --frozen-lockfile
 
       - name: Web — lint
+        if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
         working-directory: web
         run: pnpm run lint
 
       - name: Web — format check
+        if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
         working-directory: web
         run: pnpm run format:check
 
       - name: Web — build
+        if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
         working-directory: web
         run: pnpm run build
 
       - name: Web — test
+        if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
         working-directory: web
         run: pnpm test
 
@@ -258,8 +315,12 @@ jobs:
   # `develop` and `main` and a stable identifier in docs/operations/required-checks.md:
   # renaming one is a contract change that must update branch protection and that
   # document together. They run alongside `ci`, not after it, so a failing tier is
-  # reported without waiting for the rest of the gate.
+  # reported without waiting for the rest of the gate. Each backend job runs on every push
+  # and on a pull request whose `changes` result includes the backend; a job skipped by that
+  # condition reports success, and `ci` fails when `changes` itself did not succeed.
   unit:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -293,6 +354,8 @@ jobs:
   # a finite thirty-minute test budget, independent of the ffmpeg/build budgets.
   # The job allows 13 minutes for ffmpeg, 5 for build, 30 for tests and 2 for setup.
   integration-shard:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
@@ -378,26 +441,36 @@ jobs:
   # Exists so the required context keeps the name `integration` while the work runs in
   # the `integration-shard` matrix above; renaming it is a branch-protection contract
   # change (docs/operations/required-checks.md). `always()` makes it report even when a
-  # shard fails or is cancelled, so the context turns red instead of being skipped —
-  # and it is green only when every shard succeeded.
+  # shard fails or is cancelled, so the context turns red instead of being skipped. It is
+  # green when every shard succeeded, or when the shards were skipped because area
+  # detection succeeded and found no backend change on a pull request.
   integration:
-    needs: integration-shard
+    needs: [changes, integration-shard]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Every integration shard succeeded
         env:
+          EVENT: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND: ${{ needs.changes.outputs.backend }}
           SHARDS_RESULT: ${{ needs.integration-shard.result }}
         run: |
           if [ "$SHARDS_RESULT" = "success" ]; then
             echo "All integration shards succeeded."
             exit 0
           fi
-          echo "::error::The integration-shard matrix finished with result '${SHARDS_RESULT}'; every shard must succeed."
+          if [ "$SHARDS_RESULT" = "skipped" ] && [ "$CHANGES_RESULT" = "success" ] && [ "$EVENT" = "pull_request" ] && [ "$BACKEND" = "false" ]; then
+            echo "This pull request changes no backend area; the integration tier did not need to run."
+            exit 0
+          fi
+          echo "::error::The integration-shard matrix finished with result '${SHARDS_RESULT}' (changes: ${CHANGES_RESULT}, backend: ${BACKEND}); every shard must succeed."
           exit 1
 
   dependency-check:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -422,6 +495,8 @@ jobs:
         run: pnpm run check:boundaries
 
   e2e:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -482,6 +557,8 @@ jobs:
   # which the full unit tier also includes, run here under a required name of its own
   # so a pi upgrade that breaks it is reported as exactly that.
   pi-agent-contract:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
