@@ -323,6 +323,76 @@ class WorkRepositoriesTest {
     }
 
     @Test
+    fun anOccurrenceOfASeriesReadsAsTheSeriesOnItsDayUnderItsOwnId() = runTest {
+        val series = """{"id":"s1","databaseId":"d","version":"4","properties":{"name":"Svatek","date":"2026-01-10",
+            "endDate":"2026-01-11"}}"""
+        val data = work { json(series) }
+
+        val loaded = data.details.load(ItemKind.EVENT, "s1@2026-11-24")
+        val item = assertIs<RepositoryResult.Content<WorkItem>>(loaded).value
+
+        assertEquals("GET /api/items/s1", routes(requests.single()))
+        assertEquals("s1@2026-11-24", item.id)
+        assertEquals("Svatek", item.title)
+        assertEquals(Schedule("2026-11-24", null, null, "2026-11-25"), item.schedule)
+    }
+
+    @Test
+    fun aChangeToAnOccurrenceStoresItFirstAndChangesTheStoredRow() = runTest {
+        val stored = """{"id":"o1","databaseId":"d","version":"1","properties":{"name":"Svatek","date":"2026-11-24"}}"""
+        val data = work { request ->
+            when (routes(request)) {
+                "POST /api/events/series/s1/occurrences/2026-11-24" -> json(stored, HttpStatusCode.Created)
+                else -> json(stored)
+            }
+        }
+        val occurrence = WorkItem(ItemKind.EVENT, "s1@2026-11-24", "4", "Svatek", Schedule("2026-11-24", null, null))
+
+        val item = assertIs<RepositoryResult.Content<WorkItem>>(
+            data.details.update(occurrence, ItemChange.Title("Oslava")),
+        ).value
+
+        assertEquals(
+            listOf(
+                "POST /api/events/series/s1/occurrences/2026-11-24",
+                "PATCH /api/items/o1",
+                "GET /api/items/o1",
+            ),
+            requests.map(::routes),
+        )
+        // The write names the stored row's version, not the series'.
+        assertTrue(bodies[1].contains("\"ifVersion\":\"1\""))
+        assertEquals("o1", item.id)
+    }
+
+    @Test
+    fun deletingAnOccurrenceStoresItAndDeletesTheStoredRow() = runTest {
+        val data = work { request ->
+            when (routes(request)) {
+                "POST /api/tasks/series/s1/occurrences/2026-11-24" ->
+                    json("""{"id":"o1","databaseId":"d","version":"1"}""", HttpStatusCode.Created)
+                else -> json("{}")
+            }
+        }
+
+        assertIs<RepositoryResult.Content<Unit>>(data.details.delete(ItemKind.TASK, "s1@2026-11-24"))
+
+        assertEquals(
+            listOf("POST /api/tasks/series/s1/occurrences/2026-11-24", "DELETE /api/items/o1"),
+            requests.map(::routes),
+        )
+    }
+
+    @Test
+    fun anOccurrenceThatCannotBeStoredIsThatFailure() = runTest {
+        val data = work { json("{}", HttpStatusCode.ServiceUnavailable) }
+        val occurrence = WorkItem(ItemKind.EVENT, "s1@2026-11-24", "4", "Svatek", Schedule("2026-11-24", null, null))
+
+        assertIs<RepositoryResult.Failure>(data.details.update(occurrence, ItemChange.Title("Oslava")))
+        assertEquals(listOf("POST /api/events/series/s1/occurrences/2026-11-24"), requests.map(::routes))
+    }
+
+    @Test
     fun deleteTrashesTheItem() = runTest {
         val data = work { standard(it) }
 

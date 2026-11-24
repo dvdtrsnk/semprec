@@ -307,6 +307,28 @@ class ItemDetailsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `once a write stored an occurrence of a series the sheet reloads the stored row`() = runTest(dispatcher) {
+        val occurrence = meeting.copy(id = "s1@2026-11-24")
+        val loaded = mutableListOf<String>()
+        fake.onLoad = { _, id ->
+            loaded += id
+            RepositoryResult.Content(if (id == "o1") meeting.copy(id = "o1", title = "Server") else occurrence)
+        }
+        val vm = sheet(ItemKind.EVENT, "s1@2026-11-24")
+        runCurrent()
+        fake.onUpdate = { item, _ -> RepositoryResult.Content(item.copy(id = "o1", version = "9")) }
+        vm.onAction(ItemDetailsAction.SetTitle("Oslava"))
+        runCurrent()
+        fake.onUpdate = { _, _ -> RepositoryResult.Failure(FailureKind.REJECTED) }
+
+        vm.onAction(ItemDetailsAction.SetTitle("Jiná"))
+        runCurrent()
+
+        assertEquals(listOf("s1@2026-11-24", "o1"), loaded)
+        assertEquals("Server", vm.state.value.title)
+        vm.close()
+    }
+
     @Test fun `an unexpected exception in a write is an unavailable notice`() = runTest(dispatcher) {
         task()
         val vm = sheet()

@@ -98,11 +98,33 @@ private struct SempSheetBubbleModifier: ViewModifier {
 // MARK: - Stepping aside
 private extension View {
 
-    /// The bubble faded out and not touchable while a panel takes the bottom of the scene.
+    /// The bubble faded out and not touchable while a panel takes the bottom of the scene or the keyboard is up: there
+    /// it would cover the field being written in.
     func stepsAside(_ hidden: Bool) -> some View {
-        opacity(hidden ? 0 : 1)
-            .allowsHitTesting(!hidden)
-            .animation(.snappy(duration: 0.2), value: hidden)
+        modifier(SempBubbleStepsAside(hidden: hidden))
+    }
+}
+
+/// Fades the bubble out while `hidden` or while the keyboard is shown.
+private struct SempBubbleStepsAside: ViewModifier {
+
+    let hidden: Bool
+    @State private var isKeyboardShown = false
+
+    func body(content: Content) -> some View {
+        let away = hidden || isKeyboardShown
+        content
+            .opacity(away ? 0 : 1)
+            .allowsHitTesting(!away)
+            .animation(.snappy(duration: 0.2), value: away)
+        #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                isKeyboardShown = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                isKeyboardShown = false
+            }
+        #endif
     }
 }
 

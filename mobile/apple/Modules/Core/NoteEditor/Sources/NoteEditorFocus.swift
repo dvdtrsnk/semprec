@@ -52,7 +52,7 @@ extension View {
 }
 
 /// Shows the format bar while `focus` has a selection to format, and the selection panel, with the tab bar hidden,
-/// while its blocks are selected; floating controls step aside while the note is written in.
+/// while its blocks are selected.
 private struct NoteFocusBars: ViewModifier {
 
     @ObservedObject var focus: NoteEditorFocus
@@ -60,9 +60,6 @@ private struct NoteFocusBars: ViewModifier {
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) { bar }
-            // While the note is written in, the keyboard takes the bottom of the screen: floating controls there
-            // would cover the line being written.
-            .background { if focus.isEditing { Color.clear.hidesFloatingControls() } }
             .tabBarHidden(focus.selection != nil)
             .animation(.snappy(duration: 0.25), value: focus.selection == nil)
     }

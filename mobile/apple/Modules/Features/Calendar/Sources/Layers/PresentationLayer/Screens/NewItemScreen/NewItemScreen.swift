@@ -47,13 +47,10 @@ private extension NewItemScreen {
         state.phase == .saving
     }
 
-    @ViewBuilder var content: some View {
-        if state.phase == .loading {
-            StatusView(.loading)
-        } else {
-            NewItemFormView(form: $form, groups: state.groups, failure: failure)
-                .disabled(saving)
-        }
+    /// The form opens at once: what is typed needs no list of calendars, whose row comes in once they are read.
+    var content: some View {
+        NewItemFormView(form: $form, groups: state.groups, failure: failure)
+            .disabled(saving)
     }
 
     /// The message of a failed save, `nil` while nothing failed. A refused form explains what to fix.
@@ -99,7 +96,7 @@ private extension NewItemScreen {
                         Image(systemName: "checkmark")
                     }
                 }
-                .disabled(!form.canSubmit || state.phase == .loading)
+                .disabled(!form.canSubmit)
                 .accessibilityIdentifier(CalendarSheetIdentifiers.newItemAdd)
             }
         }

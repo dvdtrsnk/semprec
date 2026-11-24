@@ -17,6 +17,8 @@ struct NewItemFormView: View {
 
     // MARK: - State
     @State private var isChoosingCalendar = false
+    /// The title takes the keyboard as the sheet opens, as the system Calendar's does.
+    @FocusState private var isTitleFocused: Bool
 
     // MARK: - Body
     var body: some View {
@@ -217,6 +219,9 @@ private extension NewItemFormView {
             }
         }
         .font(.title2.weight(.semibold))
+        .focused($isTitleFocused)
+        .defaultFocus($isTitleFocused, true)
+        .onAppear { isTitleFocused = true }
         .accessibilityIdentifier(CalendarSheetIdentifiers.newItemTitle)
     }
 

@@ -75,7 +75,8 @@ class ItemDetailsViewModel internal constructor(
         if (!silent) update { it.copy(phase = ItemDetailsPhase.LOADING, failure = null) }
         loadJob = viewModelScope.launch {
             val result = try {
-                dependencies.items.load(kind, itemId)
+                // The item's own id, once a write stored an occurrence of a series under one.
+                dependencies.items.load(kind, item?.id ?: itemId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

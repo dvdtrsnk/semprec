@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.ItemKind
 import cz.semprec.app.core.LinkedValue
 import cz.semprec.app.core.TaskRepeat
+import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.ItemChange
 import cz.semprec.app.domain.ItemRepository
 import cz.semprec.app.domain.RepositoryResult
@@ -23,13 +24,33 @@ internal class HttpItemRepository(
     private val items: ItemsApi,
     private val writes: ItemWrites,
 ) : ItemRepository {
-    override suspend fun load(kind: ItemKind, id: String): RepositoryResult<WorkItem> =
-        items.get(id, WorkKeys.detailRelations(kind), links = true).map { it.toWorkItem(kind) }
+    /**
+     * An occurrence of a series not stored yet (`series@YYYY-MM-DD`, as the calendar names it) reads as its series
+     * moved to the occurrence's day, under the occurrence's id: it has no row of its own until it is changed.
+     */
+    override suspend fun load(kind: ItemKind, id: String): RepositoryResult<WorkItem> {
+        val occurrence = SeriesOccurrence.parse(id)
+            ?: return items.get(id, WorkKeys.detailRelations(kind), links = true).map { it.toWorkItem(kind) }
+        return items.get(occurrence.seriesId, WorkKeys.detailRelations(kind), links = true)
+            .map { occurrence.of(it.toWorkItem(kind)) }
+    }
 
+    /** A change to an occurrence not stored yet stores it first, and is made to the stored row. */
     override suspend fun update(item: WorkItem, change: ItemChange): RepositoryResult<WorkItem> =
-        write(item, change).then { load(item.kind, item.id) }
+        stored(item.kind, item.id, item.version).then { (id, version) ->
+            write(item.copy(id = id, version = version), change).then { load(item.kind, id) }
+        }
 
-    override suspend fun delete(kind: ItemKind, id: String): RepositoryResult<Unit> = writes.delete(id)
+    override suspend fun delete(kind: ItemKind, id: String): RepositoryResult<Unit> =
+        stored(kind, id, version = "").then { (storedId, _) -> writes.delete(storedId) }
+
+    /** The id and version of the row behind [id]: itself, or the occurrence of a series stored just now. */
+    private suspend fun stored(kind: ItemKind, id: String, version: String): RepositoryResult<Pair<String, String>> {
+        val occurrence = SeriesOccurrence.parse(id) ?: return RepositoryResult.Content(id to version)
+        val family = if (kind == ItemKind.EVENT) "events" else "tasks"
+        val path = "/api/$family/series/${occurrence.seriesId}/occurrences/${occurrence.day}"
+        return items.send(HttpMethod.Post, path).decode<CalendarStoredItem>().map { it.id to it.version }
+    }
 
     private suspend fun write(item: WorkItem, change: ItemChange): RepositoryResult<Unit> = when (change) {
         is ItemChange.Title,
@@ -90,4 +111,27 @@ private fun Schedule.properties(kind: ItemKind): Map<String, JsonElement> = buil
     put(WorkKeys.TIME_FROM, timeFrom.toJson())
     put(WorkKeys.TIME_TO, timeTo.toJson())
     if (kind == ItemKind.EVENT) put(WorkKeys.END_DATE, endDate.toJson())
+}
+
+/** An occurrence of a series that is not a stored row yet, named `series@YYYY-MM-DD` as the calendar names it. */
+private data class SeriesOccurrence(val seriesId: String, val day: CalendarDay) {
+
+    /** [series] as this occurrence: under its id, on its day, a last day kept as far from the first. */
+    fun of(series: WorkItem): WorkItem {
+        val start = series.schedule.date?.let(CalendarDay::parse)
+        val shift = start?.let { (day.epochDay - it.epochDay).toInt() } ?: 0
+        val end = series.schedule.endDate?.let(CalendarDay::parse)?.plusDays(shift)
+        return series.copy(
+            id = "$seriesId@$day",
+            schedule = series.schedule.copy(date = day.toString(), endDate = end?.toString()),
+        )
+    }
+
+    companion object {
+        fun parse(id: String): SeriesOccurrence? {
+            val parts = id.split('@')
+            if (parts.size != 2 || parts[0].isEmpty()) return null
+            return CalendarDay.parse(parts[1])?.let { SeriesOccurrence(parts[0], it) }
+        }
+    }
 }
