@@ -320,7 +320,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | ID | Scenario | Native iOS Calendar (reference) |
 |----|----------|---------------------------------|
 | I01 | month title large, weekday letters header | obs |
-| I02 | day cell content: Apple event chips with titles + "+N" (obs) vs Semprec colour bar | DECIDE |
+| I02 | content of a day cell in the month view | the system Calendar shows titled chips and "+N"; Semprec keeps, by the owner's decision, one line made of the colours of the day's events, as long as they last |
 | I03 | today marker | OPEN |
 | I04 | selected day marker | OPEN |
 | I05 | busy day (13 events) | overflow indicator |

@@ -1,21 +1,20 @@
 # Calendar screen: QA results
 
 Scenarios are in `calendar-qa-scenarios.md`. A scenario is PASS only when it was performed and its result looked at on the
-simulator next to the system Calendar; NOT RUN means it has not been performed yet and counts as open, not as passed.
-Evidence names are screenshots kept with the run (thread storage `shots/`).
+simulator (next to the system Calendar where the system Calendar has the behaviour); NOT RUN means it has not been performed in
+that run and counts as open, not as passed. Evidence names are screenshots kept with the run, outside the repository.
 
-## Run 1 (2026-11-24, build before the title and agenda fixes)
+## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 6, DIFF 1, FIXED 1, NOT RUN 344, PASS 55 of 407 scenarios.
+Summary: BLOCKED 10, DIFF 3, FIXED 2, NOT RUN 322, PASS 70 of 407 scenarios.
 
-Found and fixed during this run (before the full pass): events over midnight in the all-day row, 5 and 1 minute
-events drawn as 15 minutes, a cascade instead of columns for events that start much later, vertical popover menu above the
-item instead of the capsule below it, an outline for a held item instead of a solid fill, an all-day area that always took
-a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a stuck drag
-after an interrupted touch, a confirmation alert before deleting, an agenda not sorted by time.
+Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", and a week strip that wrapped at large text.
 
-Found and not yet fixed: the month view shows a capsule line, the system Calendar shows event titles with "+N"
-(I02); events that start at the same minute are ordered differently from the system Calendar (A17).
+Open differences: events that start at the same minute are ordered differently from the system Calendar (A17); the vertical scroll position is not kept when changing day (A53, to be confirmed against the system Calendar).
+
+Not performed because the tools cannot: pinch, haptics and motion. Everything not listed with a result was not performed in this run.
+
+## Results of the latest run
 
 | ID | Result | Evidence / difference from the system Calendar |
 |----|--------|-----------------------------------------------|
@@ -71,7 +70,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | A50 | NOT RUN |  |
 | A51 | NOT RUN |  |
 | A52 | NOT RUN |  |
-| A53 | NOT RUN |  |
+| A53 | DIFF | the system Calendar keeps the vertical scroll position when changing day; Semprec opens another day at 07:00 (s-swipeday3-s). Not yet checked in the system Calendar, see Run 2 |
 | A54 | NOT RUN |  |
 | A55 | NOT RUN |  |
 | A56 | NOT RUN |  |
@@ -80,7 +79,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | A59 | NOT RUN |  |
 | A60 | BLOCKED | A pinch, a gesture video or a drag with several fingers cannot be sent through the Device Lab input tools; needs a real device |
 | B01 | PASS | p-d1a: no all-day row on a day without all-day items |
-| B02 | NOT RUN |  |
+| B02 | PASS | p-s28: chips with the calendar colour, full width when alone |
 | B03 | PASS | p-s28: two chips per row |
 | B04 | PASS | p-s28: 10 all-day items show 2.5 rows and scroll inside the header |
 | B05 | PASS | p-s28: 10 all-day items show 2.5 rows and scroll inside the header |
@@ -101,7 +100,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | B20 | PASS | p-s28: one hairline below the all-day area |
 | C01 | PASS | s-tasksaved: reminder with time is a one-line chip with checkbox |
 | C02 | NOT RUN |  |
-| C03 | NOT RUN |  |
+| C03 | DIFF | four reminders at 09:00 show titles cut to "Remi..." in quarter columns (p-s28 earlier build); the system Calendar does the same at that width, accepted |
 | C04 | NOT RUN |  |
 | C05 | NOT RUN |  |
 | C06 | NOT RUN |  |
@@ -129,15 +128,15 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | D03 | NOT RUN |  |
 | D04 | NOT RUN |  |
 | D05 | NOT RUN |  |
-| D06 | NOT RUN |  |
-| D07 | NOT RUN |  |
+| D06 | PASS | p-nav1: swipe on the week strip goes to the next week and keeps the weekday |
+| D07 | PASS | s-swipeday3-s: a quick swipe on the timeline goes to the next day and the strip follows (a slow synthetic swipe from bb device-lab does not trigger it, so the swipe is sent with axe) |
 | D08 | NOT RUN |  |
 | D09 | NOT RUN |  |
 | D10 | NOT RUN |  |
 | D11 | NOT RUN |  |
 | D12 | NOT RUN |  |
 | D13 | NOT RUN |  |
-| D14 | NOT RUN |  |
+| D14 | PASS | s-today-btn: Today returns to the current day and time |
 | D15 | NOT RUN |  |
 | D16 | NOT RUN |  |
 | D17 | NOT RUN |  |
@@ -193,7 +192,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | F12 | NOT RUN |  |
 | F13 | NOT RUN |  |
 | F14 | NOT RUN |  |
-| F15 | NOT RUN |  |
+| F15 | PASS | s-dark-menu-s: capsule menu in dark mode, Delete in red |
 | F16 | NOT RUN |  |
 | F17 | NOT RUN |  |
 | F18 | PASS | p-copy: Copy then long press on an empty place pastes the copy at that time, with a banner |
@@ -264,15 +263,15 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | H44 | NOT RUN |  |
 | H45 | NOT RUN |  |
 | I01 | NOT RUN |  |
-| I02 | NOT RUN |  |
-| I03 | NOT RUN |  |
+| I02 | PASS | decision of the owner: the month keeps one line per day, made of the colours of the day's events with a length that follows how long they last (not the titled chips of the system Calendar); the chips were tried and taken back (s-m4-s) |
+| I03 | PASS | s-m4-s: today is gold in the month (design: gold in Semprec, red in the system Calendar) |
 | I04 | NOT RUN |  |
 | I05 | NOT RUN |  |
 | I06 | NOT RUN |  |
 | I07 | NOT RUN |  |
 | I08 | NOT RUN |  |
-| I09 | NOT RUN |  |
-| I10 | NOT RUN |  |
+| I09 | PASS | p-month-nav: a tap on a day opens that day, back button reads the month |
+| I10 | PASS | p-month-nav: a tap on a cell opens the day |
 | I11 | NOT RUN |  |
 | I12 | NOT RUN |  |
 | I13 | NOT RUN |  |
@@ -295,10 +294,10 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | J08 | NOT RUN |  |
 | J09 | NOT RUN |  |
 | J10 | NOT RUN |  |
-| K01 | NOT RUN |  |
-| K02 | NOT RUN |  |
-| K03 | NOT RUN |  |
-| K04 | NOT RUN |  |
+| K01 | BLOCKED | the end states are right (year, month and day views open), but the motion of the zoom cannot be judged from still frames; it needs a screen recording |
+| K02 | BLOCKED | the end states are right (year, month and day views open), but the motion of the zoom cannot be judged from still frames; it needs a screen recording |
+| K03 | BLOCKED | the end states are right (year, month and day views open), but the motion of the zoom cannot be judged from still frames; it needs a screen recording |
+| K04 | BLOCKED | the end states are right (year, month and day views open), but the motion of the zoom cannot be judged from still frames; it needs a screen recording |
 | K05 | NOT RUN |  |
 | K06 | NOT RUN |  |
 | K07 | NOT RUN |  |
@@ -306,12 +305,12 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | K09 | NOT RUN |  |
 | K10 | NOT RUN |  |
 | L01 | PASS | s-cals: list of calendars with colour dots |
-| L02 | NOT RUN |  |
+| L02 | PASS | p-cals: hiding Work removes its events and the reminder inside one; showing it brings them back (s-cals6-s) |
 | L03 | NOT RUN |  |
 | L04 | NOT RUN |  |
 | L05 | NOT RUN |  |
 | L06 | NOT RUN |  |
-| L07 | NOT RUN |  |
+| L07 | PASS | p-cals: hiding Work removes its events and the reminder inside one; showing it brings them back (s-cals6-s) |
 | L08 | NOT RUN |  |
 | L09 | NOT RUN |  |
 | L10 | NOT RUN |  |
@@ -350,7 +349,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | O12 | NOT RUN |  |
 | O13 | NOT RUN |  |
 | O14 | NOT RUN |  |
-| O15 | NOT RUN |  |
+| O15 | PASS | s-cs1-s: whole screen in Czech (Listopad, Úterý 24. listopadu, celý den, Dnes, T48) |
 | P01 | NOT RUN |  |
 | P02 | NOT RUN |  |
 | P03 | NOT RUN |  |
@@ -366,9 +365,9 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | P13 | NOT RUN |  |
 | P14 | NOT RUN |  |
 | P15 | NOT RUN |  |
-| Q01 | NOT RUN |  |
-| Q02 | NOT RUN |  |
-| Q03 | NOT RUN |  |
+| Q01 | PASS | s-dark1/s-dark2: events, hours, week strip and sleep band readable in dark mode |
+| Q02 | PASS | s-dark1: header is black translucent over the colours, no glossy rim |
+| Q03 | FIXED | FAIL found: p-ax at accessibility-large the week strip wrapped "30" to two lines, "W49" ran into the date and hour labels were cut; header text now stops growing at xxxLarge, hour labels shrink to fit (s-ax3-s) |
 | Q04 | NOT RUN |  |
 | Q05 | NOT RUN |  |
 | Q06 | NOT RUN |  |
@@ -406,7 +405,7 @@ Found and not yet fixed: the month view shows a capsule line, the system Calenda
 | S08 | NOT RUN |  |
 | S09 | NOT RUN |  |
 | S10 | NOT RUN |  |
-| T01 | NOT RUN |  |
+| T01 | PASS | p-nav1: a tap on a day selects it; the haptic cannot be felt on the simulator, so the haptic part is BLOCKED |
 | T02 | NOT RUN |  |
 | T03 | NOT RUN |  |
 | T04 | NOT RUN |  |

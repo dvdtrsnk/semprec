@@ -2,8 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One day of the month view, as the system Calendar's month: the day's number and below it the first items of the day
-/// as chips with their titles. The chips only show; a tap anywhere on the cell opens the day, where its items are edited.
+/// One day of the month view, as the system Calendar's compact month: the day's number and below it a line of what is
+/// on the day, a capsule as long as the day's events last, in their calendars' colours. The line only shows; a tap
+/// anywhere on the cell opens the day, where its items are edited.
 struct CalendarMonthCell: View {
 
     // MARK: - Dependencies
@@ -32,7 +33,7 @@ struct CalendarMonthCell: View {
                 .foregroundStyle(numberStyle)
                 .frame(width: Self.digitSize, height: Self.digitSize)
                 .measuresZoomFrame(if: selected) { zoomMeasures?.monthDay = $0 }
-            CalendarMonthChips(items: visible)
+            CalendarDayLine(items: visible)
             Spacer(minLength: 0)
         }
         .padding(.top, Self.digitTop)
@@ -52,7 +53,7 @@ private extension CalendarMonthCell {
 
     /// The day's number, as the system Calendar's compact month sets it, and the room between it and the line.
     static let digitFontSize: CGFloat = 19
-    static let lineGap: CGFloat = 4
+    static let lineGap: CGFloat = 7
 
     var visible: [CalendarItem] {
         items.filter { $0.kind != .trace && $0.kind != .sleep }
@@ -64,77 +65,55 @@ private extension CalendarMonthCell {
     }
 }
 
-/// What is on a day, as the system Calendar's month draws it: the first two items as chips with their titles in the
-/// colour of their calendars (an all-day one is a capsule with a dot, a timed one a rounded rectangle), and below them
-/// "+N" for as many as did not fit. All-day items and the ones that last several days come first, then the timed ones
-/// by their start.
-struct CalendarMonthChips: View {
+/// What is on a day, as the system Calendar's compact month draws it: a capsule 6 points tall that grows 6 points for
+/// every hour the day's items last (an item shorter than an hour, all-day or without a time counts as an hour, so one
+/// alone is a dot), each item a stretch of it in its calendar's colour at half strength. A day fuller than the cell is
+/// wide shows the same shares in the width there is. Nothing when the day is empty.
+struct CalendarDayLine: View {
 
     let items: [CalendarItem]
 
     var body: some View {
-        let shown = Array(ordered.prefix(Self.capacity))
-        VStack(spacing: Self.gap) {
-            ForEach(shown, id: \.identity) { item in
-                chip(item)
-            }
-            if ordered.count > shown.count {
-                Text("+\(ordered.count - shown.count)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            }
-        }
-        .padding(.horizontal, Self.margin)
-        .accessibilityHidden(true)
-    }
-
-    /// The items in the order the cell shows them.
-    var ordered: [CalendarItem] {
-        items.sorted { lhs, rhs in
-            let left = lhs.allDay ? -1 : (lhs.startMinutes ?? 0)
-            let right = rhs.allDay ? -1 : (rhs.startMinutes ?? 0)
-            return left < right
-        }
-    }
-
-    func chip(_ item: CalendarItem) -> some View {
-        HStack(spacing: 3) {
-            if item.allDay {
-                Circle().fill(item.tint).frame(width: 9, height: 9)
-            }
-            // A title longer than the chip fades out at its end, as in the system Calendar, rather than ending in dots.
-            // It is drawn over an empty line, so however long it is it asks the cell for no width.
-            Color.clear
-                .frame(maxWidth: .infinity, minHeight: Self.chipHeight, maxHeight: Self.chipHeight)
-                .overlay(alignment: .leading) {
-                    Text(item.displayTitle)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(item.tint.mix(with: .black, by: 0.35))
+        let hours = items.map(Self.hours)
+        let total = hours.reduce(0, +)
+        if total > 0 {
+            GeometryReader { proxy in
+                let widths = Self.widths(hours: hours, cellWidth: proxy.size.width)
+                HStack(spacing: 0) {
+                    ForEach(items.indices, id: \.self) { index in
+                        Rectangle()
+                            .fill(items[index].tint.opacity(Self.strength))
+                            .frame(width: widths[index])
+                    }
                 }
-                .clipped()
-                .mask(alignment: .leading) { fade }
+                .frame(width: widths.reduce(0, +), height: Self.height)
+                .clipShape(.capsule)
+                .frame(maxWidth: .infinity)
+            }
+            .frame(height: Self.height)
+            .accessibilityHidden(true)
         }
-        .padding(.horizontal, 3)
-        .frame(maxWidth: .infinity, minHeight: Self.chipHeight, maxHeight: Self.chipHeight, alignment: .leading)
-        .background(item.tint.opacity(0.22), in: RoundedRectangle(cornerRadius: item.allDay ? Self.chipHeight / 2 : 4))
-        .clipped()
     }
 
-    /// Opaque but for the last few points, which fade out.
-    var fade: some View {
-        LinearGradient(
-            stops: [.init(color: .black, location: 0.8), .init(color: .clear, location: 1)],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
+    /// The width of each item's stretch: `pointsPerHour` for every hour, the whole line no wider than the cell without
+    /// its margins, the items keeping their shares when it is cut down. Nothing for a cell with no room.
+    static func widths(hours: [Double], cellWidth: CGFloat) -> [CGFloat] {
+        let total = hours.reduce(0, +)
+        let room = max(cellWidth - margin * 2, 0)
+        guard total > 0 else { return hours.map { _ in 0 } }
+        let width = min(CGFloat(total) * pointsPerHour, room)
+        return hours.map { width * CGFloat($0 / total) }
     }
 
-    /// How many chips a cell holds before it says how many more there are.
-    static let capacity = 2
-    static let chipHeight: CGFloat = 16
-    static let gap: CGFloat = 3
-    static let margin: CGFloat = 1.5
+    /// How long an item lasts on its day, in hours, at least one.
+    static func hours(_ item: CalendarItem) -> Double {
+        guard !item.allDay, let start = item.startMinutes, let end = item.endMinutes, end > start else { return 1 }
+        return max(Double(end - start) / 60, 1)
+    }
+
+    static let height: CGFloat = 6
+    static let pointsPerHour: CGFloat = 6
+    static let strength = 0.5
+    /// The room the line leaves at each side of the cell, however full the day is.
+    static let margin: CGFloat = 4
 }

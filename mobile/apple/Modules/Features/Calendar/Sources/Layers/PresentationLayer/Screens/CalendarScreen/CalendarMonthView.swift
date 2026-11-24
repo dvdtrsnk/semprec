@@ -77,8 +77,9 @@ struct CalendarMonthView: View {
 // MARK: - Layout
 extension CalendarMonthView {
 
-    /// The height of a week, as the system Calendar's month: the day's number, two chips and the count of the rest.
-    static let rowHeight: CGFloat = 118
+    /// The height of a week, as the system Calendar's compact month: the day's number and the line of what is on
+    /// it, the months going on below.
+    static let rowHeight: CGFloat = 69
 }
 
 // MARK: - Subviews
