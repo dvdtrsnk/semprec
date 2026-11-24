@@ -6,7 +6,7 @@ that run and counts as open, not as passed. Evidence names are screenshots kept 
 
 ## Run 1 (2026-11-24, ad-hoc build r5 to r10 of the branch)
 
-Summary: BLOCKED 35, DIFF 5, FIXED 5, NOT RUN 251, PASS 111 of 407 scenarios.
+Summary: BLOCKED 34, DIFF 5, FIXED 5, NOT RUN 249, PASS 114 of 407 scenarios.
 
 Defects found and fixed while running it: events over midnight in the all-day row, 5 and 1 minute events drawn as 15 minutes, events starting later laid in columns instead of a cascade, a vertical popover menu above the item instead of the capsule below it, an outline instead of a solid held item, an all-day area that always took a row and grew without limit, clock labels not written the region's way, sleep labels over event titles, a drag stuck after an interrupted touch, a delete confirmation the system Calendar does not have, an agenda not sorted by time, a multi-line title shown as "Multi...", a week strip that wrapped at large text, a new-item form that closed without asking, an all-day chip without a menu, and a day that jumped to its start hour when the all-day area changed height.
 
@@ -17,6 +17,8 @@ Not performed because the tools cannot: pinch, haptics and motion. Everything no
 Input tool notes: `bb device-lab swipe` sends only the start and the end of a swipe, so a swipe that starts on an event block does not scroll the day; `axe drag --steps` does. A handle or block drag sent by the tool is only closed by the next touch. These are limits of the tool, not defects of the app, and are not counted as FAIL.
 
 Not reached in this run (NOT RUN): about 250 scenarios of the groups L (calendar editing), M (invitations), most of H (form fields), N, O (time zones and DST), P (data limits), Q (accessibility settings) and S. The next run walks them, and everything again.
+
+Performance, measured with Instruments (`xcrun xctrace record --template "Time Profiler"` attached to the running app, driven with axe swipes; the template also records Hangs): main-thread busy time while swiping days about 9 %, scrolling a dense day about 15 %, going year/month/day about 19 %, scrolling the month about 28 %; no hang over 250 ms in any of them. These are simulator numbers on a Mac mini, good for comparing one build with another, not frame rates of an iPhone. Animation Hitches, which would give dropped frames, does not run on a simulator.
 
 ## Results of the latest run
 
@@ -272,7 +274,7 @@ Not reached in this run (NOT RUN): about 250 scenarios of the groups L (calendar
 | I04 | NOT RUN |  |
 | I05 | NOT RUN |  |
 | I06 | NOT RUN |  |
-| I07 | NOT RUN |  |
+| I07 | PASS | Time Profiler: a month scrolled 4 times up and down: 4.9 s busy in 17.4 s, about 28 % (the heaviest of the four, includes opening the month); no hang over 250 ms, smooth in the stills. The month view is the first thing to optimise |
 | I08 | NOT RUN |  |
 | I09 | PASS | p-month-nav: a tap on a day opens that day, back button reads the month |
 | I10 | PASS | p-month-nav: a tap on a cell opens the day |
@@ -304,7 +306,7 @@ Not reached in this run (NOT RUN): about 250 scenarios of the groups L (calendar
 | K04 | BLOCKED | the end states are right (year, month and day views open), but the motion of the zoom cannot be judged from still frames; it needs a screen recording |
 | K05 | BLOCKED | motion needs a screen recording |
 | K06 | BLOCKED | motion needs a screen recording |
-| K07 | BLOCKED | frame rate needs a recording |
+| K07 | BLOCKED | Instruments Animation Hitches is not supported on the simulator ("Hitches is not supported on this platform"); frame drops can only be measured on a real iPhone. Substitute: 3 rounds day -> month -> year -> today -> day: 3.3 s busy in 17.4 s, about 19 %, no hang over 250 ms |
 | K08 | BLOCKED | motion needs a screen recording |
 | K09 | BLOCKED | motion needs a screen recording |
 | K10 | BLOCKED | motion needs a screen recording |
@@ -390,9 +392,9 @@ Not reached in this run (NOT RUN): about 250 scenarios of the groups L (calendar
 | Q19 | NOT RUN |  |
 | Q20 | NOT RUN |  |
 | R01 | BLOCKED | timing cannot be measured from stills |
-| R02 | BLOCKED | frame drops cannot be seen in stills |
+| R02 | PASS | Instruments Time Profiler + Hangs (xctrace, simulator on the Mac mini): 8 day swipes in 16.8 s kept the main thread busy 1.57 s, about 9 %, and no hang over 250 ms |
 | R03 | BLOCKED | pinch cannot be sent |
-| R04 | NOT RUN |  |
+| R04 | PASS | Time Profiler: 4 vertical scrolls up and down of a dense day: 1.86 s busy in 12 s, about 15 %, no hang over 250 ms |
 | R05 | NOT RUN |  |
 | R06 | BLOCKED | memory warnings cannot be sent |
 | R07 | NOT RUN |  |
