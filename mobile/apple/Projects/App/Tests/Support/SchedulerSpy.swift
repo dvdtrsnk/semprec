@@ -71,7 +71,12 @@ final class SchedulerSpy: AlarmScheduler, @unchecked Sendable {
 
     /// Marks the held alarm `id` as ringing.
     func ring(_ id: UUID) {
-        held = held.map { $0.id == id ? ScheduledAlarm(id: $0.id, time: $0.time, phase: .alerting) : $0 }
+        set(id, phase: .alerting)
+    }
+
+    /// Puts the held alarm `id` in `phase`.
+    func set(_ id: UUID, phase: AlarmPhase) {
+        held = held.map { $0.id == id ? ScheduledAlarm(id: $0.id, time: $0.time, phase: phase) : $0 }
     }
 
     func updates() -> AsyncStream<[ScheduledAlarm]> {

@@ -118,19 +118,19 @@ struct SleepDestination: View {
         if startsOnNight {
             SleepScreenFactory.night(
                 makeModel: { composition.models.makeSleep(night: night, startOnNight: true) },
-                wakeSettings: Self.wakeSettings
+                wakeSettings: wakeSettings
             )
         } else {
             SleepScreenFactory.plan(
                 makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
-                wakeSettings: Self.wakeSettings
+                wakeSettings: wakeSettings
             )
         }
     }
 
     /// How the sleep plan's alarms wake the person on this device; nil where the device rings no system alarm.
-    static var wakeSettings: (@MainActor () -> AnyView)? {
-        guard SystemAlarmScheduler().isSupported, let clock = AppNotifications.shared.sleepAlarms else { return nil }
+    var wakeSettings: (@MainActor () -> AnyView)? {
+        guard SystemAlarmScheduler().isSupported, let clock = composition.notifications?.sleepAlarms else { return nil }
         return { AnyView(SleepWakeScreen(clock: clock)) }
     }
 }

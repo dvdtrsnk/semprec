@@ -32,7 +32,7 @@ machine does not grant; give no other target its own destinations.
 
 - Write a platform conditional only where iOS and macOS really diverge, and
   wrap it in one small view modifier in `DesignSystem` so screens stay free of
-  `#if`. There are two in the modules and the app today, both in DesignSystem:
+  `#if`. Two of the DesignSystem modifiers that do this, as examples:
   `inlineNavigationTitle()` in
   `Modules/Core/DesignSystem/Sources/View+InlineNavigationTitle.swift`
   (`#if os(iOS)`), because a macOS window has no large title to replace, and

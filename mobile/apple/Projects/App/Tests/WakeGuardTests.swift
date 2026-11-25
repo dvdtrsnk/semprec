@@ -157,6 +157,22 @@ final class WakeGuardTests: XCTestCase {
     }
 
     @MainActor
+    func testTheCodeCancelsAWatchAlarmThatCountsDownOrIsPausedInsteadOfStoppingIt() async throws {
+        let fixture = try await ringing(.once(start.addingTimeInterval(60)))
+        let mission = try XCTUnwrap(fixture.wakeGuard.ringing)
+        fixture.scheduler.ring(mission.watchIDs[0])
+        fixture.scheduler.set(mission.watchIDs[1], phase: .countdown)
+        fixture.scheduler.set(mission.watchIDs[2], phase: .paused)
+
+        _ = await fixture.wakeGuard.submit(code: "123")
+
+        XCTAssertEqual(fixture.scheduler.stopped, [mission.watchIDs[0]])
+        XCTAssertTrue(fixture.scheduler.cancelled.contains(mission.watchIDs[1]))
+        XCTAssertTrue(fixture.scheduler.cancelled.contains(mission.watchIDs[2]))
+        XCTAssertTrue(fixture.scheduler.held.isEmpty)
+    }
+
+    @MainActor
     func testTheCodeEndsTodaysDailyRingAndGuardsTomorrows() async throws {
         let calendar = Calendar.current
         let ring = try XCTUnwrap(calendar.date(bySettingHour: 7, minute: 0, second: 0, of: start))

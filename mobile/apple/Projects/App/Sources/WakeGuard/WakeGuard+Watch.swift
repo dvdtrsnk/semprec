@@ -46,9 +46,9 @@ extension WakeGuard {
         await armMissions()
     }
 
-    /// Stops each of `ids` that rings and cancels each that waits, except `kept`, the daily alarm that rings again
-    /// tomorrow. An id the system no longer holds needs nothing. A refusal is kept in `failure`; the other ids are
-    /// still handled.
+    /// Stops each of `ids` that rings and cancels each that has not rung, counting down or paused included, except
+    /// `kept`, the daily alarm that rings again tomorrow. An id the system no longer holds needs nothing. A refusal
+    /// is kept in `failure`; the other ids are still handled.
     func silence(_ ids: [UUID], keeping kept: UUID?) {
         let held: [UUID: AlarmPhase]
         do {
@@ -60,7 +60,7 @@ extension WakeGuard {
         for id in ids {
             guard let phase = held[id] else { continue }
             do {
-                if phase != .scheduled {
+                if phase == .alerting {
                     try scheduler.stop(id: id)
                 } else if id != kept {
                     try scheduler.cancel(id: id)

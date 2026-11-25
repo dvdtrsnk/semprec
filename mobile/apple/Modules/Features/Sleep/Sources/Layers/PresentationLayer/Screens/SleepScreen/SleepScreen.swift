@@ -100,10 +100,12 @@ private extension SleepScreen {
     }
 
     func editor(_ target: ScheduleEditorTarget) -> some View {
-        let plan: SleepPlanItem? = switch target {
-        case .plan(let id): state.plans.first { $0.id == id }
+        // The editor writes to the plan it opened on, even when a later state no longer lists that plan.
+        let planID: String? = switch target {
+        case .plan(let id): id
         case .new: nil
         }
+        let plan = state.plans.first { $0.id == planID }
         let otherDays = Set(state.plans.filter { $0.id != plan?.id }.flatMap(\.wakeDays))
         return SleepScheduleEditor(
             plan: plan,
@@ -115,7 +117,7 @@ private extension SleepScreen {
             save: { draft in
                 let days = draft.days.sorted()
                 send(.savePlan(
-                    planID: plan?.id,
+                    planID: planID,
                     name: plan?.name ?? SleepFormat.days(days),
                     wakeDays: days,
                     bedMinutes: draft.bedMinutes,
@@ -123,7 +125,7 @@ private extension SleepScreen {
                     alarm: draft.alarm
                 ))
             },
-            delete: { if let plan { send(.removePlan(planID: plan.id)) } }
+            delete: { if let planID { send(.removePlan(planID: planID)) } }
         )
     }
 
