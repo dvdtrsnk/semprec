@@ -184,7 +184,8 @@ private extension SleepAlarmClock {
     }
 
     /// Cancels an alarm that has not rung, counting down or paused included; one ringing now rings on until the
-    /// person stops it, and one gone needs nothing.
+    /// person stops it, and one gone needs nothing. A ringing alarm leaves the ledger without being scheduled again:
+    /// it rings at or after its moment, and `ring(_:)` drops every moment that is not still ahead.
     /// Answers whether the alarm needs no more tracking: false when reading or cancelling it failed.
     func cancel(_ id: UUID) -> Bool {
         do {

@@ -128,9 +128,12 @@ struct SleepDestination: View {
         }
     }
 
+    /// Whether this device rings system alarms, which never changes while the app runs.
+    private static let ringsSystemAlarms = SystemAlarmScheduler().isSupported
+
     /// How the sleep plan's alarms wake the person on this device; nil where the device rings no system alarm.
     var wakeSettings: (@MainActor () -> AnyView)? {
-        guard SystemAlarmScheduler().isSupported, let clock = composition.notifications?.sleepAlarms else { return nil }
+        guard Self.ringsSystemAlarms, let clock = composition.notifications?.sleepAlarms else { return nil }
         return { AnyView(SleepWakeScreen(clock: clock)) }
     }
 }

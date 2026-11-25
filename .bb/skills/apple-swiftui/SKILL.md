@@ -280,10 +280,10 @@ Without that flag the UI tests, which run on iOS only, compile but do not run.
 ## Before committing, check
 
 - [ ] No `UIKit` or `AppKit` import; every `#if os(...)` sits in a small
-      DesignSystem view modifier, inside the one type that wraps a system API
-      only one platform has (`SystemAlarmScheduler`, `WakeAlarmSound`,
-      `VolumeEnforcer`), or, in the app's tests, in `SceneWindow` or around a
-      check only one platform can make, and exists because the platforms
+      DesignSystem view modifier or inside the one type that wraps a system
+      API only one platform has (`SystemAlarmScheduler`, `WakeAlarmSound`,
+      `VolumeEnforcer`) (in the app's tests: in `SceneWindow`, or around a
+      check only one platform can make), and exists because the platforms
       really differ.
 - [ ] Every list row that is a `Button` uses `.listRowButton()`.
 - [ ] No new import or Tuist dependency outside the table in §2; `SharedSDK`

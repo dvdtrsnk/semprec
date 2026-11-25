@@ -32,7 +32,7 @@ struct SleepNightPage: View {
                     draft: $draft,
                     goalMinutes: state.goalMinutes,
                     isNight: true,
-                    onCommit: commit,
+                    onCommit: endDrag,
                     onDragStart: { isDragging = true }
                 )
                     .accessibilityIdentifier(SleepIdentifiers.nightTimes)
@@ -84,8 +84,13 @@ private extension SleepNightPage {
     }
 
     /// Writes the night as the dial shows it, unless nothing changed.
-    func commit() {
+    /// A drag on the dial ended: states that arrive reach the dial again, and the night is written.
+    func endDrag() {
         isDragging = false
+        commit()
+    }
+
+    func commit() {
         guard draft != Self.draft(state) else { return }
         send(.saveNight(bedMinutes: draft.bedMinutes, wakeMinutes: draft.wakeMinutes, alarm: draft.alarm))
     }
