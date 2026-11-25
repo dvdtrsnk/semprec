@@ -203,6 +203,8 @@ private fun SleepState.withData(data: SleepOverview, openPlanId: String?): Sleep
         prepReminderMinutes = settings.prepReminderMinutes,
         goalOptions = SleepRules.GOALS,
         reminderLeadOptions = SleepRules.REMINDER_LEADS,
+        shortestNightMinutes = SleepRules.SHORTEST_NIGHT_MINUTES,
+        longestNightMinutes = SleepRules.LONGEST_NIGHT_MINUTES,
         plans = plans.map { it.toItem() },
         selectedPlanId = open?.id,
         night = data.night?.toItem(settings),

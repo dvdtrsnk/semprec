@@ -148,6 +148,9 @@ public struct SleepState: Equatable, Sendable {
     public var prepReminderMinutes: Int
     public var goalOptions: [Int]
     public var reminderLeadOptions: [Int]
+    /// The shortest and the longest night the dial can be set to, in minutes.
+    public var shortestNightMinutes: Int
+    public var longestNightMinutes: Int
     public var plans: [SleepPlanItem]
     public var selectedPlanID: String?
     public var night: SleepNightItem?
@@ -174,6 +177,8 @@ public struct SleepState: Equatable, Sendable {
         prepReminderMinutes: Int = 30,
         goalOptions: [Int] = [],
         reminderLeadOptions: [Int] = [],
+        shortestNightMinutes: Int = 60,
+        longestNightMinutes: Int = 720,
         plans: [SleepPlanItem] = [],
         selectedPlanID: String? = nil,
         night: SleepNightItem? = nil,
@@ -198,6 +203,8 @@ public struct SleepState: Equatable, Sendable {
         self.prepReminderMinutes = prepReminderMinutes
         self.goalOptions = goalOptions
         self.reminderLeadOptions = reminderLeadOptions
+        self.shortestNightMinutes = shortestNightMinutes
+        self.longestNightMinutes = longestNightMinutes
         self.plans = plans
         self.selectedPlanID = selectedPlanID
         self.night = night

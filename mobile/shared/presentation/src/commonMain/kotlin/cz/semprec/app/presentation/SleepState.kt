@@ -67,6 +67,8 @@ data class SleepState(
     val prepReminderMinutes: Int = 0,
     val goalOptions: List<Int> = emptyList(),
     val reminderLeadOptions: List<Int> = emptyList(),
+    val shortestNightMinutes: Int = 0,
+    val longestNightMinutes: Int = 0,
     val plans: List<SleepPlanItem> = emptyList(),
     val selectedPlanId: String? = null,
     val night: SleepNightItem? = null,

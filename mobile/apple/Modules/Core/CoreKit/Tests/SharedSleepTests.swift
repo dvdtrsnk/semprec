@@ -19,6 +19,8 @@ final class SharedSleepTests: XCTestCase {
         XCTAssertEqual(state.goalMinutes, 480)
         XCTAssertEqual(state.goalOptions, [450, 480])
         XCTAssertEqual(state.reminderLeadOptions, [30, 45])
+        XCTAssertEqual(state.shortestNightMinutes, 90)
+        XCTAssertEqual(state.longestNightMinutes, 600)
         XCTAssertEqual(state.selectedPlanID, "p1")
         XCTAssertEqual(state.takenDaysByOtherPlans, [6, 7])
         XCTAssertEqual(
@@ -249,6 +251,8 @@ final class SharedSleepTests: XCTestCase {
             prepReminderMinutes: 30,
             goalOptions: [450, 480],
             reminderLeadOptions: [30, 45],
+            shortestNightMinutes: 90,
+            longestNightMinutes: 600,
             plans: parts.plans,
             selectedPlanId: "p1",
             night: parts.night,

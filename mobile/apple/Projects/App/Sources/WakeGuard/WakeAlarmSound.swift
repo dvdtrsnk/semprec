@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import Synchronization
 
 /// The guard's own alarm sound while the app is open: a loud repeating beep the app plays itself, on top of the
 /// system's alarms. On iOS it plays in the playback category, which the silent switch does not mute, and keeps
@@ -51,12 +52,11 @@ private extension WakeAlarmSound {
         return { _, _, frameCount, bufferList in
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
             for frame in 0..<Int(frameCount) {
-                let time = Double(state.sample) / sampleRate
+                let time = Double(state.sample.add(1, ordering: .relaxed).oldValue) / sampleRate
                 let position = time.truncatingRemainder(dividingBy: 1)
                 let sounding = position < 0.15 || (position >= 0.25 && position < 0.4)
                 let wave = sin(2 * Double.pi * 880 * time)
                 let value = Float(sounding ? (wave > 0 ? 0.9 : -0.9) : 0)
-                state.sample += 1
                 for buffer in buffers {
                     buffer.mData?.assumingMemoryBound(to: Float.self)[frame] = value
                 }
@@ -66,8 +66,9 @@ private extension WakeAlarmSound {
     }
 }
 
-/// The position of the beep, kept across render calls on the audio thread only.
-private final class BeepState: @unchecked Sendable {
+/// The position of the beep, kept across render calls. The audio thread is its only writer; an atomic makes it safe
+/// to hand to that thread without a lock, which a render block must not wait on.
+private final class BeepState: Sendable {
 
-    var sample: Int64 = 0
+    let sample = Atomic<Int64>(0)
 }

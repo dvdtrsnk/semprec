@@ -59,6 +59,8 @@ extension SharedSleepScreenModel {
             prepReminderMinutes: Int(state.prepReminderMinutes),
             goalOptions: state.goalOptions.map(\.intValue),
             reminderLeadOptions: state.reminderLeadOptions.map(\.intValue),
+            shortestNightMinutes: Int(state.shortestNightMinutes),
+            longestNightMinutes: Int(state.longestNightMinutes),
             plans: state.plans.map(SleepPlanItem.init),
             selectedPlanID: state.selectedPlanId,
             night: state.night.map(SleepNightItem.init),

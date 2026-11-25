@@ -23,6 +23,15 @@ object SleepRules {
     /** The lead times of the preparation reminder the settings accept, in minutes before bedtime. */
     val REMINDER_LEADS: List<Int> = listOf(15, 30, 45, 60)
 
+    /** The shortest night a schedule or a night can be set to, in minutes. */
+    const val SHORTEST_NIGHT_MINUTES: Int = MINUTES_IN_HOUR
+
+    /**
+     * The longest night a schedule or a night can be set to, in minutes. A bedtime before noon must not reach past
+     * midnight, which the server reads as a night of no length, and a bedtime before noon plus twelve hours never does.
+     */
+    const val LONGEST_NIGHT_MINUTES: Int = NOON_MINUTES
+
     val WEEK: List<Int> = (FIRST_ISO_DAY..LAST_ISO_DAY).toList()
 
     /**

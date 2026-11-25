@@ -110,6 +110,7 @@ private extension SleepScreen {
             template: state.plans.first,
             otherDays: otherDays,
             goalMinutes: state.goalMinutes,
+            lengths: state.shortestNightMinutes...state.longestNightMinutes,
             canDelete: state.canDeletePlan,
             save: { draft in
                 let days = draft.days.sorted()

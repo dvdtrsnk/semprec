@@ -58,7 +58,8 @@ private extension SleepNightPage {
             days: [],
             bedMinutes: state.night?.bedMinutes ?? state.ring?.bedMinutes ?? 23 * 60,
             wakeMinutes: state.night?.wakeMinutes ?? state.ring?.wakeMinutes ?? 7 * 60,
-            alarm: state.night?.alarm ?? state.ring?.alarm ?? false
+            alarm: state.night?.alarm ?? state.ring?.alarm ?? false,
+            lengths: state.shortestNightMinutes...state.longestNightMinutes
         )
     }
 

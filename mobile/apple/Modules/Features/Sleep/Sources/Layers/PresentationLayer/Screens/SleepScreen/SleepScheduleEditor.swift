@@ -14,6 +14,8 @@ struct SleepScheduleEditor: View {
     /// The days other schedules hold; taking one moves it from that schedule.
     let otherDays: Set<Int>
     let goalMinutes: Int
+    /// The lengths a schedule may have.
+    let lengths: ClosedRange<Int>
     let canDelete: Bool
     let save: (SleepScheduleDraft) -> Void
     let delete: () -> Void
@@ -31,6 +33,7 @@ struct SleepScheduleEditor: View {
         template: SleepPlanItem? = nil,
         otherDays: Set<Int>,
         goalMinutes: Int,
+        lengths: ClosedRange<Int>,
         canDelete: Bool,
         save: @escaping (SleepScheduleDraft) -> Void,
         delete: @escaping () -> Void
@@ -39,10 +42,11 @@ struct SleepScheduleEditor: View {
         self.template = template
         self.otherDays = otherDays
         self.goalMinutes = goalMinutes
+        self.lengths = lengths
         self.canDelete = canDelete
         self.save = save
         self.delete = delete
-        let start = Self.draft(for: plan, otherDays: otherDays, template: template)
+        let start = Self.draft(for: plan, otherDays: otherDays, template: template, lengths: lengths)
         initial = start
         _draft = State(initialValue: start)
     }
@@ -156,20 +160,27 @@ private extension SleepScheduleEditor {
 
     /// The schedule the editor starts from: the plan as it is, or a new one on the days no schedule holds, at the
     /// times of `template` (the first schedule), else from 23:00 to 7:00, without an alarm.
-    static func draft(for plan: SleepPlanItem?, otherDays: Set<Int>, template: SleepPlanItem?) -> SleepScheduleDraft {
+    static func draft(
+        for plan: SleepPlanItem?,
+        otherDays: Set<Int>,
+        template: SleepPlanItem?,
+        lengths: ClosedRange<Int>
+    ) -> SleepScheduleDraft {
         if let plan {
             return SleepScheduleDraft(
                 days: Set(plan.wakeDays),
                 bedMinutes: plan.bedMinutes,
                 wakeMinutes: plan.wakeMinutes,
-                alarm: plan.alarm
+                alarm: plan.alarm,
+                lengths: lengths
             )
         }
         return SleepScheduleDraft(
             days: Set(1...7).subtracting(otherDays),
             bedMinutes: template?.bedMinutes ?? 23 * 60,
             wakeMinutes: template?.wakeMinutes ?? 7 * 60,
-            alarm: false
+            alarm: false,
+            lengths: lengths
         )
     }
 }
@@ -180,6 +191,7 @@ private extension SleepScheduleEditor {
         plan: SleepState.previewReady.plans.first,
         otherDays: [6, 7],
         goalMinutes: 450,
+        lengths: 60...720,
         canDelete: true,
         save: { _ in },
         delete: {}
@@ -187,6 +199,13 @@ private extension SleepScheduleEditor {
 }
 
 #Preview("Add") {
-    SleepScheduleEditor(plan: nil, otherDays: [1, 2, 3, 4, 5], goalMinutes: 450, canDelete: false, save: { _ in },
-                        delete: {})
+    SleepScheduleEditor(
+        plan: nil,
+        otherDays: [1, 2, 3, 4, 5],
+        goalMinutes: 450,
+        lengths: 60...720,
+        canDelete: false,
+        save: { _ in },
+        delete: {}
+    )
 }
