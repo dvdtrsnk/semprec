@@ -69,11 +69,18 @@ extension CalendarDayView {
         ))
     }
 
+    /// The minute the held block starts at when it follows the finger exactly.
+    var freeStart: Int? {
+        guard let held = drag else { return nil }
+        _ = followTicks
+        return min(max(minutes(at: held.location.y) - held.grab, 0), 24 * 60)
+    }
+
     /// How fast the day scrolls, in points a second (down is positive), for a finger holding an item at `fingerY`: not
     /// at all in the middle, and faster the closer the finger comes to the header or to the bars at the bottom, as the
     /// system Calendar does.
     func scrollSpeed(forFingerAt fingerY: CGFloat) -> CGFloat {
-        let zone: CGFloat = 72
+        let zone: CGFloat = 110
         let top = headerHeight
         let bottom = frames.viewport.maxY
         guard bottom > top + 2 * zone else { return 0 }
@@ -153,5 +160,5 @@ extension CalendarDayView {
     static var sideZone: CGFloat { 28 }
 
     /// The fastest the day scrolls under a held item, which is 6 hours a second at the default hour height.
-    static var fastestScroll: CGFloat { 340 }
+    static var fastestScroll: CGFloat { 520 }
 }

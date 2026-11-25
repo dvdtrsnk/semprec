@@ -34,6 +34,8 @@ struct CalendarDayView: View {
     @State var edgeMoments = 0
     /// The clock that counts them while the item rests at an edge.
     @State var edgeClock: Task<Void, Never>?
+    /// Counts the steps of the day's own scroll, which move the held block under a finger that stays.
+    @State var followTicks = 0
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
     var hourHeight = Double(CalendarGeometry.standardHourHeight)
@@ -79,9 +81,6 @@ struct CalendarDayView: View {
         }
         // A new day ticks as moving a selected row to another place does in a note.
         .sensoryFeedback(.selection, trigger: dayTicks)
-        // A held block ticks each time it settles on another quarter hour, as in the system Calendar.
-        .sensoryFeedback(.selection, trigger: state.drag?.startMinutes)
-        .sensoryFeedback(.selection, trigger: state.drag?.endMinutes)
         .onChange(of: state.selectedDay) { old, new in
             // The chosen day is dropped when the shared state reaches it, or moves somewhere a turn towards it
             // would not pass through.
@@ -288,8 +287,14 @@ extension CalendarDayView {
             // Only the shown day's timeline moves the haze; the pages beside it are laid out but not looked at.
             paper: key == shownDay ? paper : nil,
             // Only the shown day scrolls under a held item.
-            autoScroll: key == shownDay
-                ? CalendarAutoScroll(speed: autoScrollSpeed, onStep: { sendMove() }, isHolding: hold != nil) : .none
+            autoScroll: key == shownDay ? CalendarAutoScroll(
+                speed: autoScrollSpeed,
+                onStep: {
+                    followTicks += 1
+                    sendMove()
+                },
+                isHolding: hold != nil
+            ) : .none
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
@@ -298,6 +303,7 @@ extension CalendarDayView {
                 nowMinutes: state.nowMinutes,
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
+                freeStart: freeStart,
                 heldItem: heldItem,
                 handlers: handlers(day: key),
                 onResize: { item, edge, travel in

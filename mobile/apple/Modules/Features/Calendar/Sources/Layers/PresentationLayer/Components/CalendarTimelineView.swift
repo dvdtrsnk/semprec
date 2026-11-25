@@ -13,6 +13,8 @@ struct CalendarTimelineView: View {
     let nowMinutes: Int
     let selectedItemId: String?
     let drag: CalendarDrag?
+    /// Where the finger would put the held block, in minutes of the day and not snapped: the block follows it smoothly.
+    let freeStart: Int?
     /// The item a finger holds, wherever it started: it is drawn here too when the day was turned to under it.
     let heldItem: CalendarItem?
     let handlers: CalendarItemHandlers
@@ -32,6 +34,8 @@ struct CalendarTimelineView: View {
                 ForEach(timedItems, id: \.identity) { item in
                     block(item, width: width)
                 }
+                ghost(width: width)
+                snapLabel
                 if let carried = carriedItem {
                     block(carried, width: width, interactive: false)
                 }
@@ -98,6 +102,7 @@ private extension CalendarTimelineView {
             && (drag?.allDay == true || drag?.intoEventId != nil || drag?.date != day.date)
         // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
         let blockWidth = selected ? width : columnWidth - stepIn
+        let top = dragging && !away ? (freeStart ?? range.start) : range.start
         let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
         CalendarTimedItemView(
             item: item,
@@ -118,7 +123,8 @@ private extension CalendarTimelineView {
         .overlay { if interactive { handles(item, height: height, selected: selected) } }
         .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
         .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
-        .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: range.start))
+        .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: top))
+        .animation(.snappy(duration: 0.2), value: dragging)
         .opacity(away ? (drag?.allDay == true ? 0 : 0.3) : 1)
         .animation(.snappy(duration: 0.24), value: selected)
         .animation(.snappy(duration: 0.18), value: away)
@@ -126,6 +132,35 @@ private extension CalendarTimelineView {
         .transition(.opacity.combined(with: .scale(scale: 0.92)))
         // A block that starts later than the one it overlaps lies over it; a held block lies over everything.
         .zIndex(raised ? 100 : Double(1 + item.depth))
+    }
+
+    /// Where the held item came from, faint, while it is carried about the day.
+    @ViewBuilder
+    func ghost(width: CGFloat) -> some View {
+        if let drag, drag.date == day.date, !drag.allDay, drag.intoEventId == nil,
+            let item = day.items.first(where: { $0.id == drag.itemId }),
+            let start = item.startMinutes, let end = item.endMinutes {
+            let height = geometry.blockHeight(start: start, end: end)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(item.tint.opacity(0.25))
+                .frame(width: max(width / CGFloat(max(item.columns, 1)) - 2, 0), height: height)
+                .offset(x: CalendarGeometry.gutter + CGFloat(item.column) * width / CGFloat(max(item.columns, 1)),
+                        y: geometry.y(minutes: start))
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The quarter hour the held block will snap to, in the gutter at its place, as the system Calendar shows it.
+    @ViewBuilder var snapLabel: some View {
+        if let drag, drag.date == day.date, !drag.allDay, drag.intoEventId == nil, let start = drag.startMinutes,
+            start % 60 != 0 {
+            Text(CalendarDates.clock(minutes: start))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tint)
+                .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
+                .offset(y: geometry.y(minutes: start) - 7)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder

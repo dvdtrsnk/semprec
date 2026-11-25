@@ -104,7 +104,7 @@ struct CalendarPager<Page: View>: View {
 // MARK: - Private
 private extension CalendarPager {
 
-    static var slide: Animation { .easeOut(duration: 0.18) }
+    static var slide: Animation { .easeOut(duration: 0.3) }
     /// Pages on each side of the anchor; the pager recenters before a swipe can reach the last one.
     static var pagesAround: Int { 30 }
 
