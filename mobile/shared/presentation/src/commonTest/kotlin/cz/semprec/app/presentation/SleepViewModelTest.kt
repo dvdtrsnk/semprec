@@ -446,6 +446,8 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.onAction(SleepAction.DismissSaveFailure)
         vm.onAction(SleepAction.SavePlan("p1", "x", listOf(1), 23 * 60, 24 * 60, alarm = true))
         runCurrent()
+        // A time outside the day is ignored like one sent with SetTime: no write and no failure shown.
+        assertNull(vm.state.value.saveFailure)
         assertTrue(repository.writes.isEmpty())
         vm.close()
     }
@@ -513,6 +515,7 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.onAction(SleepAction.Open(SleepScreen.NIGHT))
         vm.onAction(SleepAction.SaveNight(24 * 60, 7 * 60, alarm = true))
         runCurrent()
+        assertNull(vm.state.value.saveFailure)
         assertTrue(repository.writes.isEmpty())
         vm.close()
     }

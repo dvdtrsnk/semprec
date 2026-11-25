@@ -22,7 +22,10 @@ internal fun SleepSession.editSchedules(action: SleepAction) {
     }
 }
 
-/** Writes the schedule of the editor and returns to the overview once it is written. */
+/**
+ * Writes the schedule of the editor and returns to the overview once it is written. A time outside the day is
+ * ignored without a failure, as [SleepSession.setTime] ignores one.
+ */
 internal fun SleepSession.savePlan(action: SleepAction.SavePlan) {
     val current = overview ?: return
     val inDay = 0 until ClockTime.DAY_MINUTES

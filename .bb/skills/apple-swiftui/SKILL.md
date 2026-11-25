@@ -142,11 +142,13 @@ own.
 A screen with no decisions has no ViewModel: `AboutScreen` takes `version` and
 `build` and dismisses itself through `@Environment(\.dismiss)`.
 
-A debug tool that only exercises a platform API and holds none of the
-person's data has a native `ObservableObject` over that API's app protocol
-instead of a shared ViewModel: `DebugAlarmScreen` with `DebugAlarmViewModel`
-over `AlarmScheduler`
-(`docs/adr/2026-11-24-apple-app-rings-system-alarms-through-alarmkit.md`). A
+Code that only drives a platform API and holds none of the person's data,
+only this device's state, has a native `ObservableObject` instead of a shared
+ViewModel: the debug tool `DebugAlarmScreen` with `DebugAlarmViewModel` over
+`AlarmScheduler`
+(`docs/adr/2026-11-24-apple-app-rings-system-alarms-through-alarmkit.md`), and
+the wake-up guard, `WakeGuardScreen` over `WakeGuard`
+(`docs/adr/2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned.md`). A
 screen that reads or writes the person's data still gets a shared ViewModel.
 
 Every list row that is a `Button` gets `.listRowButton()` from DesignSystem,
