@@ -87,6 +87,53 @@ class SleepUseCasesTest {
         assertEquals(1, repository.calls.size)
     }
 
+    @Test fun `saving a new schedule creates it after the last plan with every field`() = runTest {
+        val repository = RecordingSleepRepository()
+        val plans =
+            listOf(samplePlan("p1", setOf(1, 2, 3, 4, 5), position = 0), samplePlan("p2", setOf(6), position = 3))
+        val schedule = SleepSchedule(setOf(6, 7), time("23:30"), time("08:00"), alarm = false)
+
+        val saved = EditSleepPlans(repository).save(plans, null, "Weekend", schedule)
+
+        assertEquals(RepositoryResult.Content(Unit), saved)
+        val created = NewSleepPlan("Weekend", setOf(6, 7), time("23:30"), time("08:00"), alarm = false, position = 4)
+        assertEquals(listOf("create:$created"), repository.calls)
+    }
+
+    @Test fun `saving an existing schedule writes all its fields to that plan`() = runTest {
+        val repository = RecordingSleepRepository()
+        val plans = listOf(samplePlan("p1", setOf(1, 2, 3, 4, 5)))
+        val schedule = SleepSchedule(setOf(1, 2), time("22:00"), time("06:00"), alarm = true)
+
+        assertEquals(RepositoryResult.Content(Unit), EditSleepPlans(repository).save(plans, "p1", "", schedule))
+
+        val change = SleepPlanChange(wakeDays = setOf(1, 2), bed = time("22:00"), wake = time("06:00"), alarm = true)
+        assertEquals(listOf("update:p1:$change"), repository.calls)
+    }
+
+    @Test fun `a schedule without a day with a day outside the week or at the end of day is refused`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepPlans(repository)
+        val plans = listOf(samplePlan("p1", setOf(1)))
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(emptySet(), time("23:00"), time("07:00"), true)))
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(8), time("23:00"), time("07:00"), true)))
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("24:00"), time("07:00"), true)))
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("23:00"), time("24:00"), true)))
+        assertEquals(emptyList(), repository.calls)
+    }
+
+    @Test fun `saving an unknown plan is not found and a new one without a name is refused`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepPlans(repository)
+        val schedule = SleepSchedule(setOf(1), time("23:00"), time("07:00"), alarm = true)
+
+        assertEquals(RepositoryResult.Failure(FailureKind.NOT_FOUND), edit.save(emptyList(), "gone", "", schedule))
+        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), edit.save(emptyList(), null, " ", schedule))
+        assertEquals(emptyList(), repository.calls)
+    }
+
     @Test fun `only a plan that is not the last one is deleted`() = runTest {
         val repository = RecordingSleepRepository()
         val edit = EditSleepPlans(repository)
