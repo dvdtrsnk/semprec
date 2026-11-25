@@ -55,6 +55,24 @@ final class AppSceneNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testTheSleepSheetsArePresentedOverTheStackOfTheirTab() async throws {
+        for destination in [AppDestination.sleepPlan(night: nil), .sleepNight(night: "2026-10-16")] {
+            let window = try SceneWindow()
+            let scene = AppComposition(models: SignedInModels())
+            try await window.show(AppScene(composition: scene, selectedTab: .overview))
+            let overview = try await registeredStack(.overview, of: scene)
+
+            scene.navigation.presentSheet(destination, from: .overview)
+
+            XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, destination)
+            XCTAssertEqual(overview.navigator.count, 0, "The sleep sheet must be presented, not pushed")
+            try await eventually { window.presentsSheet }
+            XCTAssertTrue(window.presentsSheet, "The window must show the sleep sheet")
+            window.close()
+        }
+    }
+
+    @MainActor
     func testAWakeUpMissionThatStartsRingingClosesTheOpenSheet() async throws {
         let start = Date()
         let clock = SceneClock(now: start)

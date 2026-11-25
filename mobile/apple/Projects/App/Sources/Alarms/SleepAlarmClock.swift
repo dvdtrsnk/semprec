@@ -23,6 +23,9 @@ final class SleepAlarmClock: ObservableObject {
     private var isSyncing = false
     /// A sync asked for while one ran; the running one makes another pass.
     private var syncAgain = false
+    /// The sync the last settings change asked for. An earlier one is never cancelled: a cancelled pass would read
+    /// nothing and keep the old alarms, while a running pass picks the new settings up through `syncAgain`.
+    private(set) var pendingSync: Task<Void, Never>?
 
     // MARK: - Init
     init(
@@ -56,7 +59,7 @@ final class SleepAlarmClock: ObservableObject {
         } catch {
             failure = Self.message(error)
         }
-        Task { [weak self] in await self?.sync() }
+        pendingSync = Task { [weak self] in await self?.sync() }
     }
 
     /// Reads the week's alarms and schedules, replaces or removes the system's alarms to match. A failed read keeps
