@@ -11,6 +11,8 @@ struct CalendarAutoScroll {
 
     var speed: CGFloat
     var onStep: () -> Void
+    /// Whether a finger holds an item, which the day does not scroll under by itself.
+    var isHolding = false
 
     static var none: CalendarAutoScroll { CalendarAutoScroll(speed: 0, onStep: {}) }
 }
@@ -76,7 +78,7 @@ struct CalendarZoomableTimeline<Content: View>: View {
         // The glass header is the edge; the scroll draws no fade of its own under it.
         .scrollEdgeEffectHidden(true, for: .top)
         .scrollPosition($position)
-        .scrollDisabled(pinchY != nil)
+        .scrollDisabled(pinchY != nil || autoScroll.isHolding)
         .onScrollGeometryChange(
             for: Extent.self,
             of: { geometry in

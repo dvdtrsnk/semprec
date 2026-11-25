@@ -13,6 +13,8 @@ struct CalendarTimelineView: View {
     let nowMinutes: Int
     let selectedItemId: String?
     let drag: CalendarDrag?
+    /// The item a finger holds, wherever it started: it is drawn here too when the day was turned to under it.
+    let heldItem: CalendarItem?
     let handlers: CalendarItemHandlers
     /// The finger has travelled `travel` points since it touched the handle.
     let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ travel: CGFloat) -> Void
@@ -29,6 +31,9 @@ struct CalendarTimelineView: View {
                 sleepBands(width: width)
                 ForEach(timedItems, id: \.identity) { item in
                     block(item, width: width)
+                }
+                if let carried = carriedItem {
+                    block(carried, width: width, interactive: false)
                 }
                 if isToday {
                     nowLine(width: width)
@@ -61,6 +66,14 @@ private extension CalendarTimelineView {
         day.items.filter { $0.startMinutes != nil && !$0.allDay }
     }
 
+    /// The held item, when the day was turned to with it and it is none of this day's own items: a picture of it
+    /// where the drag would put it. The finger's gesture belongs to the day view, not to a day.
+    var carriedItem: CalendarItem? {
+        guard let drag, let heldItem, drag.date == day.date, !drag.allDay, drag.intoEventId == nil,
+            !day.items.contains(where: { $0.id == heldItem.id }) else { return nil }
+        return heldItem.alone(on: day.date)
+    }
+
     func place(_ item: CalendarItem) -> (start: Int, end: Int) {
         if let drag, drag.itemId == item.id, let start = drag.startMinutes, let end = drag.endMinutes {
             return (start, end)
@@ -69,7 +82,7 @@ private extension CalendarTimelineView {
     }
 
     @ViewBuilder
-    func block(_ item: CalendarItem, width: CGFloat) -> some View {
+    func block(_ item: CalendarItem, width: CGFloat, interactive: Bool = true) -> some View {
         let range = place(item)
         let columns = max(item.columns, 1)
         let columnWidth = width / CGFloat(columns)
@@ -81,7 +94,8 @@ private extension CalendarTimelineView {
         let raised = dragging || selected
         // Held over the all-day row the block gives way to the chip there, held over an event it is on its way into
         // it; either way it stays in place so that the finger's gesture goes on.
-        let away = dragging && (drag?.allDay == true || drag?.intoEventId != nil)
+        let away = interactive && dragging
+            && (drag?.allDay == true || drag?.intoEventId != nil || drag?.date != day.date)
         // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
         let blockWidth = selected ? width : columnWidth - stepIn
         let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
@@ -97,13 +111,11 @@ private extension CalendarTimelineView {
         )
         .frame(width: max(blockWidth - 2, 0), height: height)
         .calendarItemGestures(
-            enabled: item.editable,
+            enabled: item.editable && interactive,
             onTap: { handlers.tap(item) },
-            onSelect: { handlers.select(item) },
-            onMove: { handlers.move(item, $0, $1) },
-            onEnd: { handlers.end(item, $0) }
+            onHold: { handlers.hold(item) }
         )
-        .overlay { handles(item, height: height, selected: selected) }
+        .overlay { if interactive { handles(item, height: height, selected: selected) } }
         .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
         .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
         .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: range.start))

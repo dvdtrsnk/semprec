@@ -37,3 +37,17 @@ extension CalendarItem {
         return CalendarDates.clock(minutes: startMinutes)
     }
 }
+
+// MARK: - Carried
+extension CalendarItem {
+
+    /// The same item drawn on another day, alone in its column, as it is while a finger carries it there.
+    func alone(on day: String) -> CalendarItem {
+        CalendarItem(
+            id: id, kind: kind, title: title, color: color, date: day, endDate: nil, allDay: false,
+            startMinutes: startMinutes, endMinutes: endMinutes, hasEnd: hasEnd, done: done, missed: missed,
+            place: place, tentative: tentative, editable: editable, column: 0, columns: 1, depth: 0, tasks: tasks,
+            hostEventTitle: hostEventTitle, carriedFrom: carriedFrom, trace: trace, traceNote: traceNote
+        )
+    }
+}

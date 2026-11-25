@@ -141,9 +141,7 @@ private extension CalendarAllDayRow {
         .calendarItemGestures(
             enabled: item.editable,
             onTap: { handlers.tap(item) },
-            onSelect: { handlers.select(item) },
-            onMove: { handlers.move(item, $0, $1) },
-            onEnd: { handlers.end(item, $0) }
+            onHold: { handlers.hold(item) }
         )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))

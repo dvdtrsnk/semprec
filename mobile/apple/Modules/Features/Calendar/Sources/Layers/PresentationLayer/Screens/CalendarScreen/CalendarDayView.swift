@@ -17,35 +17,43 @@ struct CalendarDayView: View {
 
     // MARK: - State
     /// Where the shown day's timeline is, read by gestures and followed by the header's backdrop.
-    @State private var frames = CalendarDayFrames()
-    @State private var eventFrames: [String: CGRect] = [:]
+    @State var frames = CalendarDayFrames()
+    @State var eventFrames: [String: CGRect] = [:]
     /// Where the selected block is, which its menu is placed by.
-    @State private var selectedFrame: CGRect?
-    @State private var menuSize = CGSize(width: 280, height: 44)
+    @State var selectedFrame: CGRect?
+    @State var menuSize = CGSize(width: 280, height: 44)
     /// The item a finger holds and where the finger is and began, kept for the moments the day scrolls under it.
-    @State private var drag: HeldDrag?
+    @State var drag: HeldDrag?
+    /// The item a finger holds, from the long press until the finger lifts.
+    @State var hold: Hold?
     /// How fast the day scrolls under the held item, in points a second; zero when it does not.
-    @State private var autoScrollSpeed: CGFloat = 0
+    @State var autoScrollSpeed: CGFloat = 0
+    /// Which side edge of the screen a held item is at: -1 the left, 1 the right, 0 neither.
+    @State var sideEdge = 0
+    /// Counts the moments a held item has rested at a side edge, each of which turns a day.
+    @State var edgeMoments = 0
+    /// The clock that counts them while the item rests at an edge.
+    @State var edgeClock: Task<Void, Never>?
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
-    private var hourHeight = Double(CalendarGeometry.standardHourHeight)
+    var hourHeight = Double(CalendarGeometry.standardHourHeight)
     /// Counts the day changes that tick: a turn of the day pager, a tap on a day, or a day selected elsewhere.
-    @State private var dayTicks = 0
+    @State var dayTicks = 0
     /// The day this view already ticked for, whose arrival from the shared state then ticks no more.
-    @State private var tickedDay: String?
+    @State var tickedDay: String?
     /// Set while the week strip turns to another week, whose new day comes without a haptic.
-    @State private var isTurningWeek = false
+    @State var isTurningWeek = false
     /// Where the fingers of a zoom are, in global coordinates, while one is under way.
-    @State private var pinchY: CGFloat?
+    @State var pinchY: CGFloat?
     /// The day a turn or a tap just chose, shown at once until the shared state arrives at it.
-    @State private var chosenDay: String?
+    @State var chosenDay: String?
     /// The height of the glass header, which the timeline starts below and scrolls on under.
-    @State private var headerHeight: CGFloat = 0
+    @State var headerHeight: CGFloat = 0
     /// How far the day view sits below the top of the screen, under the status and navigation bars, and how tall it
     /// is: the paper the header shows is a screen tall, as the page's.
-    @State private var topBarsHeight: CGFloat = 0
-    @State private var dayHeight: CGFloat = 0
-    @State private var dayWidth: CGFloat = 0
+    @State var topBarsHeight: CGFloat = 0
+    @State var dayHeight: CGFloat = 0
+    @State var dayWidth: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
@@ -53,7 +61,8 @@ struct CalendarDayView: View {
             CalendarPager(
                 current: shownDay,
                 neighbour: { CalendarDates.shifted($0, by: $1) },
-                isEnabled: state.drag == nil && state.selectedItemId == nil,
+                // A finger that holds an item never turns a page itself; the day turns when the item rests at an edge.
+                isEnabled: hold == nil && state.drag == nil && state.selectedItemId == nil,
                 onTurn: { steps in
                     let day = CalendarDates.shifted(shownDay, by: steps)
                     tick(for: day)
@@ -81,6 +90,11 @@ struct CalendarDayView: View {
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
+        .onChange(of: edgeMoments) {
+            guard drag != nil, sideEdge != 0 else { return }
+            turnDay(sideEdge)
+            sendMove()
+        }
         .onChange(of: todayRequests) {
             chosenDay = nil
             // Today plays its own haptic where it is asked for; the day it brings does not tick again.
@@ -92,12 +106,18 @@ struct CalendarDayView: View {
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
         .onPreferenceChange(CalendarSelectedFrameKey.self) { selectedFrame = $0 }
+        // The held item's movement is read here, on the view that stays while the day turns under the finger.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .calendarDay)
+                .onChanged { follow($0) }
+                .onEnded { _ in letGo() }
+        )
         .accessibilityIdentifier(CalendarIdentifiers.screen)
     }
 }
 
 // MARK: - Subviews
-private extension CalendarDayView {
+extension CalendarDayView {
 
     /// The menu of the selected item, a capsule beside it that comes out of it; it is there while the item is held and
     /// not being dragged.
@@ -144,6 +164,12 @@ private extension CalendarDayView {
     func tick(for day: String) {
         tickedDay = day
         dayTicks += 1
+    }
+
+    /// The item a drag is carrying, wherever the window holds it.
+    var heldItem: CalendarItem? {
+        guard let held = state.drag else { return nil }
+        return state.days.lazy.flatMap(\.items).first { $0.id == held.itemId }
     }
 
     func dayState(_ key: String) -> CalendarDayState {
@@ -262,7 +288,8 @@ private extension CalendarDayView {
             // Only the shown day's timeline moves the haze; the pages beside it are laid out but not looked at.
             paper: key == shownDay ? paper : nil,
             // Only the shown day scrolls under a held item.
-            autoScroll: key == shownDay ? CalendarAutoScroll(speed: autoScrollSpeed, onStep: { sendMove() }) : .none
+            autoScroll: key == shownDay
+                ? CalendarAutoScroll(speed: autoScrollSpeed, onStep: { sendMove() }, isHolding: hold != nil) : .none
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
@@ -271,6 +298,7 @@ private extension CalendarDayView {
                 nowMinutes: state.nowMinutes,
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
+                heldItem: heldItem,
                 handlers: handlers(day: key),
                 onResize: { item, edge, travel in
                     // The edge follows the finger from where it was grabbed, rather than jumping to the finger.
@@ -294,96 +322,6 @@ private extension CalendarDayView {
             if key == shownDay { frames.viewport = frame }
         })
     }
-}
-
-// MARK: - Gestures
-private extension CalendarDayView {
-
-    func handlers(day key: String) -> CalendarItemHandlers {
-        CalendarItemHandlers(
-            tap: { viewModel.gesture(.tap(itemId: $0.id)) },
-            select: { viewModel.gesture(.select(itemId: $0.id)) },
-            move: { item, location, start in
-                // Where the finger took hold of the item is worked out once, in minutes of the day: the day may scroll
-                // under the finger afterwards, and the place it first touched goes with the day, not with the screen.
-                let grab = drag?.item.id == item.id ? drag?.grab : item.startMinutes.map { minutes(at: start.y) - $0 }
-                drag = HeldDrag(item: item, day: key, location: location, grab: grab ?? 15)
-                sendMove()
-                autoScrollSpeed = scrollSpeed(forFingerAt: location.y)
-            },
-            end: { _, moved in
-                autoScrollSpeed = 0
-                drag = nil
-                viewModel.gesture(.endDrag(commit: moved))
-            },
-            toggle: { viewModel.gesture(.toggleDone(itemId: $0)) },
-            openTask: { viewModel.gesture(.tap(itemId: $0)) }
-        )
-    }
-
-    func menu(_ action: CalendarEditAction, _ item: CalendarItem) {
-        switch action {
-        case .cut: viewModel.edit(.cut(itemId: item.id))
-        case .copy: viewModel.edit(.copy(itemId: item.id))
-        case .duplicate: viewModel.edit(.duplicate(itemId: item.id))
-        case .delete: viewModel.edit(.delete(itemId: item.id))
-        }
-    }
-
-    /// The minutes of the day at a vertical place of the day view; not snapped, the shared layer does that.
-    func minutes(at position: CGFloat) -> Int {
-        Int(((position - frames.content.minY) / CGFloat(hourHeight) * 60).rounded())
-    }
-
-    func eventId(at location: CGPoint, excluding id: String) -> String? {
-        eventFrames.first { $0.key != id && $0.value.contains(location) }?.key
-    }
-
-    /// The hour a day opens at: two hours before now on today, seven in the morning otherwise.
-    func startHour(day key: String) -> Int {
-        key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
-    }
-
-    /// Reports the held item's place again from the finger's last place: the day moved under a finger that did not.
-    func sendMove() {
-        guard let held = drag else { return }
-        viewModel.gesture(.dragMove(
-            itemId: held.item.id,
-            day: held.day,
-            rawStart: minutes(at: held.location.y) - held.grab,
-            overAllDayRow: held.location.y < headerHeight,
-            overEventId: held.item.isTask ? eventId(at: held.location, excluding: held.item.id) : nil
-        ))
-    }
-
-    /// How fast the day scrolls, in points a second (down is positive), for a finger holding an item at `fingerY`: not
-    /// at all in the middle, and faster the closer the finger comes to the header or to the bars at the bottom, as the
-    /// system Calendar does.
-    func scrollSpeed(forFingerAt fingerY: CGFloat) -> CGFloat {
-        let zone: CGFloat = 72
-        let top = headerHeight
-        let bottom = frames.viewport.maxY
-        guard bottom > top + 2 * zone else { return 0 }
-        if fingerY < top { return 0 }
-        if fingerY < top + zone { return -Self.fastestScroll * pow(1 - (fingerY - top) / zone, 1.5) }
-        if fingerY > bottom - zone {
-            return Self.fastestScroll * pow(min((fingerY - (bottom - zone)) / zone, 1), 1.5)
-        }
-        return 0
-    }
-
-    /// The fastest the day scrolls under a held item, which is 6 hours a second at the default hour height.
-    static var fastestScroll: CGFloat { 340 }
-}
-
-/// An item held by a finger.
-private struct HeldDrag {
-
-    let item: CalendarItem
-    let day: String
-    let location: CGPoint
-    /// How many minutes below the top of the item the finger took hold of it.
-    let grab: Int
 }
 
 /// The paper under the day's header, where the page's haze is: a view of its own, so only it redraws as the haze moves.
