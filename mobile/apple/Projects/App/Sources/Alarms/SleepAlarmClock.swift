@@ -130,9 +130,9 @@ private extension SleepAlarmClock {
     /// Schedules a plain system alarm for each of `rings` that has none and cancels the ones no ring needs.
     func schedulePlain(_ rings: [String: SleepAlarmRing]) async {
         var scheduled = loadScheduled()
+        // An alarm whose cancel failed stays in the ledger, so the next sync cancels it again.
         for (key, id) in scheduled where rings[key] == nil {
-            cancel(id)
-            scheduled[key] = nil
+            if cancel(id) { scheduled[key] = nil }
         }
         for (key, ring) in rings where scheduled[key] == nil {
             let request = AlarmRequest(title: ring.title, schedule: .once(ring.date))
@@ -180,12 +180,15 @@ private extension SleepAlarmClock {
     }
 
     /// Cancels an alarm that waits; one ringing now rings on until the person stops it, and one gone needs nothing.
-    func cancel(_ id: UUID) {
+    /// Answers whether the alarm needs no more tracking: false when reading or cancelling it failed.
+    func cancel(_ id: UUID) -> Bool {
         do {
             let phase = try scheduler.alarms().first { $0.id == id }?.phase
             if phase == .scheduled { try scheduler.cancel(id: id) }
+            return true
         } catch {
             failure = Self.message(error)
+            return false
         }
     }
 

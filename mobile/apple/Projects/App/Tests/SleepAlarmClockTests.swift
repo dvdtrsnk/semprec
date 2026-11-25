@@ -52,6 +52,28 @@ final class SleepAlarmClockTests: XCTestCase {
     }
 
     @MainActor
+    func testAnAlarmWhoseCancelFailedIsCancelledOnTheNextSync() async {
+        let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
+        await fixture.clock.sync()
+        fixture.source.alarms = []
+
+        fixture.scheduler.readFailure = ScriptedAlarmFailure()
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.store.scheduled.count, 1)
+        fixture.scheduler.readFailure = nil
+        fixture.scheduler.cancelFailure = ScriptedAlarmFailure()
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.store.scheduled.count, 1)
+        XCTAssertEqual(fixture.scheduler.held.count, 1)
+
+        fixture.scheduler.cancelFailure = nil
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.scheduler.cancelled, fixture.scheduler.requests.map(\.id))
+        XCTAssertTrue(fixture.scheduler.held.isEmpty)
+        XCTAssertTrue(fixture.store.scheduled.isEmpty)
+    }
+
+    @MainActor
     func testAFailedReadChangesNothing() async {
         let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
         await fixture.clock.sync()
