@@ -52,6 +52,28 @@ final class SleepAlarmClockTests: XCTestCase {
     }
 
     @MainActor
+    func testAnAlarmThePlanDropsIsCancelledWhileItCountsDownOrIsPausedButNotWhileItRings() async throws {
+        let fixture = make(alarms: [
+            alarm(wakeDay: "2026-11-26", 405), alarm(wakeDay: "2026-11-27", 405), alarm(wakeDay: "2026-11-28", 405)
+        ])
+        await fixture.clock.sync()
+        let requests = fixture.scheduler.requests
+        let countingDown = try XCTUnwrap(requests.first { $0.schedule == .once(at(26, 6, 45)) }?.id)
+        let paused = try XCTUnwrap(requests.first { $0.schedule == .once(at(27, 6, 45)) }?.id)
+        let ringing = try XCTUnwrap(requests.first { $0.schedule == .once(at(28, 6, 45)) }?.id)
+        fixture.scheduler.set(countingDown, phase: .countdown)
+        fixture.scheduler.set(paused, phase: .paused)
+        fixture.scheduler.ring(ringing)
+
+        fixture.source.alarms = []
+        await fixture.clock.sync()
+
+        XCTAssertEqual(Set(fixture.scheduler.cancelled), [countingDown, paused])
+        XCTAssertEqual(fixture.scheduler.held.map(\.id), [ringing])
+        XCTAssertTrue(fixture.store.scheduled.isEmpty)
+    }
+
+    @MainActor
     func testAnAlarmWhoseCancelFailedIsCancelledOnTheNextSync() async {
         let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
         await fixture.clock.sync()

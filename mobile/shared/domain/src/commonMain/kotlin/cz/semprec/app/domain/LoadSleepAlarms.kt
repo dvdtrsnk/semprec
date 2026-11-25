@@ -4,9 +4,10 @@ package cz.semprec.app.domain
 data class SleepAlarm(val night: CalendarDay, val wakeDay: CalendarDay, val wake: ClockTime, val planName: String?)
 
 /**
- * The alarms the device rings for the sleep plan: the nights from the evening before [today] on, for [days]
- * evenings, whose alarm is on, while the sleep plan is on. A night ends on the day after its evening, whichever side
- * of midnight its bedtime is. The plan off answers no alarm, so the device removes the ones it holds.
+ * The alarms the device rings for the sleep plan: the nights of the evening before [today], whose alarm rings today,
+ * and of the [days] evenings from [today] on, whose alarm is on, while the sleep plan is on. A night ends on the day
+ * after its evening, whichever side of midnight its bedtime is. The plan off answers no alarm, so the device removes
+ * the ones it holds.
  */
 class LoadSleepAlarms(private val repository: SleepRepository) {
     suspend operator fun invoke(today: CalendarDay, days: Int = DEFAULT_DAYS): RepositoryResult<List<SleepAlarm>> =
