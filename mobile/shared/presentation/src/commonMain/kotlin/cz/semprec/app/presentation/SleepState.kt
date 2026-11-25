@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.SleepRules
 
 enum class SleepPhase { LOADING, READY, ERROR }
 
@@ -67,8 +68,8 @@ data class SleepState(
     val prepReminderMinutes: Int = 0,
     val goalOptions: List<Int> = emptyList(),
     val reminderLeadOptions: List<Int> = emptyList(),
-    val shortestNightMinutes: Int = 0,
-    val longestNightMinutes: Int = 0,
+    val shortestNightMinutes: Int = SleepRules.SHORTEST_NIGHT_MINUTES,
+    val longestNightMinutes: Int = SleepRules.LONGEST_NIGHT_MINUTES,
     val plans: List<SleepPlanItem> = emptyList(),
     val selectedPlanId: String? = null,
     val night: SleepNightItem? = null,

@@ -37,9 +37,11 @@ few seconds ahead with the phone locked) from a debug menu.
 - The app has a debug menu, a page of the profile sheet's stack (`ProfileSheetPage.debug`), opened by a toolbar
   button the app adds to the profile. Its first tool, `DebugAlarmScreen`, is driven by a native `ObservableObject`
   (`DebugAlarmViewModel`) over `AlarmScheduler`, without a shared ViewModel. This narrows the shared-ViewModel rule of
-  [[2026-10-24-kotlin-multiplatform-below-native-mobile-ui]] for debug tools only: a debug tool exercises a platform
-  API and decides nothing about the person's data, so there is nothing to share with Android. A screen that reads or
-  writes the person's data still gets a shared ViewModel.
+  [[2026-10-24-kotlin-multiplatform-below-native-mobile-ui]] for code that only drives a platform API and holds
+  none of the person's data, only this device's state: such code decides nothing about the person's data, so there is
+  nothing to share with Android. The debug tool is the first case; the wake-up guard of
+  [[2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned]] is another. A screen that reads or writes the person's
+  data still gets a shared ViewModel.
 - The debug menu is in every build, Release included, because the app is tried on the iPhone from Ad Hoc builds.
 
 ## Consequences

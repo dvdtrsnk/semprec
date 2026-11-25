@@ -20,6 +20,8 @@ final class AppComposition: ObservableObject {
     let journalRouter: AppJournalRouter
     /// The notifications of the process, which every scene shares; nil in tests that leave the system alone.
     let notifications: AppNotifications?
+    /// The wake-up guard whose ringing mission closes the scene's sheets.
+    let wakeGuard: WakeGuard
     /// The Semp chat and its bubble: whether the chat is open, what it shows, and where the bubble can pick up objects.
     let sempChat = SempChatPresenter()
     let dropTargets = DropTargetRegistry()
@@ -34,10 +36,11 @@ final class AppComposition: ObservableObject {
     }
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.
-    init(models: any ScreenModelFactory, notifications: AppNotifications? = nil) {
+    init(models: any ScreenModelFactory, notifications: AppNotifications? = nil, wakeGuard: WakeGuard = .shared) {
         let navigation = NavigationContext()
         self.models = models
         self.notifications = notifications
+        self.wakeGuard = wakeGuard
         self.navigation = navigation
         preparedTabs = PreparedTabModels(models: models)
         overviewRouter = AppOverviewRouter(context: navigation)

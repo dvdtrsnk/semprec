@@ -27,9 +27,10 @@ struct WakeGuardHost: ViewModifier {
                     try? await Task.sleep(for: .seconds(2))
                 }
             }
-            .onChange(of: scenePhase) { _, phase in
-                guard phase == .active else { return }
-                Task { await wakeGuard.refresh() }
+            // Becoming active refreshes at once; SwiftUI cancels the pass when the phase changes again.
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await wakeGuard.refresh()
             }
     }
 }

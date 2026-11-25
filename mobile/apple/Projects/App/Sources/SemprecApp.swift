@@ -22,11 +22,16 @@ struct SemprecApp: App {
 
     // MARK: - Body
     var body: some Scene {
-        WindowGroup { AppScene().appAppearance().wakeGuard() }
-            // The sleep plan may have changed elsewhere while the app was away: its alarms are read again.
-            .onChange(of: scenePhase) { _, phase in
-                guard phase == .active else { return }
-                Task { await AppNotifications.shared.sleepAlarms?.sync() }
-            }
+        WindowGroup {
+            AppScene()
+                .appAppearance()
+                .wakeGuard()
+                // The sleep plan may have changed elsewhere while the app was away: its alarms are read again. SwiftUI
+                // cancels the pass when the phase changes again, and the clock runs one sync at a time.
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
+                    await AppNotifications.shared.sleepAlarms?.sync()
+                }
+        }
     }
 }

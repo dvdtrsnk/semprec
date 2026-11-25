@@ -53,6 +53,32 @@ final class AppSceneNavigationTests: XCTestCase {
         XCTAssertTrue(window.presentsSheet, "The window must show the sheet")
         window.close()
     }
+
+    @MainActor
+    func testAWakeUpMissionThatStartsRingingClosesTheOpenSheet() async throws {
+        let start = Date()
+        let clock = SceneClock(now: start)
+        let wakeGuard = WakeGuard(
+            scheduler: SchedulerSpy(authorization: .authorized),
+            store: MemoryMissionStore(),
+            now: { clock.now }
+        )
+        try await wakeGuard.create(title: "Up", time: .once(start.addingTimeInterval(60)), codes: ["123"])
+        let window = try SceneWindow()
+        let scene = AppComposition(models: SignedInModels(), wakeGuard: wakeGuard)
+        try await window.show(AppScene(composition: scene, selectedTab: .calendar))
+        let calendar = try await registeredStack(.calendar, of: scene)
+        scene.navigation.presentSheet(.pending(title: "Profile"), from: .calendar)
+        try await eventually { window.presentsSheet }
+
+        clock.now = start.addingTimeInterval(61)
+        await wakeGuard.refresh()
+
+        XCTAssertNotNil(wakeGuard.ringing)
+        try await eventually { !calendar.navigator.isPresenting && !window.presentsSheet }
+        XCTAssertFalse(calendar.navigator.isPresenting, "A ringing mission must close the sheet over the tabs")
+        window.close()
+    }
 }
 
 // MARK: - Helpers
@@ -66,5 +92,16 @@ private extension AppSceneNavigationTests {
             scene.navigation.stack(for: tab) as? NavigatorStackAdapter,
             "The \(tab) tab must register its NavigatorUI stack"
         )
+    }
+}
+
+/// The time the wake-up guard reads, moved by the test.
+@MainActor
+private final class SceneClock {
+
+    var now: Date
+
+    init(now: Date) {
+        self.now = now
     }
 }

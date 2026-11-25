@@ -99,7 +99,7 @@ private extension AppScene {
         .onReceive(composition.notificationArrivals) { composition.openTappedNotification() }
         // A ringing wake-up mission covers the window; the sheets open over the tabs close, because they would stay
         // above the guard.
-        .onReceive(WakeGuard.shared.$ringing) { mission in
+        .onReceive(composition.wakeGuard.$ringing) { mission in
             guard mission != nil else { return }
             // A locked navigation keeps its sheet; the guard still covers the tabs under it.
             _ = try? rootNavigator.dismissAny()
