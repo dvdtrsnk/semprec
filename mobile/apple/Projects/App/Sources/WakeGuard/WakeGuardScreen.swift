@@ -45,9 +45,10 @@ struct WakeGuardScreen: View {
             scanner.stop()
             sound.stop()
         }
-        .onChange(of: scanner.code) { _, code in
-            guard let code else { return }
-            Task { await check(code) }
+        // A task per code read: SwiftUI cancels it when another code arrives or the screen goes away.
+        .task(id: scanner.code) {
+            guard let code = scanner.code else { return }
+            await check(code)
         }
     }
 }
@@ -130,7 +131,12 @@ private extension WakeGuardScreen {
     func check(_ code: String) async {
         guard !(await wakeGuard.submit(code: code)) else { return }
         rejectedCode = code
-        try? await Task.sleep(for: .seconds(1.5))
+        // Cancelled when the screen goes away or another code arrives; the mark then clears with the next code.
+        do {
+            try await Task.sleep(for: .seconds(1.5))
+        } catch {
+            return
+        }
         if rejectedCode == code { rejectedCode = nil }
     }
 

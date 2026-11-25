@@ -56,7 +56,7 @@ final class SleepAlarmClock: ObservableObject {
         } catch {
             failure = Self.message(error)
         }
-        Task { await sync() }
+        Task { [weak self] in await self?.sync() }
     }
 
     /// Reads the week's alarms and schedules, replaces or removes the system's alarms to match. A failed read keeps

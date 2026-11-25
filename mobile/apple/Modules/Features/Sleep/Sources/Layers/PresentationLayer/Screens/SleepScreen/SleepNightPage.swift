@@ -44,7 +44,8 @@ struct SleepNightPage: View {
             .padding(.bottom, Theme.Spacing.large)
         }
         .background(Theme.Colors.groupedBackground)
-        .onChange(of: state.night) { _, _ in draft = Self.draft(state) }
+        // What the night shows changed (the night itself, or the plan's ring while no night is read): the dial follows.
+        .onChange(of: Self.draft(state)) { _, shown in draft = shown }
     }
 }
 

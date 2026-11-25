@@ -167,8 +167,10 @@ private extension AppScene {
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: AppCollectionsRouter(context: composition.navigation, tab: tab, closesSheet: true)
             )
-        case .sleepPlan, .sleepNight:
-            SleepDestination(destination: destination, composition: composition)
+        case .sleepPlan(let night):
+            SleepDestination(night: night, startsOnNight: false, composition: composition)
+        case .sleepNight(let night):
+            SleepDestination(night: night, startsOnNight: true, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)
         case .mailList, .mailThread, .mailFolders, .mailCompose, .projectMailSignals:

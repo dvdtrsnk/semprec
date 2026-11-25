@@ -17,7 +17,7 @@ final class CodeScanner: ObservableObject {
 
     // MARK: - Dependencies
     private let session = AVCaptureSession()
-    private let output = CameraOutput()
+    private var output: CameraOutput?
     private let queue = DispatchQueue(label: "cz.semprec.app.codeScanner")
 
     /// Whether the camera can run.
@@ -36,12 +36,15 @@ final class CodeScanner: ObservableObject {
             cameraState = .denied
             return
         }
-        guard configure() else {
+        let output = output ?? CameraOutput(
+            onFrame: { [weak self] image in Task { @MainActor in self?.frame = image } },
+            onCode: { [weak self] code in Task { @MainActor in self?.code = code } }
+        )
+        self.output = output
+        guard configure(output) else {
             cameraState = .unavailable
             return
         }
-        output.onFrame = { [weak self] image in Task { @MainActor in self?.frame = image } }
-        output.onCode = { [weak self] code in Task { @MainActor in self?.code = code } }
         let session = session
         queue.async { session.startRunning() }
         cameraState = .running
@@ -61,7 +64,7 @@ private extension CodeScanner {
     ]
 
     /// Adds the back camera, the code reader and the frame output once; answers whether the camera is there.
-    func configure() -> Bool {
+    func configure(_ output: CameraOutput) -> Bool {
         guard session.inputs.isEmpty else { return true }
         guard
             let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
@@ -92,12 +95,19 @@ private extension CodeScanner {
     }
 }
 
-/// Receives the camera's codes and frames on the scanner's queue and hands them on.
+/// Receives the camera's codes and frames on the scanner's queue and hands them on. It holds nothing it changes after
+/// its init: the two handlers are constants that are themselves `Sendable`, which is what makes the unchecked
+/// conformance sound while AVFoundation calls it from the scanner's queue.
 private final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelegate,
     AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
 
-    var onFrame: (@Sendable (CGImage) -> Void)?
-    var onCode: (@Sendable (String) -> Void)?
+    let onFrame: @Sendable (CGImage) -> Void
+    let onCode: @Sendable (String) -> Void
+
+    init(onFrame: @escaping @Sendable (CGImage) -> Void, onCode: @escaping @Sendable (String) -> Void) {
+        self.onFrame = onFrame
+        self.onCode = onCode
+    }
 
     func metadataOutput(
         _ output: AVCaptureMetadataOutput,
@@ -105,7 +115,7 @@ private final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelega
         from connection: AVCaptureConnection
     ) {
         for object in metadataObjects {
-            if let code = (object as? AVMetadataMachineReadableCodeObject)?.stringValue { onCode?(code) }
+            if let code = (object as? AVMetadataMachineReadableCodeObject)?.stringValue { onCode(code) }
         }
     }
 
@@ -117,6 +127,6 @@ private final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelega
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         var image: CGImage?
         VTCreateCGImageFromCVPixelBuffer(buffer, options: nil, imageOut: &image)
-        if let image { onFrame?(image) }
+        if let image { onFrame(image) }
     }
 }

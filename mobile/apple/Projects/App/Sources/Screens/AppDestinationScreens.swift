@@ -104,27 +104,27 @@ struct InboxDestination: View {
     }
 }
 
-/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations), with the screen of how its
+/// The sleep sheet: the plan (`sleepPlan`), or one night it opens on (`sleepNight`), with the screen of how its
 /// alarms wake the person where the device rings alarms.
 struct SleepDestination: View {
 
-    let destination: AppDestination
+    /// The evening whose night the sheet shows, if any.
+    let night: String?
+    /// Whether the sheet opens on that night rather than on the plan.
+    let startsOnNight: Bool
     let composition: AppComposition
 
     var body: some View {
-        switch destination {
-        case .sleepPlan(let night):
-            SleepScreenFactory.plan(
-                makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
-                wakeSettings: Self.wakeSettings
-            )
-        case .sleepNight(let night):
+        if startsOnNight {
             SleepScreenFactory.night(
                 makeModel: { composition.models.makeSleep(night: night, startOnNight: true) },
                 wakeSettings: Self.wakeSettings
             )
-        default:
-            EmptyView()
+        } else {
+            SleepScreenFactory.plan(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
+                wakeSettings: Self.wakeSettings
+            )
         }
     }
 

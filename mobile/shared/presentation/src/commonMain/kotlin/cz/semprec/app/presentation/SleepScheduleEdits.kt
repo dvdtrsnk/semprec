@@ -4,7 +4,10 @@ import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.SleepNightChange
 import cz.semprec.app.domain.SleepSchedule
 
-/** The actions that change plans or the shown night as a whole; the others do nothing here. */
+/**
+ * The actions that change plans or the shown night as a whole. Every other action is listed as doing nothing here,
+ * so a new action fails the build until it is placed.
+ */
 internal fun SleepSession.editSchedules(action: SleepAction) {
     when (action) {
         is SleepAction.ToggleDay -> toggleDay(action.day)
@@ -13,7 +16,9 @@ internal fun SleepSession.editSchedules(action: SleepAction) {
         is SleepAction.SavePlan -> savePlan(action)
         is SleepAction.RemovePlan -> removePlan(action.planId)
         is SleepAction.SaveNight -> saveNight(action)
-        else -> Unit
+        SleepAction.Retry, is SleepAction.Open, SleepAction.Back, is SleepAction.SetSwitch,
+        is SleepAction.PickMinutes, is SleepAction.PickSound, is SleepAction.SetTime, SleepAction.ResetNight,
+        SleepAction.DismissSaveFailure -> Unit
     }
 }
 
