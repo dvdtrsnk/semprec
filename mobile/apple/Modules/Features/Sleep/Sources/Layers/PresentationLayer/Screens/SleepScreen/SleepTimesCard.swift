@@ -11,6 +11,8 @@ struct SleepTimesCard: View {
     /// Whether the card shows one night rather than a schedule, which changes how the goal line reads.
     var isNight = false
     var onCommit: () -> Void = {}
+    /// Runs when a drag on the dial starts.
+    var onDragStart: () -> Void = {}
 
     // MARK: - Body
     var body: some View {
@@ -33,7 +35,7 @@ struct SleepTimesCard: View {
                     emphasized: draft.alarm
                 )
             }
-            SleepDial(draft: $draft, meetsGoal: meetsGoal, onEnd: onCommit)
+            SleepDial(draft: $draft, meetsGoal: meetsGoal, onStart: onDragStart, onEnd: onCommit)
                 .padding(.horizontal, Theme.Spacing.small)
             VStack(spacing: 4) {
                 Text(SleepFormat.longDuration(draft.durationMinutes))

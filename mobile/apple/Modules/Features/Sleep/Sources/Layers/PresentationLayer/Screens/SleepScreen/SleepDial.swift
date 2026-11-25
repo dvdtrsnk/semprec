@@ -10,6 +10,8 @@ struct SleepDial: View {
     // MARK: - Dependencies
     @Binding var draft: SleepScheduleDraft
     let meetsGoal: Bool
+    /// Runs when a drag on the snake starts.
+    var onStart: () -> Void = {}
     /// Runs when a drag that moved the snake ends.
     var onEnd: () -> Void = {}
 
@@ -105,6 +107,7 @@ private extension SleepDial {
                 let minutes = geometry.minutes(at: value.location)
                 if drag == nil {
                     drag = DialDrag.start(at: value.startLocation, geometry: geometry, draft: draft)
+                    if drag != nil { onStart() }
                 }
                 guard let drag else { return }
                 let target = Int((minutes + drag.offsetMinutes).rounded())

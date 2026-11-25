@@ -134,11 +134,13 @@ private extension SleepAlarmClock {
         for (key, id) in scheduled where rings[key] == nil {
             if cancel(id) { scheduled[key] = nil }
         }
+        var added: [UUID] = []
         for (key, ring) in rings where scheduled[key] == nil {
             let request = AlarmRequest(title: ring.title, schedule: .once(ring.date))
             do {
                 try await scheduler.schedule(request)
                 scheduled[key] = request.id
+                added.append(request.id)
             } catch {
                 failure = Self.message(error)
             }
@@ -147,6 +149,8 @@ private extension SleepAlarmClock {
             try store.saveScheduled(scheduled)
         } catch {
             failure = Self.message(error)
+            // The ledger does not know them, so the next sync would schedule them again beside these.
+            for id in added { _ = cancel(id) }
         }
     }
 

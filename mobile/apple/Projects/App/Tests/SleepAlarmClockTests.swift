@@ -74,6 +74,21 @@ final class SleepAlarmClockTests: XCTestCase {
     }
 
     @MainActor
+    func testAlarmsTheLedgerCouldNotKeepAreCancelledSoTheNextSyncDoesNotDoubleThem() async {
+        let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
+        fixture.store.saveScheduledFailure = ScriptedAlarmFailure()
+
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.scheduler.cancelled, fixture.scheduler.requests.map(\.id))
+        XCTAssertTrue(fixture.scheduler.held.isEmpty)
+
+        fixture.store.saveScheduledFailure = nil
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.scheduler.held.count, 1)
+        XCTAssertEqual(fixture.store.scheduled.count, 1)
+    }
+
+    @MainActor
     func testAFailedReadChangesNothing() async {
         let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
         await fixture.clock.sync()
@@ -239,6 +254,7 @@ private final class MemorySleepAlarmStore: SleepAlarmStore, @unchecked Sendable 
 
     var settings = SleepWakeSettings()
     var scheduled: [String: UUID] = [:]
+    var saveScheduledFailure: Error?
 
     func load() throws -> SleepWakeSettings { settings }
 
@@ -246,5 +262,8 @@ private final class MemorySleepAlarmStore: SleepAlarmStore, @unchecked Sendable 
 
     func loadScheduled() throws -> [String: UUID] { scheduled }
 
-    func saveScheduled(_ scheduled: [String: UUID]) throws { self.scheduled = scheduled }
+    func saveScheduled(_ scheduled: [String: UUID]) throws {
+        if let saveScheduledFailure { throw saveScheduledFailure }
+        self.scheduled = scheduled
+    }
 }

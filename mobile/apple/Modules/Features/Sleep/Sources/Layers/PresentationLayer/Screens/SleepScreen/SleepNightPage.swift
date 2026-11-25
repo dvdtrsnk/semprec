@@ -13,6 +13,8 @@ struct SleepNightPage: View {
 
     // MARK: - State
     @State private var draft: SleepScheduleDraft
+    /// True while a finger moves the dial; a state that arrives meanwhile does not take the dial from it.
+    @State private var isDragging = false
 
     // MARK: - Init
     init(state: SleepState, send: @escaping (SleepAction) -> Void) {
@@ -26,7 +28,13 @@ struct SleepNightPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
                 header("sleep.editor.times")
-                SleepTimesCard(draft: $draft, goalMinutes: state.goalMinutes, isNight: true, onCommit: commit)
+                SleepTimesCard(
+                    draft: $draft,
+                    goalMinutes: state.goalMinutes,
+                    isNight: true,
+                    onCommit: commit,
+                    onDragStart: { isDragging = true }
+                )
                     .accessibilityIdentifier(SleepIdentifiers.nightTimes)
                 header("sleep.editor.alarmOptions")
                 Toggle(isOn: alarm) { Text("sleep.editor.alarmToggle", bundle: .module) }
@@ -45,7 +53,9 @@ struct SleepNightPage: View {
         }
         .background(Theme.Colors.groupedBackground)
         // What the night shows changed (the night itself, or the plan's ring while no night is read): the dial follows.
-        .onChange(of: Self.draft(state)) { _, shown in draft = shown }
+        .onChange(of: Self.draft(state)) { _, shown in
+            if !isDragging { draft = shown }
+        }
     }
 }
 
@@ -75,6 +85,7 @@ private extension SleepNightPage {
 
     /// Writes the night as the dial shows it, unless nothing changed.
     func commit() {
+        isDragging = false
         guard draft != Self.draft(state) else { return }
         send(.saveNight(bedMinutes: draft.bedMinutes, wakeMinutes: draft.wakeMinutes, alarm: draft.alarm))
     }
