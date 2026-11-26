@@ -8,4 +8,10 @@ extension SleepState {
     var overviewShowsSaveFailure: Bool {
         saveFailed && editor == nil
     }
+
+    /// Whether the editor sheet presents the failure of a write: exactly when the overview does not, so one failure
+    /// never shows two alerts.
+    var editorShowsSaveFailure: Bool {
+        saveFailed && editor != nil
+    }
 }

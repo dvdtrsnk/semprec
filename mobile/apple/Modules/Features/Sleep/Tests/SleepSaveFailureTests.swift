@@ -22,6 +22,18 @@ final class SleepSaveFailureTests: XCTestCase {
         XCTAssertNotNil(failed.editor)
     }
 
+    func testOneFailureNeverShowsTwoAlerts() {
+        for editing in [false, true] {
+            for failed in [false, true] {
+                var state = editing ? SleepState.previewReady.editing(.previewNew) : SleepState.previewReady
+                state.saveFailed = failed
+
+                XCTAssertFalse(state.overviewShowsSaveFailure && state.editorShowsSaveFailure)
+                XCTAssertEqual(state.overviewShowsSaveFailure || state.editorShowsSaveFailure, failed)
+            }
+        }
+    }
+
     func testWithoutAFailureNothingIsPresented() {
         XCTAssertFalse(SleepState.previewReady.overviewShowsSaveFailure)
         XCTAssertFalse(SleepState.previewReady.editing(.previewNew).overviewShowsSaveFailure)

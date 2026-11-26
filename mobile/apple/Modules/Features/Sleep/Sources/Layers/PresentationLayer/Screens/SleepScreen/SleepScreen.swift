@@ -92,7 +92,7 @@ private extension SleepScreen {
 
     var saveFailed: Binding<Bool> {
         Binding(
-            get: { viewModel.state.saveFailed },
+            get: { viewModel.state.editorShowsSaveFailure },
             set: { if !$0 { viewModel.send(.dismissSaveFailure) } }
         )
     }

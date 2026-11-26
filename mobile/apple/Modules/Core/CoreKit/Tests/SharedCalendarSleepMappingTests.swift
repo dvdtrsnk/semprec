@@ -49,4 +49,19 @@ final class SharedCalendarSleepMappingTests: XCTestCase {
         XCTAssertEqual(state.days.first?.sleepEvening?.prepMinutes, 1350)
         XCTAssertNil(state.days.first?.sleepMorning)
     }
+
+    /// A reminder that comes after midnight is on the morning of the night's wake day, not on its evening.
+    @MainActor
+    func testStateMapsTheReminderOfAMorningBand() {
+        let day = SharedSDK.CalendarDayState(
+            date: "2026-10-16",
+            items: [],
+            sleepEvening: nil,
+            sleepMorning: CalendarKotlin.morningSleep(prepMinutes: 30)
+        )
+        let state = SharedCalendarScreenModel.state(CalendarKotlin.state(.content, days: [day]))
+
+        XCTAssertEqual(state.days.first?.sleepMorning?.prepMinutes, 30)
+        XCTAssertEqual(state.days.first?.sleepMorning?.fromMinutes, 0)
+    }
 }
