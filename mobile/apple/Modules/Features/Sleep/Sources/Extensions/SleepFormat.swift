@@ -51,6 +51,11 @@ enum SleepFormat {
         symbol(isoDay, from: calendar.shortStandaloneWeekdaySymbols).localizedCapitalized
     }
 
+    /// `P`, `Ú`, `M`: the one-letter name of an ISO weekday, as the days picker shows it.
+    static func weekdayInitial(_ isoDay: Int) -> String {
+        symbol(isoDay, from: calendar.veryShortStandaloneWeekdaySymbols).localizedUppercase
+    }
+
     static func weekdayLong(_ isoDay: Int) -> String {
         symbol(isoDay, from: calendar.standaloneWeekdaySymbols)
     }

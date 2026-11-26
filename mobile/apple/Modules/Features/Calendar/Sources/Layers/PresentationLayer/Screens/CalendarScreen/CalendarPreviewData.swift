@@ -51,7 +51,7 @@ enum CalendarPreviewData {
                 date: date,
                 items: items[date] ?? [],
                 sleepEvening: date == "2026-10-16" ? sleep : nil,
-                sleepMorning: date == "2026-10-17" ? sleep : nil
+                sleepMorning: date == "2026-10-17" ? morningSleep : nil
             )
         }
     }
@@ -84,7 +84,12 @@ enum CalendarPreviewData {
 
     static let sleep = CalendarSleep(
         night: "2026-10-16", bedMinutes: 23 * 60, wakeMinutes: 6 * 60 + 45, alarm: true, changed: false,
-        prepMinutes: 22 * 60 + 30
+        prepMinutes: 22 * 60 + 30, fromMinutes: 23 * 60, toMinutes: 24 * 60
+    )
+
+    static let morningSleep = CalendarSleep(
+        night: "2026-10-16", bedMinutes: 23 * 60, wakeMinutes: 6 * 60 + 45, alarm: true, changed: false,
+        prepMinutes: nil, fromMinutes: 0, toMinutes: 6 * 60 + 45
     )
 
     // MARK: - Private

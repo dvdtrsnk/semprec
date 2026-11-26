@@ -75,26 +75,6 @@ public struct CalendarEventTask: Equatable, Sendable, Identifiable {
     }
 }
 
-/// One night of sleep as it is drawn. The times are minutes of the day; the night starts on the evening `night`.
-public struct CalendarSleep: Equatable, Sendable {
-
-    public let night: String
-    public let bedMinutes: Int
-    public let wakeMinutes: Int
-    public let alarm: Bool
-    public let changed: Bool
-    public let prepMinutes: Int?
-
-    public init(night: String, bedMinutes: Int, wakeMinutes: Int, alarm: Bool, changed: Bool, prepMinutes: Int?) {
-        self.night = night
-        self.bedMinutes = bedMinutes
-        self.wakeMinutes = wakeMinutes
-        self.alarm = alarm
-        self.changed = changed
-        self.prepMinutes = prepMinutes
-    }
-}
-
 /// One item of one day. A timed item has `startMinutes` and `endMinutes` (minutes of the day, `endMinutes` a short
 /// block after the start when `hasEnd` is false); `column` of `columns` places it next to the ones it overlaps.
 public struct CalendarItem: Equatable, Sendable {

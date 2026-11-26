@@ -210,22 +210,31 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
+    /// The parts of the evening's and the morning's nights that fall on this day, as the shared layer cut them, and
+    /// the bedtime reminder where it comes on this day.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
         if let evening = day.sleepEvening {
-            sleepBand(evening, from: evening.bedMinutes, to: CalendarGeometry.minutesPerDay, width: width)
+            if let band = evening.band {
+                sleepBand(evening, band: band, evening: true, width: width)
+            }
             if let prep = evening.prepMinutes {
                 prepMarker(evening, minutes: prep, width: width)
             }
         }
         if let morning = day.sleepMorning {
-            sleepBand(morning, from: 0, to: morning.wakeMinutes, width: width)
+            if let band = morning.band {
+                sleepBand(morning, band: band, evening: false, width: width)
+            }
+            if let prep = morning.prepMinutes {
+                prepMarker(morning, minutes: prep, width: width)
+            }
         }
     }
 
-    func sleepBand(_ sleep: CalendarSleep, from start: Int, to end: Int, width: CGFloat) -> some View {
-        let evening = start == sleep.bedMinutes
-        return Button { onOpenSleep(sleep.night) } label: {
+    /// An evening band is labelled with its bedtime at the top, a morning band with its wake time at the bottom.
+    func sleepBand(_ sleep: CalendarSleep, band: Range<Int>, evening: Bool, width: CGFloat) -> some View {
+        Button { onOpenSleep(sleep.night) } label: {
             HStack(spacing: 4) {
                 Image(systemName: evening ? "moon.fill" : "alarm").font(.caption2)
                 Text(CalendarDates.clock(minutes: evening ? sleep.bedMinutes : sleep.wakeMinutes))
@@ -233,12 +242,15 @@ private extension CalendarTimelineView {
             }
             .foregroundStyle(sleepTint)
             .padding(6)
-            .frame(width: width, height: max(geometry.y(minutes: end) - geometry.y(minutes: start), 0),
-                alignment: evening ? .topLeading : .bottomLeading)
+            .frame(
+                width: width,
+                height: max(geometry.y(minutes: band.upperBound) - geometry.y(minutes: band.lowerBound), 0),
+                alignment: evening ? .topLeading : .bottomLeading
+            )
             .background(sleepTint.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: start))
+        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: band.lowerBound))
         .accessibilityLabel(Text("calendar.sleep.title", bundle: .module))
     }
 

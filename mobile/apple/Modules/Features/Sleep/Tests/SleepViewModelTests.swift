@@ -34,14 +34,19 @@ final class SleepViewModelTests: XCTestCase {
         let viewModel = SleepViewModel(model: model)
 
         viewModel.retry()
-        viewModel.send(.open(.plan, planID: "weekdays"))
-        viewModel.send(.setSwitch(.alarm, isOn: false))
-        viewModel.send(.setTime(.bed, minutes: 1_320))
+        viewModel.send(.open(.night))
+        viewModel.send(.setSwitch(.showInCalendar, isOn: false))
         viewModel.send(.pickMinutes(.goal, minutes: 450))
         viewModel.send(.pickSound(.birds))
-        viewModel.send(.toggleDay(6))
-        viewModel.send(.addPlan(name: "Other days"))
-        viewModel.send(.deletePlan)
+        viewModel.send(.draft(.editPlan(planID: "weekdays")))
+        viewModel.send(.draft(.editPlan(planID: nil)))
+        viewModel.send(.draft(.moveDial(.whole, minutes: 1_320)))
+        viewModel.send(.draft(.toggleDay(6)))
+        viewModel.send(.draft(.setAlarm(isOn: false)))
+        viewModel.send(.draft(.confirm(newPlanName: "Other days")))
+        viewModel.send(.draft(.deletePlan))
+        viewModel.send(.draft(.discard))
+        viewModel.send(.draft(.commitNight))
         viewModel.send(.resetNight)
         viewModel.send(.back)
         viewModel.send(.dismissSaveFailure)
@@ -49,11 +54,30 @@ final class SleepViewModelTests: XCTestCase {
         XCTAssertEqual(
             model.actions,
             [
-                .retry, .open(.plan, planID: "weekdays"), .setSwitch(.alarm, isOn: false),
-                .setTime(.bed, minutes: 1_320), .pickMinutes(.goal, minutes: 450), .pickSound(.birds), .toggleDay(6),
-                .addPlan(name: "Other days"), .deletePlan, .resetNight, .back, .dismissSaveFailure
+                .retry, .open(.night), .setSwitch(.showInCalendar, isOn: false), .pickMinutes(.goal, minutes: 450),
+                .pickSound(.birds), .draft(.editPlan(planID: "weekdays")), .draft(.editPlan(planID: nil)),
+                .draft(.moveDial(.whole, minutes: 1_320)), .draft(.toggleDay(6)), .draft(.setAlarm(isOn: false)),
+                .draft(.confirm(newPlanName: "Other days")), .draft(.deletePlan), .draft(.discard),
+                .draft(.commitNight), .resetNight, .back, .dismissSaveFailure
             ]
         )
+    }
+
+    @MainActor
+    func testTheEditorAndTheNightDraftAreRepublishedLikeAnyOtherState() async throws {
+        let model = ScriptedSleepScreenModel(state: .previewReady)
+        let viewModel = SleepViewModel(model: model)
+        let observer = Task { await viewModel.observe() }
+
+        model.publish(.previewReady.editing(.previewWeekdays))
+        try await eventually { viewModel.state.editor == .previewWeekdays }
+        XCTAssertEqual(viewModel.state.editor, .previewWeekdays)
+
+        model.publish(.previewReady.opening(.night))
+        try await eventually { viewModel.state.nightDraft == .previewNight }
+        XCTAssertNil(viewModel.state.editor)
+        XCTAssertEqual(viewModel.state.nightDraft, .previewNight)
+        observer.cancel()
     }
 
     @MainActor

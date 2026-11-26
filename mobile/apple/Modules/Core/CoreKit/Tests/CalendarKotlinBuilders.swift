@@ -47,7 +47,23 @@ enum CalendarKotlin {
             wakeMinutes: 405,
             alarm: true,
             changed: true,
-            prepMinutes: KotlinInt(int: 1350)
+            prepMinutes: KotlinInt(int: 1350),
+            fromMinutes: 1380,
+            toMinutes: 1440
+        )
+    }
+
+    /// The part of the same night that falls on the morning after: midnight to waking, without the reminder.
+    static func morningSleep() -> SharedSDK.CalendarSleep {
+        SharedSDK.CalendarSleep(
+            night: "2026-10-15",
+            bedMinutes: 1380,
+            wakeMinutes: 405,
+            alarm: true,
+            changed: false,
+            prepMinutes: nil,
+            fromMinutes: 0,
+            toMinutes: 405
         )
     }
 

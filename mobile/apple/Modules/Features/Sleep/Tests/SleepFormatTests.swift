@@ -51,6 +51,8 @@ final class SleepFormatTests: XCTestCase {
         XCTAssertEqual(SleepFormat.weekdayShort(1), "Mon")
         XCTAssertEqual(SleepFormat.weekdayShort(7), "Sun")
         XCTAssertEqual(SleepFormat.weekdayLong(5), "Friday")
+        XCTAssertEqual(SleepFormat.weekdayInitial(1), "M")
+        XCTAssertEqual(SleepFormat.weekdayInitial(7), "S")
     }
 
     // MARK: - Nights
