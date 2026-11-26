@@ -14,6 +14,9 @@ interface SleepRepository {
 
     suspend fun deletePlan(planId: String): RepositoryResult<Unit>
 
+    /** The resolved nights whose evenings are [from] to [to], both included, in order. */
+    suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>>
+
     /** Sets, changes or resets the exception of [night] and answers the resolved night, or `null` for none. */
     suspend fun changeNight(night: CalendarDay, change: SleepNightChange): RepositoryResult<SleepNight?>
 }
