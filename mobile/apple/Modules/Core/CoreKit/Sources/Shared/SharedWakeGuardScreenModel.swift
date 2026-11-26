@@ -55,7 +55,8 @@ extension SharedWakeGuardScreenModel {
             fallbackOpensAt: state.fallbackOpensAtEpochSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) },
             fallbackOpen: state.fallbackOpen,
             codeCount: Int(state.codeCount),
-            titleKind: titleKind(state.titleKind)
+            titleKind: titleKind(state.titleKind),
+            holdsVolume: state.holdsVolume
         )
     }
 

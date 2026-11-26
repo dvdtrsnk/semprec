@@ -16,6 +16,7 @@ public enum WakeTitleKind: Equatable, Sendable {
 
 /// The guard of one window. `requiredTaps` and `fallbackDelayMinutes` are the rules' numbers for the copy;
 /// `fallbackOpensAt` is when the person may tap instead of scanning, and `fallbackOpen` says it may now.
+/// `holdsVolume` says the device's volume is to be held at its maximum while the guard's window is the active one.
 public struct WakeGuardState: Equatable, Sendable {
 
     public var phase: WakeGuardPhase
@@ -26,6 +27,7 @@ public struct WakeGuardState: Equatable, Sendable {
     public var fallbackOpen: Bool
     public var codeCount: Int
     public var titleKind: WakeTitleKind
+    public var holdsVolume: Bool
 
     public init(
         phase: WakeGuardPhase = .idle,
@@ -35,7 +37,8 @@ public struct WakeGuardState: Equatable, Sendable {
         fallbackOpensAt: Date? = nil,
         fallbackOpen: Bool = false,
         codeCount: Int = 0,
-        titleKind: WakeTitleKind = .sleepAlarm
+        titleKind: WakeTitleKind = .sleepAlarm,
+        holdsVolume: Bool = false
     ) {
         self.phase = phase
         self.tapsLeft = tapsLeft
@@ -45,6 +48,7 @@ public struct WakeGuardState: Equatable, Sendable {
         self.fallbackOpen = fallbackOpen
         self.codeCount = codeCount
         self.titleKind = titleKind
+        self.holdsVolume = holdsVolume
     }
 }
 
