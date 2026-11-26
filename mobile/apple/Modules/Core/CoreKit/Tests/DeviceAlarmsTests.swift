@@ -102,11 +102,11 @@ final class DeviceAlarmsTests: XCTestCase {
     }
 
     @MainActor
-    func testMacOSRefusesToScheduleAnAlarmAsUnsupported() async {
+    func testMacOSRefusesToScheduleAnAlarmAsUnsupported() async throws {
         let scheduler = DeviceAlarmScheduler()
-        let answer: SharedSDK.DeviceAlarmScheduling = await withCheckedContinuation { continuation in
-            scheduler.schedule(ringAtEpochSeconds: 1_800_000_000) { continuation.resume(returning: $0) }
-        }
+        var answer: SharedSDK.DeviceAlarmScheduling?
+        scheduler.schedule(ringAtEpochSeconds: 1_800_000_000) { answer = $0 }
+        for _ in 0..<500 where answer == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual((answer as? SharedSDK.DeviceAlarmSchedulingRefused)?.failure, .unsupported)
     }
     #endif
