@@ -100,7 +100,7 @@ private extension SleepScreen {
     /// A failure that no open editor shows itself: the editor presents its own, as an alert cannot show under a sheet.
     var saveFailedOverview: Binding<Bool> {
         Binding(
-            get: { viewModel.state.saveFailed && viewModel.state.editor == nil },
+            get: { viewModel.state.overviewShowsSaveFailure },
             set: { if !$0 { viewModel.send(.dismissSaveFailure) } }
         )
     }
