@@ -11,6 +11,7 @@ import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { readEventTasks, type EventTasks } from "./taskStateInEvent.js";
 import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 interface TaskHostEvent {
@@ -31,6 +32,9 @@ interface HostEventsRelation {
 }
 
 const HOST_EVENTS_KEY = "hostEvents";
+
+/** Its inverse on Events is `completedTasks`. */
+const COMPLETED_IN_EVENT_KEY = "completedInEvent";
 
 /** Both sides of the relation are system-owned by the Tasks process. */
 const TASKS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: TASKS_MODULE_ID };
@@ -225,6 +229,60 @@ export function createTaskHostEventsClearRouteHandler(pool: Pool) {
         );
       }
       return { status: 200, body: await hostEventsBody(client, relation, taskId) };
+    });
+  };
+}
+
+/**
+ * `PUT /api/tasks/:id/completed-in-event/:eventId`: the task is done in that Event, whether or not the Event has
+ * ended. Locks the task, requires a `hostEvents` edge to the Event (else not found), replaces any `completedInEvent`
+ * edge with one to it as the Tasks process, and writes `status: done` through the Tasks write path as the caller, all
+ * in one transaction. The edge is written first, so the completion hook, finding it, adds none of its own. Answers the
+ * Event's tasks as `GET /api/events/:id/tasks` does. Reopening goes through a status write, whose hook removes the edge.
+ */
+export function createTaskCompleteInEventRouteHandler(pool: Pool) {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult<EventTasks>> => {
+    const id = uuidParam(ctx, "id");
+    const eventId = uuidParam(ctx, "eventId");
+    const userId = ctx.identity.user.id;
+    return withTransaction(pool, async (client) => {
+      const { tasksDatabaseId, taskId } = await lockLiveTask(client, id);
+      const hostEvents = await hostEventsRelation(client, tasksDatabaseId);
+      const hosted = await storedHostEvents(client, hostEvents, taskId);
+      if (!hosted.some((entry) => entry.eventId === eventId)) {
+        throw new NotFoundError(`Task ${taskId} is not in event ${eventId}`);
+      }
+      const property = await propertiesStore.getPropertyByKey(client, tasksDatabaseId, COMPLETED_IN_EVENT_KEY);
+      const definition = property ? await relationsStore.getRelationDefinitionByPropertyId(client, property.id) : null;
+      if (!property || !definition) throw new Error("Tasks has no 'completedInEvent' relation");
+      const edges = await relationsStore.listRelationsForItem(client, definition.id, taskId);
+      const others = edges.map((edge) => relationsStore.otherSide(edge, taskId)).filter((other) => other !== eventId);
+      for (const other of others.sort()) {
+        await deleteRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: taskId, targetItemId: other },
+          TASKS_RELATION_CONTEXT,
+          USER_WRITER,
+          userId,
+        );
+      }
+      if (others.length === edges.length) {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: taskId, targetItemId: eventId },
+          TASKS_RELATION_CONTEXT,
+          USER_WRITER,
+          userId,
+        );
+      }
+      await updateItemWithClient(
+        client,
+        { databaseId: tasksDatabaseId, itemId: taskId, propertiesPatch: { status: "done" } },
+        { writer: USER_WRITER, actingUserId: userId, humanWriterUserId: userId },
+      );
+      const eventTasks = await readEventTasks(client, eventId);
+      if (eventTasks === null) throw new NotFoundError(`Event ${eventId} not found`);
+      return { status: 200, body: eventTasks };
     });
   };
 }

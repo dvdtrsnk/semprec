@@ -494,6 +494,11 @@ Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calend
   then tasks).
 - Trashing an Event recomputes its hosted tasks and keeps the edges. Restoring an Event locks every hosted task row
   (id order) and then deletes their `hostedTasks` edges as the Tasks process; the task is not put back.
+- A task is done in an Event only through its `completedInEvent` edge: written by the status hook when the task is
+  completed while its last host Event has not ended, or by `PUT /api/tasks/:id/completed-in-event/:eventId`, which
+  completes it in one of its host Events, ended or not, replacing any edge to another Event, in the status write's
+  transaction. A task completed without the edge, from its own row on whatever day, reads `doneElsewhere` with that
+  day in every Event it sits in (`tasks/taskStateInEvent.ts`).
 
 ### Nightly rollover
 

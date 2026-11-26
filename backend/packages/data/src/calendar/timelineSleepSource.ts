@@ -127,6 +127,12 @@ function readPrepReminder(settings: SleepSettingsItem): SleepNightsSettings {
   return { prepReminder: false, prepReminderMinutes: 0 };
 }
 
+/** The goal is shown only as a whole, positive number of minutes; anything else shows no goal. */
+function readGoalMinutes(settings: SleepSettingsItem): number | null {
+  const goal = settings.properties.goalMinutes;
+  return typeof goal === "number" && Number.isInteger(goal) && goal > 0 ? goal : null;
+}
+
 /**
  * Starts the day before `from`, so a night that begins the evening before is included. Entries are derived, not
  * item rows, yet not read-only: a night is edited on its own, not through the item routes. With `includeSleep`
@@ -172,6 +178,9 @@ export async function readSleepTimelineItems(
     wakeTime: night.wakeTime,
     alarm: night.alarm,
     changed: night.changed,
+    planBedTime: plans.find((plan) => plan.id === night.planId)?.bedTime ?? null,
+    planWakeTime: plans.find((plan) => plan.id === night.planId)?.wakeTime ?? null,
+    goalMinutes: readGoalMinutes(settings),
     bedAt: night.bedAt,
     wakeAt: night.wakeAt,
     prepReminderAt: night.prepReminderAt,

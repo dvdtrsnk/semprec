@@ -13,6 +13,8 @@ export const TASKS_ROUTES: RouteMatrixEntry[] = [
   // prettier-ignore
   { name: "task host event put", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/host-events/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
+  { name: "task complete in event", method: "PUT", path: `/api/tasks/${EXAMPLE_ID}/completed-in-event/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
   { name: "task host event remove", method: "DELETE", path: `/api/tasks/${EXAMPLE_ID}/host-events/${EXAMPLE_ID}`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "task host events clear", method: "DELETE", path: `/api/tasks/${EXAMPLE_ID}/host-events`, surface: "api", public: false, tenancy: "tenant" },

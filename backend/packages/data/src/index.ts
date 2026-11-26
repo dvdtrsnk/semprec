@@ -534,6 +534,7 @@ export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
 export { createTaskOccurrenceMaterializeRouteHandler } from "./tasks/taskOccurrenceRoutes.js";
 export {
   createTaskHostEventPutRouteHandler,
+  createTaskCompleteInEventRouteHandler,
   createTaskHostEventRemoveRouteHandler,
   createTaskHostEventsClearRouteHandler,
 } from "./tasks/taskHostEventRouteHandlers.js";

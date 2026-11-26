@@ -11,7 +11,10 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createEventTasksRouteHandler } from "../eventTasksRouteHandler.js";
-import { createTaskHostEventPutRouteHandler } from "../taskHostEventRouteHandlers.js";
+import {
+  createTaskCompleteInEventRouteHandler,
+  createTaskHostEventPutRouteHandler,
+} from "../taskHostEventRouteHandlers.js";
 import { eventTaskCounts, readEventTasks, type EventTasks } from "../taskStateInEvent.js";
 
 interface SeededTenant {
@@ -68,6 +71,15 @@ function put(taskId: string, eventId: string, tenant = home) {
     createTaskHostEventPutRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
   );
 }
+
+/** Through the route that completes a task in one of its events. */
+function completeIn(taskId: string, eventId: string, tenant = home) {
+  return runInTenant(tenant.id, () =>
+    createTaskCompleteInEventRouteHandler(pool)({ params: { id: taskId, eventId }, body: {}, identity }),
+  );
+}
+
+const readTask = (taskId: string, tenant = home) => runInTenant(tenant.id, () => cp.getItem(tenant.tasksId, taskId));
 
 const setStatus = (taskId: string, status: string, tenant = home) =>
   runInTenant(tenant.id, () =>
@@ -187,14 +199,89 @@ describe("GET /api/events/:id/tasks: the state of a hosted task (issue #1801)", 
     });
   });
 
-  it("answers done for a task completed on the day of the event after the event has ended", async () => {
+  it("answers doneElsewhere with the day for a task completed from its row on the day of an ended event", async () => {
     const eventId = await event("Planning", { date: "2026-10-15", timeFrom: "13:00", timeTo: "14:00" });
     const taskId = await task("Complete after");
     await put(taskId, eventId);
     // 14:30 in Prague: the event has ended, so the completion makes no edge, and completedOn is the event's day.
     setClock("2026-10-15T12:30:00.000Z");
     await setStatus(taskId, "done");
-    expect(asRows(await getEventTasks(eventId))).toEqual([[taskId, "done"]]);
+    expect((await getEventTasks(eventId)).tasks).toEqual([
+      { taskId, title: "Complete after", state: { kind: "doneElsewhere", completedOn: "2026-10-15" } },
+    ]);
+  });
+
+  describe("completing a task in an event", () => {
+    it("answers done in an event that has ended, with the task done and the counts", async () => {
+      const eventId = await event("Planning", { date: "2026-10-15", timeFrom: "08:00", timeTo: "09:00" });
+      const taskId = await task("Late in the event");
+      await put(taskId, eventId);
+      // 10:00 in Prague: the event ended an hour ago and the task is missed there.
+      setClock("2026-10-15T08:00:00.000Z");
+      expect(asRows(await getEventTasks(eventId))).toEqual([[taskId, "missed"]]);
+      const answer = await completeIn(taskId, eventId);
+      expect(answer).toEqual({
+        status: 200,
+        body: {
+          eventId,
+          tasks: [{ taskId, title: "Late in the event", state: { kind: "done" } }],
+          counts: { open: 0, total: 1 },
+        },
+      });
+      expect((await readTask(taskId))?.properties.status).toBe("done");
+      expect(await getEventTasks(eventId)).toEqual(answer.body);
+    });
+
+    it("moves the completion of a task done in another event to this one", async () => {
+      const taskId = await task("Done twice");
+      const [first, second] = [
+        await event("First", { date: "2026-10-20" }),
+        await event("Second", { date: "2026-10-21" }),
+      ];
+      await put(taskId, first);
+      await put(taskId, second);
+      await setStatus(taskId, "done");
+      await completeIn(taskId, first);
+      expect((await getEventTasks(first)).tasks[0]?.state).toEqual({ kind: "done" });
+      expect((await getEventTasks(second)).tasks[0]?.state).toEqual({ kind: "doneElsewhere", eventName: "First" });
+    });
+
+    it("answers done in the event for a task completed earlier from its row", async () => {
+      const eventId = await event("Planning", { date: "2026-10-15", timeFrom: "08:00", timeTo: "09:00" });
+      const taskId = await task("From the row first");
+      await put(taskId, eventId);
+      setClock("2026-10-15T08:00:00.000Z");
+      await setStatus(taskId, "done");
+      expect((await getEventTasks(eventId)).tasks[0]?.state.kind).toBe("doneElsewhere");
+      await completeIn(taskId, eventId);
+      expect((await getEventTasks(eventId)).tasks[0]?.state).toEqual({ kind: "done" });
+    });
+
+    it("loses the completion in the event when the task is reopened", async () => {
+      const eventId = await event("Planning", { date: "2026-10-15", timeFrom: "08:00", timeTo: "09:00" });
+      const taskId = await task("Reopened");
+      await put(taskId, eventId);
+      setClock("2026-10-15T08:00:00.000Z");
+      await completeIn(taskId, eventId);
+      await setStatus(taskId, "notDone");
+      expect(asRows(await getEventTasks(eventId))).toEqual([[taskId, "missed"]]);
+    });
+
+    it("answers not found, and changes nothing, for a task that is not in the event", async () => {
+      const eventId = await event("Planning", { date: "2026-10-20" });
+      const taskId = await task("Elsewhere");
+      await expect(completeIn(taskId, eventId)).rejects.toMatchObject({ code: "not_found" });
+      expect((await readTask(taskId))?.properties.status).toBe("notDone");
+    });
+
+    it("answers not found for another tenant's task, as for an unknown one", async () => {
+      const eventId = await event("Planning", { date: "2026-10-20" }, foreign);
+      const taskId = await task("Foreign", {}, foreign);
+      await put(taskId, eventId, foreign);
+      await expect(completeIn(taskId, eventId)).rejects.toMatchObject({ code: "not_found" });
+      await expect(completeIn(randomUUID(), eventId)).rejects.toMatchObject({ code: "not_found" });
+      expect((await readTask(taskId, foreign))?.properties.status).toBe("notDone");
+    });
   });
 
   it("answers doneElsewhere with the event name for a task completed in another event", async () => {
