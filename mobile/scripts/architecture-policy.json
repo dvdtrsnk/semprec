@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "XCTest"],
+    "systemModules": ["AVFoundation", "AlarmKit", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -90,6 +90,7 @@
       "androidOnly": ["tab.home", "tab.settings"],
       "appleOnly": [
         "session.unreachable",
+        "NSAlarmKitUsageDescription",
         "NSMicrophoneUsageDescription",
         "tab.overview",
         "tab.calendar",
@@ -737,6 +738,12 @@
       "android": ":android:core:ui",
       "apple": "DesignSystem",
       "keys": ["state.loading", "state.retry"]
+    },
+    {
+      "android": null,
+      "apple": "CoreKit",
+      "keys": [],
+      "appleOnly": ["alarm.sleep.title", "alarm.stop"]
     },
     {
       "android": ":android:feature:home",

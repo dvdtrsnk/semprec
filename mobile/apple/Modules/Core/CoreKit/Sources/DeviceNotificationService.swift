@@ -21,6 +21,6 @@ public protocol DeviceNotificationService: AnyObject {
     /// The `userInfo` of the local notification of `reminder`, which `target(of:)` reads back when it is tapped.
     func userInfo(of reminder: DeviceReminder) -> [String: String]
 
-    /// Whether a silent push with `payload` asks the device to read its reminders again.
-    func asksForReminders(_ payload: [String: String]) -> Bool
+    /// What a silent push with `payload` asks the device to read again, or nil when it asks for nothing.
+    func resync(of payload: [String: String]) -> DeviceResync?
 }

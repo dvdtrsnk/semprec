@@ -1,14 +1,15 @@
 import Foundation
 @preconcurrency internal import SharedSDK
 
-/// The Kotlin `DeviceNotifications` of the process as a `DeviceNotificationService`. Its calls go out with the session
-/// the windows sign in to, and it shares the stored push subscription with their screen model factories, whose sign-out
-/// revokes it.
+/// The Kotlin `DeviceNotifications` and `SleepAlarmSync` of the process as a `DeviceNotificationService` and a
+/// `SleepAlarmService`. Their calls go out with the session the windows sign in to, and it shares the stored push
+/// subscription with their screen model factories, whose sign-out revokes it.
 @MainActor
 public final class SharedDeviceNotifications {
 
     // MARK: - Dependencies
     let notifications: SharedSDK.DeviceNotifications
+    let sleepAlarms: SharedSDK.SleepAlarmSync
     private let platform: SharedSDK.AppPlatform
 
     // MARK: - Init
@@ -18,15 +19,20 @@ public final class SharedDeviceNotifications {
         case .keychain:
             SharedSDK.DevicePushSDK(
                 sessionStorage: KeychainSessionStorage(),
-                subscriptions: DefaultsPushSubscriptionStorage()
+                subscriptions: DefaultsPushSubscriptionStorage(),
+                alarms: DeviceAlarmScheduler(),
+                sleepAlarmLedger: DefaultsSleepAlarmLedger()
             )
         case .memory:
             SharedSDK.DevicePushSDK(
                 sessionStorage: SharedSDK.InMemorySessionStorage(),
-                subscriptions: SharedSDK.InMemoryPushSubscriptionStorage()
+                subscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
+                alarms: SharedSDK.UnavailableDeviceAlarms(),
+                sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger()
             )
         }
         notifications = sdk.notifications
+        sleepAlarms = sdk.sleepAlarms
         platform = DeviceIdentity.current().platform
     }
 }
@@ -61,8 +67,28 @@ extension SharedDeviceNotifications: DeviceNotificationService {
         notifications.payload(reminder: Self.sharedReminder(reminder))
     }
 
-    public func asksForReminders(_ payload: [String: String]) -> Bool {
-        notifications.asksForReminders(payload: payload)
+    public func resync(of payload: [String: String]) -> DeviceResync? {
+        notifications.resync(payload: payload).map(Self.resync)
+    }
+}
+
+// MARK: - Protocol conformance
+extension SharedDeviceNotifications: SleepAlarmService {
+
+    public func syncSleepAlarms() async -> SleepAlarmSyncResult? {
+        do {
+            return Self.result(try await sleepAlarms.sync())
+        } catch {
+            return nil
+        }
+    }
+
+    public func removeSleepAlarms() async -> SleepAlarmSyncResult? {
+        do {
+            return Self.result(try await sleepAlarms.signedOut())
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -88,6 +114,24 @@ extension SharedDeviceNotifications {
         case .event(let event): .event(id: event.eventId)
         case .task(let task): .task(id: task.taskId)
         case .invitations: .invitations
+        }
+    }
+
+    static func resync(_ resync: SharedSDK.DeviceResync) -> DeviceResync {
+        switch resync {
+        case .reminders: .reminders
+        case .sleepAlarms: .sleepAlarms
+        }
+    }
+
+    static func result(_ result: SharedSDK.SleepAlarmSyncResult) -> SleepAlarmSyncResult {
+        switch result {
+        case .synced: .synced
+        case .unsupported: .unsupported
+        case .readFailed: .readFailed
+        case .notAuthorized: .notAuthorized
+        case .limitReached: .limitReached
+        case .deviceFailed: .deviceFailed
         }
     }
 

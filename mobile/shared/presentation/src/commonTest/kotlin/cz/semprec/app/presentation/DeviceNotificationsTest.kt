@@ -132,10 +132,16 @@ class DeviceNotificationsTest {
         assertEquals(NotificationTarget.Task("t1"), notifications.target(notifications.payload(task)))
     }
 
-    @Test fun `only the reminders resync push asks for the reminders`() {
+    @Test fun `a silent push asks for the reminders or the sleep alarms by its kind`() {
+        val cases: List<Pair<Map<String, String>, DeviceResync?>> = listOf(
+            mapOf("kind" to "remindersResync") to DeviceResync.REMINDERS,
+            mapOf("kind" to "sleepResync") to DeviceResync.SLEEP_ALARMS,
+            mapOf("kind" to "somethingElse") to null,
+            mapOf("kind" to "") to null,
+            mapOf("dismiss" to "n1") to null,
+            emptyMap<String, String>() to null,
+        )
         val notifications = notifications()
-        assertTrue(notifications.asksForReminders(mapOf("kind" to "remindersResync")))
-        assertFalse(notifications.asksForReminders(mapOf("kind" to "sleepResync")))
-        assertFalse(notifications.asksForReminders(mapOf("dismiss" to "n1")))
+        for ((payload, resync) in cases) assertEquals(resync, notifications.resync(payload), "$payload")
     }
 }

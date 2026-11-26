@@ -117,13 +117,28 @@ class HttpSleepRepository(private val api: AuthenticatedApi) : SleepRepository {
         }
     }
 
-    private suspend fun readNight(night: CalendarDay): RepositoryResult<SleepNight?> {
-        val query = listOf("from" to night.toString(), "to" to night.toString())
-        val response = api.send(HttpMethod.Get, "/api/sleep/nights", query = query)
-        return when (val nights = response.decode<SleepNightsResponse>()) {
-            is RepositoryResult.Failure -> nights
-            is RepositoryResult.Content -> nights.value.nights.firstOrNull().toResult()
+    override suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>> =
+        when (val read = readNights(from, to)) {
+            is RepositoryResult.Failure -> read
+            is RepositoryResult.Content -> {
+                val nights = read.value.nights.map { it.toDomain() }
+                if (nights.any { it == null }) {
+                    RepositoryResult.Failure(FailureKind.INVALID_DATA)
+                } else {
+                    RepositoryResult.Content(nights.filterNotNull())
+                }
+            }
         }
+
+    private suspend fun readNight(night: CalendarDay): RepositoryResult<SleepNight?> =
+        when (val read = readNights(night, night)) {
+            is RepositoryResult.Failure -> read
+            is RepositoryResult.Content -> read.value.nights.firstOrNull().toResult()
+        }
+
+    private suspend fun readNights(from: CalendarDay, to: CalendarDay): RepositoryResult<SleepNightsResponse> {
+        val query = listOf("from" to from.toString(), "to" to to.toString())
+        return api.send(HttpMethod.Get, "/api/sleep/nights", query = query).decode<SleepNightsResponse>()
     }
 
     private suspend fun patch(itemId: String, properties: JsonObject): RepositoryResult<Unit> =
