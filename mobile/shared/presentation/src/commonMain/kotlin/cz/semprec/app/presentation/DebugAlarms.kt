@@ -98,7 +98,7 @@ class DebugAlarms internal constructor(
     /** The alarms and missions the app holds, soonest first, or `null` when the device could not list its alarms. */
     internal suspend fun rows(): List<DebugAlarmRow>? = wake.lock.withLock {
         onDevice {
-            alarms.heldAlarms()?.let { rows(it, ledger.load(), wake.missions.value, now()) }
+            alarms.heldAlarms()?.let { rows(it, ledger.load(), wake.missions.value) }
         }
     }
 
@@ -125,15 +125,7 @@ class DebugAlarms internal constructor(
         var failure: DebugAlarmFailure? = null
         try {
             for (ringAt in rings) {
-                val scheduling = alarms.ring(ringAt.epochSeconds, opensWakeGuard = codes.isNotEmpty())
-                failure = when (scheduling) {
-                    is DeviceAlarmScheduling.Scheduled -> {
-                        record(DebugAlarmRules.key(ringAt, scheduling.id), ringAt, scheduling.id, codes, entries, missions)
-                        null
-                    }
-                    is DeviceAlarmScheduling.Refused -> scheduling.failure.toDebug()
-                    DeviceAlarmScheduling.Failed -> DebugAlarmFailure.DEVICE_FAILED
-                }
+                failure = ringOne(ringAt, codes, entries, missions)
                 if (failure != null) break
             }
             if (failure == null && codes.isNotEmpty()) {
@@ -146,15 +138,24 @@ class DebugAlarms internal constructor(
         return failure
     }
 
-    private fun record(
-        key: String,
+    /** Rings one alarm at [ringAt] and records it, in [entries] when plain and in [missions] when it has [codes]. */
+    private suspend fun ringOne(
         ringAt: Instant,
-        id: String,
         codes: List<String>,
         entries: MutableMap<String, String>,
         missions: MutableList<WakeMission>,
-    ) {
-        if (codes.isEmpty()) entries[key] = id else missions += WakeMission(key, ringAt.epochSeconds, id, codes)
+    ): DebugAlarmFailure? = when (val scheduling = alarms.ring(ringAt.epochSeconds, codes.isNotEmpty())) {
+        is DeviceAlarmScheduling.Scheduled -> {
+            val key = DebugAlarmRules.key(ringAt, scheduling.id)
+            if (codes.isEmpty()) {
+                entries[key] = scheduling.id
+            } else {
+                missions += WakeMission(key, ringAt.epochSeconds, scheduling.id, codes)
+            }
+            null
+        }
+        is DeviceAlarmScheduling.Refused -> scheduling.failure.toDebug()
+        DeviceAlarmScheduling.Failed -> DebugAlarmFailure.DEVICE_FAILED
     }
 
     /**
@@ -194,7 +195,6 @@ private fun rows(
     device: List<HeldDeviceAlarm>,
     ledger: Map<String, String>,
     missions: List<WakeMission>,
-    now: Instant,
 ): List<DebugAlarmRow> {
     val phases = device.associate { it.id to it.phase }
     val keys = ledger.entries.associate { (key, id) -> id to key }
@@ -221,9 +221,12 @@ private fun rows(
             watchCount = it.watchIds.count { id -> id in phases },
         )
     }
-    return (alarms + held).sortedWith(compareBy<DebugAlarmRow> { it.ringAtEpochSeconds == null }
-        .thenBy { it.ringAtEpochSeconds }
-        .thenBy { it.id })
+    val soonestFirst = compareBy<DebugAlarmRow>(
+        { it.ringAtEpochSeconds == null },
+        { it.ringAtEpochSeconds },
+        { it.id },
+    )
+    return (alarms + held).sortedWith(soonestFirst)
 }
 
 private fun sourceOf(key: String): DebugAlarmSource = when {

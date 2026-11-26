@@ -14,6 +14,7 @@ import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
 /** How long from now a test alarm rings. */
+@Suppress("MagicNumber") // The seconds are the point of the three delays.
 enum class DebugAlarmDelay(internal val seconds: Int) {
     TEN_SECONDS(10),
     ONE_MINUTE(60),

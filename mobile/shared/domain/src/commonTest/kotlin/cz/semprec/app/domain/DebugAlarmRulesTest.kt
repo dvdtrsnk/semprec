@@ -37,7 +37,7 @@ class DebugAlarmRulesTest {
         }
     }
 
-    @Test fun `a daily alarm rings on each of the next days at the wall clock time also over the change of the clocks`() {
+    @Test fun `a daily alarm rings on each of the next days at the wall clock time over the change of the clocks`() {
         // 07:30 in Prague: 05:30 UTC while the clocks are on summer time, 06:30 UTC after they go back on 25 October.
         val picked = Instant.parse("2026-10-23T05:30:00Z")
 

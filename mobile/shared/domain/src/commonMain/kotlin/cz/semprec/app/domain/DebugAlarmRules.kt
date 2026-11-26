@@ -38,11 +38,12 @@ object DebugAlarmRules {
     fun isDebugKey(key: String): Boolean = key.startsWith(KEY_PREFIX)
 
     /** The moment the debug alarm [key] rings at, or `null` when [key] is not a debug key. */
-    fun ringAt(key: String): Instant? {
-        if (!isDebugKey(key)) return null
-        val seconds = key.removePrefix(KEY_PREFIX).substringBefore(':').toLongOrNull() ?: return null
-        return Instant.fromEpochSeconds(seconds)
-    }
+    fun ringAt(key: String): Instant? =
+        if (isDebugKey(key)) {
+            key.removePrefix(KEY_PREFIX).substringBefore(':').toLongOrNull()?.let(Instant::fromEpochSeconds)
+        } else {
+            null
+        }
 
     /**
      * The moments [schedule] rings at after [now], soonest first, read in [zone]: a delay and a one-off moment ring

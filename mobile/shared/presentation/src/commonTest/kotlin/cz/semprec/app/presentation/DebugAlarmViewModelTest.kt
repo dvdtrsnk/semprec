@@ -26,6 +26,7 @@ import kotlin.test.assertTrue
 private val DEBUG_PRAGUE = TimeZone.of("Europe/Prague")
 
 /** Half past nine in the morning in Prague (CET). */
+private val ALERTING = DeviceAlarmPhase.ALERTING
 private val DEBUG_START = Instant.parse("2026-11-25T08:30:00Z")
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -59,7 +60,9 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
             runCurrent()
 
             assertEquals(
-                listOf(DebugAlarmRow("stray", DebugAlarmKind.ALARM, DebugAlarmSource.UNKNOWN, null, DeviceAlarmPhase.ALERTING)),
+                listOf(
+                    DebugAlarmRow("stray", DebugAlarmKind.ALARM, DebugAlarmSource.UNKNOWN, null, ALERTING),
+                ),
                 vm.state.value.alarms,
             )
             assertFalse(vm.state.value.busy)
@@ -187,13 +190,14 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
     @Test fun `a daily alarm rings on every one of the next days at the time of day picked`() = runTest(dispatcher) {
         // 07:00 in Prague has passed this morning: the days from tomorrow on ring, one alarm each.
         val picked = Instant.parse("2026-11-20T06:00:00Z").epochSeconds
+        val firstDay = Instant.parse("2026-11-25T06:00:00Z").epochSeconds
         val vm = viewModel()
         runCurrent()
 
         vm.act(DebugAlarmAction.RingAt(picked, DebugAlarmRepeat.DAILY, withCodes = false))
 
         assertEquals(
-            (1 until vm.state.value.dailyDays).map { Instant.parse("2026-11-25T06:00:00Z").epochSeconds + it * 86_400L },
+            (1 until vm.state.value.dailyDays).map { firstDay + it * 86_400L },
             device.scheduledAt,
         )
         assertEquals(DebugAlarmRules.DAILY_DAYS, vm.state.value.dailyDays)
@@ -363,13 +367,17 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `the alarms are listed by their moment with the unknown ones last and watch alarms inside their mission`() =
+    @Test fun `the alarms are listed by their moment with the unknown last and watch alarms inside their mission`() =
         runTest(dispatcher) {
             val early = Instant.parse("2026-11-26T05:45:00Z")
             val late = Instant.parse("2026-11-27T05:45:00Z")
             ledger.save(mapOf("sleep:$late" to "sleep", DebugAlarmRules.key(early, "x") to "debug"))
             wake.replaceMissions(
-                listOf(WakeMission("sleep:2026-11-28T05:45:00Z", late.epochSeconds + 86_400, "m", listOf("1"), listOf("w"))),
+                listOf(
+                    WakeMission(
+                        "sleep:2026-11-28T05:45:00Z", late.epochSeconds + 86_400, "m", listOf("1"), listOf("w"),
+                    ),
+                ),
             )
             for (id in listOf("unknown", "w", "m", "sleep", "debug")) device.phases[id] = DeviceAlarmPhase.SCHEDULED
 
@@ -378,7 +386,12 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
 
             assertEquals(listOf("debug", "sleep", "m", "unknown"), vm.state.value.alarms.map { it.id })
             assertEquals(
-                listOf(DebugAlarmSource.DEBUG, DebugAlarmSource.SLEEP_PLAN, DebugAlarmSource.SLEEP_PLAN, DebugAlarmSource.UNKNOWN),
+                listOf(
+                    DebugAlarmSource.DEBUG,
+                    DebugAlarmSource.SLEEP_PLAN,
+                    DebugAlarmSource.SLEEP_PLAN,
+                    DebugAlarmSource.UNKNOWN,
+                ),
                 vm.state.value.alarms.map { it.source },
             )
             assertEquals(1, vm.state.value.alarms[2].watchCount)
