@@ -28,6 +28,7 @@ fun sampleSettings() = SleepSettings(
 /** A repository that records its calls and answers [overview] and the writes with what the test sets. */
 class RecordingSleepRepository(
     var overviewResult: RepositoryResult<SleepOverview> = RepositoryResult.Failure(FailureKind.UNAVAILABLE),
+    private val writeAnswer: RepositoryResult<Unit> = RepositoryResult.Content(Unit),
 ) : SleepRepository {
     val calls = mutableListOf<String>()
 
@@ -43,12 +44,15 @@ class RecordingSleepRepository(
 
     override suspend fun createPlan(plan: NewSleepPlan): RepositoryResult<String> {
         calls += "create:$plan"
-        return RepositoryResult.Content("new-plan")
+        return when (writeAnswer) {
+            is RepositoryResult.Content -> RepositoryResult.Content("new-plan")
+            is RepositoryResult.Failure -> writeAnswer
+        }
     }
 
     override suspend fun updatePlan(planId: String, change: SleepPlanChange): RepositoryResult<Unit> {
         calls += "update:$planId:$change"
-        return RepositoryResult.Content(Unit)
+        return writeAnswer
     }
 
     override suspend fun deletePlan(planId: String): RepositoryResult<Unit> {

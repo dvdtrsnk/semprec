@@ -3,51 +3,71 @@ package cz.semprec.app.domain
 import cz.semprec.app.core.FailureKind
 
 /**
- * The edits of the sleep plans. A weekday is in at most one plan: switching a day on in one plan writes only that
- * plan, and the server takes the day from the plan that held it.
+ * The edits of the sleep plans. A weekday is in at most one plan: writing a plan that holds a day another plan held
+ * takes the day from that plan, which the server does.
  */
 class EditSleepPlans(private val repository: SleepRepository) {
-    suspend fun toggleDay(plans: List<SleepPlan>, planId: String, day: Int): RepositoryResult<Unit> {
-        val plan = plans.firstOrNull { it.id == planId }
-        return if (plan == null || day !in SleepRules.WEEK) {
-            RepositoryResult.Failure(FailureKind.NOT_FOUND)
-        } else {
-            repository.updatePlan(planId, SleepPlanChange(wakeDays = SleepRules.toggledDays(plan, day)))
-        }
-    }
-
-    suspend fun setBed(planId: String, bed: ClockTime): RepositoryResult<Unit> =
-        if (SleepRules.isSleepTime(bed)) {
-            repository.updatePlan(planId, SleepPlanChange(bed = bed))
-        } else {
-            RepositoryResult.Failure(FailureKind.REJECTED)
-        }
-
-    suspend fun setWake(planId: String, wake: ClockTime): RepositoryResult<Unit> =
-        if (SleepRules.isSleepTime(wake)) {
-            repository.updatePlan(planId, SleepPlanChange(wake = wake))
-        } else {
-            RepositoryResult.Failure(FailureKind.REJECTED)
-        }
-
-    suspend fun setAlarm(planId: String, alarm: Boolean): RepositoryResult<Unit> =
-        repository.updatePlan(planId, SleepPlanChange(alarm = alarm))
-
-    /** Adds a plan for the days no plan holds and answers its id; no free day is a refusal. */
-    suspend fun add(plans: List<SleepPlan>, name: String): RepositoryResult<String> {
-        val plan = SleepRules.newPlan(plans, name)
-        return if (plan == null || name.isBlank()) {
-            RepositoryResult.Failure(FailureKind.REJECTED)
-        } else {
-            repository.createPlan(plan)
+    /**
+     * Writes [draft] as the plan [planId], or as a new plan named [newPlanName] when [planId] is `null`, in one write.
+     * The draft must have a day of the week, both times a start time of the day and a night of an allowed length;
+     * otherwise, or for a new plan without a name, the answer is a refusal. An id no plan has is not found.
+     */
+    suspend fun save(
+        plans: List<SleepPlan>,
+        planId: String?,
+        newPlanName: String,
+        draft: SleepScheduleDraft,
+    ): RepositoryResult<Unit> {
+        val times = draft.times.toClockTimes()
+        val valid = draft.isComplete && SleepRules.WEEK.containsAll(draft.wakeDays)
+        return when {
+            !valid || times == null -> RepositoryResult.Failure(FailureKind.REJECTED)
+            planId == null -> create(plans, newPlanName, draft, times)
+            plans.none { it.id == planId } -> RepositoryResult.Failure(FailureKind.NOT_FOUND)
+            else -> repository.updatePlan(
+                planId,
+                SleepPlanChange(wakeDays = draft.wakeDays, bed = times.first, wake = times.second, alarm = draft.alarm),
+            )
         }
     }
 
     /** Deletes a plan unless it is the last one. */
     suspend fun delete(plans: List<SleepPlan>, planId: String): RepositoryResult<Unit> =
-        if (SleepRules.canDeletePlan(plans) && plans.any { it.id == planId }) {
-            repository.deletePlan(planId)
-        } else {
-            RepositoryResult.Failure(FailureKind.REJECTED)
+        when {
+            plans.none { it.id == planId } -> RepositoryResult.Failure(FailureKind.NOT_FOUND)
+            !SleepRules.canDeletePlan(plans) -> RepositoryResult.Failure(FailureKind.REJECTED)
+            else -> repository.deletePlan(planId)
         }
+
+    private suspend fun create(
+        plans: List<SleepPlan>,
+        name: String,
+        draft: SleepScheduleDraft,
+        times: Pair<ClockTime, ClockTime>,
+    ): RepositoryResult<Unit> {
+        if (name.isBlank()) return RepositoryResult.Failure(FailureKind.REJECTED)
+        val plan = NewSleepPlan(
+            name = name,
+            wakeDays = draft.wakeDays,
+            bed = times.first,
+            wake = times.second,
+            alarm = draft.alarm,
+            position = (plans.maxOfOrNull { it.position } ?: -1) + 1,
+        )
+        return when (val created = repository.createPlan(plan)) {
+            is RepositoryResult.Content -> RepositoryResult.Content(Unit)
+            is RepositoryResult.Failure -> created
+        }
+    }
+}
+
+/** The two times as the clock times the server takes (a start time, never `24:00`), or `null` when one is not. */
+internal fun SleepTimes.toClockTimes(): Pair<ClockTime, ClockTime>? {
+    val bed = ClockTime.ofMinutes(bedMinutes)
+    val wake = ClockTime.ofMinutes(wakeMinutes)
+    return if (bed != null && wake != null && SleepRules.isSleepTime(bed) && SleepRules.isSleepTime(wake)) {
+        bed to wake
+    } else {
+        null
+    }
 }

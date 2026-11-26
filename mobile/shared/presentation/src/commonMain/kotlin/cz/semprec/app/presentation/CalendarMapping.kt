@@ -55,8 +55,8 @@ internal fun dayStatesOf(
         CalendarDayState(
             date = day.toString(),
             items = items.laidOut(day, colors),
-            sleepEvening = nights[day]?.toState(),
-            sleepMorning = nights[day.plusDays(-1)]?.toState(),
+            sleepEvening = nights[day]?.toState(day),
+            sleepMorning = nights[day.plusDays(-1)]?.toState(day),
         )
     }
 }

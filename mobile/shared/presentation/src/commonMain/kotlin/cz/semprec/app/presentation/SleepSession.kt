@@ -7,6 +7,7 @@ import cz.semprec.app.domain.EditSleepPlans
 import cz.semprec.app.domain.EditSleepSettings
 import cz.semprec.app.domain.LoadSleep
 import cz.semprec.app.domain.RepositoryResult
+import cz.semprec.app.domain.SleepDial
 import cz.semprec.app.domain.SleepOverview
 import cz.semprec.app.domain.SleepRules
 import kotlinx.coroutines.CancellationException
@@ -42,13 +43,22 @@ internal class SleepSession(
     private var loadFailure: FailureKind? = null
     private val rootScreen = if (startOnNight && nightDay != null) SleepScreen.NIGHT else SleepScreen.MAIN
     var screen = rootScreen
-    var planId: String? = null
     var saving = false
+
+    /** The plan being edited or added, until it is confirmed or discarded; a refresh never replaces it. */
+    var editor: SleepDraftEdit? = null
+
+    /** The night on the night view, until the view is left or the night is written; a refresh never replaces it. */
+    var nightDraft: SleepDraftEdit? = null
+
+    /** Writes of a draft that were asked for while another write ran; they run in turn, none is dropped. */
+    private val waiting = ArrayDeque<() -> Unit>()
     private var saveFailed = false
     private var saveFailure: FailureKind? = null
 
     fun load() {
         job?.cancel()
+        waiting.clear()
         phase = SleepPhase.LOADING
         loadFailure = null
         saving = false
@@ -67,30 +77,35 @@ internal class SleepSession(
         }
     }
 
-    fun open(target: SleepScreen, id: String?) {
-        val current = overview ?: return
-        val allowed = when (target) {
-            SleepScreen.PLAN -> current.plans.any { it.id == id }
-            SleepScreen.NIGHT -> nightDay != null
-            else -> true
-        }
+    fun open(target: SleepScreen) {
+        if (overview == null) return
+        val allowed = target != SleepScreen.NIGHT || nightDay != null
         if (!allowed || saving) return
-        screen = target
-        planId = if (target == SleepScreen.PLAN) id else null
-        publish()
+        goTo(target)
     }
 
     fun back() {
         val previous = when (screen) {
             rootScreen -> null
             SleepScreen.MAIN -> SleepScreen.NIGHT
-            else -> SleepScreen.MAIN
+            SleepScreen.NIGHT, SleepScreen.REMIND, SleepScreen.SOUND, SleepScreen.GOAL -> SleepScreen.MAIN
         }
-        if (previous != null) {
-            screen = previous
-            planId = null
-            publish()
-        }
+        if (previous != null) goTo(previous)
+    }
+
+    /** Shows [target]; the night view starts a draft of its night, and leaving it drops what was not written. */
+    fun goTo(target: SleepScreen) {
+        screen = target
+        if (target != SleepScreen.NIGHT) nightDraft = null
+        ensureNightDraft()
+        publish()
+    }
+
+    /** Shows a failure of [kind] (`null` for an unexpected one) that no write caused. */
+    fun fail(kind: FailureKind?) {
+        saveFailed = true
+        saveFailure = kind
+        publish()
     }
 
     fun dismissSaveFailure() {
@@ -102,14 +117,21 @@ internal class SleepSession(
     /**
      * Writes one change and reads the overview again. A refused or failed write keeps the shown overview and sets
      * [SleepState.saveFailure]; [onFailed] undoes what was shown ahead of the write, and [onDone] runs only after a
-     * successful write, before the overview is read again.
+     * successful write, before the overview is read again. While another write runs, a write that [waits] takes its
+     * turn after it and any other is ignored.
      */
     fun <T> write(
+        waits: Boolean = false,
         onFailed: () -> Unit = {},
         onDone: (T) -> Unit = {},
         block: suspend () -> RepositoryResult<T>,
     ) {
-        if (saving || overview == null) return
+        if (overview == null) return
+        if (saving) {
+            if (waits) waiting.addLast { write(true, onFailed, onDone, block) }
+            publish()
+            return
+        }
         saving = true
         saveFailed = false
         saveFailure = null
@@ -130,6 +152,7 @@ internal class SleepSession(
                     publish()
                 }
             }
+            waiting.removeFirstOrNull()?.invoke()
         }
     }
 
@@ -144,7 +167,7 @@ internal class SleepSession(
             saveFailed = saveFailed,
             saveFailure = saveFailure,
         )
-        publishState(if (current == null) base else base.withData(current, planId))
+        publishState(if (current == null) base else base.withData(current, editor, nightDraft))
     }
 
     private suspend fun refresh() {
@@ -158,6 +181,7 @@ internal class SleepSession(
             }
         }
         saving = false
+        ensureNightDraft()
         publish()
     }
 
@@ -165,9 +189,15 @@ internal class SleepSession(
         overview = loaded
         phase = SleepPhase.READY
         loadFailure = null
-        if (planId != null && loaded.plans.none { it.id == planId }) {
-            planId = null
-            if (screen == SleepScreen.PLAN) screen = SleepScreen.MAIN
+        ensureNightDraft()
+    }
+
+    /** The night view always has a draft: the night as the server resolves it, or the plan's, else the base night. */
+    private fun ensureNightDraft() {
+        val current = overview ?: return
+        if (screen == SleepScreen.NIGHT && nightDraft == null) {
+            val draft = SleepDial.nightDraft(current.night, current.plans)
+            nightDraft = SleepDraftEdit(planId = null, isNight = true, original = draft, current = draft)
         }
     }
 }
@@ -188,27 +218,24 @@ private suspend fun <T> attempt(block: suspend () -> RepositoryResult<T>): Attem
     Attempt.Failed(null)
 }
 
-private fun SleepState.withData(data: SleepOverview, openPlanId: String?): SleepState {
+private fun SleepState.withData(data: SleepOverview, editing: SleepDraftEdit?, nightEdit: SleepDraftEdit?): SleepState {
     val settings = data.settings
     val plans = data.plans
-    val open = plans.firstOrNull { it.id == openPlanId }
+    val goal = settings.goalMinutes
     return copy(
         enabled = settings.enabled,
         showInCalendar = settings.showInCalendar,
         muteSemp = settings.muteSemp,
         alarmSound = settings.alarmSound.toPresentation(),
         alarmSnooze = settings.alarmSnooze,
-        goalMinutes = settings.goalMinutes,
+        goalMinutes = goal,
         prepReminder = settings.prepReminder,
         prepReminderMinutes = settings.prepReminderMinutes,
         goalOptions = SleepRules.GOALS,
         reminderLeadOptions = SleepRules.REMINDER_LEADS,
         plans = plans.map { it.toItem() },
-        selectedPlanId = open?.id,
         night = data.night?.toItem(settings),
-        ring = data.ring(screen, open?.id),
-        takenDaysByOtherPlans = plans.filter { it.id != open?.id }.flatMap { it.wakeDays }.distinct().sorted(),
-        canAddPlan = SleepRules.canAddPlan(plans),
-        canDeletePlan = SleepRules.canDeletePlan(plans),
+        editor = editing?.toState(plans, goal),
+        nightDraft = nightEdit?.toState(plans, goal),
     )
 }

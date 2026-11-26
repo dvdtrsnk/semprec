@@ -3,8 +3,6 @@ package cz.semprec.app.domain
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SleepRulesTest {
@@ -37,29 +35,44 @@ class SleepRulesTest {
         assertEquals(SleepRules.WEEK.toSet(), SleepRules.freeDays(emptyList()))
     }
 
-    @Test fun `a plan can be added only while a day is free`() {
-        assertTrue(SleepRules.canAddPlan(listOf(weekdays)))
-        assertFalse(SleepRules.canAddPlan(listOf(weekdays, weekend)))
-    }
-
     @Test fun `the last plan cannot be deleted`() {
         assertFalse(SleepRules.canDeletePlan(listOf(weekdays)))
         assertTrue(SleepRules.canDeletePlan(listOf(weekdays, weekend)))
     }
 
-    @Test fun `toggling a day adds or removes it`() {
-        assertEquals(setOf(1, 2, 3, 4), SleepRules.toggledDays(weekdays, 5))
-        assertEquals(setOf(1, 2, 3, 4, 5, 6), SleepRules.toggledDays(weekdays, 6))
+    @Test fun `the days of other plans are those no edited plan holds`() {
+        assertEquals(setOf(6, 7), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), "a"))
+        assertEquals(setOf(1, 2, 3, 4, 5), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), "b"))
+        assertEquals(setOf(1, 2, 3, 4, 5, 6, 7), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), null))
     }
 
-    @Test fun `a new plan takes the free days after the last position`() {
-        val plan = assertNotNull(SleepRules.newPlan(listOf(weekdays), "Other days"))
-        assertEquals(setOf(6, 7), plan.wakeDays)
-        assertEquals(1, plan.position)
-        assertEquals("23:00", plan.bed.toString())
-        assertEquals("07:00", plan.wake.toString())
-        assertTrue(plan.alarm)
-        assertNull(SleepRules.newPlan(listOf(weekdays, weekend), "Other days"))
+    @Test fun `the length of a night has one definition for minutes and for clock times`() {
+        for (bed in 0 until ClockTime.DAY_MINUTES step 35) {
+            for (wake in 0 until ClockTime.DAY_MINUTES step 35) {
+                assertEquals(
+                    SleepRules.durationMinutes(ClockTime(bed), ClockTime(wake)),
+                    SleepRules.durationMinutes(bed, wake),
+                )
+            }
+        }
+    }
+
+    @Test fun `a night is from one hour to twelve hours long`() {
+        listOf(0 to false, 59 to false, 60 to true, 465 to true, 720 to true, 721 to false).forEach { (minutes, ok) ->
+            assertEquals(ok, SleepRules.isNightLength(minutes), "$minutes minutes")
+        }
+    }
+
+    @Test fun `a night starts the evening before from a bedtime at noon on`() {
+        assertFalse(SleepRules.startsTheEveningBefore(time("11:59")))
+        assertTrue(SleepRules.startsTheEveningBefore(time("12:00")))
+        assertTrue(SleepRules.startsTheEveningBefore(time("23:00")))
+    }
+
+    @Test fun `a night meets the goal at the goal and above`() {
+        assertFalse(SleepRules.meetsGoal(465, 480))
+        assertTrue(SleepRules.meetsGoal(480, 480))
+        assertTrue(SleepRules.meetsGoal(510, 480))
     }
 
     @Test fun `plans are ordered by position and then id`() {

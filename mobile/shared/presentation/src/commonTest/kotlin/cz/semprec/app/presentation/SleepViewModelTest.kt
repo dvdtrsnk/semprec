@@ -10,7 +10,6 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -22,7 +21,7 @@ class SleepViewModelTest : MainDispatcherTest() {
         startOnNight: Boolean = false,
     ) = SleepViewModelFactory(repository).sleepViewModel(night, startOnNight)
 
-    @Test fun `starts loading and then shows the settings plans night and ring`() = runTest(dispatcher) {
+    @Test fun `starts loading and then shows the settings plans and night`() = runTest(dispatcher) {
         val vm = sleep(FakeSleepRepository(sleepContent()))
         assertEquals(SleepPhase.LOADING, vm.state.value.phase)
         runCurrent()
@@ -37,10 +36,9 @@ class SleepViewModelTest : MainDispatcherTest() {
         assertEquals(listOf(420, 450, 480, 510, 540), state.goalOptions)
         assertEquals(listOf(15, 30, 45, 60), state.reminderLeadOptions)
         assertEquals(SleepAlarmSound.MORNING, state.alarmSound)
-        assertEquals(SleepRing(23 * 60, 6 * 60 + 45, 465, -15, alarm = true), state.ring)
         assertEquals(22 * 60 + 30, state.night?.reminderMinutes)
-        assertFalse(state.canAddPlan)
-        assertTrue(state.canDeletePlan)
+        assertNull(state.editor)
+        assertNull(state.nightDraft)
         vm.close()
     }
 
@@ -103,29 +101,16 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `opening a plan shows its ring and back returns to the overview`() = runTest(dispatcher) {
+    @Test fun `back at the root does nothing and a picker goes back to the overview`() = runTest(dispatcher) {
         val vm = sleep(FakeSleepRepository(sleepContent()))
         runCurrent()
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p2"))
-        val state = vm.state.value
-        assertEquals(SleepScreen.PLAN, state.screen)
-        assertFalse(state.isRoot)
-        assertEquals("p2", state.selectedPlanId)
-        assertEquals(510, state.ring?.durationMinutes)
-        assertEquals(listOf(1, 2, 3, 4, 5), state.takenDaysByOtherPlans)
         vm.onAction(SleepAction.Back)
         assertEquals(SleepScreen.MAIN, vm.state.value.screen)
-        assertNull(vm.state.value.selectedPlanId)
-        vm.close()
-    }
-
-    @Test fun `an unknown plan is not opened and back at the root does nothing`() = runTest(dispatcher) {
-        val vm = sleep(FakeSleepRepository(sleepContent()))
-        runCurrent()
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "nope"))
-        assertEquals(SleepScreen.MAIN, vm.state.value.screen)
+        vm.onAction(SleepAction.Open(SleepScreen.SOUND))
+        assertFalse(vm.state.value.isRoot)
         vm.onAction(SleepAction.Back)
         assertEquals(SleepScreen.MAIN, vm.state.value.screen)
+        assertTrue(vm.state.value.isRoot)
         vm.close()
     }
 
@@ -216,7 +201,7 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM_SNOOZE, on = false))
         runCurrent()
         vm.onAction(SleepAction.SetSwitch(SleepSwitch.PREP_REMINDER, on = false))
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p1"))
+        vm.onAction(SleepAction.Open(SleepScreen.GOAL))
         assertEquals(SleepScreen.MAIN, vm.state.value.screen)
         gate.complete(Unit)
         runCurrent()
@@ -263,165 +248,16 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `switching a day writes only the open plan and does nothing elsewhere`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.ToggleDay(6))
-        runCurrent()
-        assertTrue(repository.writes.isEmpty())
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p1"))
-        vm.onAction(SleepAction.ToggleDay(6))
-        runCurrent()
-        assertTrue(repository.writes.single().startsWith("plan:p1:"))
-        assertTrue(repository.writes.single().contains("wakeDays=[1, 2, 3, 4, 5, 6]"))
-        vm.close()
-    }
-
-    @Test fun `times and the alarm of an open plan are written to that plan`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p2"))
-        vm.onAction(SleepAction.SetTime(SleepTimeField.BED, 22 * 60))
-        runCurrent()
-        vm.onAction(SleepAction.SetTime(SleepTimeField.WAKE, 7 * 60 + 15))
-        runCurrent()
-        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM, on = true))
-        runCurrent()
-        assertTrue(repository.writes[0].contains("p2") && repository.writes[0].contains("bed=22:00"))
-        assertTrue(repository.writes[1].contains("wake=07:15"))
-        assertTrue(repository.writes[2].contains("alarm=true"))
-        vm.close()
-    }
-
-    @Test fun `a time outside the day is ignored`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.SetTime(SleepTimeField.BED, 24 * 60))
-        vm.onAction(SleepAction.SetTime(SleepTimeField.BED, -1))
-        runCurrent()
-        assertTrue(repository.writes.isEmpty())
-        vm.close()
-    }
-
-    @Test fun `on the overview a time edits the plan of the shown night`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.SetTime(SleepTimeField.WAKE, 6 * 60))
-        runCurrent()
-        assertTrue(repository.writes.single().startsWith("plan:p1:"))
-        vm.close()
-    }
-
-    @Test fun `without a shown night the overview edits the first plan`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent(sleepOverview(night = null)))
-        val vm = sleep(repository, night = null)
-        runCurrent()
-        vm.onAction(SleepAction.SetTime(SleepTimeField.WAKE, 6 * 60))
-        runCurrent()
-        assertTrue(repository.writes.single().startsWith("plan:p1:"))
-        assertNull(vm.state.value.night)
-        vm.close()
-    }
-
-    @Test fun `the night view writes the night and can reset it`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository, startOnNight = true)
-        runCurrent()
-        vm.onAction(SleepAction.SetTime(SleepTimeField.BED, 22 * 60 + 30))
-        runCurrent()
-        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM, on = false))
-        runCurrent()
-        vm.onAction(SleepAction.ResetNight)
-        runCurrent()
-        assertTrue(repository.writes[0].startsWith("night:2026-10-16:") && repository.writes[0].contains("bed=22:30"))
-        assertTrue(repository.writes[1].contains("alarm=false"))
-        assertTrue(repository.writes[2].contains("reset=true"))
-        vm.close()
-    }
-
-    @Test fun `a night without a plan shows the base ring`() = runTest(dispatcher) {
-        val bare = sleepOverview(plans = emptyList(), night = null)
-        val vm = sleep(FakeSleepRepository(sleepContent(bare)), startOnNight = true)
-        runCurrent()
-        val ring = assertNotNull(vm.state.value.ring)
-        assertEquals(SleepRing(23 * 60, 7 * 60, 480, 0, alarm = false), ring)
-        assertTrue(vm.state.value.canAddPlan)
-        assertFalse(vm.state.value.canDeletePlan)
-        vm.close()
-    }
-
-    @Test fun `a plan is added for the free days and opened`() = runTest(dispatcher) {
-        val onlyWeekdays = sleepContent(sleepOverview(plans = listOf(sleepWeekdayPlan())))
-        val withNew = sleepContent(
-            sleepOverview(plans = listOf(sleepWeekdayPlan(), sleepWeekendPlan().copy(id = "p-new"))),
-        )
-        val repository = FakeSleepRepository(onlyWeekdays, withNew)
-        val vm = sleep(repository)
-        runCurrent()
-        assertTrue(vm.state.value.canAddPlan)
-        vm.onAction(SleepAction.AddPlan("Other days"))
-        runCurrent()
-        assertEquals("create:Other days:[6, 7]", repository.writes.single())
-        assertEquals(SleepScreen.PLAN, vm.state.value.screen)
-        assertEquals("p-new", vm.state.value.selectedPlanId)
-        vm.close()
-    }
-
-    @Test fun `no plan is added without a free day`() = runTest(dispatcher) {
-        val repository = FakeSleepRepository(sleepContent())
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.AddPlan("Other days"))
-        runCurrent()
-        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
-        assertTrue(repository.writes.isEmpty())
-        vm.close()
-    }
-
-    @Test fun `deleting the open plan returns to the overview and the last plan stays`() = runTest(dispatcher) {
-        val afterDelete = sleepContent(sleepOverview(plans = listOf(sleepWeekdayPlan())))
-        val repository = FakeSleepRepository(sleepContent(), afterDelete)
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p2"))
-        vm.onAction(SleepAction.DeletePlan)
-        runCurrent()
-        assertEquals("delete:p2", repository.writes.single())
-        assertEquals(SleepScreen.MAIN, vm.state.value.screen)
-        assertEquals(1, vm.state.value.plans.size)
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p1"))
-        vm.onAction(SleepAction.DeletePlan)
-        runCurrent()
-        assertEquals(1, repository.writes.size)
-        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
-        vm.close()
-    }
-
-    @Test fun `a plan that vanished after a write closes its view`() = runTest(dispatcher) {
-        val gone = sleepContent(sleepOverview(plans = listOf(sleepWeekdayPlan())))
-        val repository = FakeSleepRepository(sleepContent(), gone)
-        val vm = sleep(repository)
-        runCurrent()
-        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p2"))
-        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM, on = true))
-        runCurrent()
-        assertEquals(SleepScreen.MAIN, vm.state.value.screen)
-        assertNull(vm.state.value.selectedPlanId)
-        vm.close()
-    }
-
     @Test fun `a closed model ignores actions`() = runTest(dispatcher) {
         val repository = FakeSleepRepository(sleepContent())
         val vm = sleep(repository)
         runCurrent()
         vm.close()
         vm.onAction(SleepAction.SetSwitch(SleepSwitch.ENABLED, on = false))
+        vm.onAction(SleepAction.EditPlan("p1"))
         vm.onAction(SleepAction.Retry)
         runCurrent()
+        assertNull(vm.state.value.editor)
         assertEquals(SleepPhase.READY, vm.state.value.phase)
         assertTrue(repository.writes.isEmpty())
         assertEquals(1, repository.overviewCalls)
