@@ -59,7 +59,9 @@ final class SharedCalendarMappingTests: XCTestCase {
                 wakeMinutes: 405,
                 alarm: true,
                 changed: true,
-                prepMinutes: 1350
+                prepMinutes: 1350,
+                fromMinutes: 1380,
+                toMinutes: 1440
             )
         )
         XCTAssertNil(mapped?.sleepMorning)

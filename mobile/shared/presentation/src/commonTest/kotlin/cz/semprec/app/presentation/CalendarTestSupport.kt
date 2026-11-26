@@ -57,7 +57,12 @@ fun entry(
     occurrenceDate = schedule.date.takeIf { seriesId != null },
 )
 
-fun sleepEntry(night: CalendarDay, bed: String = "23:00", wake: String = "06:45") = CalendarEntry(
+fun sleepEntry(
+    night: CalendarDay,
+    bed: String = "23:00",
+    wake: String = "06:45",
+    prep: String? = "${night}T22:30:00+02:00",
+) = CalendarEntry(
     id = "sleep:$night",
     kind = CalendarEntryKind.SLEEP,
     title = "",
@@ -78,7 +83,7 @@ fun sleepEntry(night: CalendarDay, bed: String = "23:00", wake: String = "06:45"
         ClockTime.parse(wake)!!,
         alarm = true,
         changed = false,
-        prepReminderAt = "${night}T22:30:00+02:00",
+        prepReminderAt = prep,
     ),
 )
 

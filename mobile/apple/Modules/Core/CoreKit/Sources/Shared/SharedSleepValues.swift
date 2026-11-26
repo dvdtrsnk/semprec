@@ -6,7 +6,6 @@ extension SleepPage {
     init(_ page: SharedSDK.SleepScreen) {
         switch page {
         case .main: self = .main
-        case .plan: self = .plan
         case .night: self = .night
         case .remind: self = .remind
         case .sound: self = .sound
@@ -17,7 +16,6 @@ extension SleepPage {
     var shared: SharedSDK.SleepScreen {
         switch self {
         case .main: .main
-        case .plan: .plan
         case .night: .night
         case .remind: .remind
         case .sound: .sound
@@ -58,18 +56,18 @@ extension SleepSwitch {
         case .muteSemp: .muteSemp
         case .alarmSnooze: .alarmSnooze
         case .prepReminder: .prepReminder
-        case .alarm: .alarm
         }
     }
 }
 
-// MARK: - Sleep time fields
-extension SleepTimeField {
+// MARK: - Sleep dial handles
+extension SleepDialHandle {
 
-    var shared: SharedSDK.SleepTimeField {
+    var shared: SharedSDK.SleepDialHandle {
         switch self {
         case .bed: .bed
         case .wake: .wake
+        case .whole: .whole
         }
     }
 }
@@ -118,16 +116,24 @@ extension SleepNightItem {
     }
 }
 
-// MARK: - Sleep rings
-extension SleepRing {
+// MARK: - Sleep drafts
+extension SleepDraft {
 
-    init(_ ring: SharedSDK.SleepRing) {
+    init(_ draft: SharedSDK.SleepDraft) {
         self.init(
-            bedMinutes: Int(ring.bedMinutes),
-            wakeMinutes: Int(ring.wakeMinutes),
-            durationMinutes: Int(ring.durationMinutes),
-            goalDifferenceMinutes: Int(ring.goalDifferenceMinutes),
-            alarm: ring.alarm
+            planId: draft.planId,
+            isNew: draft.isNew,
+            wakeDays: draft.wakeDays.map(\.intValue),
+            takenDays: draft.takenDays.map(\.intValue),
+            bedMinutes: Int(draft.bedMinutes),
+            wakeMinutes: Int(draft.wakeMinutes),
+            durationMinutes: Int(draft.durationMinutes),
+            goalDifferenceMinutes: Int(draft.goalDifferenceMinutes),
+            meetsGoal: draft.meetsGoal,
+            alarm: draft.alarm,
+            canSave: draft.canSave,
+            canDelete: draft.canDelete,
+            stepMinutes: Int(draft.stepMinutes)
         )
     }
 }

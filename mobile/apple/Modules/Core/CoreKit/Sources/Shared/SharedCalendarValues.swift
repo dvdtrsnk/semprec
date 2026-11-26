@@ -114,7 +114,9 @@ extension CalendarSleep {
             wakeMinutes: Int(sleep.wakeMinutes),
             alarm: sleep.alarm,
             changed: sleep.changed,
-            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) }
+            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) },
+            fromMinutes: Int(sleep.fromMinutes),
+            toMinutes: Int(sleep.toMinutes)
         )
     }
 }
