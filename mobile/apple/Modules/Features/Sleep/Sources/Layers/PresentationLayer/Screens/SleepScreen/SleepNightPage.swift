@@ -18,10 +18,10 @@ struct SleepNightPage: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
                 if let draft = state.nightDraft {
                     header("sleep.editor.times")
-                    SleepTimesCard(draft: draft, send: send, isNight: true, onEnd: commit)
+                    SleepTimesCard(draft: draft, send: send, isNight: true, onEnd: actions.dragEnded)
                         .accessibilityIdentifier(SleepIdentifiers.nightTimes)
                     header("sleep.editor.alarmOptions")
-                    Toggle(isOn: SleepBindings.isOn(draft.alarm) { setAlarm($0) }) {
+                    Toggle(isOn: SleepBindings.isOn(draft.alarm) { actions.setAlarm($0) }) {
                         Text("sleep.editor.alarmToggle", bundle: .module)
                     }
                     .padding(Theme.Spacing.medium)
@@ -45,13 +45,8 @@ struct SleepNightPage: View {
 // MARK: - Subviews
 private extension SleepNightPage {
 
-    func commit() {
-        send(.draft(.commitNight))
-    }
-
-    func setAlarm(_ isOn: Bool) {
-        send(.draft(.setAlarm(isOn: isOn)))
-        commit()
+    var actions: SleepNightActions {
+        SleepNightActions(send: send)
     }
 
     func header(_ key: LocalizedStringKey) -> some View {

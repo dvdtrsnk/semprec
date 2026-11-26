@@ -330,6 +330,29 @@ class SleepEditorTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a retry drops the drafts that wait so that they never write after the reload`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        repository.gate = gate
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM_SNOOZE, on = false))
+        runCurrent()
+        vm.onAction(SleepAction.Draft.EditPlan("p1"))
+        vm.onAction(SleepAction.Draft.SetDraftAlarm(on = false))
+        vm.onAction(SleepAction.Draft.ConfirmDraft("Name"))
+        vm.onAction(SleepAction.Retry)
+        repository.gate = null
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(SleepPhase.READY, vm.state.value.phase)
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.MUTE_SEMP, on = false))
+        runCurrent()
+        assertEquals(2, repository.writes.size)
+        assertTrue(repository.writes.none { it.startsWith("plan:") })
+        vm.close()
+    }
+
     @Test fun `a waiting draft that is refused comes back after the write before it`() = runTest(dispatcher) {
         val gate = CompletableDeferred<Unit>()
         val repository = FakeSleepRepository(sleepContent())
