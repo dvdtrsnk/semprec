@@ -263,6 +263,22 @@ final class SharedWakeTests: XCTestCase {
         XCTAssertEqual(storage.loadMissions().count, 0)
     }
 
+    // MARK: - The beep
+    func testTheBeepSoundsTwiceAndIsSilentInThePausesOfEverySecond() {
+        let samples = stride(from: 0.0, to: 3.0, by: 0.0005).map { ($0, BeepTone.value(at: $0)) }
+
+        for (time, value) in samples {
+            let position = time.truncatingRemainder(dividingBy: 1)
+            let sounding = position < 0.15 || (position >= 0.25 && position < 0.4)
+            if sounding {
+                XCTAssertEqual(abs(value), BeepTone.amplitude, "sounds at \(time)")
+            } else {
+                XCTAssertEqual(value, 0, "is silent at \(time)")
+            }
+        }
+        XCTAssertTrue(samples.contains { $0.1 > 0 } && samples.contains { $0.1 < 0 }, "the wave swings both ways")
+    }
+
     // MARK: - The camera's codes
     func testACodeIsReportedOnceWhileTheCameraKeepsSeeingItAndAgainAfterTheInterval() {
         var filter = CodeRepeatFilter()

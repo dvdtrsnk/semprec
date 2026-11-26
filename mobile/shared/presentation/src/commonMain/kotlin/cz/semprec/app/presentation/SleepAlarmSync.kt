@@ -16,7 +16,6 @@ import cz.semprec.app.domain.SleepAlarmPlan
 import cz.semprec.app.domain.SleepAlarmRequest
 import cz.semprec.app.domain.SleepRepository
 import cz.semprec.app.domain.WakeCodes
-import cz.semprec.app.domain.WakeMissionRules
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withLock
@@ -65,6 +64,7 @@ class SleepAlarmSync internal constructor(
     private val now: () -> Instant,
     private val zone: () -> TimeZone,
 ) {
+    private val watches = WakeWatchArming { ringAt -> schedule(ringAt, mission = true) }
 
     /** Reads the sleep plan and brings the alarms of the device in step with it. */
     suspend fun sync(): SleepAlarmSyncResult = exclusively {
@@ -112,7 +112,7 @@ class SleepAlarmSync internal constructor(
                     DeviceAlarmScheduling.Failed -> result = SleepAlarmSyncResult.DEVICE_FAILED
                 }
             }
-            result = arm(missions, result)
+            result = watches.arm(missions, now(), result)
         } finally {
             ledger.save(entries)
             wake.replaceMissions(missions)
@@ -138,27 +138,6 @@ class SleepAlarmSync internal constructor(
         return scheduling
     }
 
-    /** Schedules the watch alarms of every mission that is close and has none; a refusal ends the arming. */
-    private suspend fun arm(missions: MutableList<WakeMission>, before: SleepAlarmSyncResult): SleepAlarmSyncResult {
-        var result = before
-        for (index in missions.indices) {
-            if (!WakeMissionRules.needsWatches(missions[index], now())) continue
-            missions[index] = missions[index].copy(armed = true)
-            for (ring in WakeMissionRules.watchRings(missions[index])) {
-                when (val scheduling = schedule(ring.epochSeconds, mission = true)) {
-                    is DeviceAlarmScheduling.Scheduled ->
-                        missions[index] = missions[index].copy(watchIds = missions[index].watchIds + scheduling.id)
-                    is DeviceAlarmScheduling.Refused -> return scheduling.failure.toResult()
-                    DeviceAlarmScheduling.Failed -> {
-                        result = SleepAlarmSyncResult.DEVICE_FAILED
-                        break
-                    }
-                }
-            }
-        }
-        return result
-    }
-
     private suspend fun schedule(ringAtEpochSeconds: Long, mission: Boolean): DeviceAlarmScheduling =
         suspendCancellableCoroutine { answer ->
             alarms.schedule(ringAtEpochSeconds, mission) { answer.resume(it) }
@@ -171,7 +150,7 @@ class SleepAlarmSync internal constructor(
     private suspend fun <T> onDevice(call: suspend () -> T): T = withContext(Dispatchers.Main) { call() }
 }
 
-private fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {
+internal fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {
     DeviceAlarmFailure.NOT_AUTHORIZED -> SleepAlarmSyncResult.NOT_AUTHORIZED
     DeviceAlarmFailure.LIMIT_REACHED -> SleepAlarmSyncResult.LIMIT_REACHED
     DeviceAlarmFailure.UNSUPPORTED -> SleepAlarmSyncResult.UNSUPPORTED

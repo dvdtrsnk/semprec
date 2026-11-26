@@ -46,6 +46,7 @@ internal class ScriptedAlarms(
     val phases = linkedMapOf<String, DeviceAlarmPhase>()
     val scheduledAt = mutableListOf<Long>()
     val opensWakeGuard = mutableListOf<Boolean>()
+    var afterSchedule: ((Int) -> Unit)? = null
     val cancelled = mutableListOf<String>()
     var heldReads = 0
     var failToCancel: Set<String> = emptySet()
@@ -63,6 +64,7 @@ internal class ScriptedAlarms(
         callback: (DeviceAlarmScheduling) -> Unit,
     ) {
         scheduledAt += ringAtEpochSeconds
+        afterSchedule?.invoke(scheduledAt.size)
         this.opensWakeGuard += opensWakeGuard
         val answer = scheduleAnswers.removeFirstOrNull() ?: DeviceAlarmScheduling.Scheduled("d${next++}")
         if (answer is DeviceAlarmScheduling.Scheduled) phases[answer.id] = DeviceAlarmPhase.SCHEDULED

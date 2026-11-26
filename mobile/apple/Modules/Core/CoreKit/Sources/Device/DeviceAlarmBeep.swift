@@ -60,23 +60,36 @@ private extension DeviceAlarmBeep {
         isPlaying = false
     }
 
-    /// Two short 880 Hz beeps, then a pause, every second, as a square-ish wave that cuts through.
+    /// The render block of the beep, which reads its position from an atomic the audio thread alone advances.
     static func beep(sampleRate: Double) -> AVAudioSourceNodeRenderBlock {
         let state = BeepPosition()
         return { _, _, frameCount, bufferList in
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
             for frame in 0..<Int(frameCount) {
                 let time = Double(state.sample.add(1, ordering: .relaxed).oldValue) / sampleRate
-                let position = time.truncatingRemainder(dividingBy: 1)
-                let sounding = position < 0.15 || (position >= 0.25 && position < 0.4)
-                let wave = sin(2 * Double.pi * 880 * time)
-                let value = Float(sounding ? (wave > 0 ? 0.9 : -0.9) : 0)
+                let value = BeepTone.value(at: time)
                 for buffer in buffers {
                     buffer.mData?.assumingMemoryBound(to: Float.self)[frame] = value
                 }
             }
             return noErr
         }
+    }
+}
+
+/// The beep as a function of time: two short 880 Hz bursts, then a pause, every second, as a square wave that cuts
+/// through.
+enum BeepTone {
+
+    static let frequency = 880.0
+    static let amplitude: Float = 0.9
+
+    /// The sample at `time` seconds from the start: silent in the pauses, `amplitude` or its negative while sounding.
+    static func value(at time: Double) -> Float {
+        let position = time.truncatingRemainder(dividingBy: 1)
+        let sounding = position < 0.15 || (position >= 0.25 && position < 0.4)
+        guard sounding else { return 0 }
+        return sin(2 * Double.pi * frequency * time) > 0 ? amplitude : -amplitude
     }
 }
 

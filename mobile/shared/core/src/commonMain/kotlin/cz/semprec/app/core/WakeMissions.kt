@@ -6,7 +6,7 @@ data class WakeSettings(val requiresCode: Boolean = false, val codes: List<Strin
 /**
  * A sleep alarm that only one of [codes] stops. [alarmId] is the device's alarm that rings at [ringAtEpochSeconds];
  * [watchIds] are the follow-up alarms after it, which ring again if the person silences the first, and [armed] says
- * that they were scheduled (all or as many as the device allowed).
+ * that the device was asked for all of them, and held as many as it allowed.
  */
 data class WakeMission(
     val key: String,

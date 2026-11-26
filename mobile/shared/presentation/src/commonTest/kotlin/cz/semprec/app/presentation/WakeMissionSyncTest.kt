@@ -13,6 +13,8 @@ import cz.semprec.app.domain.LoadSleepAlarmNights
 import cz.semprec.app.domain.SleepNight
 import cz.semprec.app.domain.WakeMissionRules
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
@@ -142,8 +144,34 @@ class WakeMissionSyncTest : MainDispatcherTest() {
 
         assertEquals(SleepAlarmSyncResult.DEVICE_FAILED, result)
         assertTrue(wake.missions.value.single().watchIds.isEmpty())
+        assertFalse(wake.missions.value.single().armed, "the device was not asked for all of them")
         assertEquals(2, device.scheduledAt.size)
     }
+
+    @Test fun `a run cancelled while arming is finished by the next one without holding a watch alarm twice`() =
+        runTest(dispatcher) {
+            requireCode("123")
+            val sync = sync(nightOn(WAKE_DAY))
+            val running = async { sync.sync() }
+            device.afterSchedule = { count -> if (count == 4) running.cancel() }
+
+            runCurrent()
+            running.join()
+            device.afterSchedule = null
+            val partial = wake.missions.value.single()
+            assertFalse(partial.armed, "a cancelled run did not ask for all of them")
+            assertTrue(partial.watchIds.isNotEmpty() && partial.watchIds.size < WATCH_COUNT)
+
+            sync.sync()
+
+            val mission = wake.missions.value.single()
+            assertTrue(mission.armed)
+            assertEquals(WATCH_COUNT, mission.watchIds.size)
+            assertEquals(1 + WATCH_COUNT, device.scheduledAt.distinct().size, "every ring was asked for")
+            assertEquals(1 + WATCH_COUNT + 1, device.scheduledAt.size, "only the answer that was lost is asked twice")
+            assertEquals(1, device.cancelled.size, "and the alarm whose answer was lost is removed")
+            assertEquals(1 + WATCH_COUNT, device.phases.size, "the device holds the alarm and each watch alarm once")
+        }
 
     @Test fun `a mission is kept while its codes are the same in any order and replaced when they change`() =
         runTest(dispatcher) {
