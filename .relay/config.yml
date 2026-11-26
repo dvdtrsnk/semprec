@@ -33,8 +33,10 @@ review:
   # dvdtrsnk/code-review-bot#34 requires platform results in the final assistant
   # response and preserves invalid-result failures without cost-table crashes.
   # PR #35 reads approved repository specifications from the PR base without
-  # querying GitHub Issues. The published commit is pinned before that PR merges.
-  bot: { repo: dvdtrsnk/code-review-bot, ref: eeb88558a9b6d65b0fc06e624c69c32d2794e6df }
+  # querying GitHub Issues.
+  # dvdtrsnk/code-review-bot#36 gives the native (non-Relay) CLI an execution
+  # identity, so later Actions rounds review the increment instead of a full pass.
+  bot: { repo: dvdtrsnk/code-review-bot, ref: 77a70ad95e70ca31a69d55f6ecf3d819fa83ea48 }
   check-name: code-review
   env: { REVIEW_BLOCK_SEVERITY: medium, PROMOTION_SOURCE: develop, PROMOTION_TARGET: main }
 merge:
