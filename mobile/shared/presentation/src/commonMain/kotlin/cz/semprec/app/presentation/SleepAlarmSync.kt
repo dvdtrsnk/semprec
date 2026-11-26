@@ -169,7 +169,6 @@ class SleepAlarmSync internal constructor(
 
     /** Runs [call] on the main thread, which every call of the device and every answer of it is on. */
     private suspend fun <T> onDevice(call: suspend () -> T): T = withContext(Dispatchers.Main) { call() }
-
 }
 
 private fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {
