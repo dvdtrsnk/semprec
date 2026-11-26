@@ -53,7 +53,8 @@ class EditSleepPlans(private val repository: SleepRepository) {
 
     /**
      * Writes a whole schedule at once: creates a plan named [name] after the last one when [planId] is null, else
-     * changes the plan [planId]. It needs at least one weekday of the week and two start times; anything else is a
+     * changes the plan [planId]. It needs at least one weekday of the week, two start times and a night from
+     * [SleepRules.SHORTEST_NIGHT_MINUTES] to [SleepRules.LONGEST_NIGHT_MINUTES] long; anything else is a
      * refusal. The days it takes leave the plans that held them on the server.
      */
     suspend fun save(
@@ -65,7 +66,9 @@ class EditSleepPlans(private val repository: SleepRepository) {
         val valid = schedule.wakeDays.isNotEmpty() &&
             schedule.wakeDays.all { it in SleepRules.WEEK } &&
             SleepRules.isSleepTime(schedule.bed) &&
-            SleepRules.isSleepTime(schedule.wake)
+            SleepRules.isSleepTime(schedule.wake) &&
+            SleepRules.durationMinutes(schedule.bed, schedule.wake) in
+            SleepRules.SHORTEST_NIGHT_MINUTES..SleepRules.LONGEST_NIGHT_MINUTES
         return when {
             !valid -> RepositoryResult.Failure(FailureKind.REJECTED)
             planId == null -> create(plans, name, schedule)

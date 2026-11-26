@@ -33,7 +33,8 @@ few seconds ahead with the phone locked) from a debug menu.
   the app target, not DesignSystem, because it is a system service, as `AppNotifications` is.
 - Alarms are scheduled with a fixed date (once) or a relative time repeating on all seven weekdays (every day), and
   without a countdown duration, so there is no snooze and no Live Activity, and the app has no widget extension.
-  Stopping an alarm is the system's own button; no App Intent runs.
+  Stopping a plain alarm is the system's own button; no App Intent runs. The wake-up missions of
+  [[2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned]] add a second button that runs an App Intent.
 - The app has a debug menu, a page of the profile sheet's stack (`ProfileSheetPage.debug`), opened by a toolbar
   button the app adds to the profile. Its first tool, `DebugAlarmScreen`, is driven by a native `ObservableObject`
   (`DebugAlarmViewModel`) over `AlarmScheduler`, without a shared ViewModel. This narrows the shared-ViewModel rule of

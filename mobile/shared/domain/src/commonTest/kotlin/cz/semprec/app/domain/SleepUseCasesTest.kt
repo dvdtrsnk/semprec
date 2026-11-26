@@ -124,6 +124,22 @@ class SleepUseCasesTest {
         assertEquals(emptyList(), repository.calls)
     }
 
+    @Test fun `a schedule shorter than the shortest night or longer than the longest is refused`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepPlans(repository)
+        val plans = listOf(samplePlan("p1", setOf(1)))
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+        val saved = RepositoryResult.Content(Unit)
+
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("06:00"), time("06:30"), true)))
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("19:00"), time("07:05"), true)))
+        assertEquals(refused, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("08:00"), time("07:00"), true)))
+        assertEquals(emptyList(), repository.calls)
+        assertEquals(saved, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("23:00"), time("00:00"), true)))
+        assertEquals(saved, edit.save(plans, "p1", "", SleepSchedule(setOf(1), time("19:00"), time("07:00"), true)))
+        assertEquals(2, repository.calls.size)
+    }
+
     @Test fun `saving an unknown plan is not found and a new one without a name is refused`() = runTest {
         val repository = RecordingSleepRepository()
         val edit = EditSleepPlans(repository)

@@ -148,7 +148,11 @@ ViewModel: the debug tool `DebugAlarmScreen` with `DebugAlarmViewModel` over
 `AlarmScheduler`
 (`docs/adr/2026-11-24-apple-app-rings-system-alarms-through-alarmkit.md`), and
 the wake-up guard, `WakeGuardScreen` over `WakeGuard`
-(`docs/adr/2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned.md`). A
+(`docs/adr/2026-11-24-wake-up-alarms-ring-until-a-code-is-scanned.md`), and the
+wake settings, `SleepWakeScreen` over `SleepAlarmClock`, which keeps its
+settings on the device
+(`docs/adr/2026-11-24-the-device-rings-the-sleep-plans-alarms.md`). These are
+examples, not a closed list. A
 screen that reads or writes the person's data still gets a shared ViewModel.
 
 Every list row that is a `Button` gets `.listRowButton()` from DesignSystem,
