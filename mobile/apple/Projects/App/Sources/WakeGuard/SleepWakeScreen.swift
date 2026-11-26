@@ -85,3 +85,15 @@ private extension SleepWakeScreen {
         clock.update(settings)
     }
 }
+
+// MARK: - Preview
+#Preview("Codes") {
+    SleepWakeScreen(
+        clock: SleepAlarmClock(
+            source: PreviewSleepAlarmSource(),
+            scheduler: PreviewAlarmScheduler(),
+            wakeGuard: .preview(),
+            store: PreviewSleepAlarmStore(settings: SleepWakeSettings(requiresCode: true, codes: ["5901234123457"]))
+        )
+    )
+}

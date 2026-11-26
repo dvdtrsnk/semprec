@@ -218,3 +218,12 @@ private extension DebugAlarmScreen {
         }
     }
 }
+
+// MARK: - Preview
+#Preview("Alarms") {
+    let wakeGuard = WakeGuard.preview()
+    return DebugAlarmScreen(
+        viewModel: DebugAlarmViewModel(scheduler: PreviewAlarmScheduler(), wakeGuard: wakeGuard),
+        wakeGuard: wakeGuard
+    )
+}

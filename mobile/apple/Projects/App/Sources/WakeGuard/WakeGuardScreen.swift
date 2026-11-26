@@ -146,3 +146,19 @@ private extension WakeGuardScreen {
         return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))
     }
 }
+
+// MARK: - Preview
+#Preview("Ringing") {
+    WakeGuardScreen(
+        wakeGuard: .preview(),
+        mission: WakeMission(
+            id: UUID(),
+            title: "Wake up",
+            time: .once(Date()),
+            codes: ["5901234123457"],
+            alarmID: UUID(),
+            guardedRing: Date(),
+            watchIDs: []
+        )
+    )
+}

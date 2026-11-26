@@ -36,7 +36,8 @@ sealed interface SleepAction {
     /**
      * Writes one schedule as the schedule editor shows it, in one write: a new plan named [name] when [planId] is
      * null, else the plan [planId]. [wakeDays] are ISO weekdays; the days it takes leave the plans that held them.
-     * Goes back to the overview.
+     * Goes back to the overview. As for [AddPlan], the native side writes [name] in its language, from the days in
+     * its own words (`Mon–Fri`, `Po–Pá`): a name is a label, and labels come from each platform's catalog.
      */
     data class SavePlan(
         val planId: String?,
