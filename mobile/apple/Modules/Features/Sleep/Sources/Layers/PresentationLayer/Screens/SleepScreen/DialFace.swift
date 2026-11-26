@@ -55,3 +55,8 @@ private struct FaceMarks: Shape {
         return path
     }
 }
+
+// MARK: - Preview
+#Preview("Face") {
+    DialFace(geometry: DialGeometry(size: 300, stepMinutes: 5))
+}

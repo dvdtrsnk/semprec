@@ -27,7 +27,8 @@ internal class SleepUseCases(
 
 /**
  * What the sleep sheet knows and does, apart from the ViewModel that hosts it: the loaded overview, the open view,
- * loading, writing and publishing the [SleepState]. The edits that read this state are in `SleepSessionEdits.kt`.
+ * loading, writing and publishing the [SleepState]. The edits that read this state are in `SleepSessionEdits.kt`
+ * (settings and navigation) and `SleepSessionDraftEdits.kt` (the drafts of plans and nights).
  * Everything runs on the main thread, in [scope].
  */
 internal class SleepSession(
