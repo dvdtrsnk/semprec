@@ -661,4 +661,5 @@ failed refresh keeps the kept rows and raises `actionFailed`. Searches are not k
 - [`docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md`](../../docs/adr/2026-11-20-mobile-screens-follow-the-sync-socket.md)
 - [`docs/adr/2026-11-22-mobile-apps-index-imap-history-over-their-own-tls-connection.md`](../../docs/adr/2026-11-22-mobile-apps-index-imap-history-over-their-own-tls-connection.md)
 - [`docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md`](../../docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md)
+- [`docs/adr/2026-11-26-the-wake-guard-holds-the-volume-up-with-undocumented-uikit-internals.md`](../../docs/adr/2026-11-26-the-wake-guard-holds-the-volume-up-with-undocumented-uikit-internals.md)
 - [`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`](../../docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md)
