@@ -6,11 +6,14 @@ import cz.semprec.app.core.AudioRecorder
 import cz.semprec.app.core.DeviceInfo
 import cz.semprec.app.core.InMemoryPushSubscriptionStorage
 import cz.semprec.app.core.InMemorySessionStorage
+import cz.semprec.app.core.InMemorySleepAlarmLedger
+import cz.semprec.app.core.InMemoryWakeStorage
 import cz.semprec.app.core.ItemKind
 import cz.semprec.app.core.PushSubscriptionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.UnavailableAudioPlayer
 import cz.semprec.app.core.UnavailableAudioRecorder
+import cz.semprec.app.core.UnavailableDeviceAlarms
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.FileMailThreadListCache
 import cz.semprec.app.data.HttpAuthRepository
@@ -40,6 +43,10 @@ import cz.semprec.app.domain.note.PageChanges
 import cz.semprec.app.presentation.CollectionTarget
 import cz.semprec.app.presentation.CollectionViewModel
 import cz.semprec.app.presentation.CollectionViewModelFactory
+import cz.semprec.app.presentation.DebugAlarmViewModel
+import cz.semprec.app.presentation.DebugAlarmViewModelFactory
+import cz.semprec.app.presentation.DebugAlarms
+import cz.semprec.app.presentation.DebugAlarmsFactory
 import cz.semprec.app.presentation.DetailViewModel
 import cz.semprec.app.presentation.HomeViewModel
 import cz.semprec.app.presentation.HomeViewModelFactory
@@ -84,7 +91,8 @@ import kotlinx.coroutines.flow.emptyFlow
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
  * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session. [wake]
  * and [sleepAlarms] are the process's wake missions and sleep alarm sync of that [DevicePushSDK], which the sleep
- * screens of every window share.
+ * screens of every window share; [debugAlarms] are the alarms of the debug tool, which ring through the same device
+ * alarms.
  *
  * The sync socket of the window ([sync]) tells the calendar, invitation and mailbox screens of this SDK when the
  * server changed what they show.
@@ -100,6 +108,7 @@ class HomeSDK(
     dataDirectory: String? = null,
     wake: WakeMissions? = null,
     sleepAlarms: SleepAlarmSync? = null,
+    debugAlarms: DebugAlarms? = null,
 ) {
     private val repository = InMemoryPlaceholderRepository()
     private val offline: OfflineLayer? = dataDirectory?.let(OfflineLayer::shared)
@@ -208,6 +217,18 @@ class HomeSDK(
 
     /** The sleep plans, night exceptions and settings. */
     val sleep: SleepSDK = SleepSDK(auth.api, wake, sleepAlarms)
+
+    // Without the process's alarms the tool has a device that has none, which refuses every alarm as unsupported.
+    private val debugViewModels = DebugAlarmViewModelFactory(
+        debugAlarms ?: DebugAlarmsFactory(
+            UnavailableDeviceAlarms(),
+            InMemorySleepAlarmLedger(),
+            WakeMissions(InMemoryWakeStorage(), UnavailableDeviceAlarms()),
+        ).debugAlarms(),
+    )
+
+    /** The debug tool of the device's alarms. */
+    fun debugAlarmViewModel(): DebugAlarmViewModel = debugViewModels.debugAlarmViewModel()
 
     /** The calendar, its calendars list, its invitations and the new item form. */
     val calendar: CalendarSDK = CalendarSDK(auth.api, syncChanges)

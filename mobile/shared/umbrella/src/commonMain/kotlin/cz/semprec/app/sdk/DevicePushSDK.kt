@@ -15,6 +15,8 @@ import cz.semprec.app.data.AuthenticatedApi
 import cz.semprec.app.data.HttpAccountNotificationRepository
 import cz.semprec.app.data.HttpPushRepository
 import cz.semprec.app.data.HttpSleepRepository
+import cz.semprec.app.presentation.DebugAlarms
+import cz.semprec.app.presentation.DebugAlarmsFactory
 import cz.semprec.app.presentation.DeviceNotifications
 import cz.semprec.app.presentation.DeviceNotificationsFactory
 import cz.semprec.app.presentation.SleepAlarmSync
@@ -49,4 +51,7 @@ class DevicePushSDK(
 
     val sleepAlarms: SleepAlarmSync = SleepAlarmSyncFactory(HttpSleepRepository(api), alarms, sleepAlarmLedger, wake)
         .sleepAlarmSync()
+
+    /** The alarms of the debug tool, which ring through the same [alarms], ledger and missions as the sleep alarms. */
+    val debugAlarms: DebugAlarms = DebugAlarmsFactory(alarms, sleepAlarmLedger, wake).debugAlarms()
 }

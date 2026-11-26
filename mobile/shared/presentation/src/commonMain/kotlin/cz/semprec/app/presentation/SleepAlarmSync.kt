@@ -4,7 +4,6 @@ import cz.semprec.app.core.DeviceAlarmAuthorization
 import cz.semprec.app.core.DeviceAlarmFailure
 import cz.semprec.app.core.DeviceAlarmScheduling
 import cz.semprec.app.core.DeviceAlarms
-import cz.semprec.app.core.HeldDeviceAlarm
 import cz.semprec.app.core.SleepAlarmLedger
 import cz.semprec.app.core.WakeMission
 import cz.semprec.app.domain.HeldSleepAlarms
@@ -16,14 +15,10 @@ import cz.semprec.app.domain.SleepAlarmPlan
 import cz.semprec.app.domain.SleepAlarmRequest
 import cz.semprec.app.domain.SleepRepository
 import cz.semprec.app.domain.WakeCodes
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
-import kotlin.coroutines.resume
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -64,7 +59,7 @@ class SleepAlarmSync internal constructor(
     private val now: () -> Instant,
     private val zone: () -> TimeZone,
 ) {
-    private val watches = WakeWatchArming { ringAt -> schedule(ringAt, mission = true) }
+    private val watches = WakeWatchArming { ringAt -> alarms.ring(ringAt, opensWakeGuard = true) }
 
     /** Reads the sleep plan and brings the alarms of the device in step with it. */
     suspend fun sync(): SleepAlarmSyncResult = exclusively {
@@ -87,7 +82,7 @@ class SleepAlarmSync internal constructor(
         }
 
     private suspend fun hold(nights: SleepAlarmNights): SleepAlarmSyncResult = onDevice {
-        val device = heldAlarms() ?: return@onDevice SleepAlarmSyncResult.DEVICE_FAILED
+        val device = alarms.heldAlarms() ?: return@onDevice SleepAlarmSyncResult.DEVICE_FAILED
         val held = HeldSleepAlarms(ledger.load(), device, wake.missions.value)
         apply(PlanSleepAlarms(nights, held, now(), zone(), WakeCodes.active(wake.settings.value)))
     }
@@ -127,7 +122,7 @@ class SleepAlarmSync internal constructor(
         missions: MutableList<WakeMission>,
     ): DeviceAlarmScheduling {
         val ringAt = request.ringAt.epochSeconds
-        val scheduling = schedule(ringAt, mission = request.codes.isNotEmpty())
+        val scheduling = alarms.ring(ringAt, opensWakeGuard = request.codes.isNotEmpty())
         if (scheduling is DeviceAlarmScheduling.Scheduled) {
             if (request.codes.isEmpty()) {
                 entries[request.key] = scheduling.id
@@ -137,17 +132,6 @@ class SleepAlarmSync internal constructor(
         }
         return scheduling
     }
-
-    private suspend fun schedule(ringAtEpochSeconds: Long, mission: Boolean): DeviceAlarmScheduling =
-        suspendCancellableCoroutine { answer ->
-            alarms.schedule(ringAtEpochSeconds, mission) { answer.resume(it) }
-        }
-
-    private suspend fun heldAlarms(): List<HeldDeviceAlarm>? =
-        suspendCancellableCoroutine { answer -> alarms.held { answer.resume(it) } }
-
-    /** Runs [call] on the main thread, which every call of the device and every answer of it is on. */
-    private suspend fun <T> onDevice(call: suspend () -> T): T = withContext(Dispatchers.Main) { call() }
 }
 
 internal fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {

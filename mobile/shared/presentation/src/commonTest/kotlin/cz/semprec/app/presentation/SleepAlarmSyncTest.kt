@@ -58,6 +58,16 @@ internal class ScriptedAlarms(
 
     override fun authorization() = authorization
 
+    /** The answers of the person's decision, in order; the current authorization when none is left. */
+    val decisions = ArrayDeque<DeviceAlarmAuthorization>()
+    var authorizationRequests = 0
+
+    override fun requestAuthorization(callback: (DeviceAlarmAuthorization) -> Unit) {
+        authorizationRequests += 1
+        decisions.removeFirstOrNull()?.let { authorization = it }
+        callback(authorization)
+    }
+
     override fun schedule(
         ringAtEpochSeconds: Long,
         opensWakeGuard: Boolean,

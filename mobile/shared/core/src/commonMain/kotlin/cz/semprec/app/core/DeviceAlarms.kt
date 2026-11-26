@@ -34,6 +34,12 @@ interface DeviceAlarms {
     fun authorization(): DeviceAlarmAuthorization
 
     /**
+     * Asks the person to allow alarms when never asked, and answers what the person decided; an answer that was
+     * given before is answered again without asking.
+     */
+    fun requestAuthorization(callback: (DeviceAlarmAuthorization) -> Unit)
+
+    /**
      * Rings a one-off alarm at [ringAtEpochSeconds]; the person is asked to allow alarms when never asked. With
      * [opensWakeGuard] the alert has a second button that opens the app, where a code stops the alarm.
      */
@@ -49,6 +55,9 @@ interface DeviceAlarms {
 /** The alarms of a device that has none (tests, previews, macOS): nothing is ever allowed. */
 class UnavailableDeviceAlarms : DeviceAlarms {
     override fun authorization(): DeviceAlarmAuthorization = DeviceAlarmAuthorization.UNSUPPORTED
+
+    override fun requestAuthorization(callback: (DeviceAlarmAuthorization) -> Unit) =
+        callback(DeviceAlarmAuthorization.UNSUPPORTED)
 
     override fun schedule(
         ringAtEpochSeconds: Long,

@@ -3,11 +3,14 @@ package cz.semprec.app.domain
 import cz.semprec.app.core.DeviceAlarmPhase
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.HeldDeviceAlarm
+import cz.semprec.app.core.WakeMission
 import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val PRAGUE = TimeZone.of("Europe/Prague")
@@ -178,6 +181,36 @@ class PlanSleepAlarmsTest {
         )
 
         assertEquals(listOf("known", "stray"), plan.cancel)
+    }
+
+    @Test fun `an alarm and a mission of another owner are kept whatever the plan says and the codes are`() {
+        val mission = WakeMission("debug:1:m", 1_800_000_000, "m", listOf("123"), listOf("w1"), armed = true)
+        val held = HeldSleepAlarms(
+            mapOf("debug:2:d" to "d", "debug:3:gone" to "gone"),
+            listOf(
+                HeldDeviceAlarm("d", DeviceAlarmPhase.SCHEDULED),
+                HeldDeviceAlarm("m", DeviceAlarmPhase.SCHEDULED),
+                HeldDeviceAlarm("w1", DeviceAlarmPhase.SCHEDULED),
+            ),
+            listOf(mission),
+        )
+        for (nights in listOf(on(), SleepAlarmNights(enabled = false, nights = emptyList()))) {
+            for (codes in listOf(emptyList(), listOf("456"))) {
+                val plan = PlanSleepAlarms(nights, held, NOW, PRAGUE, codes)
+
+                assertTrue(plan.cancel.isEmpty(), "$plan")
+                assertEquals(mapOf("debug:2:d" to "d"), plan.keep, "an entry whose alarm is gone is forgotten")
+                assertEquals(listOf(mission), plan.keepMissions)
+            }
+        }
+    }
+
+    @Test fun `only a sleep key names a ring of the plan and says when it rings`() {
+        assertTrue(PlanSleepAlarms.isSleepKey(key("2026-11-26T05:45:00Z")))
+        assertFalse(PlanSleepAlarms.isSleepKey("debug:1:a"))
+        assertEquals(Instant.parse("2026-11-26T05:45:00Z"), PlanSleepAlarms.ringAt(key("2026-11-26T05:45:00Z")))
+        assertNull(PlanSleepAlarms.ringAt("debug:1:a"))
+        assertNull(PlanSleepAlarms.ringAt("sleep:not a moment"))
     }
 
     @Test fun `the plan off cancels every alarm and schedules none`() {

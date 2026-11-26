@@ -21,12 +21,16 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 
 private class HoldingAlarms : DeviceAlarms {
     val cancelled = mutableListOf<String>()
 
     override fun authorization() = DeviceAlarmAuthorization.AUTHORIZED
+
+    override fun requestAuthorization(callback: (DeviceAlarmAuthorization) -> Unit) =
+        callback(DeviceAlarmAuthorization.AUTHORIZED)
 
     override fun schedule(
         ringAtEpochSeconds: Long,
@@ -74,5 +78,32 @@ class DevicePushSDKTest {
 
     @Test fun `a device with no alarms wired in has none to keep in step`() = runTest(dispatcher) {
         assertEquals(SleepAlarmSyncResult.UNSUPPORTED, DevicePushSDK().sleepAlarms.sync())
+    }
+
+    @Test fun `the debug alarm tool rings through the alarms the app wired in`() = runTest(dispatcher) {
+        val alarms = HoldingAlarms()
+        val push = DevicePushSDK(alarms = alarms)
+
+        val vm = HomeSDK(wake = push.wake, sleepAlarms = push.sleepAlarms, debugAlarms = push.debugAlarms)
+            .debugAlarmViewModel()
+        runCurrent()
+
+        assertEquals(DeviceAlarmAuthorization.AUTHORIZED, vm.state.value.authorization)
+        assertEquals(listOf("a1"), vm.state.value.alarms.map { it.id })
+        vm.close()
+    }
+
+    @Test fun `without the process's alarms the debug alarm tool has a device that has none`() = runTest(dispatcher) {
+        val sdk = HomeSDK()
+
+        val first = sdk.debugAlarmViewModel()
+        val second = sdk.debugAlarmViewModel()
+        runCurrent()
+
+        assertNotSame(first, second)
+        assertEquals(DeviceAlarmAuthorization.UNSUPPORTED, first.state.value.authorization)
+        assertTrue(first.state.value.alarms.isEmpty())
+        first.close()
+        second.close()
     }
 }
