@@ -8,6 +8,7 @@ import XCTest
 final class SharedCalendarSleepMappingTests: XCTestCase {
 
     // MARK: - Tests
+    @MainActor
     func testStateMapsTheMorningBandOfANightWithoutAReminder() {
         let day = SharedSDK.CalendarDayState(
             date: "2026-10-16",
@@ -33,6 +34,7 @@ final class SharedCalendarSleepMappingTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testStateMapsTheEveningBandWithItsReminder() {
         let day = SharedSDK.CalendarDayState(
             date: "2026-10-15",

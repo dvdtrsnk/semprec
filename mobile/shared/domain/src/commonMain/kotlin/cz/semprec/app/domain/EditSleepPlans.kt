@@ -65,9 +65,6 @@ class EditSleepPlans(private val repository: SleepRepository) {
 internal fun SleepTimes.toClockTimes(): Pair<ClockTime, ClockTime>? {
     val bed = ClockTime.ofMinutes(bedMinutes)
     val wake = ClockTime.ofMinutes(wakeMinutes)
-    return if (bed != null && wake != null && SleepRules.isSleepTime(bed) && SleepRules.isSleepTime(wake)) {
-        bed to wake
-    } else {
-        null
-    }
+    if (bed == null || wake == null) return null
+    return if (SleepRules.isSleepTime(bed) && SleepRules.isSleepTime(wake)) bed to wake else null
 }

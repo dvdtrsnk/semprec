@@ -43,19 +43,14 @@ object SleepRules {
 
     /** [durationMinutes] for times given as minutes after midnight. */
     fun durationMinutes(bedMinutes: Int, wakeMinutes: Int): Int =
-        if (startsTheEveningBefore(bedMinutes)) ClockTime.DAY_MINUTES - bedMinutes + wakeMinutes
+        if (bedMinutes >= NOON_MINUTES) ClockTime.DAY_MINUTES - bedMinutes + wakeMinutes
         else maxOf(0, wakeMinutes - bedMinutes)
 
     /**
      * Whether a night with this bedtime starts on the evening before the wake day, as the server counts it: a bedtime
      * of noon or later does, an earlier one is on the morning of the wake day.
      */
-    fun startsTheEveningBefore(bed: ClockTime): Boolean = startsTheEveningBefore(bed.minutes)
-
-    private fun startsTheEveningBefore(bedMinutes: Int): Boolean = bedMinutes >= NOON_MINUTES
-
-    /** A night is as long as the settings allow: from [SHORTEST_NIGHT_MINUTES] to [LONGEST_NIGHT_MINUTES]. */
-    fun isNightLength(minutes: Int): Boolean = minutes in SHORTEST_NIGHT_MINUTES..LONGEST_NIGHT_MINUTES
+    fun startsTheEveningBefore(bed: ClockTime): Boolean = bed.minutes >= NOON_MINUTES
 
     /** Whether a night of [duration] meets the sleep [goal]. */
     fun meetsGoal(duration: Int, goal: Int): Boolean = duration >= goal
@@ -72,10 +67,6 @@ object SleepRules {
 
     /** The last plan cannot be deleted: the sleep settings need a plan to follow. */
     fun canDeletePlan(plans: List<SleepPlan>): Boolean = plans.size > 1
-
-    /** The weekdays held by the plans other than [planId], which a plan being edited can take over. */
-    fun daysOfOtherPlans(plans: List<SleepPlan>, planId: String?): Set<Int> =
-        plans.filter { it.id != planId }.flatMap { it.wakeDays }.toSet()
 
     /** Plans in the order the server resolves a night by: [SleepPlan.position], then the id. */
     fun ordered(plans: List<SleepPlan>): List<SleepPlan> = plans.sortedWith(compareBy({ it.position }, { it.id }))

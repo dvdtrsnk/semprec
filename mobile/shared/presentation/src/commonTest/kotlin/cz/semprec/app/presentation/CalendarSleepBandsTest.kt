@@ -2,8 +2,8 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
-import kotlin.test.Test
 import cz.semprec.app.domain.SleepNightEntry
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull

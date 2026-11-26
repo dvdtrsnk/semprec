@@ -19,15 +19,15 @@ final class SharedSleepActionMappingTests: XCTestCase {
         )
         XCTAssertEqual(
             SharedSleepScreenModel.action(.draft(.deletePlan)) as? NSObject,
-            SharedSDK.SleepActionDeleteDraftPlan.shared
+            SharedSDK.SleepActionDraftDeleteDraftPlan.shared
         )
         XCTAssertEqual(
             SharedSleepScreenModel.action(.draft(.discard)) as? NSObject,
-            SharedSDK.SleepActionDiscardDraft.shared
+            SharedSDK.SleepActionDraftDiscardDraft.shared
         )
         XCTAssertEqual(
             SharedSleepScreenModel.action(.draft(.commitNight)) as? NSObject,
-            SharedSDK.SleepActionCommitNight.shared
+            SharedSDK.SleepActionDraftCommitNight.shared
         )
     }
 
@@ -59,12 +59,12 @@ final class SharedSleepActionMappingTests: XCTestCase {
     @MainActor
     func testEditingAPlanCarriesTheIdOrNone() throws {
         let edit = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.editPlan(planID: "p2"))) as? SharedSDK.SleepActionEditPlan
+            SharedSleepScreenModel.action(.draft(.editPlan(planID: "p2"))) as? SharedSDK.SleepActionDraftEditPlan
         )
         XCTAssertEqual(edit.planId, "p2")
 
         let editNew = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.editPlan(planID: nil))) as? SharedSDK.SleepActionEditPlan
+            SharedSleepScreenModel.action(.draft(.editPlan(planID: nil))) as? SharedSDK.SleepActionDraftEditPlan
         )
         XCTAssertNil(editNew.planId)
     }
@@ -77,7 +77,7 @@ final class SharedSleepActionMappingTests: XCTestCase {
             (.whole, .whole)
         ] {
             let action = SharedSleepScreenModel.action(.draft(.moveDial(handle, minutes: 1_395)))
-            let move = try XCTUnwrap(action as? SharedSDK.SleepActionMoveDial)
+            let move = try XCTUnwrap(action as? SharedSDK.SleepActionDraftMoveDial)
             XCTAssertEqual(move.handle, shared)
             XCTAssertEqual(move.minutes, 1_395)
         }
@@ -85,27 +85,25 @@ final class SharedSleepActionMappingTests: XCTestCase {
 
     @MainActor
     func testAMinuteOutsideTheIntegerRangeIsClampedAndNotTrapped() throws {
-        let move = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.moveDial(.bed, minutes: Int.max))) as? SharedSDK.SleepActionMoveDial
-        )
+        let action = SharedSleepScreenModel.action(.draft(.moveDial(.bed, minutes: Int.max)))
+        let move = try XCTUnwrap(action as? SharedSDK.SleepActionDraftMoveDial)
         XCTAssertEqual(move.minutes, Int32.max)
     }
 
     @MainActor
     func testTheDaysTheAlarmAndTheConfirmationCarryTheirValues() throws {
         let day = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.toggleDay(6))) as? SharedSDK.SleepActionToggleDraftDay
+            SharedSleepScreenModel.action(.draft(.toggleDay(6))) as? SharedSDK.SleepActionDraftToggleDraftDay
         )
         XCTAssertEqual(day.day, 6)
 
         let alarm = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.setAlarm(isOn: true))) as? SharedSDK.SleepActionSetDraftAlarm
+            SharedSleepScreenModel.action(.draft(.setAlarm(isOn: true))) as? SharedSDK.SleepActionDraftSetDraftAlarm
         )
         XCTAssertTrue(alarm.on)
 
-        let confirm = try XCTUnwrap(
-            SharedSleepScreenModel.action(.draft(.confirm(newPlanName: "Other"))) as? SharedSDK.SleepActionConfirmDraft
-        )
+        let confirmAction = SharedSleepScreenModel.action(.draft(.confirm(newPlanName: "Other")))
+        let confirm = try XCTUnwrap(confirmAction as? SharedSDK.SleepActionDraftConfirmDraft)
         XCTAssertEqual(confirm.newPlanName, "Other")
     }
 }

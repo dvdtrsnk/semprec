@@ -44,7 +44,7 @@ final class SharedSleepScreenModelTests: XCTestCase {
         _ = await waitForState(model) { $0.phase != .loading }
         let loaded = model.viewModel.state.value
 
-        let actions: [SleepAction] = [
+        let actions: [CoreKit.SleepAction] = [
             .draft(.editPlan(planID: nil)), .draft(.editPlan(planID: "p1")), .draft(.moveDial(.bed, minutes: 60)),
             .draft(.toggleDay(3)), .draft(.setAlarm(isOn: false)), .draft(.confirm(newPlanName: "Other")),
             .draft(.deletePlan), .draft(.discard), .draft(.commitNight), .resetNight

@@ -254,7 +254,7 @@ class SleepViewModelTest : MainDispatcherTest() {
         runCurrent()
         vm.close()
         vm.onAction(SleepAction.SetSwitch(SleepSwitch.ENABLED, on = false))
-        vm.onAction(SleepAction.EditPlan("p1"))
+        vm.onAction(SleepAction.Draft.EditPlan("p1"))
         vm.onAction(SleepAction.Retry)
         runCurrent()
         assertNull(vm.state.value.editor)

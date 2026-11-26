@@ -41,9 +41,9 @@ class SleepRulesTest {
     }
 
     @Test fun `the days of other plans are those no edited plan holds`() {
-        assertEquals(setOf(6, 7), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), "a"))
-        assertEquals(setOf(1, 2, 3, 4, 5), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), "b"))
-        assertEquals(setOf(1, 2, 3, 4, 5, 6, 7), SleepRules.daysOfOtherPlans(listOf(weekdays, weekend), null))
+        assertEquals(setOf(6, 7), SleepDrafts.daysOfOtherPlans(listOf(weekdays, weekend), "a"))
+        assertEquals(setOf(1, 2, 3, 4, 5), SleepDrafts.daysOfOtherPlans(listOf(weekdays, weekend), "b"))
+        assertEquals(setOf(1, 2, 3, 4, 5, 6, 7), SleepDrafts.daysOfOtherPlans(listOf(weekdays, weekend), null))
     }
 
     @Test fun `the length of a night has one definition for minutes and for clock times`() {
@@ -59,7 +59,7 @@ class SleepRulesTest {
 
     @Test fun `a night is from one hour to twelve hours long`() {
         listOf(0 to false, 59 to false, 60 to true, 465 to true, 720 to true, 721 to false).forEach { (minutes, ok) ->
-            assertEquals(ok, SleepRules.isNightLength(minutes), "$minutes minutes")
+            assertEquals(ok, SleepDial.isNightLength(minutes), "$minutes minutes")
         }
     }
 

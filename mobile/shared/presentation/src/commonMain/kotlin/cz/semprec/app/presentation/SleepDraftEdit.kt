@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.SleepDial
+import cz.semprec.app.domain.SleepDrafts
 import cz.semprec.app.domain.SleepPlan
 import cz.semprec.app.domain.SleepRules
 import cz.semprec.app.domain.SleepScheduleDraft
@@ -33,7 +34,7 @@ internal fun SleepDraftEdit.toState(plans: List<SleepPlan>, goal: Int): SleepDra
         planId = planId,
         isNew = isNew,
         wakeDays = current.wakeDays.sorted(),
-        takenDays = if (isNight) emptyList() else SleepRules.daysOfOtherPlans(plans, planId).sorted(),
+        takenDays = if (isNight) emptyList() else SleepDrafts.daysOfOtherPlans(plans, planId).sorted(),
         bedMinutes = times.bedMinutes,
         wakeMinutes = times.wakeMinutes,
         durationMinutes = duration,

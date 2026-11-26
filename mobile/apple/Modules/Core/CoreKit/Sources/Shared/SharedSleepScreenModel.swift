@@ -86,15 +86,15 @@ extension SharedSleepScreenModel {
 
     static func draftAction(_ action: SleepDraftAction) -> any SharedSDK.SleepAction {
         switch action {
-        case .editPlan(let planID): SharedSDK.SleepActionEditPlan(planId: planID)
+        case .editPlan(let planID): SharedSDK.SleepActionDraftEditPlan(planId: planID)
         case .moveDial(let handle, let minutes):
-            SharedSDK.SleepActionMoveDial(handle: handle.shared, minutes: Int32(clamping: minutes))
-        case .toggleDay(let day): SharedSDK.SleepActionToggleDraftDay(day: Int32(clamping: day))
-        case .setAlarm(let isOn): SharedSDK.SleepActionSetDraftAlarm(on: isOn)
-        case .confirm(let name): SharedSDK.SleepActionConfirmDraft(newPlanName: name)
-        case .deletePlan: SharedSDK.SleepActionDeleteDraftPlan.shared
-        case .discard: SharedSDK.SleepActionDiscardDraft.shared
-        case .commitNight: SharedSDK.SleepActionCommitNight.shared
+            SharedSDK.SleepActionDraftMoveDial(handle: handle.shared, minutes: Int32(clamping: minutes))
+        case .toggleDay(let day): SharedSDK.SleepActionDraftToggleDraftDay(day: Int32(clamping: day))
+        case .setAlarm(let isOn): SharedSDK.SleepActionDraftSetDraftAlarm(on: isOn)
+        case .confirm(let name): SharedSDK.SleepActionDraftConfirmDraft(newPlanName: name)
+        case .deletePlan: SharedSDK.SleepActionDraftDeleteDraftPlan.shared
+        case .discard: SharedSDK.SleepActionDraftDiscardDraft.shared
+        case .commitNight: SharedSDK.SleepActionDraftCommitNight.shared
         }
     }
 

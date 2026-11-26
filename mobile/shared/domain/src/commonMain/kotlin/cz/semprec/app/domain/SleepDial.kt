@@ -1,8 +1,7 @@
 package cz.semprec.app.domain
 
 private const val DAY_MINUTES = ClockTime.DAY_MINUTES
-private const val HALF_DAY_MINUTES = DAY_MINUTES / 2
-private const val NOON_MINUTES = HALF_DAY_MINUTES
+private const val NOON_MINUTES = DAY_MINUTES / 2
 
 /**
  * The two ends of a night as minutes after midnight (`0` until `1440`). [durationMinutes] is the length of the night
@@ -22,7 +21,7 @@ data class SleepScheduleDraft(val wakeDays: Set<Int>, val times: SleepTimes, val
     }
 
     /** Whether the night is of a length the settings allow. */
-    val hasNightLength: Boolean get() = SleepRules.isNightLength(times.durationMinutes)
+    val hasNightLength: Boolean get() = SleepDial.isNightLength(times.durationMinutes)
 
     /** Whether the draft can be written as a plan: it has a day and a night of an allowed length. */
     val isComplete: Boolean get() = wakeDays.isNotEmpty() && hasNightLength
@@ -42,24 +41,27 @@ object SleepDial {
 
     /** [minutes] on the nearest step, wrapped into the day: `1437` is `1435`, `-2` is `0`, `1441` is `0`. */
     fun snap(minutes: Int): Int {
-        val wrapped = wrap(minutes)
-        return wrap((wrapped + STEP_MINUTES / 2) / STEP_MINUTES * STEP_MINUTES)
+        val wrapped = DialClock.wrap(minutes)
+        return DialClock.wrap((wrapped + STEP_MINUTES / 2) / STEP_MINUTES * STEP_MINUTES)
     }
 
     /** Moves the bedtime to [to]; the wake time stays unless the length leaves its range, then it is pushed. */
     fun moveBed(times: SleepTimes, to: Int): SleepTimes {
         val bed = snap(to)
-        val length = clockwise(times.bedMinutes, times.wakeMinutes) - signedDistance(times.bedMinutes, bed)
+        val current = DialClock.clockwise(times.bedMinutes, times.wakeMinutes)
+        val length = current - DialClock.signedDistance(times.bedMinutes, bed)
         return withLength(bed, length)
     }
 
     /** Moves the wake time to [to]; the bedtime stays unless the length leaves its range, then it is pushed. */
     fun moveWake(times: SleepTimes, to: Int): SleepTimes {
         val wake = snap(to)
-        val length = clockwise(times.bedMinutes, times.wakeMinutes) + signedDistance(times.wakeMinutes, wake)
+        val current = DialClock.clockwise(times.bedMinutes, times.wakeMinutes)
+        val length = current + DialClock.signedDistance(times.wakeMinutes, wake)
         val shortest = shortestLength(times.bedMinutes)
         return when {
-            length > SleepRules.LONGEST_NIGHT_MINUTES -> SleepTimes(wrap(wake - SleepRules.LONGEST_NIGHT_MINUTES), wake)
+            length > SleepRules.LONGEST_NIGHT_MINUTES ->
+                SleepTimes(DialClock.wrap(wake - SleepRules.LONGEST_NIGHT_MINUTES), wake)
             length >= shortest -> SleepTimes(times.bedMinutes, wake)
             else -> pushedBed(times, wake)
         }
@@ -67,40 +69,19 @@ object SleepDial {
 
     /** Moves the whole night so that it starts at [bedTo]; its length stays unless that bedtime needs a longer one. */
     fun moveWhole(times: SleepTimes, bedTo: Int): SleepTimes =
-        withLength(snap(bedTo), clockwise(times.bedMinutes, times.wakeMinutes))
+        withLength(snap(bedTo), DialClock.clockwise(times.bedMinutes, times.wakeMinutes))
 
     /** [times] with a length the rules allow, the bedtime kept. */
     fun fit(times: SleepTimes): SleepTimes =
-        withLength(wrap(times.bedMinutes), clockwise(times.bedMinutes, times.wakeMinutes))
+        withLength(DialClock.wrap(times.bedMinutes), DialClock.clockwise(times.bedMinutes, times.wakeMinutes))
 
-    /** The schedule [plan] has, fitted to the lengths the dial allows. */
-    fun draftOf(plan: SleepPlan): SleepScheduleDraft =
-        SleepScheduleDraft(plan.wakeDays, fit(SleepTimes(plan.bed.minutes, plan.wake.minutes)), plan.alarm)
-
-    /**
-     * The schedule a new plan starts from: the weekdays no plan holds (none when every weekday has a plan, which
-     * taking a day from another plan then fills), at the times of the first plan, else the server's base night, with
-     * the alarm off.
-     */
-    fun newPlanDraft(plans: List<SleepPlan>): SleepScheduleDraft {
-        val first = plans.firstOrNull()
-        val bed = first?.bed ?: SleepRules.BASE_BED
-        val wake = first?.wake ?: SleepRules.BASE_WAKE
-        return SleepScheduleDraft(SleepRules.freeDays(plans), fit(SleepTimes(bed.minutes, wake.minutes)), alarm = false)
-    }
-
-    /** The night of [night], or of the first plan, else the server's base night, fitted to the lengths the dial allows. */
-    fun nightDraft(night: SleepNight?, plans: List<SleepPlan>): SleepScheduleDraft {
-        val times = night?.let { SleepTimes(it.bed.minutes, it.wake.minutes) }
-            ?: plans.firstOrNull()?.let { SleepTimes(it.bed.minutes, it.wake.minutes) }
-            ?: SleepTimes(SleepRules.BASE_BED.minutes, SleepRules.BASE_WAKE.minutes)
-        val alarm = night?.alarm ?: plans.firstOrNull()?.alarm ?: false
-        return SleepScheduleDraft(emptySet(), fit(times), alarm)
-    }
+    /** A night is as long as the settings allow: [SleepRules.SHORTEST_NIGHT_MINUTES] to [SleepRules.LONGEST_NIGHT_MINUTES]. */
+    fun isNightLength(minutes: Int): Boolean =
+        minutes in SleepRules.SHORTEST_NIGHT_MINUTES..SleepRules.LONGEST_NIGHT_MINUTES
 
     /** The bedtime pushed back so that a night ending at [wake] is as short as allowed, or the shortest night of the bedtime. */
     private fun pushedBed(times: SleepTimes, wake: Int): SleepTimes {
-        val bed = wrap(wake - SleepRules.SHORTEST_NIGHT_MINUTES)
+        val bed = DialClock.wrap(wake - SleepRules.SHORTEST_NIGHT_MINUTES)
         return if (shortestLength(bed) == SleepRules.SHORTEST_NIGHT_MINUTES) {
             SleepTimes(bed, wake)
         } else {
@@ -115,17 +96,6 @@ object SleepDial {
 
     private fun withLength(bed: Int, length: Int): SleepTimes {
         val allowed = length.coerceIn(shortestLength(bed), SleepRules.LONGEST_NIGHT_MINUTES)
-        return SleepTimes(bed, wrap(bed + allowed))
-    }
-
-    private fun wrap(minutes: Int): Int = ((minutes % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES
-
-    /** The minutes from [from] clockwise to [to], `0` until `1440`. */
-    private fun clockwise(from: Int, to: Int): Int = wrap(to - from)
-
-    /** The shorter way round the dial from [from] to [to]: positive clockwise. */
-    private fun signedDistance(from: Int, to: Int): Int {
-        val forward = clockwise(from, to)
-        return if (forward > HALF_DAY_MINUTES) forward - DAY_MINUTES else forward
+        return SleepTimes(bed, DialClock.wrap(bed + allowed))
     }
 }

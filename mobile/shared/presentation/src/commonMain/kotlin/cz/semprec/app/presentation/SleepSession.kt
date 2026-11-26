@@ -7,7 +7,7 @@ import cz.semprec.app.domain.EditSleepPlans
 import cz.semprec.app.domain.EditSleepSettings
 import cz.semprec.app.domain.LoadSleep
 import cz.semprec.app.domain.RepositoryResult
-import cz.semprec.app.domain.SleepDial
+import cz.semprec.app.domain.SleepDrafts
 import cz.semprec.app.domain.SleepOverview
 import cz.semprec.app.domain.SleepRules
 import kotlinx.coroutines.CancellationException
@@ -41,7 +41,7 @@ internal class SleepSession(
     var overview: SleepOverview? = null
     private var phase = SleepPhase.LOADING
     private var loadFailure: FailureKind? = null
-    private val rootScreen = if (startOnNight && nightDay != null) SleepScreen.NIGHT else SleepScreen.MAIN
+    val rootScreen = if (startOnNight && nightDay != null) SleepScreen.NIGHT else SleepScreen.MAIN
     var screen = rootScreen
     var saving = false
 
@@ -75,22 +75,6 @@ internal class SleepSession(
             }
             publish()
         }
-    }
-
-    fun open(target: SleepScreen) {
-        if (overview == null) return
-        val allowed = target != SleepScreen.NIGHT || nightDay != null
-        if (!allowed || saving) return
-        goTo(target)
-    }
-
-    fun back() {
-        val previous = when (screen) {
-            rootScreen -> null
-            SleepScreen.MAIN -> SleepScreen.NIGHT
-            SleepScreen.NIGHT, SleepScreen.REMIND, SleepScreen.SOUND, SleepScreen.GOAL -> SleepScreen.MAIN
-        }
-        if (previous != null) goTo(previous)
     }
 
     /** Shows [target]; the night view starts a draft of its night, and leaving it drops what was not written. */
@@ -196,7 +180,7 @@ internal class SleepSession(
     private fun ensureNightDraft() {
         val current = overview ?: return
         if (screen == SleepScreen.NIGHT && nightDraft == null) {
-            val draft = SleepDial.nightDraft(current.night, current.plans)
+            val draft = SleepDrafts.ofNight(current.night, current.plans)
             nightDraft = SleepDraftEdit(planId = null, isNight = true, original = draft, current = draft)
         }
     }

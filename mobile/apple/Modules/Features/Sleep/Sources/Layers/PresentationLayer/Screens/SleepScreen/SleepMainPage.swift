@@ -20,7 +20,6 @@ struct SleepMainPage: View {
             calendarSection
         }
         .formStyle(.grouped)
-        .listSectionSpacing(14)
     }
 }
 

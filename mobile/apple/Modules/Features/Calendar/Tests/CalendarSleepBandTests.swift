@@ -16,6 +16,7 @@ final class CalendarSleepBandTests: XCTestCase {
         XCTAssertNil(sleep(from: 600, until: 600).band)
     }
 
+    @MainActor
     func testTheSampleNightOfThePreviewsHasABandOnEachDay() {
         XCTAssertEqual(CalendarPreviewData.sleep.band, 1_380..<1_440)
         XCTAssertEqual(CalendarPreviewData.morningSleep.band, 0..<405)

@@ -37,6 +37,19 @@ class SleepViewModel internal constructor(
         session.load()
     }
 
+    private fun onDraftAction(action: SleepAction.Draft) {
+        when (action) {
+            is SleepAction.Draft.EditPlan -> session.editPlan(action.planId)
+            is SleepAction.Draft.MoveDial -> session.moveDial(action.handle, action.minutes)
+            is SleepAction.Draft.ToggleDraftDay -> session.toggleDraftDay(action.day)
+            is SleepAction.Draft.SetDraftAlarm -> session.setDraftAlarm(action.on)
+            is SleepAction.Draft.ConfirmDraft -> session.confirmDraft(action.newPlanName)
+            SleepAction.Draft.DeleteDraftPlan -> session.deleteDraftPlan()
+            SleepAction.Draft.DiscardDraft -> session.discardDraft()
+            SleepAction.Draft.CommitNight -> session.commitNight()
+        }
+    }
+
     override fun onAction(action: SleepAction) {
         if (isClosed) return
         when (action) {
@@ -46,14 +59,7 @@ class SleepViewModel internal constructor(
             is SleepAction.SetSwitch -> session.setSwitch(action.target, action.on)
             is SleepAction.PickMinutes -> session.pick(action.toChange())
             is SleepAction.PickSound -> session.pick(SleepSettingsChange(alarmSound = action.sound.toDomain()))
-            is SleepAction.EditPlan -> session.editPlan(action.planId)
-            is SleepAction.MoveDial -> session.moveDial(action.handle, action.minutes)
-            is SleepAction.ToggleDraftDay -> session.toggleDraftDay(action.day)
-            is SleepAction.SetDraftAlarm -> session.setDraftAlarm(action.on)
-            is SleepAction.ConfirmDraft -> session.confirmDraft(action.newPlanName)
-            SleepAction.DeleteDraftPlan -> session.deleteDraftPlan()
-            SleepAction.DiscardDraft -> session.discardDraft()
-            SleepAction.CommitNight -> session.commitNight()
+            is SleepAction.Draft -> onDraftAction(action)
             SleepAction.ResetNight -> session.resetNight()
             SleepAction.DismissSaveFailure -> session.dismissSaveFailure()
         }

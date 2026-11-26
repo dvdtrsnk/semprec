@@ -1,7 +1,6 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.SleepNight
-import cz.semprec.app.domain.SleepOverview
 import cz.semprec.app.domain.SleepPlan
 import cz.semprec.app.domain.SleepRules
 import cz.semprec.app.domain.SleepSettings

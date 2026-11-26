@@ -14,7 +14,7 @@ class EditSleepNight(private val repository: SleepRepository) {
         val empty = !change.reset && times.isEmpty() && change.alarm == null
         val bed = change.bed
         val wake = change.wake
-        val badLength = bed != null && wake != null && !SleepRules.isNightLength(SleepRules.durationMinutes(bed, wake))
+        val badLength = bed != null && wake != null && !SleepDial.isNightLength(SleepRules.durationMinutes(bed, wake))
         return when {
             empty || !times.all(SleepRules::isSleepTime) || badLength ->
                 RepositoryResult.Failure(FailureKind.REJECTED)

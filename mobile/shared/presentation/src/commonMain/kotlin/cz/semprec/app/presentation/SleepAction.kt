@@ -25,35 +25,42 @@ sealed interface SleepAction {
     /** Picks an alarm sound on the picker that is open, and goes back to the overview. */
     data class PickSound(val sound: SleepAlarmSound) : SleepAction
 
-    /**
-     * Opens the editor on the plan [planId], or on a new plan for `null`. The editor is [SleepState.editor] until it
-     * is confirmed or discarded. An id no plan has fails as not found.
-     */
-    data class EditPlan(val planId: String?) : SleepAction
+    /** What the person does to the draft of a plan or a night on the dial; the draft decides what each does. */
+    sealed interface Draft : SleepAction {
+        /**
+         * Opens the editor on the plan [planId], or on a new plan for `null`. The editor is [SleepState.editor] until it
+         * is confirmed or discarded. An id no plan has fails as not found.
+         */
+        data class EditPlan(val planId: String?) : Draft
 
-    /**
-     * Moves [handle] of the open draft (the editor, else the night's) to [minutes] after midnight, which snaps to the
-     * dial's step and wraps around midnight; the other end of the night follows when the length would leave its range.
-     */
-    data class MoveDial(val handle: SleepDialHandle, val minutes: Int) : SleepAction
+        /**
+         * Moves [handle] of the open draft (the editor, else the night's) to [minutes] after midnight, which snaps to
+         * the dial's step and wraps around midnight; the other end of the night follows when the length would leave
+         * its range.
+         */
+        data class MoveDial(val handle: SleepDialHandle, val minutes: Int) : Draft
 
-    /** Switches a weekday (1 for Monday up to 7 for Sunday) of the plan in the editor; another number is refused. */
-    data class ToggleDraftDay(val day: Int) : SleepAction
+        /** Switches a weekday (1 for Monday up to 7 for Sunday) of the plan in the editor; another number is refused. */
+        data class ToggleDraftDay(val day: Int) : Draft
 
-    /** Sets the alarm of the open draft. */
-    data class SetDraftAlarm(val on: Boolean) : SleepAction
+        /** Sets the alarm of the open draft. */
+        data class SetDraftAlarm(val on: Boolean) : Draft
 
-    /** Writes the editor's draft as the plan it edits, or as a new plan named [newPlanName], which the native side writes in its language. */
-    data class ConfirmDraft(val newPlanName: String) : SleepAction
+        /**
+         * Writes the editor's draft as the plan it edits, or as a new plan named [newPlanName], which the native side
+         * writes in its language.
+         */
+        data class ConfirmDraft(val newPlanName: String) : Draft
 
-    /** Deletes the plan the editor edits, unless it is the last one. */
-    data object DeleteDraftPlan : SleepAction
+        /** Deletes the plan the editor edits, unless it is the last one. */
+        data object DeleteDraftPlan : Draft
 
-    /** Closes the editor without writing. */
-    data object DiscardDraft : SleepAction
+        /** Closes the editor without writing. */
+        data object DiscardDraft : Draft
 
-    /** Writes the night's draft as the exception of the night the sheet is open for. */
-    data object CommitNight : SleepAction
+        /** Writes the night's draft as the exception of the night the sheet is open for. */
+        data object CommitNight : Draft
+    }
 
     data object ResetNight : SleepAction
     data object DismissSaveFailure : SleepAction
