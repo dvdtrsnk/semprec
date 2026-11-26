@@ -84,8 +84,13 @@ final class SharedWakeTests: XCTestCase {
             fallbackOpensAt: Date(timeIntervalSince1970: 1_800_000_000),
             fallbackOpen: true,
             codeCount: 2,
-            titleKind: .sleepAlarm
+            titleKind: .sleepAlarm,
+            holdsVolume: true
         ))
+        XCTAssertFalse(SharedWakeGuardScreenModel.state(SharedSDK.WakeGuardState(
+            phase: .idle, tapsLeft: 200, requiredTaps: 200, fallbackDelayMinutes: 10,
+            fallbackOpensAtEpochSeconds: nil, fallbackOpen: false, codeCount: 0, titleKind: .sleepAlarm
+        )).holdsVolume)
         XCTAssertNil(SharedWakeGuardScreenModel.state(SharedSDK.WakeGuardState(
             phase: .idle, tapsLeft: 200, requiredTaps: 200, fallbackDelayMinutes: 10,
             fallbackOpensAtEpochSeconds: nil, fallbackOpen: false, codeCount: 0, titleKind: .sleepAlarm
@@ -208,6 +213,7 @@ final class SharedWakeTests: XCTestCase {
         XCTAssertEqual(covered?.codeCount, 1)
         XCTAssertEqual(covered?.requiredTaps, 200)
         XCTAssertEqual(covered?.fallbackDelayMinutes, 10)
+        XCTAssertEqual(covered?.holdsVolume, true)
 
         var effects = model.effects().makeAsyncIterator()
         model.send(.codeScanned("999"))
@@ -220,6 +226,7 @@ final class SharedWakeTests: XCTestCase {
         XCTAssertEqual(finished, .finished)
         let idle = await Self.firstState(of: model) { $0.phase == .idle }
         XCTAssertEqual(idle?.phase, .idle)
+        XCTAssertEqual(idle?.holdsVolume, false)
         XCTAssertEqual(DefaultsWakeStorage(defaults: defaults).loadMissions().count, 0)
     }
 }
