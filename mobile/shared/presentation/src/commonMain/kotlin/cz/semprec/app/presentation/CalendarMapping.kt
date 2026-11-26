@@ -72,9 +72,9 @@ private fun CalendarEntry.spansDays(): Boolean {
 }
 
 private fun List<CalendarEntry>.laidOut(day: CalendarDay, colors: CalendarColors): List<CalendarItem> {
-    val timed = filter { it.timedRange(day) != null }
-    val lanes = layoutTimeline(timed.mapNotNull { it.timedRange(day) })
-    val laneOf = timed.zip(lanes).associate { (entry, lane) -> entry.id to lane }
+    val timed = mapNotNull { entry -> entry.timedRange(day)?.let { entry to it } }
+    val lanes = layoutTimeline(timed.map { it.second })
+    val laneOf = timed.zip(lanes).associate { (timedEntry, lane) -> timedEntry.first.id to lane }
     return map { entry -> entry.toItem(day, colors.of(entry), laneOf[entry.id]) }
 }
 

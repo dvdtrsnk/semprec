@@ -274,6 +274,15 @@ describe("GET /api/events/:id/tasks: the state of a hosted task (issue #1801)", 
       expect((await readTask(taskId))?.properties.status).toBe("notDone");
     });
 
+    it("answers not found, and changes nothing, for a trashed event the task is still in", async () => {
+      const eventId = await event("Trashed", { date: "2026-10-20" });
+      const taskId = await task("In a trashed event");
+      await put(taskId, eventId);
+      await trash(home.eventsId, eventId);
+      await expect(completeIn(taskId, eventId)).rejects.toMatchObject({ code: "not_found" });
+      expect((await readTask(taskId))?.properties.status).toBe("notDone");
+    });
+
     it("answers not found for another tenant's task, as for an unknown one", async () => {
       const eventId = await event("Planning", { date: "2026-10-20" }, foreign);
       const taskId = await task("Foreign", {}, foreign);

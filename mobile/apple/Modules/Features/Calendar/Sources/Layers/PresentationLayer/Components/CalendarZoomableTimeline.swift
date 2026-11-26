@@ -93,8 +93,9 @@ struct CalendarZoomableTimeline<Content: View>: View {
                 place.range = new.low...max(new.high, new.low)
             }
         )
-        // A held item at the edge carries the day on, a step for every frame, until it is let go or moved away.
-        .task(id: autoScroll.speed != 0) {
+        // A held item at the edge carries the day on, a step for every frame, until it is let go or moved away; a
+        // new speed starts the steps again at that speed.
+        .task(id: autoScroll.speed) {
             guard autoScroll.speed != 0 else { return }
             hasScrolled = true
             var last = ContinuousClock.now

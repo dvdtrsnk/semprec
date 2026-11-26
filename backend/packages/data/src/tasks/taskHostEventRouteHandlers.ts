@@ -252,6 +252,8 @@ export function createTaskCompleteInEventRouteHandler(pool: Pool) {
       if (!hosted.some((entry) => entry.eventId === eventId)) {
         throw new NotFoundError(`Task ${taskId} is not in event ${eventId}`);
       }
+      const event = await itemsStore.getItemById(client, hostEvents.eventsDatabaseId, eventId);
+      if (!event || event.deletedAt) throw new NotFoundError(`Event ${eventId} not found`);
       const property = await propertiesStore.getPropertyByKey(client, tasksDatabaseId, COMPLETED_IN_EVENT_KEY);
       const definition = property ? await relationsStore.getRelationDefinitionByPropertyId(client, property.id) : null;
       if (!property || !definition) throw new Error("Tasks has no 'completedInEvent' relation");
