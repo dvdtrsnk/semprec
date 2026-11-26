@@ -702,7 +702,7 @@ describe("COPY-PARITY", () => {
 
   it("fails a String Catalog of no copy entry, and a copy entry naming no Apple target", () => {
     const root = copyOfTree();
-    write(root, "apple/Modules/Core/CoreKit/Resources/Localizable.xcstrings", '{ "sourceLanguage" : "en", "strings" : {}, "version" : "1.0" }\n');
+    write(root, "apple/Modules/Core/Probe/Resources/Localizable.xcstrings", '{ "sourceLanguage" : "en", "strings" : {}, "version" : "1.0" }\n');
     assertViolations(root, ["COPY-PARITY"], /belongs to no Apple target in copy/);
     const other = copyOfTree();
     editPolicy(other, (policy) => (policy.copy[0].apple = "Profile"));
