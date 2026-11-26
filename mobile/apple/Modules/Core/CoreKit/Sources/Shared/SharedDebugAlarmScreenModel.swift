@@ -108,6 +108,7 @@ extension SharedDebugAlarmScreenModel {
         case .readFailed: .readFailed
         case .noCodes: .noCodes
         case .inThePast: .inThePast
+        case .invalidTime: .invalidTime
         }
     }
 

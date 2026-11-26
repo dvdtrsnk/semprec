@@ -41,6 +41,7 @@ public enum DebugAlarmFailure: Equatable, Sendable {
     case readFailed
     case noCodes
     case inThePast
+    case invalidTime
 }
 
 /// How long from now a test alarm rings.

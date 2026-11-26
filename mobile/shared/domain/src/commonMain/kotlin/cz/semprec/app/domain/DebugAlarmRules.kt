@@ -12,11 +12,26 @@ sealed interface DebugSchedule {
     /** [seconds] from now. */
     data class In(val seconds: Int) : DebugSchedule
 
-    /** Once, at [at]. */
-    data class Once(val at: Instant) : DebugSchedule
+    /** Once, at the moment [epochSeconds]. */
+    data class Once(val epochSeconds: Long) : DebugSchedule
 
-    /** Every day at the wall-clock time that [at] has in the zone of the device. */
-    data class Daily(val at: Instant) : DebugSchedule
+    /** Every day at the wall-clock time that the moment [epochSeconds] has in the zone of the device. */
+    data class Daily(val epochSeconds: Long) : DebugSchedule
+}
+
+/** What the debug tool does about a request to ring. */
+sealed interface DebugRingPlan {
+    /** Ring at each of [rings], soonest first. */
+    data class Ring(val rings: List<Instant>) : DebugRingPlan
+
+    /** A wake mission was asked for, but no code stops it. */
+    data object NoCodes : DebugRingPlan
+
+    /** The moment asked for is no moment a clock can have. */
+    data object InvalidTime : DebugRingPlan
+
+    /** Every moment asked for has passed, so nothing rings. */
+    data object InThePast : DebugRingPlan
 }
 
 /**
@@ -46,6 +61,26 @@ object DebugAlarmRules {
         }
 
     /**
+     * What to do about a request to ring [schedule], as a wake mission stopped by [codes] when [withCodes]: a mission
+     * needs a code, a moment must be one a clock can have, and a request whose moments have all passed rings nothing.
+     */
+    fun plan(
+        schedule: DebugSchedule,
+        withCodes: Boolean,
+        codes: List<String>,
+        now: Instant,
+        zone: TimeZone,
+    ): DebugRingPlan {
+        val rings = rings(schedule, now, zone)
+        return when {
+            withCodes && codes.isEmpty() -> DebugRingPlan.NoCodes
+            schedule !is DebugSchedule.In && momentOf(schedule) == null -> DebugRingPlan.InvalidTime
+            rings.isEmpty() -> DebugRingPlan.InThePast
+            else -> DebugRingPlan.Ring(rings)
+        }
+    }
+
+    /**
      * The moments [schedule] rings at after [now], soonest first, read in [zone]: a delay and a one-off moment ring
      * once, or never when the moment has passed; a daily alarm rings on [DAILY_DAYS] days from today, each at the
      * wall-clock time, so a day whose clocks change still rings at that time, and today's ring is left out when it
@@ -53,9 +88,23 @@ object DebugAlarmRules {
      */
     fun rings(schedule: DebugSchedule, now: Instant, zone: TimeZone): List<Instant> = when (schedule) {
         is DebugSchedule.In -> listOf(now + schedule.seconds.seconds)
-        is DebugSchedule.Once -> listOf(schedule.at)
-        is DebugSchedule.Daily -> daily(schedule.at, now, zone)
+        is DebugSchedule.Once -> listOfNotNull(momentOf(schedule))
+        is DebugSchedule.Daily -> momentOf(schedule)?.let { daily(it, now, zone) }.orEmpty()
     }.filter { it > now }
+
+    /** The moment a schedule names, or `null` when it names none or its seconds are outside the range of a clock. */
+    private fun momentOf(schedule: DebugSchedule): Instant? = when (schedule) {
+        is DebugSchedule.In -> null
+        is DebugSchedule.Once -> moment(schedule.epochSeconds)
+        is DebugSchedule.Daily -> moment(schedule.epochSeconds)
+    }
+
+    private fun moment(epochSeconds: Long): Instant? =
+        if (epochSeconds in Instant.DISTANT_PAST.epochSeconds..Instant.DISTANT_FUTURE.epochSeconds) {
+            Instant.fromEpochSeconds(epochSeconds)
+        } else {
+            null
+        }
 
     private fun daily(at: Instant, now: Instant, zone: TimeZone): List<Instant> {
         val time = at.toLocalDateTime(zone)

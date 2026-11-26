@@ -270,6 +270,7 @@ private extension DebugAlarmScreen {
         case .readFailed: "debug.alarm.failure.readFailed"
         case .noCodes: "debug.alarm.failure.noCodes"
         case .inThePast: "debug.alarm.failure.inThePast"
+        case .invalidTime: "debug.alarm.failure.invalidTime"
         }
     }
 }

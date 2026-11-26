@@ -9,6 +9,7 @@ import cz.semprec.app.core.HeldDeviceAlarm
 import cz.semprec.app.core.SleepAlarmLedger
 import cz.semprec.app.core.WakeMission
 import cz.semprec.app.domain.DebugAlarmRules
+import cz.semprec.app.domain.DebugRingPlan
 import cz.semprec.app.domain.DebugSchedule
 import cz.semprec.app.domain.PlanSleepAlarms
 import cz.semprec.app.domain.WakeCodes
@@ -43,6 +44,9 @@ enum class DebugAlarmFailure {
 
     /** The moment asked for has passed, so nothing rings. */
     IN_THE_PAST,
+
+    /** The moment asked for is no moment a clock can have. */
+    INVALID_TIME,
 }
 
 /** What an alarm the app holds is: a plain one, or a wake mission with its watch alarms that a scanned code stops. */
@@ -110,11 +114,11 @@ class DebugAlarms internal constructor(
     internal suspend fun ring(schedule: DebugSchedule, withCodes: Boolean): DebugAlarmFailure? = wake.lock.withLock {
         onDevice {
             val codes = if (withCodes) codes() else emptyList()
-            val rings = DebugAlarmRules.rings(schedule, now(), zone())
-            when {
-                withCodes && codes.isEmpty() -> DebugAlarmFailure.NO_CODES
-                rings.isEmpty() -> DebugAlarmFailure.IN_THE_PAST
-                else -> ringAll(rings, codes)
+            when (val plan = DebugAlarmRules.plan(schedule, withCodes, codes, now(), zone())) {
+                DebugRingPlan.NoCodes -> DebugAlarmFailure.NO_CODES
+                DebugRingPlan.InvalidTime -> DebugAlarmFailure.INVALID_TIME
+                DebugRingPlan.InThePast -> DebugAlarmFailure.IN_THE_PAST
+                is DebugRingPlan.Ring -> ringAll(plan.rings, codes)
             }
         }
     }
@@ -162,16 +166,18 @@ class DebugAlarms internal constructor(
      * Removes the alarm [id], or the whole mission when [id] is its alarm or one of its watch alarms, and stops it
      * when it rings. Answers `null` when it is gone.
      */
-    internal suspend fun cancel(id: String): DebugAlarmFailure? {
+    internal suspend fun cancel(id: String): DebugAlarmFailure? = wake.lock.withLock {
         val mission = wake.missions.value.firstOrNull { id == it.alarmId || id in it.watchIds }
-        if (mission != null) return if (wake.finish(mission.key)) null else DebugAlarmFailure.DEVICE_FAILED
-        return wake.lock.withLock {
+        val removed = if (mission != null) {
+            wake.finishHeld(mission.key)
+        } else {
             onDevice {
-                val removed = alarms.cancel(id)
+                val cancelled = alarms.cancel(id)
                 ledger.save(ledger.load().filterValues { it != id })
-                if (removed) null else DebugAlarmFailure.DEVICE_FAILED
+                cancelled
             }
         }
+        if (removed) null else DebugAlarmFailure.DEVICE_FAILED
     }
 
     /**

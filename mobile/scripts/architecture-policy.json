@@ -174,7 +174,7 @@
       "debug.alarm.failure.deviceFailed",
       "debug.alarm.failure.readFailed",
       "debug.alarm.failure.noCodes",
-      "debug.alarm.failure.inThePast"
+      "debug.alarm.failure.inThePast", "debug.alarm.failure.invalidTime"
       ],
       "androidUntranslatable": ["app_name"]
     },

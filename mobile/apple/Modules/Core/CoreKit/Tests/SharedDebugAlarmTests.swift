@@ -85,6 +85,7 @@ final class SharedDebugAlarmTests: XCTestCase {
         XCTAssertEqual(SharedDebugAlarmScreenModel.failure(.readFailed), .readFailed)
         XCTAssertEqual(SharedDebugAlarmScreenModel.failure(.noCodes), .noCodes)
         XCTAssertEqual(SharedDebugAlarmScreenModel.failure(.inThePast), .inThePast)
+        XCTAssertEqual(SharedDebugAlarmScreenModel.failure(.invalidTime), .invalidTime)
     }
 
     @MainActor

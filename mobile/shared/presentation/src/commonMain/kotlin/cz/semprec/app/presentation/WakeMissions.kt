@@ -50,10 +50,13 @@ class WakeMissions(private val storage: WakeStorage, private val alarms: DeviceA
      * when the device could not remove one of them; the mission is gone either way, and the next sync removes an alarm
      * it does not know unless it rings.
      */
-    internal suspend fun finish(key: String): Boolean = lock.withLock {
-        val mission = mutableMissions.value.firstOrNull { it.key == key } ?: return@withLock true
+    internal suspend fun finish(key: String): Boolean = lock.withLock { finishHeld(key) }
+
+    /** [finish] for a caller that holds [lock] already. */
+    internal suspend fun finishHeld(key: String): Boolean {
+        val mission = mutableMissions.value.firstOrNull { it.key == key } ?: return true
         replaceMissions(mutableMissions.value - mission)
-        withContext(Dispatchers.Main) {
+        return withContext(Dispatchers.Main) {
             (listOf(mission.alarmId) + mission.watchIds).map { alarms.cancel(it) }.all { it }
         }
     }

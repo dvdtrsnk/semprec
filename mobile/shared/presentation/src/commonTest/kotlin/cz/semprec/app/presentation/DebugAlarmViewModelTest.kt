@@ -205,6 +205,20 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a moment no clock can have is the failure and rings nothing`() = runTest(dispatcher) {
+        val vm = viewModel()
+        runCurrent()
+
+        for (repeat in DebugAlarmRepeat.entries) {
+            vm.act(DebugAlarmAction.RingAt(Long.MAX_VALUE, repeat, withCodes = false))
+
+            assertEquals(DebugAlarmFailure.INVALID_TIME, vm.state.value.failure)
+            assertFalse(vm.state.value.busy)
+        }
+        assertTrue(device.scheduledAt.isEmpty())
+        vm.close()
+    }
+
     @Test fun `what the device refuses is the failure and the alarms before it stay`() = runTest(dispatcher) {
         val cases = mapOf(
             DeviceAlarmScheduling.Refused(DeviceAlarmFailure.NOT_AUTHORIZED) to DebugAlarmFailure.NOT_AUTHORIZED,
@@ -479,6 +493,7 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
         val vm = viewModel()
         runCurrent()
         vm.close()
+        val before = vm.state.value
 
         vm.onAction(DebugAlarmAction.RingIn(DebugAlarmDelay.TEN_SECONDS, withCodes = false))
         vm.onAction(DebugAlarmAction.CancelAll)
@@ -488,7 +503,7 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
         assertTrue(device.scheduledAt.isEmpty())
         assertTrue(device.cancelled.isEmpty())
         assertEquals(0, device.authorizationRequests)
-        assertFalse(vm.state.value.busy)
+        assertEquals(before, vm.state.value, "a closed ViewModel keeps its last state")
     }
 
     @Test fun `closing while the device has not answered ends the action quietly`() = runTest(dispatcher) {
@@ -498,10 +513,11 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
         vm.onAction(DebugAlarmAction.RingIn(DebugAlarmDelay.TEN_SECONDS, withCodes = false))
         runCurrent()
 
+        val before = vm.state.value
         vm.close()
         runCurrent()
 
+        assertEquals(before, vm.state.value, "ending the work changes nothing after the close")
         assertNull(vm.state.value.failure)
-        assertFalse(vm.state.value.busy)
     }
 }

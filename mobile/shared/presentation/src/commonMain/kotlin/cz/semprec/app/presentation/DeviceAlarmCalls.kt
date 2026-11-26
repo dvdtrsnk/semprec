@@ -12,6 +12,10 @@ import kotlin.coroutines.resume
 /*
  * The calls of the device's alarms as suspending functions, for the two services that use them: the sleep alarm sync
  * and the debug alarm tool. Each device call and each of its answers is on the main thread, which `onDevice` is.
+ *
+ * A call the device has taken cannot be recalled when its caller is cancelled: the continuation drops the late answer,
+ * so an alarm rung meanwhile is one that neither the ledger nor the missions know. That is intended, and no handler
+ * on cancellation would change it: the next sleep alarm sync removes the alarms it does not know, unless one rings.
  */
 
 /** Rings one alarm at [ringAtEpochSeconds] and answers what the device said. */

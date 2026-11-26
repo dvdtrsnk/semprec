@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Instant
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -112,7 +111,8 @@ class DebugAlarmViewModel internal constructor(
                 queue.withLock { work() }
             } finally {
                 pending -= 1
-                update { it.copy(busy = pending > 0) }
+                // Closing ends the work, and nothing changes the state after it.
+                if (!isClosed) update { it.copy(busy = pending > 0) }
             }
         }
     }
@@ -135,12 +135,9 @@ class DebugAlarmViewModel internal constructor(
         }
     }
 
-    private fun schedule(epochSeconds: Long, repeat: DebugAlarmRepeat): DebugSchedule {
-        val at = Instant.fromEpochSeconds(epochSeconds)
-        return when (repeat) {
-            DebugAlarmRepeat.ONCE -> DebugSchedule.Once(at)
-            DebugAlarmRepeat.DAILY -> DebugSchedule.Daily(at)
-        }
+    private fun schedule(epochSeconds: Long, repeat: DebugAlarmRepeat): DebugSchedule = when (repeat) {
+        DebugAlarmRepeat.ONCE -> DebugSchedule.Once(epochSeconds)
+        DebugAlarmRepeat.DAILY -> DebugSchedule.Daily(epochSeconds)
     }
 }
 
