@@ -33,7 +33,11 @@ sealed interface CalendarAction {
         /** A long press on an item selects it. */
         data class Select(val itemId: String) : Gesture
 
-        data class ToggleDone(val itemId: String) : Gesture
+        /**
+         * The checkbox of a task: on its own row it finishes or reopens the task; in an event ([inEventId]) it marks
+         * the task done in that event, or reopens a task done there.
+         */
+        data class ToggleDone(val itemId: String, val inEventId: String? = null) : Gesture
 
         /** The item is dragged to [day]; [rawStart] is where its top is, in minutes, unless over the all-day row. */
         data class DragMove(
@@ -49,6 +53,16 @@ sealed interface CalendarAction {
 
         /** The finger lifted: [commit] writes the move, otherwise it is dropped. */
         data class EndDrag(val commit: Boolean) : Gesture
+
+        /**
+         * The night that starts on the evening [night] is moved (no [edge]: both times by [deltaMinutes]) or one of its
+         * ends dragged ([CalendarEdge.START] the bedtime, [CalendarEdge.END] the wake time) by [deltaMinutes] from
+         * where the night is.
+         */
+        data class SleepDrag(val night: String, val edge: CalendarEdge?, val deltaMinutes: Int) : Gesture
+
+        /** The finger that moved a night lifted: [commit] writes the times of this night alone. */
+        data class EndSleepDrag(val commit: Boolean) : Gesture
 
         /** The item is dropped on a day of the month view. */
         data class MoveToDay(val itemId: String, val day: String) : Gesture

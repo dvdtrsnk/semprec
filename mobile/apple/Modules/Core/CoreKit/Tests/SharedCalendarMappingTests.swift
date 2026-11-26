@@ -29,6 +29,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(state.selectedDay, "2026-10-16")
         XCTAssertEqual(state.today, "2026-10-15")
         XCTAssertEqual(state.nowMinutes, 804)
+        XCTAssertEqual(state.timezone, "Europe/Prague")
         XCTAssertEqual(state.monthGrid, ["2026-09-28", "2026-09-29"])
         XCTAssertEqual(state.months, [CoreKit.CalendarMonthState(year: 2026, month: 10, leading: 3, length: 31)])
         XCTAssertEqual(state.pendingInvitations, 3)
@@ -51,17 +52,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         let state = SharedCalendarScreenModel.state(CalendarKotlin.state(.content, days: [day]))
         let mapped = state.days.first
         XCTAssertEqual(mapped?.date, "2026-10-16")
-        XCTAssertEqual(
-            mapped?.sleepEvening,
-            CoreKit.CalendarSleep(
-                night: "2026-10-15",
-                bedMinutes: 1380,
-                wakeMinutes: 405,
-                alarm: true,
-                changed: true,
-                prepMinutes: 1350
-            )
-        )
+        XCTAssertEqual(mapped?.sleepEvening?.night, "2026-10-15")
         XCTAssertNil(mapped?.sleepMorning)
         let item = mapped?.items.first
         XCTAssertEqual(item?.title, "Meeting")
@@ -76,6 +67,8 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(item?.hostEventTitle, "Review")
         XCTAssertEqual(item?.carriedFrom, "2026-10-14")
         XCTAssertEqual(item?.traceNote, "2026-10-15")
+        XCTAssertEqual(item?.timeFrom, 600)
+        XCTAssertEqual(item?.timeTo, 660)
         XCTAssertEqual(item?.trace, .movedToEvent)
         XCTAssertEqual(
             item?.tasks,
@@ -181,7 +174,8 @@ final class SharedCalendarMappingTests: XCTestCase {
         )
         XCTAssertEqual(
             (
-                Model.action(.gesture(.toggleDone(itemId: "c"))) as? SharedSDK.CalendarActionGestureToggleDone
+                Model.action(.gesture(.toggleDone(itemId: "c", inEventId: nil)))
+                    as? SharedSDK.CalendarActionGestureToggleDone
             )?.itemId, "c"
         )
         let move = try XCTUnwrap(

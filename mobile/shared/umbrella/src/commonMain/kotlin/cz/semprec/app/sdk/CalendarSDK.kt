@@ -6,6 +6,7 @@ import cz.semprec.app.data.HttpCalendarCatalogRepository
 import cz.semprec.app.data.HttpCalendarRepository
 import cz.semprec.app.data.HttpInvitationRepository
 import cz.semprec.app.data.HttpMailboxRepository
+import cz.semprec.app.data.HttpSleepRepository
 import cz.semprec.app.domain.CalendarChanges
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.presentation.CalendarAgendaViewModel
@@ -32,6 +33,7 @@ class CalendarSDK internal constructor(api: AuthenticatedApi, sync: SyncChanges)
         HttpMailboxRepository(api),
         api.changes.events,
         sync,
+        HttpSleepRepository(api),
     )
     private val agenda = CalendarAgendaViewModelFactory(HttpCalendarAgendaRepository(api), api.changes.events)
 

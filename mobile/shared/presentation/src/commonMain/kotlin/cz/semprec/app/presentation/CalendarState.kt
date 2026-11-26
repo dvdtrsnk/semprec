@@ -33,6 +33,9 @@ data class CalendarEventTask(
 /**
  * One night of sleep as it is drawn: [bedMinutes] and [wakeMinutes] are times of day, the night starts on the
  * evening [night] (`YYYY-MM-DD`). [prepMinutes] is when the bedtime reminder comes, as a time of day, or `null`.
+ * [planBedMinutes] and [planWakeMinutes] are the times of the plan the night follows, or departs from when [changed]
+ * (`null` without a plan). [durationMinutes] is how long the night is, [goalMinutes] the sleep goal (`null` when
+ * unknown); [meetsGoal] tells whether the night is at least as long as the goal (`null` without a goal).
  */
 data class CalendarSleep(
     val night: String,
@@ -41,6 +44,19 @@ data class CalendarSleep(
     val alarm: Boolean,
     val changed: Boolean,
     val prepMinutes: Int?,
+    val planBedMinutes: Int?,
+    val planWakeMinutes: Int?,
+    val durationMinutes: Int,
+    val goalMinutes: Int?,
+    val meetsGoal: Boolean?,
+)
+
+/** The night a finger moves or stretches, and the times it would have: snapped minutes of the day. */
+data class CalendarSleepDrag(
+    val night: String,
+    val bedMinutes: Int,
+    val wakeMinutes: Int,
+    val committing: Boolean,
 )
 
 /**
@@ -48,7 +64,9 @@ data class CalendarSleep(
  * (a short block when it has no end of its own, [hasEnd] `false`). [column] and [columns] place a timed item next
  * to the ones it overlaps, [depth] steps it in from the left of its column when it starts well after one it overlaps
  * (drawn over it). [color] is the colour of its calendar, `#RRGGBB`. [editable] tells whether it can be
- * moved, finished or removed.
+ * moved, finished or removed. [timeFrom] and [timeTo] are its own start and end as times of day, whichever day it is
+ * drawn on: the stored ones, [timeTo] the end the server decides for an event without a stored end; both are `null`
+ * for an item without a time.
  */
 data class CalendarItem(
     val id: String,
@@ -74,6 +92,8 @@ data class CalendarItem(
     val carriedFrom: String?,
     val trace: CalendarTraceOutcome?,
     val traceNote: String?,
+    val timeFrom: Int?,
+    val timeTo: Int?,
 )
 
 /** A day of the window: its items, and the sleep that ends on it (the morning band) and starts on it (evening). */
@@ -108,7 +128,8 @@ data class CalendarClipboard(val mode: CalendarClipboardMode, val title: String)
 /**
  * The calendar. [days] are the days of the loaded window, the six weeks of the selected month and a week before and
  * after (57 days), [monthGrid] the 42 days of the month view in order. [months] are the twelve months of the year of
- * [selectedDay]. [nowMinutes] is the time of day on [today], in the zone of the server. [problem] is `true` after a
+ * [selectedDay]. [nowMinutes] is the time of day on [today], in the zone of the server, [timezone] (an IANA name,
+ * empty until the server first answers); every time of the state is in that zone. [problem] is `true` after a
  * write that failed, with [problemFailure] as its reason (`null` for an unexpected one).
  */
 data class CalendarState(
@@ -118,12 +139,14 @@ data class CalendarState(
     val selectedDay: String,
     val today: String,
     val nowMinutes: Int,
+    val timezone: String,
     val days: List<CalendarDayState>,
     val monthGrid: List<String>,
     val months: List<CalendarMonthState>,
     val pendingInvitations: Int,
     val selectedItemId: String?,
     val drag: CalendarDrag?,
+    val sleepDrag: CalendarSleepDrag?,
     val clipboard: CalendarClipboard?,
     val busy: Boolean,
     val problem: Boolean,

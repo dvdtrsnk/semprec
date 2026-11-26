@@ -5,6 +5,7 @@ import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.EditCalendarEntry
+import cz.semprec.app.domain.EditSleepNight
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.ScheduleEditing
 import cz.semprec.app.domain.SyncAccountCalendars
@@ -29,7 +30,8 @@ class CalendarViewModel internal constructor(
     edit: EditCalendarEntry,
     private val syncAccounts: SyncAccountCalendars,
     dataChanges: Flow<Unit> = emptyFlow(),
-) : CalendarGestureViewModel(initialDay, loadWindow, changes, edit) {
+    editSleep: EditSleepNight? = null,
+) : CalendarNightViewModel(initialDay, loadWindow, changes, edit, editSleep) {
     private var copied: CalendarEntry? = null
 
     init {
@@ -64,7 +66,7 @@ class CalendarViewModel internal constructor(
 
     /** Nothing is dragged or written, so the window can be read again without losing what the person does. */
     private val idle: Boolean
-        get() = state.value.drag == null && !state.value.busy
+        get() = state.value.drag == null && state.value.sleepDrag == null && !state.value.busy
 
     private fun gesture(action: CalendarAction.Gesture) {
         when (action) {
@@ -73,7 +75,9 @@ class CalendarViewModel internal constructor(
                 update { it.copy(selectedItemId = null) }
             }
             is CalendarAction.Gesture.Select -> select(action.itemId)
-            is CalendarAction.Gesture.ToggleDone -> toggleDone(action.itemId)
+            is CalendarAction.Gesture.ToggleDone -> toggleDone(action.itemId, action.inEventId)
+            is CalendarAction.Gesture.SleepDrag -> sleepDrag(action)
+            is CalendarAction.Gesture.EndSleepDrag -> endSleepDrag(action.commit)
             is CalendarAction.Gesture.DragMove -> dragMove(action)
             is CalendarAction.Gesture.DragResize -> dragResize(action)
             is CalendarAction.Gesture.EndDrag -> endDrag(action.commit)

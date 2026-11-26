@@ -26,12 +26,14 @@ internal fun initialCalendarState(initialDay: String): CalendarState {
         selectedDay = day.toString(),
         today = day.toString(),
         nowMinutes = 0,
+        timezone = "",
         days = emptyList(),
         monthGrid = monthGridOf(day),
         months = monthsOf(day.year),
         pendingInvitations = 0,
         selectedItemId = null,
         drag = null,
+        sleepDrag = null,
         clipboard = null,
         busy = false,
         problem = false,
@@ -127,10 +129,12 @@ abstract class CalendarWindowViewModel internal constructor(
                 failure = null,
                 today = timeline.today.toString(),
                 nowMinutes = timeline.nowMinutes,
+                timezone = timeline.timezone,
                 days = days,
                 pendingInvitations = window.pendingInvitations,
                 selectedItemId = it.selectedItemId?.takeIf { id -> id in entries },
                 drag = null,
+                sleepDrag = null,
                 busy = false,
             )
         }
@@ -139,9 +143,9 @@ abstract class CalendarWindowViewModel internal constructor(
     private fun failed(kind: FailureKind?) {
         update {
             if (it.days.isEmpty()) {
-                it.copy(phase = CalendarPhase.ERROR, failure = kind, busy = false, drag = null)
+                it.copy(phase = CalendarPhase.ERROR, failure = kind, busy = false, drag = null, sleepDrag = null)
             } else {
-                it.copy(problem = true, problemFailure = kind, busy = false, drag = null)
+                it.copy(problem = true, problemFailure = kind, busy = false, drag = null, sleepDrag = null)
             }
         }
     }

@@ -70,5 +70,9 @@ extension CalendarEventTask {
         return String(format: String(localized: "calendar.task.doneIn", bundle: .module), note ?? "")
     }
 
-    var isDone: Bool { state == .done || state == .doneElsewhere }
+    /// Done in this event: a task completed elsewhere, on its own row or in another event, was not done here.
+    var isDone: Bool { state == .done }
+
+    /// Whether the note says the task was not done in this event: missed there, or done somewhere else.
+    var isNotDoneHere: Bool { state == .missed || state == .doneElsewhere }
 }

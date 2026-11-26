@@ -15,6 +15,7 @@ enum CalendarDates {
     }()
     private static var formatters: [String: DateFormatter] = [:]
     private static var clocks: [Int: String] = [:]
+    private static var dates: [String: Date] = [:]
     private static let minutesPerDay = 24 * 60
 
     // MARK: - Parsing
@@ -24,10 +25,16 @@ enum CalendarDates {
         return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 
+    /// Read once per day and kept: the week strip and the pages ask for the same few days on every frame.
     static func date(_ key: String) -> Date? {
+        if let cached = dates[key] { return cached }
         let parts = key.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        guard parts.count == 3,
+            let made = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) else {
+            return nil
+        }
+        dates[key] = made
+        return made
     }
 
     static func key(_ date: Date) -> String {
@@ -185,9 +192,9 @@ enum CalendarDates {
     }
 
     /// Whether the person's region writes times with AM and PM.
-    private static var uses12Hours: Bool {
+    /// Read once: the locale's clock does not change while the app runs.
+    private static let uses12Hours: Bool =
         (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
-    }
 
     /// `14:00–15:30`.
     static func range(from start: Int, to end: Int) -> String {

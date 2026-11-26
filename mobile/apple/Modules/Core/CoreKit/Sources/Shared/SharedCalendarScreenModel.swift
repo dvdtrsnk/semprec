@@ -52,12 +52,14 @@ extension SharedCalendarScreenModel {
             selectedDay: state.selectedDay,
             today: state.today,
             nowMinutes: Int(state.nowMinutes),
+            timezone: state.timezone,
             days: state.days.map(CalendarDayState.init),
             monthGrid: state.monthGrid,
             months: state.months.map(CalendarMonthState.init),
             pendingInvitations: Int(state.pendingInvitations),
             selectedItemId: state.selectedItemId,
             drag: state.drag.map(CalendarDrag.init),
+            sleepDrag: state.sleepDrag.map(CalendarSleepDrag.init),
             clipboard: state.clipboard.map(CalendarClipboard.init),
             busy: state.busy,
             problem: state.problem,
@@ -105,7 +107,8 @@ private extension SharedCalendarScreenModel {
         case .tap(let id): SharedSDK.CalendarActionGestureTap(itemId: id)
         case .tapBackground: SharedSDK.CalendarActionGestureTapBackground.shared
         case .select(let id): SharedSDK.CalendarActionGestureSelect(itemId: id)
-        case .toggleDone(let id): SharedSDK.CalendarActionGestureToggleDone(itemId: id)
+        case .toggleDone(let id, let inEventId):
+            SharedSDK.CalendarActionGestureToggleDone(itemId: id, inEventId: inEventId)
         case .dragMove(let id, let day, let rawStart, let overAllDayRow, let overEventId):
             SharedSDK.CalendarActionGestureDragMove(
                 itemId: id,
@@ -117,6 +120,9 @@ private extension SharedCalendarScreenModel {
         case .dragResize(let id, let edge, let raw):
             SharedSDK.CalendarActionGestureDragResize(itemId: id, edge: edge.shared, rawMinutes: Int32(raw))
         case .endDrag(let commit): SharedSDK.CalendarActionGestureEndDrag(commit: commit)
+        case .sleepDrag(let night, let edge, let delta):
+            SharedSDK.CalendarActionGestureSleepDrag(night: night, edge: edge?.shared, deltaMinutes: Int32(delta))
+        case .endSleepDrag(let commit): SharedSDK.CalendarActionGestureEndSleepDrag(commit: commit)
         case .moveToDay(let id, let day): SharedSDK.CalendarActionGestureMoveToDay(itemId: id, day: day)
         }
     }

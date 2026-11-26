@@ -7,9 +7,11 @@ import cz.semprec.app.domain.CalendarRepository
 import cz.semprec.app.domain.CreateCalendarItem
 import cz.semprec.app.domain.EditCalendarEntry
 import cz.semprec.app.domain.EditCalendars
+import cz.semprec.app.domain.EditSleepNight
 import cz.semprec.app.domain.InternetAccountRepository
 import cz.semprec.app.domain.InvitationRepository
 import cz.semprec.app.domain.LoadCalendarWindow
+import cz.semprec.app.domain.SleepRepository
 import cz.semprec.app.domain.SyncAccountCalendars
 import cz.semprec.app.domain.SyncChanges
 import cz.semprec.app.domain.SyncTopic
@@ -36,6 +38,7 @@ class CalendarViewModelFactory(
     private val accounts: InternetAccountRepository,
     private val dataChanges: Flow<Unit> = emptyFlow(),
     private val sync: SyncChanges = SyncChanges(),
+    private val sleep: SleepRepository? = null,
 ) {
     private val syncAccounts = SyncAccountCalendars(accounts)
 
@@ -49,6 +52,7 @@ class CalendarViewModelFactory(
             syncAccounts,
             // The calendar shows the number of invitations that wait for an answer, too.
             merge(dataChanges, sync.changes(SyncTopic.CALENDAR), sync.changes(SyncTopic.INVITATIONS)),
+            sleep?.let(::EditSleepNight),
         )
 
     fun calendarListViewModel(): CalendarListViewModel =

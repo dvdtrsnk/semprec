@@ -70,6 +70,12 @@ class EditCalendarEntry(private val repository: CalendarRepository) {
         return if (fits) repository.putTaskInEvent(task, event) else refused(false)
     }
 
+    /** Marks [task] done in [event]: only an editable task in an editable event. */
+    suspend fun completeInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        val fits = task.isEditable && task.kind == CalendarEntryKind.TASK && event.kind == CalendarEntryKind.EVENT
+        return if (fits) repository.completeTaskInEvent(task, event) else refused(false)
+    }
+
     suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> =
         if (entry.isEditable) repository.duplicate(entry, schedule) else RepositoryResult.Failure(FailureKind.REJECTED)
 

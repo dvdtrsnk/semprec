@@ -47,7 +47,8 @@ extension CalendarItem {
             id: id, kind: kind, title: title, color: color, date: day, endDate: nil, allDay: false,
             startMinutes: startMinutes, endMinutes: endMinutes, hasEnd: hasEnd, done: done, missed: missed,
             place: place, tentative: tentative, editable: editable, column: 0, columns: 1, depth: 0, tasks: tasks,
-            hostEventTitle: hostEventTitle, carriedFrom: carriedFrom, trace: trace, traceNote: traceNote
+            hostEventTitle: hostEventTitle, carriedFrom: carriedFrom, trace: trace, traceNote: traceNote,
+            timeFrom: timeFrom, timeTo: timeTo
         )
     }
 }

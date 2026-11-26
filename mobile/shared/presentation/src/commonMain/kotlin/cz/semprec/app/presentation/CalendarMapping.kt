@@ -88,19 +88,29 @@ private fun List<CalendarEntry>.laidOut(day: CalendarDay, colors: CalendarColors
 internal fun CalendarEntry.timedRange(day: CalendarDay): IntRange? {
     val from = timeFrom?.minutes
     val timedKind = kind == CalendarEntryKind.EVENT || kind == CalendarEntryKind.TASK || kind == CalendarEntryKind.TRACE
-    if (from == null || !timedKind) return null
     val last = endDate
-    if (spansDays() && last != null) {
-        val to = timeTo?.minutes ?: return null
-        val minutesLong = (last.epochDay - date.epochDay).toInt() * ClockTime.DAY_MINUTES + to - from
-        return when {
-            minutesLong > ClockTime.DAY_MINUTES -> null
-            day == date -> from..ClockTime.DAY_MINUTES
-            day == last -> 0..to
-            else -> null
-        }
+    return when {
+        from == null || !timedKind -> null
+        spansDays() && last != null -> spanningRange(day, from, last)
+        date != day -> null
+        else -> ownDayRange(from)
     }
-    if (date != day) return null
+}
+
+/** An event over midnight of less than a day: to midnight on its first day, from midnight on its last. */
+private fun CalendarEntry.spanningRange(day: CalendarDay, from: Int, last: CalendarDay): IntRange? {
+    val to = timeTo?.minutes ?: return null
+    val minutesLong = (last.epochDay - date.epochDay).toInt() * ClockTime.DAY_MINUTES + to - from
+    return when {
+        minutesLong > ClockTime.DAY_MINUTES -> null
+        day == date -> from..ClockTime.DAY_MINUTES
+        day == last -> 0..to
+        else -> null
+    }
+}
+
+/** A real end as it is, else the end the server decides or a short block after the start. */
+private fun CalendarEntry.ownDayRange(from: Int): IntRange {
     val end = if (kind == CalendarEntryKind.EVENT) {
         effectiveTo?.minutes ?: ScheduleEditing.visibleEnd(schedule) ?: from
     } else {

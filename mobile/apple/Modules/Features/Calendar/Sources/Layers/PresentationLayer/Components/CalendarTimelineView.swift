@@ -14,15 +14,20 @@ struct CalendarTimelineView: View {
     let selectedItemId: String?
     let drag: CalendarDrag?
     /// Where the finger would put the held block, in minutes of the day and not snapped: the block follows it smoothly.
-    let freeStart: Int?
+    let dragFollower: CalendarDragFollower
     /// The item a finger holds, wherever it started: it is drawn here too when the day was turned to under it.
     let heldItem: CalendarItem?
     let handlers: CalendarItemHandlers
     /// The finger has travelled `travel` points since it touched the handle.
     let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ travel: CGFloat) -> Void
     let onResizeEnd: () -> Void
-    let onOpenSleep: (String) -> Void
+    /// The night held on this day, its moves, and the times a finger is moving one to.
+    let selectedNight: String?
+    let sleepDrag: CalendarSleepDrag?
+    let sleepHandlers: CalendarSleepHandlers
     let onPaste: ((CGPoint) -> Void)?
+    /// A tap on the day where there is no item.
+    let onTapBackground: () -> Void
 
     // MARK: - Body
     var body: some View {
@@ -30,6 +35,9 @@ struct CalendarTimelineView: View {
             let width = max(proxy.size.width - CalendarGeometry.gutter - 8, 0)
             ZStack(alignment: .topLeading) {
                 hours(width: width)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTapBackground() }
+                    .gesture(pasteGesture)
                 sleepBands(width: width)
                 ForEach(timedItems, id: \.identity) { item in
                     block(item, width: width)
@@ -46,7 +54,6 @@ struct CalendarTimelineView: View {
             .frame(width: proxy.size.width, height: geometry.height, alignment: .topLeading)
             .animation(.snappy(duration: 0.28), value: timedItems.map(\.identity))
             .contentShape(Rectangle())
-            .gesture(pasteGesture)
         }
         .frame(height: geometry.height)
         .accessibilityElement(children: .contain)
@@ -70,11 +77,12 @@ private extension CalendarTimelineView {
         day.items.filter { $0.startMinutes != nil && !$0.allDay }
     }
 
-    /// The held item, when the day was turned to with it and it is none of this day's own items: a picture of it
-    /// where the drag would put it. The finger's gesture belongs to the day view, not to a day.
+    /// The held item where the drag would put it on this day's timeline, when none of the day's own blocks is it: an
+    /// item carried in from another day, or one without a time taken out of the all-day row, which the timeline then
+    /// shows as a block, as the all-day row shows a block taken into it as a chip.
     var carriedItem: CalendarItem? {
         guard let drag, let heldItem, drag.date == day.date, !drag.allDay, drag.intoEventId == nil,
-            !day.items.contains(where: { $0.id == heldItem.id }) else { return nil }
+            !timedItems.contains(where: { $0.id == heldItem.id }) else { return nil }
         return heldItem.alone(on: day.date)
     }
 
@@ -102,8 +110,8 @@ private extension CalendarTimelineView {
             && (drag?.allDay == true || drag?.intoEventId != nil || drag?.date != day.date)
         // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
         let blockWidth = selected ? width : columnWidth - stepIn
-        let top = dragging && !away ? (freeStart ?? range.start) : range.start
         let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
+        let follows = dragging && !away
         CalendarTimedItemView(
             item: item,
             selected: selected,
@@ -115,15 +123,21 @@ private extension CalendarTimelineView {
             onOpenTask: handlers.openTask
         )
         .frame(width: max(blockWidth - 2, 0), height: height)
-        .calendarItemGestures(
-            enabled: item.editable && interactive,
-            onTap: { handlers.tap(item) },
-            onHold: { handlers.hold(item) }
-        )
+        .calendarItemGestures(item, enabled: item.editable, selected: selected, handlers: handlers)
         .overlay { if interactive { handles(item, height: height, selected: selected) } }
-        .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
+        // The picture of an item carried in from another day takes no touches.
+        .allowsHitTesting(interactive)
+        .background(CalendarItemFrameReporter(id: item.id, isEvent: item.kind == .event))
         .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
-        .offset(x: CalendarGeometry.gutter + blockX, y: geometry.y(minutes: top))
+        // Placed by padding rather than by an offset: the system's drag finds the item where its layout puts it.
+        .padding(.leading, CalendarGeometry.gutter + blockX)
+        .padding(.top, geometry.y(minutes: range.start))
+        // The held block follows the finger between the quarter hours the shared layer snaps it to.
+        .modifier(CalendarFollowedBlock(
+            follower: follows ? dragFollower : nil,
+            start: range.start,
+            geometry: geometry
+        ))
         .animation(.snappy(duration: 0.2), value: dragging)
         .opacity(away ? (drag?.allDay == true ? 0 : 0.3) : 1)
         .animation(.snappy(duration: 0.24), value: selected)
@@ -201,18 +215,6 @@ private extension CalendarTimelineView {
     }
 }
 
-/// Reports the frame of an event block under its id.
-private struct EventFrameReporter: View {
-
-    let id: String
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(key: CalendarEventFramesKey.self, value: [id: proxy.frame(in: .calendarDay)])
-        }
-    }
-}
-
 // MARK: - Grid
 private extension CalendarTimelineView {
 
@@ -268,42 +270,44 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
+    /// The two parts of the nights on this day, at the times a finger is moving them to while one is.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
-        if let evening = day.sleepEvening {
-            sleepBand(evening, from: evening.bedMinutes, to: CalendarGeometry.minutesPerDay, width: width)
-            if let prep = evening.prepMinutes {
+        if let evening = day.sleepEvening.map(moved), evening.bedMinutes >= CalendarSleep.noon {
+            let midnight = CalendarGeometry.minutesPerDay
+            sleepBand(evening, evening: true, from: evening.bedMinutes, to: midnight, width: width)
+            if let prep = evening.prepMinutes, sleepDrag?.night != evening.night {
                 prepMarker(evening, minutes: prep, width: width)
             }
         }
-        if let morning = day.sleepMorning {
-            sleepBand(morning, from: 0, to: morning.wakeMinutes, width: width)
+        if let morning = day.sleepMorning.map(moved) {
+            let start = morning.bedMinutes < CalendarSleep.noon ? morning.bedMinutes : 0
+            sleepBand(morning, evening: false, from: start, to: morning.wakeMinutes, width: width)
         }
     }
 
-    func sleepBand(_ sleep: CalendarSleep, from start: Int, to end: Int, width: CGFloat) -> some View {
-        let evening = start == sleep.bedMinutes
+    func moved(_ sleep: CalendarSleep) -> CalendarSleep {
+        guard let sleepDrag, sleepDrag.night == sleep.night else { return sleep }
+        return sleep.moved(bed: sleepDrag.bedMinutes, wake: sleepDrag.wakeMinutes)
+    }
+
+    func sleepBand(_ sleep: CalendarSleep, evening: Bool, from start: Int, to end: Int, width: CGFloat) -> some View {
         let labelTop = evening ? geometry.y(minutes: start) : geometry.y(minutes: end) - Self.labelHeight
-        return Button { onOpenSleep(sleep.night) } label: {
-            HStack(spacing: 4) {
-                Image(systemName: evening ? "moon.fill" : "alarm").font(.caption2)
-                Text(CalendarDates.clock(minutes: evening ? sleep.bedMinutes : sleep.wakeMinutes))
-                    .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(sleepTint)
-            .opacity(isLabelCovered(top: labelTop, width: width) ? 0 : 1)
-            .padding(6)
-            .frame(width: width, height: max(geometry.y(minutes: end) - geometry.y(minutes: start), 0),
-                alignment: evening ? .topLeading : .bottomLeading)
-            .background(sleepTint.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: start))
-        .accessibilityLabel(Text("calendar.sleep.title", bundle: .module))
+        return CalendarSleepBand(
+            sleep: sleep,
+            evening: evening,
+            startMinutes: start,
+            endMinutes: end,
+            geometry: geometry,
+            width: width,
+            selected: selectedNight == sleep.night || sleepDrag?.night == sleep.night,
+            labelHidden: isLabelCovered(top: labelTop, width: width),
+            handlers: sleepHandlers
+        )
     }
 
     func prepMarker(_ sleep: CalendarSleep, minutes: Int, width: CGFloat) -> some View {
-        Button { onOpenSleep(sleep.night) } label: {
+        Button { sleepHandlers.open(sleep.night) } label: {
             HStack(spacing: 4) {
                 Image(systemName: "bell").font(.caption2)
                 Text(

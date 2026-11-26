@@ -2,10 +2,12 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
+import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.EventTaskEntry
 import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.SleepNightEntry
+import cz.semprec.app.domain.SleepRules
 import cz.semprec.app.domain.TimelineLane
 import cz.semprec.app.domain.TraceOutcome
 import cz.semprec.app.domain.isEditable
@@ -37,6 +39,8 @@ internal fun CalendarEntry.toItem(day: CalendarDay, color: String, lane: Timelin
         carriedFrom = carriedFrom?.toString(),
         trace = trace?.toState(),
         traceNote = traceNote,
+        timeFrom = timeFrom?.minutes,
+        timeTo = (timeTo ?: if (kind == CalendarEntryKind.EVENT) effectiveTo else null)?.minutes,
     )
 }
 
@@ -63,5 +67,19 @@ private fun String.timeOfDay(): Int? =
 
 private const val CLOCK_TEXT_LENGTH = 5
 
-internal fun SleepNightEntry.toState(): CalendarSleep =
-    CalendarSleep(night.toString(), bedTime.minutes, wakeTime.minutes, alarm, changed, prepReminderAt?.timeOfDay())
+internal fun SleepNightEntry.toState(): CalendarSleep {
+    val duration = SleepRules.durationMinutes(bedTime, wakeTime)
+    return CalendarSleep(
+        night = night.toString(),
+        bedMinutes = bedTime.minutes,
+        wakeMinutes = wakeTime.minutes,
+        alarm = alarm,
+        changed = changed,
+        prepMinutes = prepReminderAt?.timeOfDay(),
+        planBedMinutes = planBed?.minutes,
+        planWakeMinutes = planWake?.minutes,
+        durationMinutes = duration,
+        goalMinutes = goalMinutes,
+        meetsGoal = goalMinutes?.let { duration >= it },
+    )
+}

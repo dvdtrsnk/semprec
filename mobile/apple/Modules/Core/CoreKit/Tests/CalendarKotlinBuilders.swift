@@ -37,7 +37,9 @@ enum CalendarKotlin {
             hostEventTitle: "Review",
             carriedFrom: "2026-10-14",
             trace: trace,
-            traceNote: "2026-10-15"
+            traceNote: "2026-10-15",
+            timeFrom: start.map { KotlinInt(int: $0) },
+            timeTo: end.map { KotlinInt(int: $0) }
         )
     }
 
@@ -48,7 +50,12 @@ enum CalendarKotlin {
             wakeMinutes: 405,
             alarm: true,
             changed: true,
-            prepMinutes: KotlinInt(int: 1350)
+            prepMinutes: KotlinInt(int: 1350),
+            planBedMinutes: KotlinInt(int: 1350),
+            planWakeMinutes: KotlinInt(int: 405),
+            durationMinutes: 465,
+            goalMinutes: KotlinInt(int: 480),
+            meetsGoal: KotlinBoolean(bool: false)
         )
     }
 
@@ -68,12 +75,14 @@ enum CalendarKotlin {
             selectedDay: "2026-10-16",
             today: "2026-10-15",
             nowMinutes: 804,
+            timezone: "Europe/Prague",
             days: days,
             monthGrid: ["2026-09-28", "2026-09-29"],
             months: [SharedSDK.CalendarMonthState(year: 2026, month: 10, leading: 3, length: 31)],
             pendingInvitations: 3,
             selectedItemId: "e1",
             drag: drag,
+            sleepDrag: nil,
             clipboard: clipboard,
             busy: true,
             problem: true,

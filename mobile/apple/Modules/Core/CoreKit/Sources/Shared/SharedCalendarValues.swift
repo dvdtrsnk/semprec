@@ -114,7 +114,12 @@ extension CalendarSleep {
             wakeMinutes: Int(sleep.wakeMinutes),
             alarm: sleep.alarm,
             changed: sleep.changed,
-            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) }
+            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) },
+            planBedMinutes: sleep.planBedMinutes.map { Int(truncating: $0) },
+            planWakeMinutes: sleep.planWakeMinutes.map { Int(truncating: $0) },
+            durationMinutes: Int(sleep.durationMinutes),
+            goalMinutes: sleep.goalMinutes.map { Int(truncating: $0) },
+            meetsGoal: sleep.meetsGoal.map { $0.boolValue }
         )
     }
 }
@@ -146,7 +151,9 @@ extension CalendarItem {
             hostEventTitle: item.hostEventTitle,
             carriedFrom: item.carriedFrom,
             trace: item.trace.map(CalendarTraceOutcome.init),
-            traceNote: item.traceNote
+            traceNote: item.traceNote,
+            timeFrom: item.timeFrom.map { Int(truncating: $0) },
+            timeTo: item.timeTo.map { Int(truncating: $0) }
         )
     }
 }
@@ -354,5 +361,18 @@ extension NewItemCalendarQualifier {
         case .accountName: self = .accountName
         case .accountAddress: self = .accountAddress
         }
+    }
+}
+
+// MARK: - CalendarSleepDrag
+extension CalendarSleepDrag {
+
+    init(_ drag: SharedSDK.CalendarSleepDrag) {
+        self.init(
+            night: drag.night,
+            bedMinutes: Int(drag.bedMinutes),
+            wakeMinutes: Int(drag.wakeMinutes),
+            committing: drag.committing
+        )
     }
 }

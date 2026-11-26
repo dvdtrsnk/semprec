@@ -155,7 +155,7 @@ class ScheduleEditingTest {
         assertEquals(0, layoutTimeline(listOf(540..600, 573..640))[1].column)
     }
 
-    @Test fun `blocks nested in a long one use its column when they start late and the next column when they start soon`() {
+    @Test fun `blocks nested in a long one share its column when late and take the next when soon`() {
         // 14:00-18:00 with 14:30-15:30, 15:00-16:00 and 15:15-15:30 inside it.
         val lanes = layoutTimeline(listOf(840..1080, 870..930, 900..960, 915..930))
         assertEquals(listOf(0, 1, 0, 1), lanes.map { it.column })

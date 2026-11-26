@@ -35,9 +35,18 @@ finding of this task.
    `AppComposition` — medium; high when one window's screens or navigation
    reach another window. Each `WindowGroup` window builds its own `AppScene`
    with its own composition.
-6. UIKit or AppKit imported into `DesignSystem` or a feature where a SwiftUI API
+6. UIKit or AppKit used in `DesignSystem` or a feature where a SwiftUI API
    exists for the same purpose — medium: those modules are shared by both
-   platforms, and today they build their UI with SwiftUI alone.
+   platforms and build their UI with SwiftUI. Where SwiftUI has no API for the
+   behavior, a UIKit type is allowed in one small file of its own, wrapped in
+   `#if os(iOS)` with the macOS path in SwiftUI, reached through `import
+   SwiftUI` (never `import UIKit`), and with its doc comment naming what SwiftUI
+   lacks; `mobile/docs/architecture.md` lists every such file. Today they are
+   the calendar's `CalendarDragSource.swift` (a drag whose preview changes while
+   it is under way, which `draggable` cannot) and `CalendarPinchSource.swift`
+   (a gesture that begins only with two touches, which no SwiftUI gesture
+   waits for). Any other UIKit use, or one of these files grown beyond what its
+   comment names, is this finding.
 7. A `Button` that is a whole `List` row without `.listRowButton()` — low: on
    macOS it stays a small bordered push button that reacts only on its
    capsule, while the same row reacts across its width on iOS and Android.

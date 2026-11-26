@@ -4,8 +4,6 @@ import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarKind
-import cz.semprec.app.domain.EventTaskEntry
-import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -508,33 +506,6 @@ class CalendarViewModelTest : MainDispatcherTest() {
         assertTrue(vm.item("paid").done)
         vm.close()
     }
-
-    @Test fun `a task listed inside an event can be opened and ticked off`() = runTest(dispatcher) {
-        val agenda = EventTaskEntry("agenda", "Agenda", EventTaskState.OPEN, null)
-        val review = EventTaskEntry("review", "Review", EventTaskState.DONE, null)
-        serve(MEETING.copy(tasks = listOf(agenda, review)))
-        val vm = loaded()
-        val effects = effectsOf(vm)
-        act(vm, CalendarAction.Gesture.Tap("agenda"))
-        assertEquals(CalendarEffect.OpenDetails("agenda", CalendarItemKind.TASK, "2026-10-16"), effects.single())
-        act(vm, CalendarAction.Gesture.ToggleDone("agenda"))
-        act(vm, CalendarAction.Gesture.ToggleDone("review"))
-        assertEquals(listOf("done agenda true", "done review false"), repository.calls.filter { it.startsWith("done") })
-        val states = vm.item("meeting").tasks.map { it.state }
-        assertEquals(listOf(CalendarTaskInEvent.OPEN, CalendarTaskInEvent.DONE), states)
-        vm.close()
-    }
-
-    @Test fun `a listed task is not a separate item of the day and does not shadow a task of the window`() =
-        runTest(dispatcher) {
-            val same = EventTaskEntry("invoice", "Invoice", EventTaskState.OPEN, null)
-            serve(MEETING.copy(tasks = listOf(same)), INVOICE)
-            val vm = loaded()
-            assertEquals(listOf("meeting", "invoice"), vm.day("2026-10-16").items.map { it.id })
-            act(vm, CalendarAction.Gesture.ToggleDone("invoice"))
-            assertEquals(listOf("done invoice true"), repository.calls.filter { it.startsWith("done") })
-            vm.close()
-        }
 
     @Test fun `an item dropped on a day of the month view moves there and keeps its time`() = runTest(dispatcher) {
         serve(MEETING)

@@ -401,6 +401,86 @@
         }
       }
     },
+    "calendar.sleep.goalMet" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "splňuje cíl spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "reaches the sleep goal"
+          }
+        }
+      }
+    },
+    "calendar.sleep.goalMissed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "kratší než cíl spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "shorter than the sleep goal"
+          }
+        }
+      }
+    },
+    "calendar.sleep.handle.bed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čas spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bedtime"
+          }
+        }
+      }
+    },
+    "calendar.sleep.handle.wake" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čas probuzení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake time"
+          }
+        }
+      }
+    },
+    "calendar.sleep.plan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "plán %@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "plan %@"
+          }
+        }
+      }
+    },
     "calendar.sleep.prep" : {
       "localizations" : {
         "cs" : {
@@ -438,13 +518,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "splněno v %@"
+            "value" : "nesplněno zde · splněno v %@"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "done in %@"
+            "value" : "not done here · done in %@"
           }
         }
       }
@@ -454,13 +534,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "splněno později (%@)"
+            "value" : "nesplněno zde · splněno %@"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "done later (%@)"
+            "value" : "not done here · done %@"
           }
         }
       }
@@ -605,6 +685,86 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "not done · moved to the event %@"
+          }
+        }
+      }
+    },
+    "calendar.transfer.allDay" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, celý den"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, all day"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task.done" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol · splněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task · done"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task.open" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol · nesplněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task · to do"
+          }
+        }
+      }
+    },
+    "calendar.transfer.untitled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez názvu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Untitled"
           }
         }
       }

@@ -72,6 +72,11 @@ internal class RecordingCalendarRepository(
         return RepositoryResult.Content(Unit)
     }
 
+    override suspend fun completeTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        calls += "complete ${task.id} in ${event.id}"
+        return RepositoryResult.Content(Unit)
+    }
+
     override suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> {
         calls += "duplicate ${entry.id}"
         return RepositoryResult.Content("copy")

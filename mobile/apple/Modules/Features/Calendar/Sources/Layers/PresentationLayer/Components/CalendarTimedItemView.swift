@@ -14,7 +14,8 @@ struct CalendarTimedItemView: View {
     let range: (start: Int, end: Int)
     /// How tall the block is, which decides how much of the item it has room to say.
     let height: CGFloat
-    let onToggle: (String) -> Void
+    /// The checkbox of the task `itemId`, on its own block or in the event `inEventId`.
+    let onToggle: (_ itemId: String, _ inEventId: String?) -> Void
     let onOpenTask: (String) -> Void
 
     // MARK: - Body
@@ -27,7 +28,7 @@ struct CalendarTimedItemView: View {
                     size: 18,
                     enabled: item.canToggle,
                     label: item.toggleLabel
-                ) { onToggle(item.id) }
+                ) { onToggle(item.id, nil) }
                 .padding(.leading, 8)
                 .padding(.top, Layout.checkboxTop(height))
             } else {
@@ -128,7 +129,7 @@ private extension CalendarTimedItemView {
                 size: 12,
                 enabled: true,
                 label: task.toggleLabel
-            ) { onToggle(task.id) }
+            ) { onToggle(task.id, item.id) }
             Text(task.title)
                 .font(.caption2)
                 .strikethrough(task.isDone)
@@ -137,7 +138,7 @@ private extension CalendarTimedItemView {
             if let note = task.stateNote {
                 Text(note)
                     .font(.caption2)
-                    .foregroundStyle(task.state == .missed ? Color.orange : .secondary)
+                    .foregroundStyle(task.isNotDoneHere ? AnyShapeStyle(Color.orange) : secondaryStyle)
                     .lineLimit(1)
             }
         }

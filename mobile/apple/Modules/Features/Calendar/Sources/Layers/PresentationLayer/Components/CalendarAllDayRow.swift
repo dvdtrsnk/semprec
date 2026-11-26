@@ -4,7 +4,7 @@ import SwiftUI
 /// The area above the timeline for what has no time: holidays, birthdays, events of the whole day and tasks without a
 /// time. It is not there on a day with none. The chips stand in two columns, or one when there is a single chip, and
 /// the area stops growing at two rows and a half, scrolling inside itself, so a day with many never pushes the
-/// timeline off the screen. Each chip can be held and pulled into the timeline to give it a time.
+/// timeline off the screen. Each chip can be held and dragged into the timeline to give it a time.
 struct CalendarAllDayRow: View {
 
     // MARK: - Dependencies
@@ -95,7 +95,7 @@ private extension CalendarAllDayRow {
                     size: 16,
                     enabled: item.canToggle,
                     label: item.toggleLabel
-                ) { handlers.toggle(item.id) }
+                ) { handlers.toggle(item.id, nil) }
             } else if item.kind == .birthday {
                 Image(systemName: "gift").font(.caption).foregroundStyle(item.tint)
             }
@@ -131,18 +131,18 @@ private extension CalendarAllDayRow {
             in: RoundedRectangle(cornerRadius: 6)
         )
         .background(held ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
+        .background(CalendarItemFrameReporter(id: item.id, isEvent: false))
         .overlay {
             if item.isGhost {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(Color.orange, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
             }
         }
-        .opacity(dragged ? 0.4 : 1)
-        .calendarItemGestures(
-            enabled: item.editable,
-            onTap: { handlers.tap(item) },
-            onHold: { handlers.hold(item) }
-        )
+        // Carried into the timeline the chip gives way to the block there, as a block carried into this row gives way
+        // to its chip.
+        .opacity(dragged ? (drag?.allDay == false ? 0 : 0.4) : 1)
+        .animation(.snappy(duration: 0.18), value: drag?.allDay)
+        .calendarItemGestures(item, enabled: item.editable, selected: selectedItemId == item.id, handlers: handlers)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))
         .sempTarget(of: item, meta: String(localized: "calendar.allDay", bundle: .module))
