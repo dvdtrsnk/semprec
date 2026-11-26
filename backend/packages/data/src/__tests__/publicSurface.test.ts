@@ -431,6 +431,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createSession",
   "createSetHeartbeatEnabledRouteHandler",
   "createSmtpTransporter",
+  "createTaskCompleteInEventRouteHandler",
   "createTaskHostEventPutRouteHandler",
   "createTaskHostEventRemoveRouteHandler",
   "createTaskHostEventsClearRouteHandler",

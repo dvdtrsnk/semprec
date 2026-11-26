@@ -1822,6 +1822,9 @@ async function hostEventState(tenant: TenantFixture, taskId: string): Promise<Ho
 
 const hostEventPath = (taskId: string, eventId: string): string => `/api/tasks/${taskId}/host-events/${eventId}`;
 
+const completedInEventPath = (taskId: string, eventId: string): string =>
+  `/api/tasks/${taskId}/completed-in-event/${eventId}`;
+
 async function seriesTemplate(tenant: TenantFixture, seriesId: string): Promise<Array<{ template: unknown }>> {
   return inTenantTransaction(tenant.tenantId, async (client) => {
     const { rows } = await client.query<{ template: unknown }>(
@@ -3446,6 +3449,20 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     await expectForeign404(b.member, [foreign.eventId], ([id]) => PUT(hostEventPath(own.taskId, id!)));
     expect(await hostEventState(a, foreign.taskId)).toEqual(before);
     expect(await hostEventState(b, own.taskId)).toEqual(ownBefore);
+  },
+  "task complete in event": async () => {
+    const [own, foreign] = [await taskAndEvent(b), await taskAndEvent(a)];
+    await sendOk(b.member, PUT(hostEventPath(own.taskId, own.eventId)));
+    await sendOk(a.member, PUT(hostEventPath(foreign.taskId, foreign.eventId)));
+    const done = await sendOk(b.member, PUT(completedInEventPath(own.taskId, own.eventId)));
+    expect(readString(done, "eventId")).toBe(own.eventId);
+    expect(done).toContain(own.taskId);
+    const ownAfter = await hostEventState(b, own.taskId);
+    const before = await hostEventState(a, foreign.taskId);
+    await expectForeign404(b.member, [foreign.taskId], ([id]) => PUT(completedInEventPath(id!, own.eventId)));
+    await expectForeign404(b.member, [foreign.eventId], ([id]) => PUT(completedInEventPath(own.taskId, id!)));
+    expect(await hostEventState(a, foreign.taskId)).toEqual(before);
+    expect(await hostEventState(b, own.taskId)).toEqual(ownAfter);
   },
   "task host event remove": async () => {
     const [own, foreign] = [await taskAndEvent(b), await taskAndEvent(a)];
