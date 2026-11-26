@@ -42,7 +42,8 @@ final class SharedCalendarSleepMappingTests: XCTestCase {
             wakeMinutes: 405,
             committing: true,
             durationMinutes: 495,
-            meetsGoal: KotlinBoolean(bool: true)
+            meetsGoal: KotlinBoolean(bool: true),
+            changed: true
         )
         XCTAssertEqual(
             Model.state(CalendarKotlin.state(.content, sleepDrag: drag)).sleepDrag,
@@ -52,11 +53,13 @@ final class SharedCalendarSleepMappingTests: XCTestCase {
                 wakeMinutes: 405,
                 committing: true,
                 durationMinutes: 495,
-                meetsGoal: true
+                meetsGoal: true,
+                changed: true
             )
         )
         let withoutGoal = SharedSDK.CalendarSleepDrag(
-            night: "n", bedMinutes: 0, wakeMinutes: 60, committing: false, durationMinutes: 60, meetsGoal: nil
+            night: "n", bedMinutes: 0, wakeMinutes: 60, committing: false, durationMinutes: 60, meetsGoal: nil,
+            changed: false
         )
         XCTAssertNil(Model.state(CalendarKotlin.state(.content, sleepDrag: withoutGoal)).sleepDrag?.meetsGoal)
     }

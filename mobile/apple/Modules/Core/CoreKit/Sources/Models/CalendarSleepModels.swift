@@ -16,6 +16,7 @@ public struct CalendarSleep: Equatable, Sendable {
     public let durationMinutes: Int
     public let goalMinutes: Int?
     public let meetsGoal: Bool?
+    public let changed: Bool
 
     public init(
         night: String,
@@ -28,7 +29,8 @@ public struct CalendarSleep: Equatable, Sendable {
         planWakeMinutes: Int? = nil,
         durationMinutes: Int = 0,
         goalMinutes: Int? = nil,
-        meetsGoal: Bool? = nil
+        meetsGoal: Bool? = nil,
+        changed: Bool = false
     ) {
         self.night = night
         self.bedMinutes = bedMinutes
@@ -41,11 +43,13 @@ public struct CalendarSleep: Equatable, Sendable {
         self.durationMinutes = durationMinutes
         self.goalMinutes = goalMinutes
         self.meetsGoal = meetsGoal
+        self.changed = changed
     }
 }
 
-/// The night a finger moves or stretches: the snapped times it would have, how long it would be and whether it would
-/// reach the sleep goal (`nil` without a goal), as the shared layer works them out.
+/// The night a finger moves or stretches: the snapped times it would have, how long it would be, whether it would
+/// reach the sleep goal (`nil` without a goal) and whether it would differ from its plan, as the shared layer works
+/// them out.
 public struct CalendarSleepDrag: Equatable, Sendable {
 
     public let night: String
@@ -54,6 +58,7 @@ public struct CalendarSleepDrag: Equatable, Sendable {
     public let committing: Bool
     public let durationMinutes: Int
     public let meetsGoal: Bool?
+    public let changed: Bool
 
     public init(
         night: String,
@@ -61,7 +66,8 @@ public struct CalendarSleepDrag: Equatable, Sendable {
         wakeMinutes: Int,
         committing: Bool,
         durationMinutes: Int = 0,
-        meetsGoal: Bool? = nil
+        meetsGoal: Bool? = nil,
+        changed: Bool = false
     ) {
         self.night = night
         self.bedMinutes = bedMinutes
@@ -69,5 +75,6 @@ public struct CalendarSleepDrag: Equatable, Sendable {
         self.committing = committing
         self.durationMinutes = durationMinutes
         self.meetsGoal = meetsGoal
+        self.changed = changed
     }
 }

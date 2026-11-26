@@ -224,6 +224,10 @@ class CalendarUseCasesTest {
                 edit.toggleDoneInEvent(entry(id = "open", kind = CalendarEntryKind.TASK, readOnly = true), event),
             )
             assertEquals(
+                RepositoryResult.Failure(FailureKind.REJECTED),
+                edit.toggleDoneInEvent(entry(id = "done", kind = CalendarEntryKind.TASK, readOnly = true), event),
+            )
+            assertEquals(
                 listOf(
                     "complete open in ev",
                     "complete missed in ev",

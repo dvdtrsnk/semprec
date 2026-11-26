@@ -41,9 +41,10 @@ abstract class CalendarNightViewModel internal constructor(
         if (!SleepNightRules.isNightLength(ClockTime(newBed), ClockTime(newWake))) return
         val duration = SleepRules.durationMinutes(ClockTime(newBed), ClockTime(newWake))
         val meetsGoal = night.goalMinutes?.let { SleepNightRules.meetsGoal(duration, it) }
+        val changed = SleepNightRules.isChanged(night, ClockTime(newBed), ClockTime(newWake))
         update {
             it.copy(
-                sleepDrag = CalendarSleepDrag(action.night, newBed, newWake, false, duration, meetsGoal),
+                sleepDrag = CalendarSleepDrag(action.night, newBed, newWake, false, duration, meetsGoal, changed),
                 selectedItemId = null,
             )
         }

@@ -53,7 +53,7 @@ data class CalendarSleep(
 
 /**
  * The night a finger moves or stretches, and the times it would have: snapped minutes of the day, how long the night
- * would be and whether it would reach the sleep goal (`null` without a goal).
+ * would be, whether it would reach the sleep goal (`null` without a goal) and whether it would differ from its plan.
  */
 data class CalendarSleepDrag(
     val night: String,
@@ -62,6 +62,7 @@ data class CalendarSleepDrag(
     val committing: Boolean,
     val durationMinutes: Int = 0,
     val meetsGoal: Boolean? = null,
+    val changed: Boolean = false,
 )
 
 /**

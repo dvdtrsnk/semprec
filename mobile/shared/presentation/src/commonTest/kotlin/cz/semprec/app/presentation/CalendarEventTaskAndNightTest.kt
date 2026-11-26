@@ -126,14 +126,17 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `a moved night says whether it would reach the sleep goal`() = runTest(dispatcher) {
+    @Test fun `a moved night says whether it would reach the sleep goal and differ from its plan`() = runTest(dispatcher) {
         val night = sleepEntry(DAY_ZERO)
-        serve(night.copy(sleep = night.sleep?.copy(goalMinutes = 8 * 60)))
+        val plan = ClockTime(23 * 60) to ClockTime(6 * 60 + 45)
+        serve(night.copy(sleep = night.sleep?.copy(goalMinutes = 8 * 60, planBed = plan.first, planWake = plan.second)))
         val vm = loaded()
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 15))
         assertEquals(8 * 60 to true, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
+        assertEquals(true, vm.state.value.sleepDrag?.changed)
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 0))
         assertEquals(7 * 60 + 45 to false, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
+        assertEquals(false, vm.state.value.sleepDrag?.changed)
         vm.close()
     }
 
