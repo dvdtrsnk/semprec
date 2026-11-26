@@ -191,6 +191,33 @@ class SleepNightDraftTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `leaving the night view while its commit is written ends without a draft and reopens on the new night`() =
+        runTest(dispatcher) {
+            val written = sleepFridayNight(changed = true).copy(bed = sleepClock("22:30"), durationMinutes = 495)
+            val repository = FakeSleepRepository(sleepContent(), sleepContent(sleepOverview(night = written)))
+            val vm = sleep(repository, startOnNight = false)
+            runCurrent()
+            vm.onAction(SleepAction.Open(SleepScreen.NIGHT))
+            vm.onAction(SleepAction.Draft.MoveDial(SleepDialHandle.BED, 22 * 60 + 30))
+            val gate = CompletableDeferred<Unit>()
+            repository.gate = gate
+            vm.onAction(SleepAction.Draft.CommitNight)
+            runCurrent()
+            vm.onAction(SleepAction.Back)
+            assertEquals(SleepScreen.MAIN, vm.state.value.screen)
+            assertNull(vm.state.value.nightDraft)
+            repository.gate = null
+            gate.complete(Unit)
+            runCurrent()
+            assertFalse(vm.state.value.saving)
+            assertNull(vm.state.value.nightDraft)
+            assertEquals(1, repository.writes.size)
+            vm.onAction(SleepAction.Open(SleepScreen.NIGHT))
+            assertEquals(22 * 60 + 30, vm.draft().bedMinutes)
+            assertFalse(vm.draft().canSave)
+            vm.close()
+        }
+
     @Test fun `resetting the night writes the reset and shows the night the server resolves again`() =
         runTest(dispatcher) {
             val plan = sleepFridayNight(changed = false)
