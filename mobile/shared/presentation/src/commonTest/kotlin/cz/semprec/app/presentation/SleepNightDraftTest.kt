@@ -169,6 +169,28 @@ class SleepNightDraftTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a retry drops a commit that waits so that it never writes after the reload`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        repository.gate = gate
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ALARM_SNOOZE, on = false))
+        runCurrent()
+        vm.onAction(SleepAction.Draft.SetDraftAlarm(on = false))
+        vm.onAction(SleepAction.Draft.CommitNight)
+        vm.onAction(SleepAction.Retry)
+        repository.gate = null
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(SleepPhase.READY, vm.state.value.phase)
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.MUTE_SEMP, on = false))
+        runCurrent()
+        assertEquals(2, repository.writes.size)
+        assertTrue(repository.writes.none { it.startsWith("night:") })
+        vm.close()
+    }
+
     @Test fun `resetting the night writes the reset and shows the night the server resolves again`() =
         runTest(dispatcher) {
             val plan = sleepFridayNight(changed = false)

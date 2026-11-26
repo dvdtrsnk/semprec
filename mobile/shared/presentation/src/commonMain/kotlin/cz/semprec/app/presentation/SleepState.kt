@@ -62,8 +62,9 @@ data class SleepDraft(
  * The sleep sheet. [isRoot] is `true` on the view the sheet opens on, which closes the sheet instead of going back.
  * [editor] is the plan being edited or added, `null` while no editor is open; [nightDraft] is the night on the night
  * view. [saving] is `true` while a change is written; a plan or night that is confirmed meanwhile waits its turn.
- * [saveFailure] is the expected failure of the last write, `null` for none or an unexpected one together with
- * [saveFailed]; the draft of a write that failed is back in [editor].
+ * [saveFailure] is the expected failure of the last write or of an action that was refused before any write (an
+ * unknown plan, a number that is no weekday, a delete of a plan that is not saved yet), `null` for none or for an
+ * unexpected failure together with [saveFailed]; after a failed write the draft is back in [editor].
  */
 data class SleepState(
     val phase: SleepPhase = SleepPhase.LOADING,
