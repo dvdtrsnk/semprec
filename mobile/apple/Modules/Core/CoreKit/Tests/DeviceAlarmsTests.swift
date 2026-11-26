@@ -71,12 +71,14 @@ final class DeviceAlarmsTests: XCTestCase {
 
     // MARK: - The system's alarms
     #if os(iOS)
+    @MainActor
     func testEveryAuthorizationOfTheSystemMaps() {
         XCTAssertEqual(DeviceAlarmScheduler.authorization(.notDetermined), .notDetermined)
         XCTAssertEqual(DeviceAlarmScheduler.authorization(.denied), .denied)
         XCTAssertEqual(DeviceAlarmScheduler.authorization(.authorized), .authorized)
     }
 
+    @MainActor
     func testOnlyAnAlarmThatRingsCannotBeRemoved() {
         XCTAssertEqual(DeviceAlarmScheduler.phase(.scheduled), .scheduled)
         XCTAssertEqual(DeviceAlarmScheduler.phase(.countdown), .scheduled)
@@ -84,6 +86,7 @@ final class DeviceAlarmsTests: XCTestCase {
         XCTAssertEqual(DeviceAlarmScheduler.phase(.alerting), .alerting)
     }
 
+    @MainActor
     func testTheLimitIsRefusedAndAnyOtherFailureIsNotExplained() {
         let limit = DeviceAlarmScheduler.failure(AlarmManager.AlarmError.maximumLimitReached)
         XCTAssertEqual((limit as? SharedSDK.DeviceAlarmSchedulingRefused)?.failure, .limitReached)
