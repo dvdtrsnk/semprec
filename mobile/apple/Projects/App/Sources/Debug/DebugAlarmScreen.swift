@@ -133,7 +133,11 @@ private extension DebugAlarmScreen {
             Text("debug.alarm.new")
         } footer: {
             if repeatsDaily {
-                Text(String(format: String(localized: "debug.alarm.repeatDaily.footer"), locale: .current, state.dailyDays))
+                Text(String(
+                    format: String(localized: "debug.alarm.repeatDaily.footer"),
+                    locale: .current,
+                    state.dailyDays
+                ))
             }
         }
     }
@@ -170,7 +174,7 @@ private extension DebugAlarmScreen {
 
     func row(_ alarm: DebugAlarmRow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(alarm.ringAt.map { $0.formatted(date: .abbreviated, time: .standard) } ?? String(localized: "debug.alarm.noMoment"))
+            Text(Self.moment(alarm.ringAt))
             Text(Self.detail(alarm))
                 .font(.footnote)
                 .foregroundStyle(Theme.Colors.secondaryText)
@@ -192,6 +196,10 @@ private extension DebugAlarmScreen {
 
 // MARK: - Copy
 private extension DebugAlarmScreen {
+
+    static func moment(_ ringAt: Date?) -> String {
+        ringAt?.formatted(date: .abbreviated, time: .standard) ?? String(localized: "debug.alarm.noMoment")
+    }
 
     static func name(_ authorization: DebugAlarmAuthorization) -> LocalizedStringKey {
         switch authorization {
