@@ -9,11 +9,13 @@ import cz.semprec.app.domain.LoadSleep
 import cz.semprec.app.domain.SleepSettingsChange
 
 /**
- * The sleep sheet: the plan overview, one plan, one night and the pickers of the overview. [nightDay] is the evening
- * the sheet was opened for (the ring and the night view show it); with [startOnNight] the sheet opens on that night,
- * which then is its root view. A change is written, then the whole overview is read again, because the server moves
- * wake days between plans and resolves the nights. While a write runs, further changes are ignored. The screen has
- * no effects: the native sheet closes itself.
+ * The sleep sheet: the plan overview, one night and the pickers of the overview. [nightDay] is the evening the sheet
+ * was opened for; with [startOnNight] the sheet opens on that night, which then is its root view. A plan is edited on
+ * a draft ([SleepState.editor]) and a night on its own ([SleepState.nightDraft]): the dial, the days and the alarm
+ * change the draft only, and it is written when it is confirmed. A change is written, then the whole overview is read
+ * again, because the server moves wake days between plans and resolves the nights. While a write runs, a settings
+ * change is ignored and a draft that is confirmed waits its turn. The screen has no effects: the native sheet closes
+ * itself.
  */
 class SleepViewModel internal constructor(
     nightDay: CalendarDay?,
@@ -35,19 +37,29 @@ class SleepViewModel internal constructor(
         session.load()
     }
 
+    private fun onDraftAction(action: SleepAction.Draft) {
+        when (action) {
+            is SleepAction.Draft.EditPlan -> session.editPlan(action.planId)
+            is SleepAction.Draft.MoveDial -> session.moveDial(action.handle, action.minutes)
+            is SleepAction.Draft.ToggleDraftDay -> session.toggleDraftDay(action.day)
+            is SleepAction.Draft.SetDraftAlarm -> session.setDraftAlarm(action.on)
+            is SleepAction.Draft.ConfirmDraft -> session.confirmDraft(action.newPlanName)
+            SleepAction.Draft.DeleteDraftPlan -> session.deleteDraftPlan()
+            SleepAction.Draft.DiscardDraft -> session.discardDraft()
+            SleepAction.Draft.CommitNight -> session.commitNight()
+        }
+    }
+
     override fun onAction(action: SleepAction) {
         if (isClosed) return
         when (action) {
             SleepAction.Retry -> session.load()
-            is SleepAction.Open -> session.open(action.screen, action.planId)
+            is SleepAction.Open -> session.open(action.screen)
             SleepAction.Back -> session.back()
             is SleepAction.SetSwitch -> session.setSwitch(action.target, action.on)
             is SleepAction.PickMinutes -> session.pick(action.toChange())
             is SleepAction.PickSound -> session.pick(SleepSettingsChange(alarmSound = action.sound.toDomain()))
-            is SleepAction.SetTime -> session.setTime(action.field, action.minutes)
-            is SleepAction.ToggleDay -> session.toggleDay(action.day)
-            is SleepAction.AddPlan -> session.addPlan(action.name)
-            SleepAction.DeletePlan -> session.deletePlan()
+            is SleepAction.Draft -> onDraftAction(action)
             SleepAction.ResetNight -> session.resetNight()
             SleepAction.DismissSaveFailure -> session.dismissSaveFailure()
         }

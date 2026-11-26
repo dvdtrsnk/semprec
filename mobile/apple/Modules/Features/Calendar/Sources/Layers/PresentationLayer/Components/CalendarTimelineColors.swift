@@ -52,11 +52,11 @@ private extension CalendarTimelineColors {
         day.items.filter { $0.startMinutes != nil && !$0.allDay }
     }
 
-    /// The evening's sleep from bedtime to midnight and the morning's from midnight to waking.
+    /// The parts of the evening's and the morning's nights that fall on this day, as the shared layer cut them.
     var sleepRanges: [(Int, Int)] {
-        var ranges: [(Int, Int)] = []
-        if let evening = day.sleepEvening { ranges.append((evening.bedMinutes, CalendarGeometry.minutesPerDay)) }
-        if let morning = day.sleepMorning { ranges.append((0, morning.wakeMinutes)) }
-        return ranges
+        day.sleepParts.compactMap { part in
+            guard case .band(_, let band, _) = part else { return nil }
+            return (band.lowerBound, band.upperBound)
+        }
     }
 }

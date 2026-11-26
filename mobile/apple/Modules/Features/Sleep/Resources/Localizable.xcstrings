@@ -193,6 +193,22 @@
         }
       }
     },
+    "sleep.dial.a11y" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spánek od %1$@ do %2$@, %3$@, %4$@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sleep from %1$@ to %2$@, %3$@, %4$@"
+          }
+        }
+      }
+    },
     "sleep.done" : {
       "localizations" : {
         "cs" : {
@@ -253,6 +269,246 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld min"
+          }
+        }
+      }
+    },
+    "sleep.editor.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        }
+      }
+    },
+    "sleep.editor.addTitle" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nový rozvrh"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add Schedule"
+          }
+        }
+      }
+    },
+    "sleep.editor.alarm" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alarm"
+          }
+        }
+      }
+    },
+    "sleep.editor.alarmOptions" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Možnosti budíku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alarm Options"
+          }
+        }
+      }
+    },
+    "sleep.editor.alarmToggle" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alarm"
+          }
+        }
+      }
+    },
+    "sleep.editor.bed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Večerka"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bedtime"
+          }
+        }
+      }
+    },
+    "sleep.editor.day.otherPlan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, patří jinému rozvrhu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, belongs to another schedule"
+          }
+        }
+      }
+    },
+    "sleep.editor.days" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dny, kdy platí"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Days Active"
+          }
+        }
+      }
+    },
+    "sleep.editor.delete" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smazat rozvrh"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Schedule"
+          }
+        }
+      }
+    },
+    "sleep.editor.delete.confirm" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smazat tento rozvrh?"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete this schedule?"
+          }
+        }
+      }
+    },
+    "sleep.editor.editTitle" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upravit rozvrh"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit Schedule"
+          }
+        }
+      }
+    },
+    "sleep.editor.goal.met" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento rozvrh splňuje tvůj cíl spánku."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This schedule meets your sleep goal."
+          }
+        }
+      }
+    },
+    "sleep.editor.goal.missed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento rozvrh nesplňuje tvůj cíl spánku."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This schedule does not meet your sleep goal."
+          }
+        }
+      }
+    },
+    "sleep.editor.times" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Večerka a probuzení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bedtime and Wake-up"
+          }
+        }
+      }
+    },
+    "sleep.editor.wakeNoAlarm" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Probuzení bez budíku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake-up, no alarm"
           }
         }
       }
@@ -385,34 +641,34 @@
         }
       }
     },
-    "sleep.night.alarm" : {
+    "sleep.night.goal.met" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Budík tuto noc"
+            "value" : "Tato noc splňuje tvůj cíl spánku."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Alarm this night"
+            "value" : "This night meets your sleep goal."
           }
         }
       }
     },
-    "sleep.night.alarm.off" : {
+    "sleep.night.goal.missed" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez budíku"
+            "value" : "Tato noc nesplňuje tvůj cíl spánku."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No alarm"
+            "value" : "This night does not meet your sleep goal."
           }
         }
       }
@@ -561,150 +817,6 @@
         }
       }
     },
-    "sleep.plan.alarm" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Budík"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Alarm"
-          }
-        }
-      }
-    },
-    "sleep.plan.alarm.a11y" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Budík pro tento plán"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Alarm for this plan"
-          }
-        }
-      }
-    },
-    "sleep.plan.alarm.off" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jen čas vstávání, bez zvonění"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wake-up time only, no alarm"
-          }
-        }
-      }
-    },
-    "sleep.plan.alarm.on" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zazvoní: %1$@ · %2$@"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rings at %1$@ · %2$@"
-          }
-        }
-      }
-    },
-    "sleep.plan.day.inPlan" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : ", v plánu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : ", in the plan"
-          }
-        }
-      }
-    },
-    "sleep.plan.day.otherPlan" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : ", v jiném plánu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : ", in another plan"
-          }
-        }
-      }
-    },
-    "sleep.plan.days.header" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dny, kdy vstáváš"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Days you get up"
-          }
-        }
-      }
-    },
-    "sleep.plan.days.hint" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Den, který patří jinému plánu, se přidáním přesune sem."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A day that belongs to another plan moves here when you add it."
-          }
-        }
-      }
-    },
-    "sleep.plan.delete" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazat plán"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delete plan"
-          }
-        }
-      }
-    },
     "sleep.plan.off" : {
       "localizations" : {
         "cs" : {
@@ -749,118 +861,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sleep plan"
-          }
-        }
-      }
-    },
-    "sleep.plans.a11y" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Plán %@, upravit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Plan %@, edit"
-          }
-        }
-      }
-    },
-    "sleep.plans.add" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přidat plán pro další dny"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Add a plan for other days"
-          }
-        }
-      }
-    },
-    "sleep.plans.alarmOff" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "bez budíku"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "no alarm"
-          }
-        }
-      }
-    },
-    "sleep.plans.alarmOn" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "budík"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "alarm"
-          }
-        }
-      }
-    },
-    "sleep.plans.footer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Plán platí pro dny, kdy vstáváš. Jednu noc upravíš klepnutím na spánek v kalendáři."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A plan applies to the days you get up. Change a single night by tapping the sleep in the calendar."
-          }
-        }
-      }
-    },
-    "sleep.plans.header" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Plány"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Plans"
-          }
-        }
-      }
-    },
-    "sleep.plans.newName" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Další dny"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Other days"
           }
         }
       }
@@ -993,22 +993,6 @@
         }
       }
     },
-    "sleep.prep.when" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kdy"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "When"
-          }
-        }
-      }
-    },
     "sleep.remind.hint" : {
       "localizations" : {
         "cs" : {
@@ -1073,70 +1057,6 @@
         }
       }
     },
-    "sleep.ring.alarm" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Budík"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Alarm"
-          }
-        }
-      }
-    },
-    "sleep.ring.alarm.a11y" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Budík %@, změnit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Alarm %@, change"
-          }
-        }
-      }
-    },
-    "sleep.ring.bed" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Večerka"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bedtime"
-          }
-        }
-      }
-    },
-    "sleep.ring.bed.a11y" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Večerka %@, změnit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bedtime %@, change"
-          }
-        }
-      }
-    },
     "sleep.ring.goal.above" : {
       "localizations" : {
         "cs" : {
@@ -1185,38 +1105,6 @@
         }
       }
     },
-    "sleep.ring.wake" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vstávání"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wake-up"
-          }
-        }
-      }
-    },
-    "sleep.ring.wake.a11y" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vstávání %@, změnit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wake-up %@, change"
-          }
-        }
-      }
-    },
     "sleep.save.dismiss" : {
       "localizations" : {
         "cs" : {
@@ -1245,6 +1133,118 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The change was not saved"
+          }
+        }
+      }
+    },
+    "sleep.schedule.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat rozvrh"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add Schedule"
+          }
+        }
+      }
+    },
+    "sleep.schedule.details" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další podrobnosti"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Additional Details"
+          }
+        }
+      }
+    },
+    "sleep.schedule.edit" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upravit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edit"
+          }
+        }
+      }
+    },
+    "sleep.schedule.goal" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cíl spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sleep Goal"
+          }
+        }
+      }
+    },
+    "sleep.schedule.noDays" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez aktivních dnů"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No days"
+          }
+        }
+      }
+    },
+    "sleep.schedule.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úplný rozvrh"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Full Schedule"
+          }
+        }
+      }
+    },
+    "sleep.schedule.windDown" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příprava na spánek"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wind Down"
           }
         }
       }

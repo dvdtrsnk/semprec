@@ -31,8 +31,10 @@ data class CalendarEventTask(
 )
 
 /**
- * One night of sleep as it is drawn: [bedMinutes] and [wakeMinutes] are times of day, the night starts on the
- * evening [night] (`YYYY-MM-DD`). [prepMinutes] is when the bedtime reminder comes, as a time of day, or `null`.
+ * The part of one night of sleep that falls on one day: [bedMinutes] and [wakeMinutes] are the night's times of day,
+ * the night belongs to the evening [night] (`YYYY-MM-DD`). The band on this day runs from [fromMinutes] to
+ * [toMinutes] and is empty when they are equal. [prepMinutes] is when the bedtime reminder comes on this day, or
+ * `null` when it comes on another day or not at all.
  */
 data class CalendarSleep(
     val night: String,
@@ -41,6 +43,8 @@ data class CalendarSleep(
     val alarm: Boolean,
     val changed: Boolean,
     val prepMinutes: Int?,
+    val fromMinutes: Int,
+    val toMinutes: Int,
 )
 
 /**
