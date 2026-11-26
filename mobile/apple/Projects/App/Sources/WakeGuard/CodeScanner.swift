@@ -54,6 +54,16 @@ final class CodeScanner: ObservableObject {
         let session = session
         queue.async { session.stopRunning() }
     }
+
+    /// Where the person allows the camera again after refusing it: the app's page of the Settings app on iOS, the
+    /// camera privacy pane of System Settings on macOS.
+    nonisolated static var cameraSettingsURL: URL? {
+        #if os(iOS)
+            URL(string: "app-settings:")
+        #else
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
+        #endif
+    }
 }
 
 // MARK: - Private

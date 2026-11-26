@@ -18,7 +18,8 @@ extension WakeGuard {
                 continue
             }
             guard ring.timeIntervalSince(now()) <= WakeMission.armHorizon else { continue }
-            let watchIDs = await scheduleWatches(for: mission, after: ring)
+            // A pass cancelled while it scheduled leaves the mission unarmed, so the next pass arms it whole.
+            guard let watchIDs = await scheduleWatches(for: mission, after: ring) else { break }
             if let index = missions.firstIndex(where: { $0.id == id }) {
                 missions[index].guardedRing = ring
                 missions[index].watchIDs = watchIDs
@@ -103,21 +104,15 @@ extension WakeGuard {
             .min { ($0.guardedRing ?? .distantFuture) < ($1.guardedRing ?? .distantFuture) }
     }
 
-    /// The codes without surrounding whitespace, blanks and repeats, in their order.
-    nonisolated static func normalized(_ codes: [String]) -> [String] {
-        var seen = Set<String>()
-        return codes
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-    }
 }
 
 // MARK: - Private
 private extension WakeGuard {
 
     /// Schedules the watch alarms after `ring` until the system refuses one; answers the ids it accepted. The ones
-    /// accepted before a refusal still guard the ring.
-    func scheduleWatches(for mission: WakeMission, after ring: Date) async -> [UUID] {
+    /// accepted before a refusal still guard the ring. A cancelled task cancels the ones it scheduled and answers
+    /// nil: the mission is not armed, rather than armed with part of its watch.
+    func scheduleWatches(for mission: WakeMission, after ring: Date) async -> [UUID]? {
         var ids: [UUID] = []
         for offset in WakeMission.watchOffsets {
             let request = AlarmRequest(
@@ -128,9 +123,16 @@ private extension WakeGuard {
             do {
                 try await scheduler.schedule(request)
                 ids.append(request.id)
+            } catch is CancellationError {
+                silence(ids, keeping: nil)
+                return nil
             } catch {
                 failure = String(describing: error)
                 break
+            }
+            if Task.isCancelled {
+                silence(ids, keeping: nil)
+                return nil
             }
         }
         return ids

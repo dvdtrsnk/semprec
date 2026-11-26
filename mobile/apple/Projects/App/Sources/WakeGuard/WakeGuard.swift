@@ -50,7 +50,7 @@ final class WakeGuard: ObservableObject {
     /// Creates a wake-up mission ringing at `time` that only one of `codes` ends, and schedules its watch alarms once
     /// its ring is within `WakeMission.armHorizon`. `source` names what created it, nil for one made by hand.
     func create(title: String, time: AlarmTime, codes: [String], source: String? = nil) async throws {
-        let codes = Self.normalized(codes)
+        let codes = WakeCodes.normalized(codes)
         guard !codes.isEmpty else { throw WakeGuardError.noCodes }
         let mission = WakeMission(
             id: UUID(),

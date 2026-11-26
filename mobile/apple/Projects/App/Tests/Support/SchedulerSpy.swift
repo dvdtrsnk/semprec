@@ -26,6 +26,8 @@ final class SchedulerSpy: AlarmScheduler, @unchecked Sendable {
     private(set) var stopped: [UUID] = []
     /// The system refuses every request after this many accepted ones.
     var limit: Int?
+    /// The task is cancelled while it schedules the request after this many accepted ones.
+    var cancelsAfter: Int?
     private(set) var authorizationRequests = 0
 
     init(authorization: AlarmAuthorization) {
@@ -51,6 +53,7 @@ final class SchedulerSpy: AlarmScheduler, @unchecked Sendable {
     func schedule(_ request: AlarmRequest) async throws -> ScheduledAlarm {
         // Lets another task run, as the system's scheduling does.
         await Task.yield()
+        if let cancelsAfter, held.count >= cancelsAfter { throw CancellationError() }
         requests.append(request)
         if let authorizationAfterSchedule { authorizationState = authorizationAfterSchedule }
         if let scheduleFailure { throw scheduleFailure }

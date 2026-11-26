@@ -60,6 +60,6 @@ private extension WakeCodesSection {
     }
 
     func add(_ code: String) {
-        codes = WakeGuard.normalized(codes + [code])
+        codes = WakeCodes.normalized(codes + [code])
     }
 }

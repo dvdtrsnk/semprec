@@ -517,6 +517,33 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a refused night write is reported and keeps the night open`() = runTest(dispatcher) {
+        val refused = RepositoryResult.Failure(FailureKind.REJECTED)
+        val repository = FakeSleepRepository(sleepContent(), writeAnswer = refused)
+        val vm = sleep(repository, startOnNight = true)
+        runCurrent()
+        vm.onAction(SleepAction.SaveNight(23 * 60, 7 * 60, alarm = false))
+        runCurrent()
+        assertEquals(1, repository.writes.size)
+        assertEquals(FailureKind.REJECTED, vm.state.value.saveFailure)
+        assertEquals(SleepScreen.NIGHT, vm.state.value.screen)
+        vm.close()
+    }
+
+    @Test fun `a failed plan removal is reported and keeps the editor open`() = runTest(dispatcher) {
+        val unavailable = RepositoryResult.Failure(FailureKind.UNAVAILABLE)
+        val repository = FakeSleepRepository(sleepContent(), writeAnswer = unavailable)
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.Open(SleepScreen.PLAN, "p2"))
+        vm.onAction(SleepAction.RemovePlan("p2"))
+        runCurrent()
+        assertEquals("delete:p2", repository.writes.single())
+        assertEquals(FailureKind.UNAVAILABLE, vm.state.value.saveFailure)
+        assertEquals(SleepScreen.PLAN, vm.state.value.screen)
+        vm.close()
+    }
+
     @Test fun `saving the night does nothing outside the night view or out of the day`() = runTest(dispatcher) {
         val repository = FakeSleepRepository(sleepContent())
         val vm = sleep(repository)

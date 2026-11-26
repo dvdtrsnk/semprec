@@ -60,7 +60,7 @@ private extension WakeGuardScreen {
         VStack(spacing: Theme.Spacing.large) {
             header
             WakeCameraPreview(frame: scanner.frame, state: scanner.cameraState, rejected: rejectedCode != nil) {
-                if let url = URL(string: "app-settings:") { openURL(url) }
+                if let url = CodeScanner.cameraSettingsURL { openURL(url) }
             }
             .padding(.horizontal, Theme.Spacing.large)
             Text(String(format: String(localized: "wake.scan.hint"), locale: .current, mission.codes.count))

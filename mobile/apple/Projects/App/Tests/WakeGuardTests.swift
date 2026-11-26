@@ -157,6 +157,29 @@ final class WakeGuardTests: XCTestCase {
     }
 
     @MainActor
+    func testAnArmingCancelledMidwayLeavesTheMissionUnarmedAndTheNextPassArmsItWhole() async throws {
+        let fixture = make()
+        fixture.scheduler.cancelsAfter = 3
+        try await fixture.wakeGuard.create(title: "Up", time: .once(start.addingTimeInterval(60)), codes: ["123"])
+        let mission = try XCTUnwrap(fixture.wakeGuard.missions.first)
+        XCTAssertNil(mission.guardedRing)
+        XCTAssertTrue(mission.watchIDs.isEmpty)
+        XCTAssertEqual(
+            fixture.scheduler.held.map(\.id),
+            [mission.alarmID],
+            "The watch alarms it had scheduled are cancelled"
+        )
+        XCTAssertNil(fixture.wakeGuard.failure)
+
+        fixture.scheduler.cancelsAfter = nil
+        await fixture.wakeGuard.refresh()
+
+        let armed = try XCTUnwrap(fixture.wakeGuard.missions.first)
+        XCTAssertNotNil(armed.guardedRing)
+        XCTAssertEqual(armed.watchIDs.count, WakeMission.watchOffsets.count)
+    }
+
+    @MainActor
     func testTheCodeEndsEveryAlarmOfTheMissionEvenWhenTheSystemsListCannotBeRead() async throws {
         let fixture = try await ringing(.once(start.addingTimeInterval(60)))
         let mission = try XCTUnwrap(fixture.wakeGuard.ringing)

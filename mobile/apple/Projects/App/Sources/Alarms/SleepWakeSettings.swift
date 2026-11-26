@@ -9,7 +9,19 @@ struct SleepWakeSettings: Codable, Equatable, Sendable {
 
     /// The codes that end an alarm, or none while the alarm stops with the system's button.
     var activeCodes: [String] {
-        requiresCode ? WakeGuard.normalized(codes) : []
+        requiresCode ? WakeCodes.normalized(codes) : []
+    }
+}
+
+/// The rule of what counts as a wake-up code, which the wake settings, the guard and the debug tool all apply.
+enum WakeCodes {
+
+    /// The codes without surrounding whitespace, blanks and repeats, in their order.
+    static func normalized(_ codes: [String]) -> [String] {
+        var seen = Set<String>()
+        return codes
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 }
 

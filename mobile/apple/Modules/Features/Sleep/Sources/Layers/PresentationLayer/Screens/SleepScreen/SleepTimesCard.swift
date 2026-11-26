@@ -55,6 +55,9 @@ struct SleepTimesCard: View {
 // MARK: - Subviews
 private extension SleepTimesCard {
 
+    /// Whether the length on the dial reaches the goal. It is the draft's length, which changes with every step of a
+    /// drag before anything is written, so the shared state's saved ring cannot answer it; the goal itself comes
+    /// from the shared state.
     var meetsGoal: Bool {
         draft.durationMinutes >= goalMinutes
     }

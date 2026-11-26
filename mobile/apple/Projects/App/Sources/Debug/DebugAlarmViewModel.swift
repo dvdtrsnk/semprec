@@ -59,7 +59,7 @@ final class DebugAlarmViewModel: ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let title = trimmed.isEmpty ? Self.defaultTitle : trimmed
         do {
-            if let wakeGuard, !WakeGuard.normalized(codes).isEmpty {
+            if let wakeGuard, !WakeCodes.normalized(codes).isEmpty {
                 try await wakeGuard.create(title: title, time: time, codes: codes)
             } else {
                 try await scheduler.schedule(AlarmRequest(title: title, schedule: time))

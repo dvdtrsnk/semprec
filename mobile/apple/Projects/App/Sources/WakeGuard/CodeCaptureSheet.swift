@@ -19,7 +19,7 @@ struct CodeCaptureSheet: View {
         NavigationStack {
             VStack(spacing: Theme.Spacing.large) {
                 WakeCameraPreview(frame: scanner.frame, state: scanner.cameraState, rejected: false) {
-                    if let url = URL(string: "app-settings:") { openURL(url) }
+                    if let url = CodeScanner.cameraSettingsURL { openURL(url) }
                 }
                 Text("debug.wake.capture.hint")
                     .font(.callout)

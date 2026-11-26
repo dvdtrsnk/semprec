@@ -40,7 +40,7 @@ struct DebugAlarmScreen: View {
         .formStyle(.grouped)
         .sheet(isPresented: $scanning) {
             CodeCaptureSheet { code in
-                codes = WakeGuard.normalized(codes + [code])
+                codes = WakeCodes.normalized(codes + [code])
                 scanning = false
             }
         }

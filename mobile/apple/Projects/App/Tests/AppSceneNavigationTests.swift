@@ -73,6 +73,27 @@ final class AppSceneNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testTheProfileSheetOpensTheDebugMenuAndItsAlarmTool() async throws {
+        for (opening, title) in [([ProfileSheetPage.debug], "Debug"), ([.debug, .debugAlarms], "System alarms")] {
+            let window = try SceneWindow()
+            let scene = AppComposition(models: SignedInModels())
+            try await window.show(AppScene(composition: scene, selectedTab: .overview))
+            let overview = try await registeredStack(.overview, of: scene)
+
+            scene.navigation.presentSheet(.profile(opening: opening), from: .overview)
+
+            XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, .profile(opening: opening))
+            try await eventually { window.presentsSheet }
+            XCTAssertTrue(window.presentsSheet, "The window must show the profile sheet")
+            #if os(iOS)
+                try await eventually { window.sheetTitle == title }
+                XCTAssertEqual(window.sheetTitle, title, "The sheet's stack must show the debug page on top")
+            #endif
+            window.close()
+        }
+    }
+
+    @MainActor
     func testAWakeUpMissionThatStartsRingingClosesTheOpenSheet() async throws {
         let start = Date()
         let clock = SceneClock(now: start)

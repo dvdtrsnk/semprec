@@ -148,6 +148,9 @@ private extension SleepAlarmClock {
                 try await scheduler.schedule(request)
                 scheduled[key] = request.id
                 added.append(request.id)
+            } catch is CancellationError {
+                // The pass stops without a failure; the ledger below keeps what it scheduled for the next one.
+                break
             } catch {
                 failure = Self.message(error)
             }
@@ -174,6 +177,9 @@ private extension SleepAlarmClock {
         for (key, ring) in rings where !held.contains(key) {
             do {
                 try await wakeGuard.create(title: ring.title, time: .once(ring.date), codes: codes, source: key)
+            } catch is CancellationError {
+                // The pass stops without a failure; the next one creates what is missing.
+                return
             } catch {
                 failure = Self.message(error)
             }

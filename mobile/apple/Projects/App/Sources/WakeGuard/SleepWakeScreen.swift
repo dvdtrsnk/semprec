@@ -46,7 +46,7 @@ struct SleepWakeScreen: View {
             }
             .sheet(isPresented: $scanning) {
                 CodeCaptureSheet { code in
-                    change { $0.codes = WakeGuard.normalized($0.codes + [code]) }
+                    change { $0.codes = WakeCodes.normalized($0.codes + [code]) }
                     scanning = false
                 }
             }
