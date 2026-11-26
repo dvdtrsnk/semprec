@@ -4,8 +4,8 @@ import SwiftUI
 
 /// The screen that covers a window while a wake mission rings: the camera waits for one of the mission's codes, the
 /// app's own beep plays, and nothing on it closes it. Once the shared guard opens the fallback, the person may tap
-/// instead of scanning, on a screen of its own. The camera and the sound run only while this window's scene is the
-/// active one.
+/// instead of scanning, on a screen of its own. The camera, the sound and the hold that keeps the device's volume at
+/// its maximum run only while this window's scene is the active one.
 struct WakeGuardScreen: View {
 
     // MARK: - Dependencies
@@ -42,6 +42,7 @@ struct WakeGuardScreen: View {
             guard scansNow else { return }
             await scanner.run { viewModel.send(.codeScanned($0)) }
         }
+        .background { DeviceVolumeHold(isHeld: holdsVolumeNow) }
         .task(id: soundsNow) {
             guard soundsNow else { return }
             await beep.play()
@@ -65,6 +66,11 @@ private extension WakeGuardScreen {
 
     var soundsNow: Bool {
         scenePhase == .active && state.phase != .idle
+    }
+
+    /// The device's volume is held up while the shared guard says so and this scene is the active one.
+    var holdsVolumeNow: Bool {
+        scenePhase == .active && state.holdsVolume
     }
 
     var scanning: some View {

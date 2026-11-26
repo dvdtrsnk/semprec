@@ -28,6 +28,9 @@ enum class WakeTitleKind { SLEEP_ALARM }
 /**
  * [fallbackOpensAtEpochSeconds] is when the person may tap instead of scanning, [fallbackOpen] says it may now;
  * [requiredTaps] and [fallbackDelayMinutes] are the rules' numbers, so that the app's copy takes them from here.
+ * [holdsVolume] says the device's volume is to be held at its maximum: for as long as a mission rings, in either
+ * of its phases, so the person cannot turn the alarm down. The app drives the device's volume from it and only
+ * while its scene is the active one.
  */
 data class WakeGuardState(
     val phase: WakeGuardPhase = WakeGuardPhase.IDLE,
@@ -38,7 +41,9 @@ data class WakeGuardState(
     val fallbackOpen: Boolean = false,
     val codeCount: Int = 0,
     val titleKind: WakeTitleKind = WakeTitleKind.SLEEP_ALARM,
-)
+) {
+    val holdsVolume: Boolean get() = phase != WakeGuardPhase.IDLE
+}
 
 sealed interface WakeGuardAction {
     /** The camera read [code]. */

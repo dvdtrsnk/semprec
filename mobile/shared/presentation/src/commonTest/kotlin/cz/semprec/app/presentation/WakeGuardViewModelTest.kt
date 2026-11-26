@@ -68,6 +68,32 @@ class WakeGuardViewModelTest : MainDispatcherTest() {
         guard.close()
     }
 
+    @Test fun `the volume is held for as long as a mission rings in either phase and not otherwise`() =
+        runTest(dispatcher) {
+            hold(mission(START + 1.hours))
+            val guard = guard()
+            runCurrent()
+            assertFalse(guard.state.value.holdsVolume, "nothing rings yet")
+
+            advanceTimeBy(1.hours)
+            runCurrent()
+            assertTrue(guard.state.value.holdsVolume, "the mission rings and the camera waits")
+
+            advanceTimeBy(10.minutes)
+            runCurrent()
+            guard.onAction(WakeGuardAction.OpenTapFallback)
+            assertEquals(WakeGuardPhase.TAPPING, guard.state.value.phase)
+            assertTrue(guard.state.value.holdsVolume, "the taps are still a ringing alarm")
+
+            guard.onAction(WakeGuardAction.BackToScanning)
+            assertTrue(guard.state.value.holdsVolume)
+            guard.onAction(WakeGuardAction.CodeScanned("123"))
+            runCurrent()
+            assertEquals(WakeGuardPhase.IDLE, guard.state.value.phase)
+            assertFalse(guard.state.value.holdsVolume, "the mission ended")
+            guard.close()
+        }
+
     @Test fun `a mission that rang before the window opened rings at once and its fallback is already open`() =
         runTest(dispatcher) {
             hold(mission(START - 30.minutes))
