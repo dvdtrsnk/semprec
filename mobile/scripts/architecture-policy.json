@@ -90,6 +90,7 @@
       "androidOnly": ["tab.home", "tab.settings"],
       "appleOnly": [
         "session.unreachable",
+        "alarm.scan",
         "NSAlarmKitUsageDescription",
         "NSCameraUsageDescription",
         "NSMicrophoneUsageDescription",

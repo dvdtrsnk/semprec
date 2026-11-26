@@ -96,6 +96,12 @@ final class DeviceAlarmsTests: XCTestCase {
         XCTAssertEqual(DeviceAlarmScheduler.removal(.paused), .cancel)
     }
 
+    func testTheIntentTitleIsAKeyTheAppsOwnCatalogTranslates() {
+        // The tests run in the app, whose main bundle is the one App Intents resolve the title in.
+        let title = String(localized: OpenWakeGuardIntent.title)
+        XCTAssertNotEqual(title, "alarm.scan", "The title must not be the raw key")
+    }
+
     @MainActor
     func testTheTwoAlertsDifferByTheSecondButton() {
         XCTAssertNil(DeviceAlarmScheduler.alert(opensWakeGuard: false).secondaryButton)

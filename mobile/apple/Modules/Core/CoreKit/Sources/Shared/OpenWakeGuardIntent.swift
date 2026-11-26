@@ -6,6 +6,8 @@ import AppIntents
 /// window covers it as soon as it sees the mission ring.
 struct OpenWakeGuardIntent: LiveActivityIntent {
 
+    /// App Intents resolve a title in the main bundle, so the app's catalog holds this key as well as CoreKit's, whose
+    /// copy words the button of the alert.
     static let title: LocalizedStringResource = "alarm.scan"
     static let openAppWhenRun = true
 

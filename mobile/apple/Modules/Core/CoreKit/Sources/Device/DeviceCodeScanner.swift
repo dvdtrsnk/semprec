@@ -124,13 +124,14 @@ private extension DeviceCodeScanner {
 /// Receives the camera's codes and frames on the scanner's queue and yields them into the scanner's streams. Its
 /// stored values are constants that are `Sendable` themselves, and the one mutable value, the filter that stops a code
 /// from repeating, is behind a `Mutex`, so the compiler checks its conformance.
-private final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelegate,
+final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelegate,
     AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
 
     private let codes: AsyncStream<String>.Continuation
     private let frames: AsyncStream<CGImage>.Continuation
     private let filter = Mutex(CodeRepeatFilter())
 
+    // MARK: - Init
     init(codes: AsyncStream<String>.Continuation, frames: AsyncStream<CGImage>.Continuation) {
         self.codes = codes
         self.frames = frames
@@ -144,8 +145,13 @@ private final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelega
         let now = Date()
         for object in metadataObjects {
             guard let code = (object as? AVMetadataMachineReadableCodeObject)?.stringValue else { continue }
-            if filter.withLock({ $0.accepts(code, at: now) }) { codes.yield(code) }
+            report(code, at: now)
         }
+    }
+
+    /// Hands `code` to the scanner's code stream unless the camera just reported it.
+    func report(_ code: String, at date: Date) {
+        if filter.withLock({ $0.accepts(code, at: date) }) { codes.yield(code) }
     }
 
     func captureOutput(
