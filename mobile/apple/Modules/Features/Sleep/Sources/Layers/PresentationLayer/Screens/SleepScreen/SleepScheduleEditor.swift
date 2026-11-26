@@ -42,7 +42,7 @@ struct SleepScheduleEditor: View {
                 isPresented: $confirmsDelete,
                 titleVisibility: .visible
             ) {
-                Button(role: .destructive) { send(.draft(.deletePlan)) } label: {
+                Button(role: .destructive) { actions.delete() } label: {
                     Text("sleep.editor.delete", bundle: .module)
                 }
             }
@@ -62,6 +62,10 @@ struct SleepScheduleEditor: View {
 // MARK: - Subviews
 private extension SleepScheduleEditor {
 
+    var actions: SleepEditorActions {
+        SleepEditorActions(draft: draft, send: send)
+    }
+
     func header(_ key: LocalizedStringKey) -> some View {
         Text(key, bundle: .module)
             .font(.headline)
@@ -73,7 +77,7 @@ private extension SleepScheduleEditor {
     var alarmCard: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.small) {
             header("sleep.editor.alarmOptions")
-            Toggle(isOn: SleepBindings.isOn(draft.alarm) { send(.draft(.setAlarm(isOn: $0))) }) {
+            Toggle(isOn: SleepBindings.isOn(draft.alarm) { actions.setAlarm($0) }) {
                 Text("sleep.editor.alarmToggle", bundle: .module)
             }
             .padding(Theme.Spacing.medium)
@@ -97,13 +101,13 @@ private extension SleepScheduleEditor {
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button { send(.draft(.discard)) } label: {
+            Button { actions.close() } label: {
                 Label { Text("sleep.close", bundle: .module) } icon: { Image(systemName: "xmark") }
             }
             .accessibilityIdentifier(SleepIdentifiers.editorClose)
         }
         ToolbarItem(placement: .confirmationAction) {
-            Button { send(.draft(.confirm(newPlanName: SleepFormat.days(draft.wakeDays)))) } label: {
+            Button { actions.confirm() } label: {
                 if draft.isNew {
                     Text("sleep.editor.add", bundle: .module)
                 } else {

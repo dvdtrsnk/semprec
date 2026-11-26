@@ -28,8 +28,8 @@ struct SleepDaysPicker: View {
 private extension SleepDaysPicker {
 
     func dayButton(_ day: Int) -> some View {
-        let selected = draft.wakeDays.contains(day)
-        let taken = !selected && draft.takenDays.contains(day)
+        let selected = draft.role(of: day) == .selected
+        let taken = draft.role(of: day) == .heldByAnotherPlan
         return Button { send(.draft(.toggleDay(day))) } label: {
             VStack(spacing: 6) {
                 Text(verbatim: SleepFormat.weekdayInitial(day))
@@ -66,4 +66,24 @@ private extension SleepDaysPicker {
     SleepDaysPicker(draft: .previewWeekend, send: { _ in })
         .padding()
         .background(Theme.Colors.groupedBackground)
+}
+
+// MARK: - Day role
+/// How a weekday stands in a schedule being edited.
+enum SleepDayRole: Equatable {
+
+    /// The schedule holds the day.
+    case selected
+    /// Another schedule holds the day, which picking takes over.
+    case heldByAnotherPlan
+    case free
+}
+
+// MARK: - Day role
+extension SleepDraft {
+
+    func role(of day: Int) -> SleepDayRole {
+        if wakeDays.contains(day) { return .selected }
+        return takenDays.contains(day) ? .heldByAnotherPlan : .free
+    }
 }

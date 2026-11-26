@@ -19,3 +19,30 @@ struct SleepNightActions {
         send(.draft(.commitNight))
     }
 }
+
+// MARK: - Editor
+/// What the plan editor sends for the buttons of its toolbar and its form.
+struct SleepEditorActions {
+
+    // MARK: - Dependencies
+    let draft: SleepDraft
+    let send: (SleepAction) -> Void
+
+    // MARK: - Methods
+    /// Writes the draft; a new plan is named after its days, which the screen writes in the person's language.
+    func confirm() {
+        send(.draft(.confirm(newPlanName: SleepFormat.days(draft.wakeDays))))
+    }
+
+    func close() {
+        send(.draft(.discard))
+    }
+
+    func delete() {
+        send(.draft(.deletePlan))
+    }
+
+    func setAlarm(_ isOn: Bool) {
+        send(.draft(.setAlarm(isOn: isOn)))
+    }
+}

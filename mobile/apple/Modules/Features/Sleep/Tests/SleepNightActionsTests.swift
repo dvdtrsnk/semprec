@@ -3,7 +3,8 @@ import XCTest
 
 @testable import SleepFeature
 
-/// What the night view sends: a night without a confirm button writes its draft when a drag ends or the alarm switches.
+/// What the sleep views send: the night view writes its draft when a drag ends or the alarm switches, the dial's
+/// accessibility controls move an end by one step, the plan editor's buttons send their intents, and a day has a role.
 final class SleepNightActionsTests: XCTestCase {
 
     // MARK: - Tests
@@ -28,6 +29,59 @@ final class SleepNightActionsTests: XCTestCase {
                 .draft(.setAlarm(isOn: true)), .draft(.commitNight)
             ]
         )
+    }
+
+    // MARK: - Dial
+    func testAnAdjustmentMovesTheEndByOneStepAndThenEndsTheChange() {
+        let sent = Recorder()
+        var ended = 0
+        let actions = SleepDialActions(send: sent.record, onEnd: { ended += 1 })
+
+        actions.adjust(.bed, at: 1_380, stepMinutes: 5, isLater: true)
+        actions.adjust(.wake, at: 405, stepMinutes: 5, isLater: false)
+
+        XCTAssertEqual(
+            sent.actions,
+            [.draft(.moveDial(.bed, minutes: 1_385)), .draft(.moveDial(.wake, minutes: 400))]
+        )
+        XCTAssertEqual(ended, 2)
+    }
+
+    // MARK: - Editor
+    func testTheEditorButtonsSendTheirIntents() {
+        let sent = Recorder()
+        let actions = SleepEditorActions(draft: .previewWeekdays, send: sent.record)
+
+        actions.confirm()
+        actions.close()
+        actions.delete()
+        actions.setAlarm(false)
+
+        XCTAssertEqual(
+            sent.actions,
+            [
+                .draft(.confirm(newPlanName: "Mon–Fri")), .draft(.discard), .draft(.deletePlan),
+                .draft(.setAlarm(isOn: false))
+            ]
+        )
+    }
+
+    func testANewPlanIsNamedAfterItsDays() {
+        let sent = Recorder()
+
+        SleepEditorActions(draft: .previewNew, send: sent.record).confirm()
+
+        XCTAssertEqual(sent.actions, [.draft(.confirm(newPlanName: "Sat, Sun"))])
+    }
+
+    // MARK: - Days
+    func testADayIsSelectedHeldByAnotherPlanOrFree() {
+        let draft = SleepDraft.previewWeekdays
+
+        XCTAssertEqual(draft.role(of: 1), .selected)
+        XCTAssertEqual(draft.role(of: 6), .heldByAnotherPlan)
+        XCTAssertEqual(SleepDraft.previewNew.role(of: 6), .selected)
+        XCTAssertEqual(SleepDraft.previewNight.role(of: 3), .free)
     }
 }
 

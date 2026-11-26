@@ -191,6 +191,32 @@ class SleepNightDraftTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a refused reset keeps the night draft and reports the failure`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(
+            sleepContent(),
+            writeAnswer = RepositoryResult.Failure(FailureKind.UNAVAILABLE),
+        )
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.Draft.MoveDial(SleepDialHandle.BED, 22 * 60))
+        val draft = vm.draft()
+        vm.onAction(SleepAction.ResetNight)
+        runCurrent()
+        assertEquals(draft, vm.draft())
+        assertEquals(FailureKind.UNAVAILABLE, vm.state.value.saveFailure)
+        vm.close()
+    }
+
+    @Test fun `a reset away from the night view writes nothing`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository, startOnNight = false)
+        runCurrent()
+        vm.onAction(SleepAction.ResetNight)
+        runCurrent()
+        assertTrue(repository.writes.isEmpty())
+        vm.close()
+    }
+
     @Test fun `leaving the night view while its commit is written ends without a draft and reopens on the new night`() =
         runTest(dispatcher) {
             val written = sleepFridayNight(changed = true).copy(bed = sleepClock("22:30"), durationMinutes = 495)

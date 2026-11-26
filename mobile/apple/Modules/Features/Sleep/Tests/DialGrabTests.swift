@@ -69,6 +69,25 @@ final class DialGrabTests: XCTestCase {
         XCTAssertNil(DialGrab.start(at: CGPoint(x: 150, y: 150), geometry: geometry, draft: draft))
     }
 
+    // MARK: - Moves
+    func testAMoveIsSentOnlyWhenTheFingerReachesAnotherStep() {
+        var grab = DialGrab(handle: .bed, offsetMinutes: 0, lastSentStep: nil)
+
+        XCTAssertEqual(grab.move(to: 1_380, stepMinutes: 5), 1_380)
+        XCTAssertNil(grab.move(to: 1_381, stepMinutes: 5))
+        XCTAssertNil(grab.move(to: 1_379, stepMinutes: 5))
+        XCTAssertEqual(grab.move(to: 1_383, stepMinutes: 5), 1_383)
+        XCTAssertEqual(grab.move(to: 1_370, stepMinutes: 5), 1_370)
+        XCTAssertEqual(grab.lastSentStep, 274)
+    }
+
+    func testAZeroStepDoesNotDivideByZero() {
+        var grab = DialGrab(handle: .wake, offsetMinutes: 0, lastSentStep: nil)
+
+        XCTAssertEqual(grab.move(to: 7, stepMinutes: 0), 7)
+        XCTAssertNil(grab.move(to: 7, stepMinutes: 0))
+    }
+
     // MARK: - Helpers
     /// The point of the snake's track at a minute of the day, for a dial 300 points wide.
     private func point(minutes: Double) -> CGPoint {

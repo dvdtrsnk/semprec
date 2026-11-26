@@ -30,10 +30,10 @@ struct SleepScreen: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(SleepIdentifiers.screen)
-        .sheet(isPresented: editorPresented) { editorSheet }
+        .sheet(isPresented: presentation.editor) { editorSheet }
         .alert(
             Text("sleep.save.failed", bundle: .module),
-            isPresented: saveFailedOverview,
+            isPresented: presentation.overviewFailure,
             actions: {
                 Button { viewModel.send(.dismissSaveFailure) } label: { Text("sleep.save.dismiss", bundle: .module) }
             },
@@ -76,33 +76,19 @@ private extension SleepScreen {
         }
     }
 
-    /// Whether the editor shows; closing it by the system (a swipe down) discards its draft.
-    var editorPresented: Binding<Bool> {
-        Binding(
-            get: { viewModel.state.editor != nil },
-            set: { if !$0 { viewModel.send(.draft(.discard)) } }
-        )
+    var presentation: SleepPresentation {
+        SleepPresentation(state: state, send: send)
     }
 
     @ViewBuilder var editorSheet: some View {
         if let draft = state.editor ?? shownEditor {
-            SleepScheduleEditor(draft: draft, saveFailed: saveFailed, saveFailure: state.saveFailure, send: send)
+            SleepScheduleEditor(
+                draft: draft,
+                saveFailed: presentation.editorFailure,
+                saveFailure: state.saveFailure,
+                send: send
+            )
         }
-    }
-
-    var saveFailed: Binding<Bool> {
-        Binding(
-            get: { viewModel.state.editorShowsSaveFailure },
-            set: { if !$0 { viewModel.send(.dismissSaveFailure) } }
-        )
-    }
-
-    /// A failure that no open editor shows itself: the editor presents its own, as an alert cannot show under a sheet.
-    var saveFailedOverview: Binding<Bool> {
-        Binding(
-            get: { viewModel.state.overviewShowsSaveFailure },
-            set: { if !$0 { viewModel.send(.dismissSaveFailure) } }
-        )
     }
 
     var title: Text {

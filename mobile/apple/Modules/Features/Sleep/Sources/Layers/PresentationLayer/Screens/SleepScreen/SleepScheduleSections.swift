@@ -61,7 +61,7 @@ private extension SleepScheduleSections {
 
     func card(_ plan: SleepPlanItem) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: daysText(plan))
+            Text(verbatim: SleepFormat.days(plan.wakeDays))
                 .font(.headline)
                 .foregroundStyle(Theme.Colors.sleep)
             HStack(alignment: .top, spacing: 0) {
@@ -87,11 +87,6 @@ private extension SleepScheduleSections {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-    }
-
-    func daysText(_ plan: SleepPlanItem) -> String {
-        guard !plan.wakeDays.isEmpty else { return String(localized: "sleep.schedule.noDays", bundle: .module) }
-        return SleepFormat.days(plan.wakeDays)
     }
 
     func timeColumn(symbol: String, symbolColor: Color, title: Text, minutes: Int, emphasized: Bool) -> some View {

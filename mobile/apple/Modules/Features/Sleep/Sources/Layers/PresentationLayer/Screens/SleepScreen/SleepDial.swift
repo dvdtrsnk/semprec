@@ -120,10 +120,8 @@ private extension SleepDial {
                 }
                 guard var held = grab else { return }
                 let target = held.target(at: value.location, geometry: geometry)
-                let step = Int((Double(target) / Double(max(draft.stepMinutes, 1))).rounded())
-                guard step != held.lastSentStep else { return }
-                send(.draft(.moveDial(held.handle, minutes: target)))
-                held.lastSentStep = step
+                guard let minutes = held.move(to: target, stepMinutes: draft.stepMinutes) else { return }
+                send(.draft(.moveDial(held.handle, minutes: minutes)))
                 grab = held
             }
             .onEnded { _ in onEnd() }
@@ -158,17 +156,16 @@ private extension SleepDial {
             .accessibilityValue(Text(verbatim: SleepFormat.time(minutes)))
             .accessibilityAdjustableAction { direction in
                 switch direction {
-                case .increment: adjust(handle, to: minutes + draft.stepMinutes)
-                case .decrement: adjust(handle, to: minutes - draft.stepMinutes)
+                case .increment: actions.adjust(handle, at: minutes, stepMinutes: draft.stepMinutes, isLater: true)
+                case .decrement: actions.adjust(handle, at: minutes, stepMinutes: draft.stepMinutes, isLater: false)
                 @unknown default: break
                 }
             }
             .accessibilityIdentifier(identifier)
     }
 
-    func adjust(_ handle: SleepDialHandle, to minutes: Int) {
-        send(.draft(.moveDial(handle, minutes: minutes)))
-        onEnd()
+    var actions: SleepDialActions {
+        SleepDialActions(send: send, onEnd: onEnd)
     }
 }
 

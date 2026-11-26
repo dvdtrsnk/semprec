@@ -9,3 +9,27 @@ extension CalendarSleep {
         fromMinutes < toMinutes ? fromMinutes..<toMinutes : nil
     }
 }
+
+/// What the day timeline draws of the sleep on one day: a band of a night, or its bedtime reminder.
+enum CalendarSleepPart: Equatable {
+
+    /// The band of `sleep`; the evening one is labelled with the bedtime, the morning one with the wake time.
+    case band(CalendarSleep, Range<Int>, isEvening: Bool)
+    case reminder(CalendarSleep, minutes: Int)
+}
+
+// MARK: - Parts
+extension CalendarDayState {
+
+    /// The evening's night first, then the morning's: each with its band when the night reaches this day, and its
+    /// reminder when it comes on this day.
+    var sleepParts: [CalendarSleepPart] {
+        var parts: [CalendarSleepPart] = []
+        for (sleep, isEvening) in [(sleepEvening, true), (sleepMorning, false)] {
+            guard let sleep else { continue }
+            if let band = sleep.band { parts.append(.band(sleep, band, isEvening: isEvening)) }
+            if let minutes = sleep.prepMinutes { parts.append(.reminder(sleep, minutes: minutes)) }
+        }
+        return parts
+    }
+}

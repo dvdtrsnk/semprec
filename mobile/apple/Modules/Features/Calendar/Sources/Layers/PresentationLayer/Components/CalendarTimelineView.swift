@@ -210,24 +210,15 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
-    /// The parts of the evening's and the morning's nights that fall on this day, as the shared layer cut them, and
-    /// the bedtime reminder where it comes on this day.
+    /// The bands and the bedtime reminders of the sleep on this day, as the shared layer cut them.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
-        if let evening = day.sleepEvening {
-            if let band = evening.band {
-                sleepBand(evening, band: band, evening: true, width: width)
-            }
-            if let prep = evening.prepMinutes {
-                prepMarker(evening, minutes: prep, width: width)
-            }
-        }
-        if let morning = day.sleepMorning {
-            if let band = morning.band {
-                sleepBand(morning, band: band, evening: false, width: width)
-            }
-            if let prep = morning.prepMinutes {
-                prepMarker(morning, minutes: prep, width: width)
+        ForEach(Array(day.sleepParts.enumerated()), id: \.offset) { _, part in
+            switch part {
+            case .band(let sleep, let band, let isEvening):
+                sleepBand(sleep, band: band, evening: isEvening, width: width)
+            case .reminder(let sleep, let minutes):
+                prepMarker(sleep, minutes: minutes, width: width)
             }
         }
     }

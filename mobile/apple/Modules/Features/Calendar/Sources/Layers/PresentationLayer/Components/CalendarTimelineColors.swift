@@ -54,8 +54,9 @@ private extension CalendarTimelineColors {
 
     /// The parts of the evening's and the morning's nights that fall on this day, as the shared layer cut them.
     var sleepRanges: [(Int, Int)] {
-        [day.sleepEvening, day.sleepMorning]
-            .compactMap { $0?.band }
-            .map { ($0.lowerBound, $0.upperBound) }
+        day.sleepParts.compactMap { part in
+            guard case .band(_, let band, _) = part else { return nil }
+            return (band.lowerBound, band.upperBound)
+        }
     }
 }

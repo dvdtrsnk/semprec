@@ -43,6 +43,10 @@ final class SleepFormatTests: XCTestCase {
         XCTAssertEqual(SleepFormat.days([1, 2, 3, 4, 5, 6, 7]), "Every day")
     }
 
+    func testAPlanWithoutDaysSaysSo() {
+        XCTAssertEqual(SleepFormat.days([]), "No days")
+    }
+
     func testOtherDaysAreListedInOrder() {
         XCTAssertEqual(SleepFormat.days([3, 1]), "Mon, Wed")
     }

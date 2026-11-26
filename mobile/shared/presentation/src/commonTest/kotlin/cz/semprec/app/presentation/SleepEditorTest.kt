@@ -372,6 +372,41 @@ class SleepEditorTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `an editor can be opened while a write runs and its confirmation waits`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val repository = FakeSleepRepository(sleepContent())
+        val vm = sleep(repository)
+        runCurrent()
+        repository.gate = gate
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ENABLED, on = false))
+        runCurrent()
+        assertTrue(vm.state.value.saving)
+        vm.onAction(SleepAction.Draft.EditPlan("p2"))
+        assertEquals("p2", vm.editor().planId)
+        repository.gate = null
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals("p2", vm.editor().planId)
+        vm.close()
+    }
+
+    @Test fun `a plan that was deleted elsewhere is not found when its draft is confirmed`() = runTest(dispatcher) {
+        val repository = FakeSleepRepository(sleepContent(), sleepContent(onlyWeekdays))
+        val vm = sleep(repository)
+        runCurrent()
+        vm.onAction(SleepAction.Draft.EditPlan("p2"))
+        vm.onAction(SleepAction.SetSwitch(SleepSwitch.ENABLED, on = false))
+        runCurrent()
+        assertEquals(1, vm.state.value.plans.size)
+        vm.onAction(SleepAction.Draft.SetDraftAlarm(on = true))
+        vm.onAction(SleepAction.Draft.ConfirmDraft("Name"))
+        runCurrent()
+        assertEquals(FailureKind.NOT_FOUND, vm.state.value.saveFailure)
+        assertEquals("p2", vm.editor().planId)
+        assertTrue(repository.writes.none { it.startsWith("plan:") })
+        vm.close()
+    }
+
     @Test fun `discarding closes the editor without a write`() = runTest(dispatcher) {
         val repository = FakeSleepRepository(sleepContent())
         val vm = sleep(repository)

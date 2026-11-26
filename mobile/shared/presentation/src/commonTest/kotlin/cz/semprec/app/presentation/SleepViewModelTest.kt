@@ -158,6 +158,26 @@ class SleepViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `every switch of the overview writes its own setting`() = runTest(dispatcher) {
+        val expected = mapOf(
+            SleepSwitch.ENABLED to "enabled=false",
+            SleepSwitch.SHOW_IN_CALENDAR to "showInCalendar=false",
+            SleepSwitch.MUTE_SEMP to "muteSemp=false",
+            SleepSwitch.ALARM_SNOOZE to "alarmSnooze=false",
+            SleepSwitch.PREP_REMINDER to "prepReminder=false",
+        )
+        assertEquals(SleepSwitch.entries.toSet(), expected.keys)
+        for ((target, field) in expected) {
+            val repository = FakeSleepRepository(sleepContent())
+            val vm = sleep(repository)
+            runCurrent()
+            vm.onAction(SleepAction.SetSwitch(target, on = false))
+            runCurrent()
+            assertTrue(repository.writes.single().contains(field), "$target wrote ${repository.writes}")
+            vm.close()
+        }
+    }
+
     @Test fun `a refused settings write is reverted and reported`() = runTest(dispatcher) {
         val repository = FakeSleepRepository(
             sleepContent(),

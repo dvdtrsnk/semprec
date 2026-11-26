@@ -33,4 +33,30 @@ struct DialGrab: Equatable {
     func target(at point: CGPoint, geometry: DialGeometry) -> Int {
         Int((geometry.minutes(at: point) + offsetMinutes).rounded())
     }
+
+    /// The time to send for the finger's `target` when it reached another step than the last one sent, nil while it
+    /// is still on that step. The shared draft snaps the time; this only keeps the stream of sends to one per step.
+    mutating func move(to target: Int, stepMinutes: Int) -> Int? {
+        let step = Int((Double(target) / Double(max(stepMinutes, 1))).rounded())
+        guard step != lastSentStep else { return nil }
+        lastSentStep = step
+        return target
+    }
+}
+
+// MARK: - Accessibility
+/// What the dial's accessibility controls send: an end moves by one step of the dial, and the night is written when
+/// the screen writes each change.
+struct SleepDialActions {
+
+    // MARK: - Dependencies
+    let send: (SleepAction) -> Void
+    let onEnd: () -> Void
+
+    // MARK: - Methods
+    /// Moves `handle`, now at `minutes`, one `stepMinutes` later (`isLater`) or earlier; the shared draft wraps it.
+    func adjust(_ handle: SleepDialHandle, at minutes: Int, stepMinutes: Int, isLater: Bool) {
+        send(.draft(.moveDial(handle, minutes: isLater ? minutes + stepMinutes : minutes - stepMinutes)))
+        onEnd()
+    }
 }
