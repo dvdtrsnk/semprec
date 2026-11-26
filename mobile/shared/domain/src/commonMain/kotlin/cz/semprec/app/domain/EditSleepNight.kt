@@ -7,8 +7,11 @@ class EditSleepNight(private val repository: SleepRepository) {
     suspend operator fun invoke(night: CalendarDay, change: SleepNightChange): RepositoryResult<SleepNight?> {
         val times = listOfNotNull(change.bed, change.wake)
         val empty = !change.reset && times.isEmpty() && change.alarm == null
+        val bed = change.bed
+        val wake = change.wake
+        val badLength = bed != null && wake != null && !SleepNightRules.isNightLength(bed, wake)
         return when {
-            empty || !times.all(SleepRules::isSleepTime) -> RepositoryResult.Failure(FailureKind.REJECTED)
+            empty || badLength || !times.all(SleepRules::isSleepTime) -> RepositoryResult.Failure(FailureKind.REJECTED)
             else -> repository.changeNight(night, change)
         }
     }

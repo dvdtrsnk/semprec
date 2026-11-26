@@ -65,6 +65,7 @@ enum CalendarKotlin {
         zoom: SharedSDK.CalendarZoom = .day,
         days: [SharedSDK.CalendarDayState] = [],
         drag: SharedSDK.CalendarDrag? = nil,
+        sleepDrag: SharedSDK.CalendarSleepDrag? = nil,
         clipboard: SharedSDK.CalendarClipboard? = nil,
         problemFailure: SharedSDK.FailureKind? = nil
     ) -> SharedSDK.CalendarState {
@@ -82,7 +83,7 @@ enum CalendarKotlin {
             pendingInvitations: 3,
             selectedItemId: "e1",
             drag: drag,
-            sleepDrag: nil,
+            sleepDrag: sleepDrag,
             clipboard: clipboard,
             busy: true,
             problem: true,

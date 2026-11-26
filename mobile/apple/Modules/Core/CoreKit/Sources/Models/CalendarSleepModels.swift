@@ -44,18 +44,30 @@ public struct CalendarSleep: Equatable, Sendable {
     }
 }
 
-/// The night a finger moves or stretches, and the snapped times it would have.
+/// The night a finger moves or stretches: the snapped times it would have, how long it would be and whether it would
+/// reach the sleep goal (`nil` without a goal), as the shared layer works them out.
 public struct CalendarSleepDrag: Equatable, Sendable {
 
     public let night: String
     public let bedMinutes: Int
     public let wakeMinutes: Int
     public let committing: Bool
+    public let durationMinutes: Int
+    public let meetsGoal: Bool?
 
-    public init(night: String, bedMinutes: Int, wakeMinutes: Int, committing: Bool) {
+    public init(
+        night: String,
+        bedMinutes: Int,
+        wakeMinutes: Int,
+        committing: Bool,
+        durationMinutes: Int = 0,
+        meetsGoal: Bool? = nil
+    ) {
         self.night = night
         self.bedMinutes = bedMinutes
         self.wakeMinutes = wakeMinutes
         self.committing = committing
+        self.durationMinutes = durationMinutes
+        self.meetsGoal = meetsGoal
     }
 }

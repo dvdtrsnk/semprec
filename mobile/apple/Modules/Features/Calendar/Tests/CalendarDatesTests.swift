@@ -58,6 +58,19 @@ final class CalendarDatesTests: XCTestCase {
         XCTAssertNotEqual(CalendarDates.clock(minutes: 0), CalendarDates.clock(minutes: 720))
     }
 
+    func testAnHourLineIsLabelledAsTheRegionWritesHours() {
+        let two = CalendarDates.hourLabel(14)
+        if DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current)?.contains("a") == true {
+            XCTAssertTrue(two.contains("2"), two)
+            XCTAssertFalse(two.contains("14"), two)
+            XCTAssertFalse(two.contains(":"), two)
+        } else {
+            XCTAssertEqual(two, CalendarDates.clock(minutes: 14 * 60))
+        }
+        XCTAssertNotEqual(CalendarDates.hourLabel(0), CalendarDates.hourLabel(12))
+        XCTAssertEqual(CalendarDates.hourLabel(14), two)
+    }
+
     func testRangeJoinsTwoClocksWithAnEnDash() {
         let expected = "\(CalendarDates.clock(minutes: 840))–\(CalendarDates.clock(minutes: 930))"
         XCTAssertEqual(CalendarDates.range(from: 840, to: 930), expected)

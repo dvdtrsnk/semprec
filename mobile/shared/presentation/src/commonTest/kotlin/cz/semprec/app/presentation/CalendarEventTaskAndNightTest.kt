@@ -96,7 +96,7 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
         val vm = loaded()
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", edge = null, deltaMinutes = -58))
         assertEquals(
-            CalendarSleepDrag("2026-10-16", 22 * 60, 5 * 60 + 45, committing = false),
+            CalendarSleepDrag("2026-10-16", 22 * 60, 5 * 60 + 45, false, 7 * 60 + 45, meetsGoal = null),
             vm.state.value.sleepDrag,
         )
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.START, deltaMinutes = -38))
@@ -125,6 +125,17 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
             assertEquals(null, vm.state.value.sleepDrag)
             vm.close()
         }
+
+    @Test fun `a moved night says whether it would reach the sleep goal`() = runTest(dispatcher) {
+        val night = sleepEntry(DAY_ZERO)
+        serve(night.copy(sleep = night.sleep?.copy(goalMinutes = 8 * 60)))
+        val vm = loaded()
+        act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 15))
+        assertEquals(8 * 60 to true, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
+        act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 0))
+        assertEquals(7 * 60 + 45 to false, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
+        vm.close()
+    }
 
     @Test fun `a night whose write failed can be moved again`() = runTest(dispatcher) {
         sleep.writeAnswer = unavailable

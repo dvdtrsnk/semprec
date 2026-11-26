@@ -6,21 +6,21 @@ extension CalendarSleep {
     /// Noon, from which a bedtime runs through midnight, as the server counts a night.
     static let noon = 12 * 60
 
-    /// The same night with other times, its length and its goal worked out again as the server counts them.
-    func moved(bed: Int, wake: Int) -> CalendarSleep {
-        let duration = bed >= Self.noon ? CalendarGeometry.minutesPerDay - bed + wake : max(0, wake - bed)
-        return CalendarSleep(
+    /// The same night with the times of `drag`, and the length and the goal the shared layer worked out for them.
+    func moved(by drag: CalendarSleepDrag) -> CalendarSleep {
+        CalendarSleep(
             night: night,
-            bedMinutes: bed,
-            wakeMinutes: wake,
+            bedMinutes: drag.bedMinutes,
+            wakeMinutes: drag.wakeMinutes,
             alarm: alarm,
-            changed: changed || planBedMinutes.map { bed != $0 } == true || planWakeMinutes.map { wake != $0 } == true,
+            changed: changed || planBedMinutes.map { drag.bedMinutes != $0 } == true
+                || planWakeMinutes.map { drag.wakeMinutes != $0 } == true,
             prepMinutes: prepMinutes,
             planBedMinutes: planBedMinutes,
             planWakeMinutes: planWakeMinutes,
-            durationMinutes: duration,
+            durationMinutes: drag.durationMinutes,
             goalMinutes: goalMinutes,
-            meetsGoal: goalMinutes.map { duration >= $0 }
+            meetsGoal: drag.meetsGoal
         )
     }
 }

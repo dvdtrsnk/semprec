@@ -35,6 +35,32 @@ final class SharedCalendarSleepMappingTests: XCTestCase {
         )
     }
 
+    func testAMovedNightMapsItsTimesItsLengthAndItsGoal() {
+        let drag = SharedSDK.CalendarSleepDrag(
+            night: "2026-10-15",
+            bedMinutes: 1350,
+            wakeMinutes: 405,
+            committing: true,
+            durationMinutes: 495,
+            meetsGoal: KotlinBoolean(bool: true)
+        )
+        XCTAssertEqual(
+            Model.state(CalendarKotlin.state(.content, sleepDrag: drag)).sleepDrag,
+            CoreKit.CalendarSleepDrag(
+                night: "2026-10-15",
+                bedMinutes: 1350,
+                wakeMinutes: 405,
+                committing: true,
+                durationMinutes: 495,
+                meetsGoal: true
+            )
+        )
+        let withoutGoal = SharedSDK.CalendarSleepDrag(
+            night: "n", bedMinutes: 0, wakeMinutes: 60, committing: false, durationMinutes: 60, meetsGoal: nil
+        )
+        XCTAssertNil(Model.state(CalendarKotlin.state(.content, sleepDrag: withoutGoal)).sleepDrag?.meetsGoal)
+    }
+
     func testTheCheckboxOfATaskInAnEventAndTheMovesOfANightMapToKotlin() throws {
         let inEvent = try XCTUnwrap(
             Model.action(.gesture(.toggleDone(itemId: "c", inEventId: "e")))

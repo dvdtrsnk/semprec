@@ -288,7 +288,7 @@ private extension CalendarTimelineView {
 
     func moved(_ sleep: CalendarSleep) -> CalendarSleep {
         guard let sleepDrag, sleepDrag.night == sleep.night else { return sleep }
-        return sleep.moved(bed: sleepDrag.bedMinutes, wake: sleepDrag.wakeMinutes)
+        return sleep.moved(by: sleepDrag)
     }
 
     func sleepBand(_ sleep: CalendarSleep, evening: Bool, from start: Int, to end: Int, width: CGFloat) -> some View {

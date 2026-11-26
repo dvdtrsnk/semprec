@@ -372,7 +372,9 @@ extension CalendarSleepDrag {
             night: drag.night,
             bedMinutes: Int(drag.bedMinutes),
             wakeMinutes: Int(drag.wakeMinutes),
-            committing: drag.committing
+            committing: drag.committing,
+            durationMinutes: Int(drag.durationMinutes),
+            meetsGoal: drag.meetsGoal?.boolValue
         )
     }
 }

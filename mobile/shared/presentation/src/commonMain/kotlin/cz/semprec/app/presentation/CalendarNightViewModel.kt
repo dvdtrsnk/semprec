@@ -7,6 +7,7 @@ import cz.semprec.app.domain.EditSleepNight
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.ScheduleEditing
 import cz.semprec.app.domain.SleepNightChange
+import cz.semprec.app.domain.SleepNightRules
 import cz.semprec.app.domain.SleepRules
 
 /**
@@ -23,7 +24,8 @@ abstract class CalendarNightViewModel internal constructor(
 
     /**
      * A night is moved or one of its ends dragged: the times it would have are kept as a preview, snapped to the step
-     * of the calendar. A night is never shorter than an hour nor longer than [MAX_NIGHT_MINUTES].
+     * of the calendar, with its length and whether it reaches the goal; a night is never shorter nor longer than
+     * [SleepNightRules.isNightLength] allows.
      */
     internal fun sleepDrag(action: CalendarAction.Gesture.SleepDrag) {
         val night = entryOf(SLEEP_ID_PREFIX + action.night)?.sleep
@@ -36,11 +38,12 @@ abstract class CalendarNightViewModel internal constructor(
             CalendarEdge.START -> snapped(bed + action.deltaMinutes) to wake
             CalendarEdge.END -> bed to snapped(wake + action.deltaMinutes)
         }
+        if (!SleepNightRules.isNightLength(ClockTime(newBed), ClockTime(newWake))) return
         val duration = SleepRules.durationMinutes(ClockTime(newBed), ClockTime(newWake))
-        if (duration < MIN_NIGHT_MINUTES || duration > MAX_NIGHT_MINUTES) return
+        val meetsGoal = night.goalMinutes?.let { SleepNightRules.meetsGoal(duration, it) }
         update {
             it.copy(
-                sleepDrag = CalendarSleepDrag(action.night, newBed, newWake, committing = false),
+                sleepDrag = CalendarSleepDrag(action.night, newBed, newWake, false, duration, meetsGoal),
                 selectedItemId = null,
             )
         }
@@ -68,9 +71,3 @@ abstract class CalendarNightViewModel internal constructor(
 
 /** The id the server gives the night that starts on an evening, `sleep:<night>`. */
 private const val SLEEP_ID_PREFIX = "sleep:"
-
-/** The shortest night a drag leaves. */
-private const val MIN_NIGHT_MINUTES = 60
-
-/** The longest night a drag leaves. */
-private const val MAX_NIGHT_MINUTES = 16 * 60

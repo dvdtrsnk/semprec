@@ -74,9 +74,11 @@ private extension CalendarAllDayRow {
         .animation(.snappy(duration: 0.28), value: items.map(\.identity))
     }
 
-    /// The note of a task that was in an event and was not done is orange, as a warning; other notes are quiet.
+    /// The note of a task that was in an event and was not done is orange, as a warning; other notes, a trace's among
+    /// them, are quiet.
     func noteStyle(_ item: CalendarItem) -> AnyShapeStyle {
-        item.hostEventTitle == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange)
+        let warns = item.traceDescription == nil && item.hostedDescription != nil
+        return warns ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary)
     }
 
     /// A held chip is the colour of its calendar all through, with white words, as a held block of the timeline.

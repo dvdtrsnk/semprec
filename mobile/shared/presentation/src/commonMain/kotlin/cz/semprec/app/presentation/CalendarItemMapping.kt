@@ -7,6 +7,7 @@ import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.EventTaskEntry
 import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.SleepNightEntry
+import cz.semprec.app.domain.SleepNightRules
 import cz.semprec.app.domain.SleepRules
 import cz.semprec.app.domain.TimelineLane
 import cz.semprec.app.domain.TraceOutcome
@@ -80,6 +81,6 @@ internal fun SleepNightEntry.toState(): CalendarSleep {
         planWakeMinutes = planWake?.minutes,
         durationMinutes = duration,
         goalMinutes = goalMinutes,
-        meetsGoal = goalMinutes?.let { duration >= it },
+        meetsGoal = goalMinutes?.let { SleepNightRules.meetsGoal(duration, it) },
     )
 }
