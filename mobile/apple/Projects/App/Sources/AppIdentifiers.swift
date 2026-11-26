@@ -27,4 +27,22 @@ enum AppIdentifiers {
     static let wakeGuardTap = "wake.guard.tap"
     /// The button that goes back from the tap challenge to scanning.
     static let wakeGuardTapBack = "wake.guard.tapBack"
+    /// The debug menu and its alarm tool; Apple-only, because they try the platform features of Apple devices.
+    static let debugOpen = "debug.open"
+    static let debugMenu = "debug.menu"
+    static let debugAlarmsRow = "debug.row.alarms"
+    static let debugAlarmScreen = "debug.alarm"
+    static let debugAlarmRefresh = "debug.alarm.refresh"
+    static let debugAlarmPermission = "debug.alarm.permission"
+    static let debugAlarmRequestPermission = "debug.alarm.permission.request"
+    static let debugAlarmMission = "debug.alarm.mission"
+    static let debugAlarmRepeat = "debug.alarm.repeat"
+    static let debugAlarmTime = "debug.alarm.time"
+    static let debugAlarmSchedule = "debug.alarm.schedule"
+    static let debugAlarmIn10s = "debug.alarm.in10s"
+    static let debugAlarmIn1m = "debug.alarm.in1m"
+    static let debugAlarmIn5m = "debug.alarm.in5m"
+    /// The cancel button of one alarm; the alarm's id follows.
+    static let debugAlarmCancelPrefix = "debug.alarm.cancel."
+    static let debugAlarmCancelAll = "debug.alarm.cancelAll"
 }

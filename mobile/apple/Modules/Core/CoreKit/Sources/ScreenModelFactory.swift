@@ -41,6 +41,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeWakeSettings() -> any WakeSettingsScreenModel
     /// The guard of one window, which covers it while a wake mission rings.
     func makeWakeGuard() -> any WakeGuardScreenModel
+    /// The debug tool of the device's alarms: the permission, ringing a test alarm or a mission, and the alarms held.
+    func makeDebugAlarms() -> any DebugAlarmScreenModel
 
     // Calendar slice
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.

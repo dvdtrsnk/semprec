@@ -20,6 +20,12 @@ extension DeviceAlarmScheduler: @preconcurrency SharedSDK.DeviceAlarms {
         Self.systemAuthorization()
     }
 
+    func requestAuthorization(callback: @escaping (SharedSDK.DeviceAlarmAuthorization) -> Void) {
+        // Like scheduling, the one system call is awaited in a task that holds no state of this object and ends with
+        // its answer, which it hands over exactly once.
+        Task { @MainActor in callback(await Self.systemRequestAuthorization()) }
+    }
+
     func schedule(
         ringAtEpochSeconds: Int64,
         opensWakeGuard: Bool,
@@ -120,6 +126,16 @@ private extension DeviceAlarmScheduler {
         authorization(AlarmManager.shared.authorizationState)
     }
 
+    /// Asks the person when never asked; an answer given before is read back. A request the system fails is answered
+    /// with what the device holds, which the caller shows as it is.
+    static func systemRequestAuthorization() async -> SharedSDK.DeviceAlarmAuthorization {
+        do {
+            return authorization(try await AlarmManager.shared.requestAuthorization())
+        } catch {
+            return systemAuthorization()
+        }
+    }
+
     static func systemSchedule(at date: Date, opensWakeGuard: Bool) async -> SharedSDK.DeviceAlarmScheduling {
         // An undecided permission is asked for by the system as part of scheduling; a refused one is not asked again.
         guard AlarmManager.shared.authorizationState != .denied else {
@@ -171,6 +187,8 @@ private extension DeviceAlarmScheduler {
 private extension DeviceAlarmScheduler {
 
     static func systemAuthorization() -> SharedSDK.DeviceAlarmAuthorization { .unsupported }
+
+    static func systemRequestAuthorization() async -> SharedSDK.DeviceAlarmAuthorization { .unsupported }
 
     static func systemSchedule(at date: Date, opensWakeGuard: Bool) async -> SharedSDK.DeviceAlarmScheduling {
         SharedSDK.DeviceAlarmSchedulingRefused(failure: .unsupported)

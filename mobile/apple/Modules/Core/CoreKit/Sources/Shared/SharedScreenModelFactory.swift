@@ -52,7 +52,8 @@ public final class SharedScreenModelFactory {
             cacheDirectory: cacheDirectory,
             dataDirectory: dataDirectory,
             wake: wake?.wake,
-            sleepAlarms: wake?.sleepAlarms
+            sleepAlarms: wake?.sleepAlarms,
+            debugAlarms: wake?.debugAlarms
         )
     }
 
@@ -146,6 +147,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func makeWakeGuard() -> any WakeGuardScreenModel {
         SharedWakeGuardScreenModel(sdk.sleep.wakeGuardViewModel())
+    }
+
+    public func makeDebugAlarms() -> any DebugAlarmScreenModel {
+        SharedDebugAlarmScreenModel(sdk.debugAlarmViewModel())
     }
 
     // Calendar slice

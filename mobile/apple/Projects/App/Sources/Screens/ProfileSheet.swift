@@ -4,6 +4,8 @@ import SwiftUI
 
 /// The sheet of the profile and settings: the profile, and the account screens it leads to on a stack of the sheet's
 /// own. The profile button of the Overview opens it on the profile; the Mail screens open it on the internet accounts.
+/// The profile's toolbar opens the debug menu, which is in every build: the owner tries the system alarms on the
+/// Ad Hoc builds he installs.
 struct ProfileSheet: View {
 
     // MARK: - Dependencies
@@ -40,6 +42,14 @@ struct ProfileSheet: View {
         )
         NavigationStack(path: $path.pages) {
             AccountScreenFactory.profile(makeModel: { [models] in models.makeProfile() }, router: router)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Button { router.showDebugMenu() } label: {
+                            Label { Text("debug.title") } icon: { Image(systemName: "ladybug") }
+                        }
+                        .accessibilityIdentifier(AppIdentifiers.debugOpen)
+                    }
+                }
                 .navigationDestination(for: ProfileSheetPage.self) { [models] page in
                     Self.destination(page, models, router: router)
                 }
@@ -64,6 +74,10 @@ extension ProfileSheet {
                 makeModel: { models.makeInternetAccount(accountId: accountId) },
                 router: router
             )
+        case .debug:
+            DebugMenuScreen(openAlarms: { router.showDebugAlarms() })
+        case .debugAlarms:
+            DebugAlarmScreen(makeModel: { models.makeDebugAlarms() })
         }
     }
 
