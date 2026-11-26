@@ -114,6 +114,40 @@ class HttpSleepRepositoryTest {
     }
 
     @Test
+    fun theNightsOfARangeAreReadInOneRequest() = runTest {
+        val second = NIGHT.replace("2026-10-16", "2026-10-17").replace("\"alarm\":true", "\"alarm\":false")
+        val repo = repository { json("""{"nights":[$NIGHT,$second]}""") }
+
+        val result = repo.nights(CalendarDay(2026, 10, 16), CalendarDay(2026, 10, 22))
+
+        val nights = assertIs<RepositoryResult.Content<List<cz.semprec.app.domain.SleepNight>>>(result).value
+        assertEquals(listOf(CalendarDay(2026, 10, 16), CalendarDay(2026, 10, 17)), nights.map { it.night })
+        assertEquals(listOf(true, false), nights.map { it.alarm })
+        val request = requests.single()
+        assertEquals("/api/sleep/nights", request.path())
+        assertEquals(HttpMethod.Get, request.method)
+        assertEquals("2026-10-16", request.url.parameters["from"])
+        assertEquals("2026-10-22", request.url.parameters["to"])
+    }
+
+    @Test
+    fun aRangeWithAnUnreadableNightIsInvalidDataAndAFailedReadItsFailure() = runTest {
+        val unreadable = NIGHT.replace("\"bedTime\":\"23:00\"", "\"bedTime\":\"late\"")
+        val invalid = repository { json("""{"nights":[$NIGHT,$unreadable]}""") }
+        val range = CalendarDay(2026, 10, 16) to CalendarDay(2026, 10, 22)
+        assertEquals(
+            FailureKind.INVALID_DATA,
+            assertIs<RepositoryResult.Failure>(invalid.nights(range.first, range.second)).kind,
+        )
+
+        val down = repository { json("{}", HttpStatusCode.ServiceUnavailable) }
+        assertEquals(
+            FailureKind.UNAVAILABLE,
+            assertIs<RepositoryResult.Failure>(down.nights(range.first, range.second)).kind,
+        )
+    }
+
+    @Test
     fun theDatabasesAreFoundOnlyOnce() = runTest {
         val repo = repository { reads(it) }
 

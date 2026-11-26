@@ -24,6 +24,9 @@ data class DeviceReminder(
     val startsAt: String,
 )
 
+/** What a silent push asks the device to read again. */
+enum class DeviceResync { REMINDERS, SLEEP_ALARMS }
+
 /** Where a tapped notification leads. */
 sealed interface NotificationTarget {
     data class Event(val eventId: String) : NotificationTarget
@@ -86,8 +89,12 @@ class DeviceNotifications internal constructor(
         DeviceReminderKind.TASK -> mapOf(TASK_ID to reminder.itemId)
     }
 
-    /** Whether a silent push with [payload] asks the device to read its reminders again. */
-    fun asksForReminders(payload: Map<String, String>): Boolean = payload[KIND] == REMINDERS_RESYNC
+    /** What a silent push with [payload] asks the device to read again, or `null` when it asks for nothing. */
+    fun resync(payload: Map<String, String>): DeviceResync? = when (payload[KIND]) {
+        REMINDERS_RESYNC -> DeviceResync.REMINDERS
+        SLEEP_RESYNC -> DeviceResync.SLEEP_ALARMS
+        else -> null
+    }
 
     private companion object {
         const val INVITATION_ID = "invitation_id"
@@ -95,6 +102,7 @@ class DeviceNotifications internal constructor(
         const val TASK_ID = "task_id"
         const val KIND = "kind"
         const val REMINDERS_RESYNC = "remindersResync"
+        const val SLEEP_RESYNC = "sleepResync"
     }
 }
 

@@ -37,6 +37,14 @@ class RecordingSleepRepository(
         return overviewResult
     }
 
+    /** What [nights] answers. */
+    var nightsResult: RepositoryResult<List<SleepNight>> = RepositoryResult.Content(emptyList())
+
+    override suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>> {
+        calls += "nights:$from..$to"
+        return nightsResult
+    }
+
     override suspend fun updateSettings(itemId: String, change: SleepSettingsChange): RepositoryResult<Unit> {
         calls += "settings:$itemId:$change"
         return RepositoryResult.Content(Unit)

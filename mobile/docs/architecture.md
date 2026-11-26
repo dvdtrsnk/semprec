@@ -356,11 +356,23 @@ process over `HttpPushRepository` (`shared/data`: `POST /api/push-subscriptions`
   for the build's environment; the subscription id is kept in the user defaults
   (`DefaultsPushSubscriptionStorage`). Signing out revokes it with the session it
   ends, before the logout (`HttpAuthRepository`'s `endingSession`), and removes the
-  scheduled reminders and the badge.
+  scheduled reminders, the badge and the sleep alarms.
 - Reminders: the next 48 hours of `GET /api/calendar/reminders` (none while the
   `reminders` switch is off) replace the scheduled local notifications whose
   identifier starts with `reminder.`, on sign-in and on the silent push
   `kind: remindersResync`. The badge is the sum of the counts whose badge switch is on.
+- Sleep alarms: every night of the sleep plan whose alarm is on rings a system alarm on
+  its wake day while the plan is on. `PlanSleepAlarms` (`shared/domain`) decides which:
+  the wake time of each night of the next seven mornings, read on the wall clock of the
+  device's time zone, minus what has passed and what the device already holds, and it
+  never cancels an alarm that is ringing. `SleepAlarmSync` (`shared/presentation`, on
+  `DevicePushSDK`) reads the nights (`GET /api/sleep/nights`), runs one pass at a time and
+  hands the decision to `DeviceAlarms` (`shared/core`), which CoreKit's
+  `DeviceAlarmScheduler` implements with AlarmKit on iOS and iPadOS and as unsupported
+  on macOS; `SleepAlarmLedger` (the user defaults) remembers which alarm is which ring.
+  `AppNotifications` runs it when a scene shows its tabs or becomes active
+  (`SleepAlarmUpkeep`) and on the silent push `kind: sleepResync`, and removes the alarms
+  on sign-out. A plan that cannot be read keeps the alarms the device holds.
 - Taps: `invitation_id` opens the invitations sheet, `event_id` the event's
   Podrobnosti sheet, `task_id` (a task's reminder) the task's, all over the Calendar
   stack. The target waits in `AppNotifications` until a signed-in scene takes it,
@@ -438,7 +450,7 @@ same key:
   (English, the fallback) and `res/values-cs/strings.xml` of the module that
   renders it. The only key outside the table is `app_name`
   (`translatable="false"`).
-- Apple: `Resources/Localizable.xcstrings` of the app, DesignSystem, HomeFeature
+- Apple: `Resources/Localizable.xcstrings` of the app, CoreKit, DesignSystem, HomeFeature
   and SettingsFeature, source language English, every key translated to Czech;
   read with `Text("key", bundle: .module)` or `String(localized:bundle:)` in the
   modules. Keys with arguments are formatted with `String(format:locale:)`, so the

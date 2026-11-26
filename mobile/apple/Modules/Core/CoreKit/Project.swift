@@ -8,11 +8,13 @@ let project = Project(
     targets: [
         SemprecProject.framework(
             "CoreKit",
+            resources: ["Resources/**"],
             scripts: [SemprecProject.kotlinFrameworkScript(.build)],
             settings: SemprecProject.kotlinFrameworkScriptSettings.merging([
                 "OTHER_LDFLAGS": .string("$(inherited) -framework \(ProjectConfiguration.frameworkName)"),
             ]) { _, new in new }
         ),
         SemprecProject.tests("CoreKitTests", for: "CoreKit"),
-    ]
+    ],
+    resourceSynthesizers: []
 )

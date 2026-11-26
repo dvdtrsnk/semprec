@@ -48,8 +48,10 @@ class FakeSleepRepository(
     var writeAnswer: RepositoryResult<Unit> = RepositoryResult.Content(Unit),
     var gate: CompletableDeferred<Unit>? = null,
     var crash: Boolean = false,
+    var nightsAnswer: RepositoryResult<List<SleepNight>> = RepositoryResult.Content(emptyList()),
 ) : SleepRepository {
     private val script = answers.toList()
+    val nightRanges = mutableListOf<Pair<CalendarDay, CalendarDay>>()
     var overviewCalls = 0
         private set
     val writes = mutableListOf<String>()
@@ -64,6 +66,12 @@ class FakeSleepRepository(
         overviewCalls += 1
         waitForGate()
         return answer
+    }
+
+    override suspend fun nights(from: CalendarDay, to: CalendarDay): RepositoryResult<List<SleepNight>> {
+        nightRanges += from to to
+        waitForGate()
+        return nightsAnswer
     }
 
     override suspend fun updateSettings(itemId: String, change: SleepSettingsChange): RepositoryResult<Unit> {
