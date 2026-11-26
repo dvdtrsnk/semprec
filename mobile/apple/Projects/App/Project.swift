@@ -15,7 +15,9 @@ let project = Project(
             bundleId: ProjectConfiguration.appleBundleId,
             deploymentTargets: SemprecProject.deploymentTargets,
             // Tuist's default app plist mixes iOS and macOS keys (a Main storyboard, an armv7 requirement), so the
-            // app lists its keys itself. macOS ignores the UIKit keys; Xcode adds the platform keys of each SDK.
+            // app lists its keys itself. One target builds both platforms from this one plist, so it cannot hold a key
+            // for iOS alone: macOS ignores the keys of frameworks it does not run, the UIKit ones and AlarmKit's usage
+            // description, which only AlarmKit reads. Xcode adds the platform keys of each SDK.
             infoPlist: .dictionary([
                 "CFBundleDevelopmentRegion": "en",
                 "CFBundleDisplayName": .string(app),

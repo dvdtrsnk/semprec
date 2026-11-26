@@ -53,6 +53,10 @@ final class SleepFormatTests: XCTestCase {
         XCTAssertEqual(SleepFormat.weekdayLong(5), "Friday")
     }
 
+    func testTheDaysPickerShowsOneLetterForEachIsoDay() {
+        XCTAssertEqual((1...7).map(SleepFormat.weekdayInitial), ["M", "T", "W", "T", "F", "S", "S"])
+    }
+
     // MARK: - Nights
     func testANightIsReadFromItsEveningDate() throws {
         let date = try XCTUnwrap(SleepFormat.date(of: "2026-10-16"))
