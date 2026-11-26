@@ -84,11 +84,14 @@ abstract class CalendarGestureViewModel internal constructor(
         }
     }
 
-    /** The checkbox of a task, on its own row or in the event [inEventId]. */
+    /** The checkbox of a task, on its own row or in the event [inEventId]; in an event no longer shown, nothing. */
     internal fun toggleDone(itemId: String, inEventId: String?) {
         val entry = entryOf(itemId) ?: return
         val event = inEventId?.let { entryOf(it) }
-        write { if (event == null) edit.toggleDone(entry) else edit.toggleDoneInEvent(entry, event) }
+        when {
+            inEventId == null -> write { edit.toggleDone(entry) }
+            event != null -> write { edit.toggleDoneInEvent(entry, event) }
+        }
     }
 
     /** Runs a write; the window reloads when it is done, which also takes the preview of a drag away. */

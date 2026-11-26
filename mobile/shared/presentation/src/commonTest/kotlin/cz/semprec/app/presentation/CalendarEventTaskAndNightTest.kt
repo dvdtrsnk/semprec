@@ -83,6 +83,14 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a checkbox in an event that is no longer shown writes nothing`() = runTest(dispatcher) {
+        serve(INVOICE)
+        val vm = loaded()
+        act(vm, CalendarAction.Gesture.ToggleDone("invoice", inEventId = "gone"))
+        assertTrue(repository.calls.none { it.startsWith("done") || it.startsWith("complete") })
+        vm.close()
+    }
+
     @Test fun `a night is moved and stretched as a preview and written for itself alone`() = runTest(dispatcher) {
         serve(sleepEntry(DAY_ZERO))
         val vm = loaded()
