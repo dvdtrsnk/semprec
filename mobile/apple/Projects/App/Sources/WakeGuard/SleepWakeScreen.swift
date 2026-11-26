@@ -22,7 +22,7 @@ struct SleepWakeScreen: View {
                     Toggle(isOn: requiresCode) { Text("sleepWake.requiresCode") }
                         .accessibilityIdentifier(AppIdentifiers.sleepWakeToggle)
                 } footer: {
-                    Text(footer)
+                    Text(Self.footer(clock.settings))
                 }
                 if clock.settings.requiresCode {
                     WakeCodesSection(codes: codes) { scanning = true }
@@ -55,6 +55,19 @@ struct SleepWakeScreen: View {
     }
 }
 
+// MARK: - Texts
+extension SleepWakeScreen {
+
+    /// What the switch does with `settings`: off, on with codes, or on without one yet, which rings like a plain
+    /// alarm.
+    static func footer(_ settings: SleepWakeSettings) -> String {
+        guard settings.requiresCode else { return String(localized: "sleepWake.off") }
+        return settings.activeCodes.isEmpty
+            ? String(localized: "sleepWake.noCode")
+            : String(localized: "sleepWake.on")
+    }
+}
+
 // MARK: - Subviews
 private extension SleepWakeScreen {
 
@@ -64,14 +77,6 @@ private extension SleepWakeScreen {
 
     var codes: Binding<[String]> {
         Binding(get: { clock.settings.codes }, set: { value in change { $0.codes = value } })
-    }
-
-    /// What the switch does now: off, on with codes, or on without one yet, which rings like a plain alarm.
-    var footer: String {
-        guard clock.settings.requiresCode else { return String(localized: "sleepWake.off") }
-        return clock.settings.activeCodes.isEmpty
-            ? String(localized: "sleepWake.noCode")
-            : String(localized: "sleepWake.on")
     }
 
     func change(_ edit: (inout SleepWakeSettings) -> Void) {

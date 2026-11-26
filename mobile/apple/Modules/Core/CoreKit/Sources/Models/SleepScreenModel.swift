@@ -151,6 +151,11 @@ public struct SleepState: Equatable, Sendable {
     /// The shortest and the longest night the dial can be set to, in minutes.
     public var shortestNightMinutes: Int
     public var longestNightMinutes: Int
+    /// The lengths the dial allows, from the shortest to the longest; limits that arrive the wrong way round are
+    /// put in order rather than trapping.
+    public var nightLengths: ClosedRange<Int> {
+        min(shortestNightMinutes, longestNightMinutes)...max(shortestNightMinutes, longestNightMinutes)
+    }
     public var plans: [SleepPlanItem]
     public var selectedPlanID: String?
     public var night: SleepNightItem?
