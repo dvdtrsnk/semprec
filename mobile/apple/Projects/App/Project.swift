@@ -38,6 +38,8 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 // AlarmKit asks for this when the first sleep alarm is scheduled; macOS has no AlarmKit and ignores it.
                 "NSAlarmKitUsageDescription": "Semprec rings your alarms even in silent mode and through a Focus.",
+                // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS.
+                "NSCameraUsageDescription": "Semprec reads the barcodes and QR codes that stop your wake-up alarm.",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 // `remote-notification` lets a silent push wake the app to read its reminders again.
@@ -121,7 +123,7 @@ let project = Project(
             ]
         ),
         // XCUITest drives the app from outside, by the accessibility identifiers the app and the features declare; it
-        // compiles their identifier files, since it links none of their modules. iPhone and iPad only: on macOS
+        // compiles their identifier files (the app's and the Sleep feature's), since it links none of their modules. iPhone and iPad only: on macOS
         // XCUITest needs the Accessibility permission to control the app, which a build machine does not grant.
         .target(
             name: "\(app)UITests",
@@ -137,6 +139,7 @@ let project = Project(
             sources: [
                 "UITests/**",
                 "Sources/AppIdentifiers.swift",
+                "../../Modules/Features/Sleep/Sources/SleepIdentifiers.swift",
             ],
             dependencies: [.target(name: app)]
         ),

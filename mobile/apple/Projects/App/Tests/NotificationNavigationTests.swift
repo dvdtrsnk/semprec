@@ -56,7 +56,8 @@ final class NotificationNavigationTests: XCTestCase {
             service: shared,
             alarms: shared,
             center: SystemNotificationCenter(),
-            environment: .sandbox
+            environment: .sandbox,
+            deviceServices: shared.deviceServices
         )
         let composition = AppComposition(models: SignedInModels(), notifications: notifications)
         let calendar = NotificationStackSpy()

@@ -1,3 +1,4 @@
+import Combine
 import NavigatorUI
 import XCTest
 
@@ -44,6 +45,54 @@ final class NavigationTests: XCTestCase {
         context.push(.pending(title: "Mail"), in: .overview)
         XCTAssertTrue(first.pushed.isEmpty)
         XCTAssertEqual(second.pushed, [.pending(title: "Mail")])
+    }
+
+    @MainActor
+    func testEveryPresentedSheetIsDismissedOverEveryRegisteredStack() {
+        let context = NavigationContext()
+        let stacks = [AppTab.overview, .calendar, .journal].map { tab -> StackSpy in
+            let stack = StackSpy()
+            context.register(stack, for: tab)
+            return stack
+        }
+
+        context.dismissAllPresented()
+
+        XCTAssertEqual(stacks.map(\.dismissals), [1, 1, 1])
+        context.dismissSheets(in: .calendar)
+        XCTAssertEqual(stacks.map(\.dismissals), [1, 2, 1], "dismissing one tab's sheets reaches that tab only")
+    }
+
+    @MainActor
+    func testDismissingEverySheetOfAnEmptyContextDoesNothing() {
+        NavigationContext().dismissAllPresented()
+    }
+
+    @MainActor
+    func testABlockedContextOpensNothingAndAnUnblockedOneRoutesAgain() {
+        let context = NavigationContext()
+        let stack = StackSpy()
+        context.register(stack, for: .overview)
+        var requested: [AppTab] = []
+        let subscription = context.tabRequests.sink { requested.append($0) }
+        var routed = 0
+        context.isBlocked = true
+
+        context.push(.pending(title: "Inbox"), in: .overview)
+        context.presentSheet(.pending(title: "Profile"), from: .overview)
+        context.select(.journal)
+        context.whenShown(.calendar) { _ in routed += 1 }
+
+        XCTAssertTrue(stack.pushed.isEmpty && stack.sheets.isEmpty)
+        XCTAssertTrue(requested.isEmpty)
+        XCTAssertEqual(routed, 0)
+
+        context.isBlocked = false
+        context.push(.pending(title: "Inbox"), in: .overview)
+        context.select(.journal)
+        XCTAssertEqual(stack.pushed, [.pending(title: "Inbox")])
+        XCTAssertEqual(requested, [.journal])
+        subscription.cancel()
     }
 
     @MainActor
@@ -170,6 +219,7 @@ private final class StackSpy {
     // MARK: - Properties
     var pushed: [AppDestination] = []
     var sheets: [AppDestination] = []
+    private(set) var dismissals = 0
     /// Whether `top` reports the last pushed destination, or nil as a stack that cannot tell its top does.
     var knowsTop = true
 }
@@ -189,5 +239,7 @@ extension StackSpy: StackNavigating {
         sheets.append(destination)
     }
 
-    func dismissPresented() {}
+    func dismissPresented() {
+        dismissals += 1
+    }
 }

@@ -22,7 +22,9 @@ public final class SharedScreenModelFactory {
     let sdk: SharedSDK.HomeSDK
 
     // MARK: - Init
-    public init(sessionStore: SessionStore = .keychain) {
+    /// `deviceServices` are the process's, which every scene's factory is given by the owner of the process's
+    /// notifications; a factory creates none of its own.
+    public init(sessionStore: SessionStore = .keychain, deviceServices: DeviceServices) {
         let storage: any SharedSDK.SessionStorage = switch sessionStore {
         case .keychain: KeychainSessionStorage()
         case .memory: SharedSDK.InMemorySessionStorage()
@@ -46,7 +48,9 @@ public final class SharedScreenModelFactory {
             player: DeviceAudioPlayer(),
             pushSubscriptions: subscriptions,
             cacheDirectory: cacheDirectory,
-            dataDirectory: dataDirectory
+            dataDirectory: dataDirectory,
+            wake: deviceServices.wake,
+            sleepAlarms: deviceServices.sleepAlarms
         )
     }
 
@@ -132,6 +136,14 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
+
+    public func makeWakeSettings() -> any WakeSettingsScreenModel {
+        SharedWakeSettingsScreenModel(sdk.sleep.wakeSettingsViewModel())
+    }
+
+    public func makeWakeGuard() -> any WakeGuardScreenModel {
+        SharedWakeGuardScreenModel(sdk.sleep.wakeGuardViewModel())
     }
 
     // Calendar slice

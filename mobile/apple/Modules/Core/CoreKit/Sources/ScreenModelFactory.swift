@@ -37,6 +37,10 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel
+    /// The wake settings of this device: whether only a scanned code stops a sleep alarm, and the codes.
+    func makeWakeSettings() -> any WakeSettingsScreenModel
+    /// The guard of one window, which covers it while a wake mission rings.
+    func makeWakeGuard() -> any WakeGuardScreenModel
 
     // Calendar slice
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.

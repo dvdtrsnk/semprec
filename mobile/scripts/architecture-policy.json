@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "AlarmKit", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "XCTest"],
+    "systemModules": ["AVFoundation", "AlarmKit", "AppIntents", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -75,7 +75,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel", "SyncStatusViewModel"],
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel", "SyncStatusViewModel", "WakeSettingsViewModel", "WakeGuardViewModel"],
     "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
@@ -90,7 +90,9 @@
       "androidOnly": ["tab.home", "tab.settings"],
       "appleOnly": [
         "session.unreachable",
+        "alarm.scan",
         "NSAlarmKitUsageDescription",
+        "NSCameraUsageDescription",
         "NSMicrophoneUsageDescription",
         "tab.overview",
         "tab.calendar",
@@ -104,7 +106,21 @@
         "sync.offline.saved",
         "sync.offline.waiting",
         "sync.failed",
-        "sync.dismiss"
+        "sync.dismiss",
+        "wake.title.sleepAlarm",
+        "wake.scan.hint",
+        "wake.scan.wrong",
+        "wake.tap.hint",
+        "wake.tap.countdown",
+        "wake.tap.open",
+        "wake.tap.title",
+        "wake.tap.subtitle",
+        "wake.tap.left",
+        "wake.tap.back",
+        "wake.camera.denied",
+        "wake.camera.settings",
+        "wake.camera.unavailable",
+        "wake.guard.a11y"
       ],
       "androidUntranslatable": ["app_name"]
     },
@@ -743,7 +759,7 @@
       "android": null,
       "apple": "CoreKit",
       "keys": [],
-      "appleOnly": ["alarm.sleep.title", "alarm.stop"]
+      "appleOnly": ["alarm.scan", "alarm.sleep.title", "alarm.stop"]
     },
     {
       "android": ":android:feature:home",
@@ -1636,7 +1652,33 @@
         "sleep.sound.piano",
         "sleep.sound.title",
         "sleep.sound.vibrateOnly",
-        "sleep.title"
+        "sleep.title",
+        "sleep.wake.row.title",
+        "sleep.wake.row.sub",
+        "sleep.wake.title",
+        "sleep.wake.requiresCode",
+        "sleep.wake.footer.off",
+        "sleep.wake.footer.needsCode",
+        "sleep.wake.footer.on",
+        "sleep.wake.codes.header",
+        "sleep.wake.codes.footer",
+        "sleep.wake.code.placeholder",
+        "sleep.wake.code.type",
+        "sleep.wake.code.add",
+        "sleep.wake.code.remove",
+        "sleep.wake.code.scan",
+        "sleep.wake.capture.title",
+        "sleep.wake.capture.hint",
+        "sleep.wake.capture.cancel",
+        "sleep.wake.camera.denied",
+        "sleep.wake.camera.settings",
+        "sleep.wake.camera.unavailable",
+        "sleep.wake.failure.emptyCode",
+        "sleep.wake.failure.notAuthorized",
+        "sleep.wake.failure.limitReached",
+        "sleep.wake.failure.readFailed",
+        "sleep.wake.failure.deviceFailed",
+        "sleep.wake.failure.dismiss"
       ]
     },
     {

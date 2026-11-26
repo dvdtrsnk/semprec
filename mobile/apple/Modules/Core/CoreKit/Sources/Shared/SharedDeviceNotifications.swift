@@ -10,6 +10,8 @@ public final class SharedDeviceNotifications {
     // MARK: - Dependencies
     let notifications: SharedSDK.DeviceNotifications
     let sleepAlarms: SharedSDK.SleepAlarmSync
+    /// The wake missions and the sleep alarm sync, which the process's owner hands to every scene's model factory.
+    public let deviceServices: DeviceServices
     private let platform: SharedSDK.AppPlatform
 
     // MARK: - Init
@@ -21,18 +23,21 @@ public final class SharedDeviceNotifications {
                 sessionStorage: KeychainSessionStorage(),
                 subscriptions: DefaultsPushSubscriptionStorage(),
                 alarms: DeviceAlarmScheduler(),
-                sleepAlarmLedger: DefaultsSleepAlarmLedger()
+                sleepAlarmLedger: DefaultsSleepAlarmLedger(),
+                wakeStorage: DefaultsWakeStorage()
             )
         case .memory:
             SharedSDK.DevicePushSDK(
                 sessionStorage: SharedSDK.InMemorySessionStorage(),
                 subscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
                 alarms: SharedSDK.UnavailableDeviceAlarms(),
-                sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger()
+                sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger(),
+                wakeStorage: SharedSDK.InMemoryWakeStorage()
             )
         }
         notifications = sdk.notifications
         sleepAlarms = sdk.sleepAlarms
+        deviceServices = DeviceServices(wake: sdk.wake, sleepAlarms: sdk.sleepAlarms)
         platform = DeviceIdentity.current().platform
     }
 }

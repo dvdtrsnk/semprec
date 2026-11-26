@@ -70,7 +70,7 @@ private extension SleepScreen {
 
     @ViewBuilder var page: some View {
         switch state.page {
-        case .main: SleepMainPage(state: state, send: send)
+        case .main: SleepMainPage(state: state, send: send, openWakeSettings: viewModel.showWakeSettings)
         case .night: SleepNightPage(state: state, send: send)
         case .remind, .sound, .goal: SleepPickerPage(state: state, send: send)
         }
@@ -143,26 +143,27 @@ private extension SleepScreen {
 }
 
 // MARK: - Preview
+@MainActor
+private func previewScreen(_ state: SleepState) -> some View {
+    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: state), router: PreviewSleepRouter()))
+}
+
 #Preview("Overview") {
-    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady)))
+    previewScreen(.previewReady)
 }
 
 #Preview("Editor") {
-    SleepScreen(
-        viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady.editing(.previewWeekdays)))
-    )
+    previewScreen(.previewReady.editing(.previewWeekdays))
 }
 
 #Preview("Night") {
-    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady.opening(.night))))
+    previewScreen(.previewReady.opening(.night))
 }
 
 #Preview("Loading") {
-    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: SleepState())))
+    previewScreen(SleepState())
 }
 
 #Preview("Unavailable") {
-    SleepScreen(
-        viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: SleepState(phase: .failure(.unavailable))))
-    )
+    previewScreen(SleepState(phase: .failure(.unavailable)))
 }

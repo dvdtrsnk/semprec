@@ -19,4 +19,29 @@ final class SmokeFlowTests: XCTestCase {
         let gate = app.descendants(matching: .any)[AppIdentifiers.sessionGate].firstMatch
         XCTAssertTrue(gate.waitForExistence(timeout: 15), "The app must start behind the session gate")
     }
+
+    /// Opens the wake settings from the sleep sheet of the Calendar. It needs a signed-in session, which a fresh
+    /// simulator does not have, so it is skipped there and runs on a simulator that is signed in to a server.
+    @MainActor
+    func testTheWakeSettingsOpenFromTheSleepSheet() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let calendarTab = app.descendants(matching: .any)[AppIdentifiers.calendarTab].firstMatch
+        try XCTSkipUnless(calendarTab.waitForExistence(timeout: 15), "The app is signed out, so it has no sleep sheet")
+        calendarTab.tap()
+        let calendars = app.descendants(matching: .any)["calendar.calendars"].firstMatch
+        XCTAssertTrue(calendars.waitForExistence(timeout: 10), "The Calendar must offer its calendars")
+        calendars.tap()
+        let sleepInfo = app.descendants(matching: .any)["calendars.info.sleep"].firstMatch
+        XCTAssertTrue(sleepInfo.waitForExistence(timeout: 10), "The sleep calendar must offer its sheet")
+        sleepInfo.tap()
+
+        let wakeSettings = app.descendants(matching: .any)[SleepIdentifiers.wakeSettings].firstMatch
+        XCTAssertTrue(wakeSettings.waitForExistence(timeout: 10), "The sleep sheet must offer the wake settings")
+        wakeSettings.tap()
+
+        let screen = app.descendants(matching: .any)[SleepIdentifiers.wakeScreen].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 10), "The wake settings must open")
+        XCTAssertTrue(app.descendants(matching: .any)[SleepIdentifiers.wakeRequiresCode].firstMatch.exists)
+    }
 }

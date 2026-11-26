@@ -1360,6 +1360,422 @@
           }
         }
       }
+    },
+    "sleep.wake.camera.denied" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera není povolená, takže kódy nejdou skenovat."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The camera is not allowed, so codes cannot be scanned."
+          }
+        }
+      }
+    },
+    "sleep.wake.camera.settings" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít Nastavení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Settings"
+          }
+        }
+      }
+    },
+    "sleep.wake.camera.unavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toto zařízení nemá kameru ke skenování."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device has no camera to scan with."
+          }
+        }
+      }
+    },
+    "sleep.wake.capture.cancel" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        }
+      }
+    },
+    "sleep.wake.capture.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Namiř kameru na čárový nebo QR kód."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold the camera in front of a barcode or a QR code."
+          }
+        }
+      }
+    },
+    "sleep.wake.capture.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenuj kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan a code"
+          }
+        }
+      }
+    },
+    "sleep.wake.code.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add code"
+          }
+        }
+      }
+    },
+    "sleep.wake.code.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Napiš kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Type a code"
+          }
+        }
+      }
+    },
+    "sleep.wake.code.remove" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odebrat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove code"
+          }
+        }
+      }
+    },
+    "sleep.wake.code.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan a code"
+          }
+        }
+      }
+    },
+    "sleep.wake.code.type" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kód"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Code"
+          }
+        }
+      }
+    },
+    "sleep.wake.codes.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenuj čárový nebo QR kód něčeho, co je dál od postele, nebo ho napiš."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan a barcode or QR code of something away from your bed, or type it."
+          }
+        }
+      }
+    },
+    "sleep.wake.codes.header" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kódy"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codes"
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.deviceFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zařízení nedokázalo změnit své budíky."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The device could not change its alarms."
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.dismiss" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OK"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OK"
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.emptyCode" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nejdřív napiš kód."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Type a code first."
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.limitReached" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zařízení drží tolik budíků, kolik dovolí, takže některé nezazvoní."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The device holds as many alarms as it allows, so some did not ring."
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.notAuthorized" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Povol Semprecu budíky v Nastavení, aby mohl budík zvonit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow alarms for Semprec in Settings, so that the alarm can ring."
+          }
+        }
+      }
+    },
+    "sleep.wake.failure.readFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plán spánku se nepodařilo přečíst, budíky zůstaly, jak byly."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The sleep plan could not be read, so the alarms stay as they were."
+          }
+        }
+      }
+    },
+    "sleep.wake.footer.needsCode" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Níže přidej kód. Do té doby se budík zastaví tlačítkem Zastavit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a code below. Until then the alarm stops with the Stop button."
+          }
+        }
+      }
+    },
+    "sleep.wake.footer.off" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík se zastaví systémovým tlačítkem Zastavit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The alarm stops with the Stop button of the system."
+          }
+        }
+      }
+    },
+    "sleep.wake.footer.on" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík zvoní, dokud nenaskenuješ jeden z kódů, i když otevřeš aplikaci. Po chvíli můžeš místo toho klepat."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The alarm keeps ringing until you scan one of the codes, also when you open the app. After a while you can tap instead."
+          }
+        }
+      }
+    },
+    "sleep.wake.requiresCode" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zastavit jen kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop only with a code"
+          }
+        }
+      }
+    },
+    "sleep.wake.row.sub" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budík ztichne až po naskenování kódu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A scanned code stops the alarm"
+          }
+        }
+      }
+    },
+    "sleep.wake.row.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zastavit jen kódem"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop only with a code"
+          }
+        }
+      }
+    },
+    "sleep.wake.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kód pro vstávání"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake-up code"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -8,6 +8,7 @@ import cz.semprec.app.core.DeviceAlarms
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.HeldDeviceAlarm
 import cz.semprec.app.core.InMemorySleepAlarmLedger
+import cz.semprec.app.core.InMemoryWakeStorage
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.LoadSleepAlarmNights
 import cz.semprec.app.domain.RepositoryResult
@@ -39,11 +40,13 @@ private const val FIRST_RING = "sleep:2026-11-26T05:45:00Z"
 private const val SECOND_RING = "sleep:2026-11-27T05:45:00Z"
 
 /** A device that holds the alarms it was given, and answers when the test lets it. */
-private class ScriptedAlarms(
+internal class ScriptedAlarms(
     var authorization: DeviceAlarmAuthorization = DeviceAlarmAuthorization.AUTHORIZED,
 ) : DeviceAlarms {
     val phases = linkedMapOf<String, DeviceAlarmPhase>()
     val scheduledAt = mutableListOf<Long>()
+    val opensWakeGuard = mutableListOf<Boolean>()
+    var afterSchedule: ((Int) -> Unit)? = null
     val cancelled = mutableListOf<String>()
     var heldReads = 0
     var failToCancel: Set<String> = emptySet()
@@ -55,8 +58,14 @@ private class ScriptedAlarms(
 
     override fun authorization() = authorization
 
-    override fun schedule(ringAtEpochSeconds: Long, callback: (DeviceAlarmScheduling) -> Unit) {
+    override fun schedule(
+        ringAtEpochSeconds: Long,
+        opensWakeGuard: Boolean,
+        callback: (DeviceAlarmScheduling) -> Unit,
+    ) {
         scheduledAt += ringAtEpochSeconds
+        afterSchedule?.invoke(scheduledAt.size)
+        this.opensWakeGuard += opensWakeGuard
         val answer = scheduleAnswers.removeFirstOrNull() ?: DeviceAlarmScheduling.Scheduled("d${next++}")
         if (answer is DeviceAlarmScheduling.Scheduled) phases[answer.id] = DeviceAlarmPhase.SCHEDULED
         val gate = scheduleGate
@@ -82,12 +91,14 @@ private class ScriptedAlarms(
 class SleepAlarmSyncTest : MainDispatcherTest() {
     private val device = ScriptedAlarms()
     private val ledger = InMemorySleepAlarmLedger()
+    private val wake = WakeMissions(InMemoryWakeStorage(), device)
     private var now = SYNC_NOW
 
     private fun sync(repository: FakeSleepRepository) = SleepAlarmSync(
         LoadSleepAlarmNights(repository),
         device,
         ledger,
+        wake,
         now = { now },
         zone = { SYNC_ZONE },
     )

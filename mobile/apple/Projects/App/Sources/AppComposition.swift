@@ -29,8 +29,10 @@ final class AppComposition: ObservableObject {
     let preparedTabs: PreparedTabModels
 
     // MARK: - Init
-    convenience init() {
-        self.init(models: SceneContainer().screenModelFactory()(), notifications: .shared)
+    /// A scene's composition over the device services of the process, which `notifications` owns and every scene is
+    /// given; the scene's screen models are made over them and the composition creates none of its own.
+    convenience init(deviceServices: DeviceServices, notifications: AppNotifications?) {
+        self.init(models: SceneContainer().screenModelFactory(deviceServices)(), notifications: notifications)
     }
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.
@@ -76,6 +78,12 @@ final class AppComposition: ObservableObject {
     }
 
     // MARK: - Routers
+    /// The router of the sleep sheet, which opens the wake settings over the stack of the tab the person is on.
+    private(set) lazy var sleepRouter = AppSleepRouter(
+        context: navigation,
+        tab: { [weak self] in self?.currentTab ?? .overview }
+    )
+
     /// The router of an Inbox that sits on the stack of `tab`; what a decision created opens over that stack.
     func inboxRouter(in tab: AppTab) -> AppInboxRouter {
         AppInboxRouter(context: navigation, tab: tab)

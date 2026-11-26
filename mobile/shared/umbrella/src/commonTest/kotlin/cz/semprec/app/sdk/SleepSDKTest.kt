@@ -3,6 +3,8 @@ package cz.semprec.app.sdk
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.presentation.SleepPhase
 import cz.semprec.app.presentation.SleepScreen
+import cz.semprec.app.presentation.WakeGuardPhase
+import cz.semprec.app.presentation.WakeSettingsAction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -43,5 +45,22 @@ class SleepSDKTest {
             assertEquals(FailureKind.UNAUTHORIZED, vm.state.value.failure)
             assertEquals(SleepScreen.NIGHT, vm.state.value.screen)
             vm.close()
+        }
+
+    @Test fun `every call returns a new wake ViewModel and they work without the process's services`() =
+        runTest(dispatcher) {
+            val sdk = HomeSDK()
+            val settings = sdk.sleep.wakeSettingsViewModel()
+            val guard = sdk.sleep.wakeGuardViewModel()
+            assertNotSame(settings, sdk.sleep.wakeSettingsViewModel())
+            assertNotSame(guard, sdk.sleep.wakeGuardViewModel())
+
+            settings.onAction(WakeSettingsAction.AddCode("123"))
+            runCurrent()
+
+            assertEquals(listOf("123"), settings.state.value.codes)
+            assertEquals(WakeGuardPhase.IDLE, guard.state.value.phase)
+            settings.close()
+            guard.close()
         }
 }

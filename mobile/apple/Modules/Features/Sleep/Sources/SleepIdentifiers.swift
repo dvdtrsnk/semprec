@@ -31,4 +31,14 @@ enum SleepIdentifiers {
     static let editor = "sleep.editor"
     static let editorClose = "sleep.editor.close"
     static let editorConfirm = "sleep.editor.confirm"
+    static let wakeSettings = "sleep.wakeSettings"
+    static let wakeScreen = "sleep.wake.screen"
+    static let wakeDone = "sleep.wake.doneButton"
+    static let wakeRequiresCode = "sleep.wake.requiresCode"
+    static let wakeCodeField = "sleep.wake.codeField"
+    static let wakeCodeAdd = "sleep.wake.codeAdd"
+    static let wakeCodeScan = "sleep.wake.codeScan"
+    static let wakeCapture = "sleep.wake.capture"
+    /// Followed by the code, e.g. `sleep.wake.code.4006381333931`.
+    static let wakeCodePrefix = "sleep.wake.code."
 }

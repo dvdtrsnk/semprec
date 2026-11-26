@@ -4,5 +4,8 @@
 /// stored in the Keychain of the same simulator.
 @MainActor
 func isolatedFactory() -> SharedScreenModelFactory {
-    SharedScreenModelFactory(sessionStore: .memory)
+    SharedScreenModelFactory(
+        sessionStore: .memory,
+        deviceServices: SharedDeviceNotifications(sessionStore: .memory).deviceServices
+    )
 }

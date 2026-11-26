@@ -3,19 +3,22 @@ import CoreKit
 import Foundation
 
 /// Thin adapter between the sleep sheet and its shared screen model: republishes the state and forwards intents. It
-/// owns the model; releasing it closes the shared ViewModel behind the model. The sheet has no effects.
+/// owns the model; releasing it closes the shared ViewModel behind the model. The sheet has no effects; the wake
+/// settings row asks the injected router to open them.
 @MainActor
 final class SleepViewModel: ObservableObject {
 
     // MARK: - Dependencies
     private let model: any SleepScreenModel
+    private let router: any SleepRouting
 
     // MARK: - Published Properties
     @Published private(set) var state: SleepState
 
     // MARK: - Init
-    init(model: any SleepScreenModel) {
+    init(model: any SleepScreenModel, router: any SleepRouting) {
         self.model = model
+        self.router = router
         state = model.state
     }
 
@@ -31,5 +34,9 @@ final class SleepViewModel: ObservableObject {
 
     func retry() {
         model.send(.retry)
+    }
+
+    func showWakeSettings() {
+        router.showWakeSettings()
     }
 }

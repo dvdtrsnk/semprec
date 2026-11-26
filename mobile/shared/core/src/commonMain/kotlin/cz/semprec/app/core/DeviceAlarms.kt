@@ -33,10 +33,13 @@ sealed interface DeviceAlarmScheduling {
 interface DeviceAlarms {
     fun authorization(): DeviceAlarmAuthorization
 
-    /** Rings a one-off alarm at [ringAtEpochSeconds]; the person is asked to allow alarms when never asked. */
-    fun schedule(ringAtEpochSeconds: Long, callback: (DeviceAlarmScheduling) -> Unit)
+    /**
+     * Rings a one-off alarm at [ringAtEpochSeconds]; the person is asked to allow alarms when never asked. With
+     * [opensWakeGuard] the alert has a second button that opens the app, where a code stops the alarm.
+     */
+    fun schedule(ringAtEpochSeconds: Long, opensWakeGuard: Boolean, callback: (DeviceAlarmScheduling) -> Unit)
 
-    /** Removes the alarm [id]; `false` when the device could not. An alarm that is gone counts as removed. */
+    /** Removes the alarm [id], or stops it when it rings; `false` when the device could not. A gone alarm counts as removed. */
     fun cancel(id: String): Boolean
 
     /** The alarms of this app the device holds, or `null` when it could not read them. */
@@ -47,7 +50,11 @@ interface DeviceAlarms {
 class UnavailableDeviceAlarms : DeviceAlarms {
     override fun authorization(): DeviceAlarmAuthorization = DeviceAlarmAuthorization.UNSUPPORTED
 
-    override fun schedule(ringAtEpochSeconds: Long, callback: (DeviceAlarmScheduling) -> Unit) =
+    override fun schedule(
+        ringAtEpochSeconds: Long,
+        opensWakeGuard: Boolean,
+        callback: (DeviceAlarmScheduling) -> Unit,
+    ) =
         callback(DeviceAlarmScheduling.Refused(DeviceAlarmFailure.UNSUPPORTED))
 
     override fun cancel(id: String): Boolean = true
