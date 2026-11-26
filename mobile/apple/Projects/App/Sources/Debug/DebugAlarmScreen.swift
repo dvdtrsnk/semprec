@@ -32,7 +32,7 @@ struct DebugAlarmScreen: View {
                 WakeCodesSection(codes: $codes) { scanning = true }
                 quickTest
                 DebugWakeMissionsSection(wakeGuard: wakeGuard) { id in
-                    Task { await viewModel.removeMission(id) }
+                    viewModel.perform { model in await model.removeMission(id) }
                 }
                 scheduled
             }
@@ -57,6 +57,7 @@ struct DebugAlarmScreen: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AppIdentifiers.debugAlarmScreen)
         .task { await viewModel.observe() }
+        .onDisappear { viewModel.cancelWork() }
     }
 }
 
@@ -72,7 +73,7 @@ private extension DebugAlarmScreen {
                 Text("debug.alarm.permission.state")
             }
             if viewModel.authorization == .notDetermined {
-                Button { Task { await viewModel.requestAuthorization() } } label: {
+                Button { viewModel.perform { model in await model.requestAuthorization() } } label: {
                     Text("debug.alarm.permission.request")
                 }
                 .listRowButton()
@@ -102,7 +103,10 @@ private extension DebugAlarmScreen {
                 Text("debug.alarm.time")
             }
             .accessibilityIdentifier(AppIdentifiers.debugAlarmTime)
-            Button { Task { await viewModel.schedule(title: title, time: alarmTime, codes: codes) } } label: {
+            Button {
+                let (title, time, codes) = (title, alarmTime, codes)
+                viewModel.perform { model in await model.schedule(title: title, time: time, codes: codes) }
+            } label: {
                 Text("debug.alarm.schedule")
             }
             .listRowButton()
@@ -156,7 +160,10 @@ private extension DebugAlarmScreen {
     }
 
     func quickButton(_ key: LocalizedStringKey, seconds: TimeInterval, identifier: String) -> some View {
-        Button { Task { await viewModel.schedule(title: title, in: seconds, codes: codes) } } label: { Text(key) }
+        Button {
+            let (title, codes) = (title, codes)
+            viewModel.perform { model in await model.schedule(title: title, in: seconds, codes: codes) }
+        } label: { Text(key) }
             .listRowButton()
             .disabled(viewModel.isScheduling)
             .accessibilityIdentifier(identifier)

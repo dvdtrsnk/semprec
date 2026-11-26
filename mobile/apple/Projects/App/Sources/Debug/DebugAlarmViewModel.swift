@@ -19,6 +19,8 @@ final class DebugAlarmViewModel: ObservableObject {
     @Published private(set) var alarms: [ScheduledAlarm] = []
     @Published private(set) var failure: DebugAlarmFailure?
     @Published private(set) var isScheduling = false
+    /// The work the screen's buttons started; the screen cancels it when it goes away.
+    private var work: [UUID: Task<Void, Never>] = [:]
 
     // MARK: - Init
     init(
@@ -33,6 +35,22 @@ final class DebugAlarmViewModel: ObservableObject {
     }
 
     // MARK: - Methods
+    /// Runs `action` for a button of the screen, as work the screen owns: `cancelWork()` ends it.
+    func perform(_ action: @escaping @MainActor (DebugAlarmViewModel) async -> Void) {
+        let id = UUID()
+        work[id] = Task { [weak self] in
+            guard let self else { return }
+            await action(self)
+            work[id] = nil
+        }
+    }
+
+    /// The screen went away: the work its buttons started is cancelled.
+    func cancelWork() {
+        work.values.forEach { $0.cancel() }
+        work = [:]
+    }
+
     /// Reads the alarms, then follows every change of them until the screen's task is cancelled.
     func observe() async {
         reload()
