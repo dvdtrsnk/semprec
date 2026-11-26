@@ -95,10 +95,13 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
         serve(sleepEntry(DAY_ZERO))
         val vm = loaded()
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", edge = null, deltaMinutes = -58))
-        assertEquals(
-            CalendarSleepDrag("2026-10-16", 22 * 60, 5 * 60 + 45, false, 7 * 60 + 45, meetsGoal = null),
-            vm.state.value.sleepDrag,
-        )
+        val drag = vm.state.value.sleepDrag
+        assertEquals(22 * 60 to 5 * 60 + 45, drag?.let { it.bedMinutes to it.wakeMinutes })
+        assertEquals(false, drag?.committing)
+        assertEquals(22 * 60 to 24 * 60, drag?.evening?.let { it.fromMinutes to it.toMinutes })
+        assertEquals(0 to 5 * 60 + 45, drag?.morning?.let { it.fromMinutes to it.toMinutes })
+        assertEquals("2026-10-17", drag?.morningDay)
+        assertEquals(null, drag?.evening?.prepMinutes)
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.START, deltaMinutes = -38))
         assertEquals(22 * 60 + 15, vm.state.value.sleepDrag?.bedMinutes)
         assertEquals(6 * 60 + 45, vm.state.value.sleepDrag?.wakeMinutes)
@@ -126,17 +129,20 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `a moved night says whether it would reach the sleep goal and differ from its plan`() = runTest(dispatcher) {
+    @Test fun `a moved night says whether it reaches the goal and leaves its plan`() = runTest(dispatcher) {
         val night = sleepEntry(DAY_ZERO)
         val plan = ClockTime(23 * 60) to ClockTime(6 * 60 + 45)
-        serve(night.copy(sleep = night.sleep?.copy(goalMinutes = 8 * 60, planBed = plan.first, planWake = plan.second)))
+        val planned = night.sleep?.copy(goalMinutes = 8 * 60, planBed = plan.first, planWake = plan.second)
+        serve(night.copy(sleep = planned))
         val vm = loaded()
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 15))
-        assertEquals(8 * 60 to true, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
-        assertEquals(true, vm.state.value.sleepDrag?.changed)
+        val longer = vm.state.value.sleepDrag?.evening
+        assertEquals(8 * 60 to true, longer?.let { it.durationMinutes to it.meetsGoal })
+        assertEquals(true, vm.state.value.sleepDrag?.morning?.changed)
         act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", CalendarEdge.END, deltaMinutes = 0))
-        assertEquals(7 * 60 + 45 to false, vm.state.value.sleepDrag?.let { it.durationMinutes to it.meetsGoal })
-        assertEquals(false, vm.state.value.sleepDrag?.changed)
+        val planLength = vm.state.value.sleepDrag?.evening
+        assertEquals(7 * 60 + 45 to false, planLength?.let { it.durationMinutes to it.meetsGoal })
+        assertEquals(false, vm.state.value.sleepDrag?.morning?.changed)
         vm.close()
     }
 

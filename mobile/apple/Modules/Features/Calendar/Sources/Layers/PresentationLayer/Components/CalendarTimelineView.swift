@@ -270,34 +270,30 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
-    /// The two parts of the nights on this day, at the times a finger is moving them to while one is.
+    /// The bands and the bedtime reminders of the sleep on this day, as the shared layer cut them; a night a finger
+    /// moves is drawn at the times it is moving to.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
-        if let evening = day.sleepEvening.map(moved), evening.bedMinutes >= CalendarSleep.noon {
-            let midnight = CalendarGeometry.minutesPerDay
-            sleepBand(evening, evening: true, from: evening.bedMinutes, to: midnight, width: width)
-            if let prep = evening.prepMinutes, sleepDrag?.night != evening.night {
-                prepMarker(evening, minutes: prep, width: width)
+        ForEach(Array(day.sleepParts(dragging: sleepDrag).enumerated()), id: \.offset) { _, part in
+            switch part {
+            case .band(let sleep, let band, let isEvening):
+                sleepBand(sleep, band: band, evening: isEvening, width: width)
+            case .reminder(let sleep, let minutes):
+                prepMarker(sleep, minutes: minutes, width: width)
             }
         }
-        if let morning = day.sleepMorning.map(moved) {
-            let start = morning.bedMinutes < CalendarSleep.noon ? morning.bedMinutes : 0
-            sleepBand(morning, evening: false, from: start, to: morning.wakeMinutes, width: width)
-        }
     }
 
-    func moved(_ sleep: CalendarSleep) -> CalendarSleep {
-        guard let sleepDrag, sleepDrag.night == sleep.night else { return sleep }
-        return sleep.moved(by: sleepDrag)
-    }
-
-    func sleepBand(_ sleep: CalendarSleep, evening: Bool, from start: Int, to end: Int, width: CGFloat) -> some View {
-        let labelTop = evening ? geometry.y(minutes: start) : geometry.y(minutes: end) - Self.labelHeight
+    /// An evening band is labelled with its bedtime at the top, a morning band with its wake time at the bottom.
+    func sleepBand(_ sleep: CalendarSleep, band: Range<Int>, evening: Bool, width: CGFloat) -> some View {
+        let labelTop = evening
+            ? geometry.y(minutes: band.lowerBound)
+            : geometry.y(minutes: band.upperBound) - Self.labelHeight
         return CalendarSleepBand(
             sleep: sleep,
             evening: evening,
-            startMinutes: start,
-            endMinutes: end,
+            startMinutes: band.lowerBound,
+            endMinutes: band.upperBound,
             geometry: geometry,
             width: width,
             selected: selectedNight == sleep.night || sleepDrag?.night == sleep.night,

@@ -30,6 +30,9 @@ value class ClockTime(val minutes: Int) : Comparable<ClockTime> {
     companion object {
         const val DAY_MINUTES: Int = MINUTES_IN_DAY
 
+        /** The time [minutes] after midnight, `24:00` included; a number outside the day is `null`. */
+        fun ofMinutes(minutes: Int): ClockTime? = if (minutes in 0..MINUTES_IN_DAY) ClockTime(minutes) else null
+
         /** Reads `H:MM` or `HH:MM` (`24:00` included); anything else is `null`. */
         fun parse(text: String): ClockTime? {
             val parts = text.split(TIME_SEPARATOR)

@@ -31,11 +31,13 @@ data class CalendarEventTask(
 )
 
 /**
- * One night of sleep as it is drawn: [bedMinutes] and [wakeMinutes] are times of day, the night starts on the
- * evening [night] (`YYYY-MM-DD`). [prepMinutes] is when the bedtime reminder comes, as a time of day, or `null`.
- * [planBedMinutes] and [planWakeMinutes] are the times of the plan the night follows, or departs from when [changed]
- * (`null` without a plan). [durationMinutes] is how long the night is, [goalMinutes] the sleep goal (`null` when
- * unknown); [meetsGoal] tells whether the night is at least as long as the goal (`null` without a goal).
+ * The part of one night of sleep that falls on one day: [bedMinutes] and [wakeMinutes] are the night's times of day,
+ * the night belongs to the evening [night] (`YYYY-MM-DD`). The band on this day runs from [fromMinutes] to
+ * [toMinutes] and is empty when they are equal. [prepMinutes] is when the bedtime reminder comes on this day, or
+ * `null` when it comes on another day or not at all. [planBedMinutes] and [planWakeMinutes] are the times of the plan
+ * the night follows, or departs from when [changed] (`null` without a plan). [durationMinutes] is how long the night
+ * is, [goalMinutes] the sleep goal (`null` when unknown); [meetsGoal] tells whether the night is at least as long as
+ * the goal (`null` without a goal).
  */
 data class CalendarSleep(
     val night: String,
@@ -44,25 +46,27 @@ data class CalendarSleep(
     val alarm: Boolean,
     val changed: Boolean,
     val prepMinutes: Int?,
-    val planBedMinutes: Int?,
-    val planWakeMinutes: Int?,
-    val durationMinutes: Int,
-    val goalMinutes: Int?,
-    val meetsGoal: Boolean?,
+    val fromMinutes: Int,
+    val toMinutes: Int,
+    val planBedMinutes: Int? = null,
+    val planWakeMinutes: Int? = null,
+    val durationMinutes: Int = 0,
+    val goalMinutes: Int? = null,
+    val meetsGoal: Boolean? = null,
 )
 
 /**
- * The night a finger moves or stretches, and the times it would have: snapped minutes of the day, how long the night
- * would be, whether it would reach the sleep goal (`null` without a goal) and whether it would differ from its plan.
+ * The night a finger moves or stretches: the snapped times it would have, and the parts it would have on its evening
+ * [night] and on the morning after, [morningDay], as [CalendarSleep] cuts them (`null` where nothing of it would fall).
  */
 data class CalendarSleepDrag(
     val night: String,
     val bedMinutes: Int,
     val wakeMinutes: Int,
     val committing: Boolean,
-    val durationMinutes: Int = 0,
-    val meetsGoal: Boolean? = null,
-    val changed: Boolean = false,
+    val evening: CalendarSleep? = null,
+    val morning: CalendarSleep? = null,
+    val morningDay: String = "",
 )
 
 /**

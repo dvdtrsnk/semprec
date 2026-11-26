@@ -53,6 +53,9 @@ final class SharedCalendarMappingTests: XCTestCase {
         let mapped = state.days.first
         XCTAssertEqual(mapped?.date, "2026-10-16")
         XCTAssertEqual(mapped?.sleepEvening?.night, "2026-10-15")
+        XCTAssertEqual(mapped?.sleepEvening?.fromMinutes, 1380)
+        XCTAssertEqual(mapped?.sleepEvening?.toMinutes, 1440)
+        XCTAssertEqual(mapped?.sleepEvening?.prepMinutes, 1350)
         XCTAssertNil(mapped?.sleepMorning)
         let item = mapped?.items.first
         XCTAssertEqual(item?.title, "Meeting")

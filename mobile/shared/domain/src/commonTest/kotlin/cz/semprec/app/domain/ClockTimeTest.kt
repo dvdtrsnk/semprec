@@ -34,4 +34,12 @@ class ClockTimeTest {
         assertEquals(9, ClockTime(555).hour)
         assertEquals(15, ClockTime(555).minute)
     }
+
+    @Test fun `minutes after midnight make a time only inside the day`() {
+        assertEquals("00:00", ClockTime.ofMinutes(0).toString())
+        assertEquals("23:59", ClockTime.ofMinutes(1439).toString())
+        assertEquals(true, ClockTime.ofMinutes(1440)?.isEndOfDay)
+        assertNull(ClockTime.ofMinutes(-1))
+        assertNull(ClockTime.ofMinutes(1441))
+    }
 }

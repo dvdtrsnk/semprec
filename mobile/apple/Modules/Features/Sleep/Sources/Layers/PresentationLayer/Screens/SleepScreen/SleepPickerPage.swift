@@ -81,7 +81,7 @@ private extension SleepPickerPage {
                     action: .pickSound($0)
                 )
             }
-        case .main, .plan, .night:
+        case .main, .night:
             []
         }
     }
@@ -90,7 +90,7 @@ private extension SleepPickerPage {
         switch state.page {
         case .remind: String(localized: "sleep.remind.hint", bundle: .module)
         case .goal: String(localized: "sleep.goal.hint", bundle: .module)
-        case .main, .plan, .night, .sound: nil
+        case .main, .night, .sound: nil
         }
     }
 }

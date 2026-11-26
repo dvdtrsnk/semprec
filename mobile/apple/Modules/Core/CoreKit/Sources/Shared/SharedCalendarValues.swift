@@ -115,6 +115,8 @@ extension CalendarSleep {
             alarm: sleep.alarm,
             changed: sleep.changed,
             prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) },
+            fromMinutes: Int(sleep.fromMinutes),
+            toMinutes: Int(sleep.toMinutes),
             planBedMinutes: sleep.planBedMinutes.map { Int(truncating: $0) },
             planWakeMinutes: sleep.planWakeMinutes.map { Int(truncating: $0) },
             durationMinutes: Int(sleep.durationMinutes),
@@ -373,9 +375,9 @@ extension CalendarSleepDrag {
             bedMinutes: Int(drag.bedMinutes),
             wakeMinutes: Int(drag.wakeMinutes),
             committing: drag.committing,
-            durationMinutes: Int(drag.durationMinutes),
-            meetsGoal: drag.meetsGoal?.boolValue,
-            changed: drag.changed
+            evening: drag.evening.map(CalendarSleep.init),
+            morning: drag.morning.map(CalendarSleep.init),
+            morningDay: drag.morningDay
         )
     }
 }

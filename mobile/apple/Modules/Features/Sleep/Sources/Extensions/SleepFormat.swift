@@ -51,14 +51,20 @@ enum SleepFormat {
         symbol(isoDay, from: calendar.shortStandaloneWeekdaySymbols).localizedCapitalized
     }
 
+    /// `P`, `Ú`, `M`: the one-letter name of an ISO weekday, as the days picker shows it.
+    static func weekdayInitial(_ isoDay: Int) -> String {
+        symbol(isoDay, from: calendar.veryShortStandaloneWeekdaySymbols).localizedUppercase
+    }
+
     static func weekdayLong(_ isoDay: Int) -> String {
         symbol(isoDay, from: calendar.standaloneWeekdaySymbols)
     }
 
-    /// The days of a plan: `Mon–Fri`, `Sat, Sun`, `Every day`, or the short names in order.
+    /// The days of a plan: `Mon–Fri`, `Sat, Sun`, `Every day`, the short names in order, or that it has none.
     static func days(_ isoDays: [Int]) -> String {
         let sorted = isoDays.sorted()
         switch sorted {
+        case []: return String(localized: "sleep.schedule.noDays", bundle: .module)
         case [1, 2, 3, 4, 5]: return String(localized: "sleep.days.weekdays", bundle: .module)
         case [6, 7]: return String(localized: "sleep.days.weekend", bundle: .module)
         case Array(1...7): return String(localized: "sleep.days.everyDay", bundle: .module)

@@ -48,51 +48,71 @@ class SleepUseCasesTest {
         assertEquals(2, repository.calls.size)
     }
 
-    @Test fun `switching a day writes only the edited plan`() = runTest {
+    private fun draft(
+        days: Set<Int> = setOf(1, 2, 3),
+        bed: Int = 23 * 60,
+        wake: Int = 6 * 60 + 45,
+        alarm: Boolean = true,
+    ) = SleepScheduleDraft(days, SleepTimes(bed, wake), alarm)
+
+    private val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
+
+    @Test fun `saving an existing plan updates it in one write`() = runTest {
         val repository = RecordingSleepRepository()
-        val edit = EditSleepPlans(repository)
-        edit.toggleDay(listOf(weekdays, weekend), "a", 6)
-        assertEquals(
-            listOf("update:a:${SleepPlanChange(wakeDays = setOf(1, 2, 3, 4, 5, 6))}"),
-            repository.calls,
-        )
+        val result = EditSleepPlans(repository).save(listOf(weekdays, weekend), "a", "unused", draft())
+        assertEquals(RepositoryResult.Content(Unit), result)
+        val change = SleepPlanChange(wakeDays = setOf(1, 2, 3), bed = time("23:00"), wake = time("06:45"), alarm = true)
+        assertEquals(listOf("update:a:$change"), repository.calls)
     }
 
-    @Test fun `an unknown plan or day is not found`() = runTest {
-        val edit = EditSleepPlans(RecordingSleepRepository())
-        val missing = RepositoryResult.Failure(FailureKind.NOT_FOUND)
-        assertEquals(missing, edit.toggleDay(listOf(weekdays), "zz", 1))
-        assertEquals(missing, edit.toggleDay(listOf(weekdays), "a", 9))
+    @Test fun `saving a new plan creates it after the last plan under the given name`() = runTest {
+        val repository = RecordingSleepRepository()
+        val result = EditSleepPlans(repository).save(listOf(weekdays, weekend), null, "Other days", draft(setOf(6)))
+        assertEquals(RepositoryResult.Content(Unit), result)
+        val plan = NewSleepPlan("Other days", setOf(6), time("23:00"), time("06:45"), alarm = true, position = 2)
+        assertEquals(listOf("create:$plan"), repository.calls)
     }
 
-    @Test fun `plan times refuse the end of day`() = runTest {
+    @Test fun `saving a plan refuses what cannot be written and writes nothing`() = runTest {
         val repository = RecordingSleepRepository()
         val edit = EditSleepPlans(repository)
-        val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
-        assertEquals(rejected, edit.setBed("a", time("24:00")))
-        assertEquals(rejected, edit.setWake("a", time("24:00")))
+        val plans = listOf(weekdays, weekend)
+        listOf(
+            "no day" to draft(days = emptySet()),
+            "a day that is no weekday" to draft(days = setOf(8)),
+            "a day of week zero" to draft(days = setOf(0, 1)),
+            "the end of the day as a time" to draft(bed = 24 * 60, wake = 6 * 60),
+            "minutes past the day" to draft(wake = 25 * 60),
+            "negative minutes" to draft(bed = -5),
+            "a night shorter than an hour" to draft(bed = 23 * 60, wake = 23 * 60 + 30),
+            "a night longer than twelve hours" to draft(bed = 20 * 60, wake = 10 * 60),
+        ).forEach { (name, draft) ->
+            assertEquals(rejected, edit.save(plans, "a", "Name", draft), name)
+            assertEquals(rejected, edit.save(plans, null, "Name", draft), name)
+        }
+        assertEquals(rejected, edit.save(plans, null, " ", draft()), "a new plan without a name")
         assertTrue(repository.calls.isEmpty())
-        edit.setBed("a", time("22:30"))
-        edit.setWake("a", time("07:00"))
-        edit.setAlarm("a", false)
-        assertEquals(3, repository.calls.size)
     }
 
-    @Test fun `adding a plan needs a free day and a name`() = runTest {
+    @Test fun `saving a plan no plan has is not found`() = runTest {
         val repository = RecordingSleepRepository()
+        val result = EditSleepPlans(repository).save(listOf(weekdays), "zz", "Name", draft())
+        assertEquals(RepositoryResult.Failure(FailureKind.NOT_FOUND), result)
+        assertTrue(repository.calls.isEmpty())
+    }
+
+    @Test fun `a refused write is the answer of saving`() = runTest {
+        val repository = RecordingSleepRepository(writeAnswer = RepositoryResult.Failure(FailureKind.UNAVAILABLE))
         val edit = EditSleepPlans(repository)
-        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), edit.add(listOf(weekdays, weekend), "Other"))
-        assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), edit.add(listOf(weekdays), " "))
-        assertEquals(RepositoryResult.Content("new-plan"), edit.add(listOf(weekdays), "Other"))
-        assertEquals(1, repository.calls.size)
+        assertEquals(RepositoryResult.Failure(FailureKind.UNAVAILABLE), edit.save(listOf(weekdays), "a", "N", draft()))
+        assertEquals(RepositoryResult.Failure(FailureKind.UNAVAILABLE), edit.save(listOf(weekdays), null, "N", draft()))
     }
 
     @Test fun `only a plan that is not the last one is deleted`() = runTest {
         val repository = RecordingSleepRepository()
         val edit = EditSleepPlans(repository)
-        val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
         assertEquals(rejected, edit.delete(listOf(weekdays), "a"))
-        assertEquals(rejected, edit.delete(listOf(weekdays, weekend), "zz"))
+        assertEquals(RepositoryResult.Failure(FailureKind.NOT_FOUND), edit.delete(listOf(weekdays, weekend), "zz"))
         assertEquals(RepositoryResult.Content(Unit), edit.delete(listOf(weekdays, weekend), "b"))
         assertEquals(listOf("delete:b"), repository.calls)
     }
@@ -100,7 +120,6 @@ class SleepUseCasesTest {
     @Test fun `a night change needs something to change and valid times`() = runTest {
         val repository = RecordingSleepRepository()
         val edit = EditSleepNight(repository)
-        val rejected = RepositoryResult.Failure(FailureKind.REJECTED)
         assertEquals(rejected, edit(night, SleepNightChange()))
         assertEquals(rejected, edit(night, SleepNightChange(wake = time("24:00"))))
         assertEquals(rejected, edit(night, SleepNightChange(bed = time("23:00"), wake = time("23:30"))))
@@ -111,6 +130,37 @@ class SleepUseCasesTest {
         edit(night, SleepNightChange(reset = true))
         edit(night, SleepNightChange(bed = time("23:00"), wake = time("07:00")))
         assertEquals(4, repository.calls.size)
+    }
+
+    @Test fun `a night change with both times needs a night of an allowed length`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepNight(repository)
+        assertEquals(rejected, edit(night, SleepNightChange(bed = time("23:00"), wake = time("23:30"))))
+        assertEquals(rejected, edit(night, SleepNightChange(bed = time("20:00"), wake = time("10:00"))))
+        assertTrue(repository.calls.isEmpty())
+        assertEquals(
+            RepositoryResult.Content(null),
+            edit(night, SleepNightChange(bed = time("23:00"), wake = time("07:00"))),
+        )
+        assertEquals(1, repository.calls.size)
+    }
+
+    @Test fun `committing a night writes both times and the alarm`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepNight(repository)
+        edit.commit(night, SleepTimes(22 * 60, 6 * 60), alarm = false)
+        val change = SleepNightChange(bed = time("22:00"), wake = time("06:00"), alarm = false)
+        assertEquals(listOf("night:$night:$change"), repository.calls)
+    }
+
+    @Test fun `committing a night refuses minutes that are no start time and a bad length`() = runTest {
+        val repository = RecordingSleepRepository()
+        val edit = EditSleepNight(repository)
+        assertEquals(rejected, edit.commit(night, SleepTimes(-1, 6 * 60), alarm = true))
+        assertEquals(rejected, edit.commit(night, SleepTimes(23 * 60, 24 * 60), alarm = true))
+        assertEquals(rejected, edit.commit(night, SleepTimes(23 * 60, 1500), alarm = true))
+        assertEquals(rejected, edit.commit(night, SleepTimes(23 * 60, 23 * 60 + 30), alarm = true))
+        assertTrue(repository.calls.isEmpty())
     }
 
     @Test fun `a settings change replaces only the fields it names`() {

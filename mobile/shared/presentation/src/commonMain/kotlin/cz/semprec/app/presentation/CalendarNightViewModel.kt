@@ -6,6 +6,7 @@ import cz.semprec.app.domain.EditCalendarEntry
 import cz.semprec.app.domain.EditSleepNight
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.ScheduleEditing
+import cz.semprec.app.domain.SleepDial
 import cz.semprec.app.domain.SleepNightChange
 import cz.semprec.app.domain.SleepNightRules
 import cz.semprec.app.domain.SleepRules
@@ -24,8 +25,8 @@ abstract class CalendarNightViewModel internal constructor(
 
     /**
      * A night is moved or one of its ends dragged: the times it would have are kept as a preview, snapped to the step
-     * of the calendar, with its length and whether it reaches the goal; a night is never shorter nor longer than
-     * [SleepNightRules.isNightLength] allows.
+     * of the calendar, with the parts of the night they would draw on its evening and the morning after; a night is
+     * never shorter nor longer than [SleepDial.isNightLength] allows.
      */
     internal fun sleepDrag(action: CalendarAction.Gesture.SleepDrag) {
         val night = entryOf(SLEEP_ID_PREFIX + action.night)?.sleep
@@ -38,13 +39,27 @@ abstract class CalendarNightViewModel internal constructor(
             CalendarEdge.START -> snapped(bed + action.deltaMinutes) to wake
             CalendarEdge.END -> bed to snapped(wake + action.deltaMinutes)
         }
-        if (!SleepNightRules.isNightLength(ClockTime(newBed), ClockTime(newWake))) return
-        val duration = SleepRules.durationMinutes(ClockTime(newBed), ClockTime(newWake))
-        val meetsGoal = night.goalMinutes?.let { SleepNightRules.meetsGoal(duration, it) }
-        val changed = SleepNightRules.isChanged(night, ClockTime(newBed), ClockTime(newWake))
+        if (!SleepDial.isNightLength(SleepRules.durationMinutes(newBed, newWake))) return
+        val times = ClockTime(newBed) to ClockTime(newWake)
+        // The reminder is the server's, for the stored bedtime; a moved night shows none until it is written.
+        val moved = night.copy(
+            bedTime = times.first,
+            wakeTime = times.second,
+            changed = SleepNightRules.isChanged(night, times.first, times.second),
+            prepReminderAt = null,
+        )
+        val morningDay = night.night.plusDays(1)
         update {
             it.copy(
-                sleepDrag = CalendarSleepDrag(action.night, newBed, newWake, false, duration, meetsGoal, changed),
+                sleepDrag = CalendarSleepDrag(
+                    night = action.night,
+                    bedMinutes = newBed,
+                    wakeMinutes = newWake,
+                    committing = false,
+                    evening = moved.toState(night.night),
+                    morning = moved.toState(morningDay),
+                    morningDay = morningDay.toString(),
+                ),
                 selectedItemId = null,
             )
         }

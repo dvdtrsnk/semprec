@@ -60,12 +60,9 @@ extension SharedSleepScreenModel {
             goalOptions: state.goalOptions.map(\.intValue),
             reminderLeadOptions: state.reminderLeadOptions.map(\.intValue),
             plans: state.plans.map(SleepPlanItem.init),
-            selectedPlanID: state.selectedPlanId,
             night: state.night.map(SleepNightItem.init),
-            ring: state.ring.map(SleepRing.init),
-            takenDaysByOtherPlans: state.takenDaysByOtherPlans.map(\.intValue),
-            canAddPlan: state.canAddPlan,
-            canDeletePlan: state.canDeletePlan,
+            editor: state.editor.map(SleepDraft.init),
+            nightDraft: state.nightDraft.map(SleepDraft.init),
             saving: state.saving,
             saveFailed: state.saveFailed,
             saveFailure: state.saveFailure.map(FailureKind.init)
@@ -75,19 +72,29 @@ extension SharedSleepScreenModel {
     static func action(_ action: SleepAction) -> any SharedSDK.SleepAction {
         switch action {
         case .retry: SharedSDK.SleepActionRetry.shared
-        case .open(let page, let planID): SharedSDK.SleepActionOpen(screen: page.shared, planId: planID)
+        case .open(let page): SharedSDK.SleepActionOpen(screen: page.shared)
         case .back: SharedSDK.SleepActionBack.shared
         case .setSwitch(let target, let isOn): SharedSDK.SleepActionSetSwitch(target: target.shared, on: isOn)
         case .pickMinutes(let choice, let minutes):
-            SharedSDK.SleepActionPickMinutes(choice: choice.shared, minutes: Int32(minutes))
+            SharedSDK.SleepActionPickMinutes(choice: choice.shared, minutes: Int32(clamping: minutes))
         case .pickSound(let sound): SharedSDK.SleepActionPickSound(sound: sound.shared)
-        case .setTime(let field, let minutes):
-            SharedSDK.SleepActionSetTime(field: field.shared, minutes: Int32(minutes))
-        case .toggleDay(let day): SharedSDK.SleepActionToggleDay(day: Int32(day))
-        case .addPlan(let name): SharedSDK.SleepActionAddPlan(name: name)
-        case .deletePlan: SharedSDK.SleepActionDeletePlan.shared
+        case .draft(let draft): draftAction(draft)
         case .resetNight: SharedSDK.SleepActionResetNight.shared
         case .dismissSaveFailure: SharedSDK.SleepActionDismissSaveFailure.shared
+        }
+    }
+
+    static func draftAction(_ action: SleepDraftAction) -> any SharedSDK.SleepAction {
+        switch action {
+        case .editPlan(let planID): SharedSDK.SleepActionDraftEditPlan(planId: planID)
+        case .moveDial(let handle, let minutes):
+            SharedSDK.SleepActionDraftMoveDial(handle: handle.shared, minutes: Int32(clamping: minutes))
+        case .toggleDay(let day): SharedSDK.SleepActionDraftToggleDraftDay(day: Int32(clamping: day))
+        case .setAlarm(let isOn): SharedSDK.SleepActionDraftSetDraftAlarm(on: isOn)
+        case .confirm(let name): SharedSDK.SleepActionDraftConfirmDraft(newPlanName: name)
+        case .deletePlan: SharedSDK.SleepActionDraftDeleteDraftPlan.shared
+        case .discard: SharedSDK.SleepActionDraftDiscardDraft.shared
+        case .commitNight: SharedSDK.SleepActionDraftCommitNight.shared
         }
     }
 

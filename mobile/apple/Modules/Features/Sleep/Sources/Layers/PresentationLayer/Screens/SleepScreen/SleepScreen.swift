@@ -2,14 +2,18 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The sleep sheet: the plan overview, one plan, one night and the pickers, switched by the shared state. The sheet
-/// closes itself (the person's close and done buttons on its root view); going back inside it is a shared intent.
+/// The sleep sheet: the plan overview, one night and the pickers, switched by the shared state, and over them the
+/// editor of a plan, which shows while the shared state has one. The sheet closes itself (the person's close and done
+/// buttons on its root view); going back inside it is a shared intent.
 struct SleepScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: SleepViewModel
     @Environment(\.dismiss)
     private var dismiss
+    /// The editor the sheet showed last, so that the sheet keeps its content while it slides away after the shared
+    /// state closed the editor.
+    @State private var shownEditor: SleepDraft?
 
     // MARK: - Init
     init(viewModel: @autoclosure @escaping () -> SleepViewModel) {
@@ -26,14 +30,18 @@ struct SleepScreen: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(SleepIdentifiers.screen)
+        .sheet(isPresented: presentation.editor) { editorSheet }
         .alert(
             Text("sleep.save.failed", bundle: .module),
-            isPresented: saveFailed,
+            isPresented: presentation.overviewFailure,
             actions: {
                 Button { viewModel.send(.dismissSaveFailure) } label: { Text("sleep.save.dismiss", bundle: .module) }
             },
             message: { Text(FailureKind.sleepMessage(for: viewModel.state.saveFailure)) }
         )
+        .onChange(of: state.editor) { _, editor in
+            if let editor { shownEditor = editor }
+        }
         .task { await viewModel.observe() }
     }
 }
@@ -63,23 +71,29 @@ private extension SleepScreen {
     @ViewBuilder var page: some View {
         switch state.page {
         case .main: SleepMainPage(state: state, send: send)
-        case .plan: SleepPlanPage(state: state, send: send)
         case .night: SleepNightPage(state: state, send: send)
         case .remind, .sound, .goal: SleepPickerPage(state: state, send: send)
         }
     }
 
-    var saveFailed: Binding<Bool> {
-        Binding(
-            get: { viewModel.state.saveFailed },
-            set: { if !$0 { viewModel.send(.dismissSaveFailure) } }
-        )
+    var presentation: SleepPresentation {
+        SleepPresentation(state: state, send: send)
+    }
+
+    @ViewBuilder var editorSheet: some View {
+        if let draft = state.editor ?? shownEditor {
+            SleepScheduleEditor(
+                draft: draft,
+                saveFailed: presentation.editorFailure,
+                saveFailure: state.saveFailure,
+                send: send
+            )
+        }
     }
 
     var title: Text {
         switch state.page {
         case .main: Text("sleep.title", bundle: .module)
-        case .plan: Text(state.plans.first { $0.id == state.selectedPlanID }?.name ?? "")
         case .night: nightTitle
         case .remind: Text("sleep.remind.title", bundle: .module)
         case .sound: Text("sleep.sound.title", bundle: .module)
@@ -133,8 +147,10 @@ private extension SleepScreen {
     SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady)))
 }
 
-#Preview("Plan") {
-    SleepScreen(viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady.opening(.plan))))
+#Preview("Editor") {
+    SleepScreen(
+        viewModel: SleepViewModel(model: ScriptedSleepScreenModel(state: .previewReady.editing(.previewWeekdays)))
+    )
 }
 
 #Preview("Night") {

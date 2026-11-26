@@ -3,88 +3,65 @@ import XCTest
 
 @testable import CoreKit
 
-/// The calendar's nights of sleep and its task checkboxes inside events, across the Kotlin boundary.
-@MainActor
+/// The parts of a night of sleep that the calendar's day timeline draws: both Kotlin values and what they map to. Both
+/// modules declare these type names, so each is qualified with its module.
 final class SharedCalendarSleepMappingTests: XCTestCase {
 
-    private typealias Model = SharedCalendarScreenModel
-
-    func testANightMapsItsTimesThePlanAndTheGoal() {
+    // MARK: - Tests
+    @MainActor
+    func testStateMapsTheMorningBandOfANightWithoutAReminder() {
         let day = SharedSDK.CalendarDayState(
             date: "2026-10-16",
             items: [],
-            sleepEvening: CalendarKotlin.sleep(),
-            sleepMorning: nil
+            sleepEvening: nil,
+            sleepMorning: CalendarKotlin.morningSleep()
         )
-        let mapped = Model.state(CalendarKotlin.state(.content, days: [day])).days.first
+        let state = SharedCalendarScreenModel.state(CalendarKotlin.state(.content, days: [day]))
+
+        XCTAssertNil(state.days.first?.sleepEvening)
         XCTAssertEqual(
-            mapped?.sleepEvening,
+            state.days.first?.sleepMorning,
             CoreKit.CalendarSleep(
                 night: "2026-10-15",
                 bedMinutes: 1380,
                 wakeMinutes: 405,
                 alarm: true,
-                changed: true,
-                prepMinutes: 1350,
-                planBedMinutes: 1350,
-                planWakeMinutes: 405,
-                durationMinutes: 465,
-                goalMinutes: 480,
-                meetsGoal: false
+                changed: false,
+                prepMinutes: nil,
+                fromMinutes: 0,
+                toMinutes: 405
             )
         )
     }
 
-    func testAMovedNightMapsItsTimesItsLengthAndItsGoal() {
-        let drag = SharedSDK.CalendarSleepDrag(
-            night: "2026-10-15",
-            bedMinutes: 1350,
-            wakeMinutes: 405,
-            committing: true,
-            durationMinutes: 495,
-            meetsGoal: KotlinBoolean(bool: true),
-            changed: true
+    @MainActor
+    func testStateMapsTheEveningBandWithItsReminder() {
+        let day = SharedSDK.CalendarDayState(
+            date: "2026-10-15",
+            items: [],
+            sleepEvening: CalendarKotlin.sleep(),
+            sleepMorning: nil
         )
-        XCTAssertEqual(
-            Model.state(CalendarKotlin.state(.content, sleepDrag: drag)).sleepDrag,
-            CoreKit.CalendarSleepDrag(
-                night: "2026-10-15",
-                bedMinutes: 1350,
-                wakeMinutes: 405,
-                committing: true,
-                durationMinutes: 495,
-                meetsGoal: true,
-                changed: true
-            )
-        )
-        let withoutGoal = SharedSDK.CalendarSleepDrag(
-            night: "n", bedMinutes: 0, wakeMinutes: 60, committing: false, durationMinutes: 60, meetsGoal: nil,
-            changed: false
-        )
-        XCTAssertNil(Model.state(CalendarKotlin.state(.content, sleepDrag: withoutGoal)).sleepDrag?.meetsGoal)
+        let state = SharedCalendarScreenModel.state(CalendarKotlin.state(.content, days: [day]))
+
+        XCTAssertEqual(state.days.first?.sleepEvening?.fromMinutes, 1380)
+        XCTAssertEqual(state.days.first?.sleepEvening?.toMinutes, 1440)
+        XCTAssertEqual(state.days.first?.sleepEvening?.prepMinutes, 1350)
+        XCTAssertNil(state.days.first?.sleepMorning)
     }
 
-    func testTheCheckboxOfATaskInAnEventAndTheMovesOfANightMapToKotlin() throws {
-        let inEvent = try XCTUnwrap(
-            Model.action(.gesture(.toggleDone(itemId: "c", inEventId: "e")))
-                as? SharedSDK.CalendarActionGestureToggleDone
+    /// A reminder that comes after midnight is on the morning of the night's wake day, not on its evening.
+    @MainActor
+    func testStateMapsTheReminderOfAMorningBand() {
+        let day = SharedSDK.CalendarDayState(
+            date: "2026-10-16",
+            items: [],
+            sleepEvening: nil,
+            sleepMorning: CalendarKotlin.morningSleep(prepMinutes: 30)
         )
-        XCTAssertEqual(inEvent.inEventId, "e")
-        let night = try XCTUnwrap(
-            Model.action(.gesture(.sleepDrag(night: "2026-10-15", edge: .end, deltaMinutes: -30)))
-                as? SharedSDK.CalendarActionGestureSleepDrag
-        )
-        XCTAssertEqual([night.night], ["2026-10-15"])
-        XCTAssertEqual(night.edge, .end)
-        XCTAssertEqual(night.deltaMinutes, -30)
-        XCTAssertNil(
-            (Model.action(.gesture(.sleepDrag(night: "n", edge: nil, deltaMinutes: 15)))
-                as? SharedSDK.CalendarActionGestureSleepDrag)?.edge
-        )
-        XCTAssertEqual(
-            (Model.action(.gesture(.endSleepDrag(commit: true)))
-                as? SharedSDK.CalendarActionGestureEndSleepDrag)?.commit,
-            true
-        )
+        let state = SharedCalendarScreenModel.state(CalendarKotlin.state(.content, days: [day]))
+
+        XCTAssertEqual(state.days.first?.sleepMorning?.prepMinutes, 30)
+        XCTAssertEqual(state.days.first?.sleepMorning?.fromMinutes, 0)
     }
 }
