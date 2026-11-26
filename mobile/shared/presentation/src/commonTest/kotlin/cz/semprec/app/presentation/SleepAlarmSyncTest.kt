@@ -98,7 +98,11 @@ class SleepAlarmSyncTest : MainDispatcherTest() {
     )
 
     @Test fun `the rings of the plan are scheduled and the ledger says which alarm is which`() = runTest(dispatcher) {
-        val repository = repository(night(SYNC_TODAY), night(SYNC_TODAY.plusDays(1)), night(SYNC_TODAY.plusDays(2), alarm = false))
+        val repository = repository(
+            night(SYNC_TODAY),
+            night(SYNC_TODAY.plusDays(1)),
+            night(SYNC_TODAY.plusDays(2), alarm = false),
+        )
 
         val result = sync(repository).sync()
 
