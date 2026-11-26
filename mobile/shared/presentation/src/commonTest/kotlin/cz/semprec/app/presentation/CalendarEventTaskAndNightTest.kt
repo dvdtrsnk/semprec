@@ -54,7 +54,7 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
         runCurrent()
     }
 
-    @Test fun `a task ticked off inside an event is done there, whatever it was there before`() = runTest(dispatcher) {
+    @Test fun `a task ticked off inside an event is done there whatever it was there before`() = runTest(dispatcher) {
         val missed = EventTaskEntry("missed", "Missed", EventTaskState.MISSED, null)
         val elsewhere = EventTaskEntry("elsewhere", "Elsewhere", EventTaskState.DONE_ELSEWHERE, "2026-10-16")
         val open = EventTaskEntry("open", "Open", EventTaskState.OPEN, null)
