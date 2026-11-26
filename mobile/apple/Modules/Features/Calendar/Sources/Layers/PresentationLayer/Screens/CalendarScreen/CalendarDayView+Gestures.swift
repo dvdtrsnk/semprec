@@ -242,19 +242,20 @@ extension CalendarDayView {
         viewModel.navigate(.page(steps: steps))
     }
 
-    /// The finger is at `edge` (or at none, 0). A new edge starts a clock that counts the moments the item rests there,
-    /// each of which turns a day; leaving the edge stops it.
+    /// The finger is at `edge` (or at none, 0). A new edge starts the clock of the day view that counts the moments
+    /// the item rests there, each of which turns a day; leaving the edge stops it.
     func restEdge(_ edge: Int) {
-        guard edge != sideEdge else { return }
-        sideEdge = edge
-        edgeClock?.cancel()
-        guard edge != 0 else { return }
-        edgeClock = Task { @MainActor in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(Self.turnPause))
-                guard !Task.isCancelled else { return }
-                edgeMoments += 1
-            }
+        if edge != sideEdge { sideEdge = edge }
+    }
+
+    /// Counts the moments a carried item rests at the side edge it is at; it is the view's task for `sideEdge`, so
+    /// another edge, none, or the view leaving stops it.
+    func countEdgeMoments() async {
+        guard sideEdge != 0 else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(Self.turnPause))
+            guard !Task.isCancelled else { return }
+            edgeMoments += 1
         }
     }
 

@@ -118,6 +118,20 @@ class CalendarEventTaskAndNightTest : MainDispatcherTest() {
             vm.close()
         }
 
+    @Test fun `a night whose write failed can be moved again`() = runTest(dispatcher) {
+        sleep.writeAnswer = unavailable
+        serve(sleepEntry(DAY_ZERO))
+        val vm = loaded()
+        act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", edge = null, deltaMinutes = 30))
+        act(vm, CalendarAction.Gesture.EndSleepDrag(commit = true))
+        assertEquals(1, sleep.writes.size)
+        assertEquals(null, vm.state.value.sleepDrag)
+        assertTrue(vm.state.value.problem)
+        act(vm, CalendarAction.Gesture.SleepDrag("2026-10-16", edge = null, deltaMinutes = 60))
+        assertEquals(false, vm.state.value.sleepDrag?.committing)
+        vm.close()
+    }
+
     @Test fun `a task listed inside an event can be opened and ticked off`() = runTest(dispatcher) {
         val agenda = EventTaskEntry("agenda", "Agenda", EventTaskState.OPEN, null)
         val review = EventTaskEntry("review", "Review", EventTaskState.DONE, null)

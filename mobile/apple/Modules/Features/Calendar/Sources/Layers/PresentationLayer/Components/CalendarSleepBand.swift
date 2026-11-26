@@ -36,8 +36,8 @@ struct CalendarSleepBand: View {
     let handlers: CalendarSleepHandlers
 
     // MARK: - State
-    /// The clock of a press, which holds the night once it lasted long enough.
-    @State private var pressClock: Task<Void, Never>?
+    /// Whether a finger presses the night; one still on it after the hold's time holds it.
+    @State private var pressing = false
 
     // MARK: - Body
     var body: some View {
@@ -56,14 +56,12 @@ struct CalendarSleepBand: View {
             // a touch that scrolls the day or turns it: a drag inside a scroll view would take its touches.
             // A long press of a view in a scroll view is recognized only when the finger lifts, so the press is timed:
             // a finger still on the night after the hold's time holds it.
-            .onLongPressGesture(minimumDuration: Self.holdDuration, perform: {}, onPressingChanged: { pressing in
-                pressClock?.cancel()
+            .onLongPressGesture(minimumDuration: Self.holdDuration, perform: {}, onPressingChanged: { pressing = $0 })
+            .task(id: pressing) {
                 guard pressing else { return }
-                pressClock = Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(Self.holdDuration))
-                    if !Task.isCancelled { handlers.hold(sleep.night) }
-                }
-            })
+                try? await Task.sleep(for: .seconds(Self.holdDuration))
+                if !Task.isCancelled { handlers.hold(sleep.night) }
+            }
             .overlay(alignment: evening ? .top : .bottom) { if selected { handle } }
             .animation(.snappy(duration: 0.2), value: selected)
             .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: startMinutes))

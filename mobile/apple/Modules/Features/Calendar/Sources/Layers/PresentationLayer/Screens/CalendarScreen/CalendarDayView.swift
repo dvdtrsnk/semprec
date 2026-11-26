@@ -51,8 +51,6 @@ struct CalendarDayView: View {
     @State var sideEdge = 0
     /// Counts the moments a held item has rested at a side edge, each of which turns a day.
     @State var edgeMoments = 0
-    /// The clock that counts them while the item rests at an edge.
-    @State var edgeClock: Task<Void, Never>?
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
     var hourHeight = Double(CalendarGeometry.standardHourHeight)
@@ -116,6 +114,7 @@ struct CalendarDayView: View {
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
+        .task(id: sideEdge) { await countEdgeMoments() }
         .onChange(of: edgeMoments) {
             guard carry?.moved == true, sideEdge != 0 else { return }
             turnDay(sideEdge)

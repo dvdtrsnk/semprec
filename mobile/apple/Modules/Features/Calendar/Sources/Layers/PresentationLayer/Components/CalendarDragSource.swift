@@ -89,7 +89,7 @@ final class CalendarDragCoordinator: NSObject, UIDragInteractionDelegate {
         provider.register(transfer)
         let dragItem = UIDragItem(itemProvider: provider)
         dragItem.localObject = item.id
-        let card = Self.card(for: item)
+        let card = Self.card(for: item, scale: anchor.traitCollection.displayScale)
         dragged = (item, dragItem, card)
         showsCard = false
         dragItem.previewProvider = { Self.hiddenPreview() }
@@ -151,10 +151,10 @@ final class CalendarDragCoordinator: NSObject, UIDragInteractionDelegate {
     }
 
     /// The card of the drag: the item's colour, title and time, drawn once as a picture, which the system's preview
-    /// shows as it is.
-    private static func card(for item: CalendarItem) -> UIView {
+    /// shows as it is, at the scale of the screen the day is on.
+    private static func card(for item: CalendarItem, scale: CGFloat) -> UIView {
         let renderer = ImageRenderer(content: CalendarDragPreview(item: item).fixedSize())
-        renderer.scale = UIScreen.main.scale
+        renderer.scale = scale
         let image = renderer.uiImage ?? UIImage()
         let view = UIImageView(image: image)
         view.frame = CGRect(origin: .zero, size: image.size)

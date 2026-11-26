@@ -203,6 +203,39 @@ class CalendarUseCasesTest {
         assertEquals(listOf("host t ev"), repository.calls)
     }
 
+    @Test fun `a task's checkbox in an event completes it there and opens one done there and toggles one not listed`() =
+        runTest {
+            val repository = RecordingCalendarRepository()
+            val edit = EditCalendarEntry(repository)
+            val states = listOf(
+                "open" to EventTaskState.OPEN,
+                "missed" to EventTaskState.MISSED,
+                "elsewhere" to EventTaskState.DONE_ELSEWHERE,
+                "moved" to EventTaskState.MOVED,
+                "done" to EventTaskState.DONE,
+            )
+            val listed = states.map { (id, state) -> EventTaskEntry(id, id, state, null) }
+            val event = entry(id = "ev").copy(tasks = listed)
+            for ((id, _) in states + ("other" to null)) {
+                edit.toggleDoneInEvent(entry(id = id, kind = CalendarEntryKind.TASK), event)
+            }
+            assertEquals(
+                RepositoryResult.Failure(FailureKind.REJECTED),
+                edit.toggleDoneInEvent(entry(id = "open", kind = CalendarEntryKind.TASK, readOnly = true), event),
+            )
+            assertEquals(
+                listOf(
+                    "complete open in ev",
+                    "complete missed in ev",
+                    "complete elsewhere in ev",
+                    "complete moved in ev",
+                    "done done false",
+                    "done other true",
+                ),
+                repository.calls,
+            )
+        }
+
     @Test fun `a copy and a delete reach the repository for an editable entry`() = runTest {
         val repository = RecordingCalendarRepository()
         val edit = EditCalendarEntry(repository)

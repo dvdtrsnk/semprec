@@ -14,7 +14,7 @@ extension CalendarSleep {
             bedMinutes: bed,
             wakeMinutes: wake,
             alarm: alarm,
-            changed: changed || bed != planBedMinutes || wake != planWakeMinutes,
+            changed: changed || planBedMinutes.map { bed != $0 } == true || planWakeMinutes.map { wake != $0 } == true,
             prepMinutes: prepMinutes,
             planBedMinutes: planBedMinutes,
             planWakeMinutes: planWakeMinutes,

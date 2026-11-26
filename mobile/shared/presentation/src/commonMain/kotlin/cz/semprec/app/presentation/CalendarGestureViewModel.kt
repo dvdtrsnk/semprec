@@ -8,7 +8,6 @@ import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.EditCalendarEntry
-import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.ScheduleEditing
@@ -85,20 +84,11 @@ abstract class CalendarGestureViewModel internal constructor(
         }
     }
 
-    /**
-     * The checkbox of a task. In an event a task done there opens again, and any other is marked done in that event:
-     * one missed there, still open, or done elsewhere, whose completion then counts in this event.
-     */
+    /** The checkbox of a task, on its own row or in the event [inEventId]. */
     internal fun toggleDone(itemId: String, inEventId: String?) {
         val entry = entryOf(itemId) ?: return
         val event = inEventId?.let { entryOf(it) }
-        val stateThere = event?.tasks?.firstOrNull { it.id == itemId }?.state
-        when {
-            event == null || stateThere == null -> write { edit.toggleDone(entry) }
-            stateThere == EventTaskState.DONE ->
-                write { edit.toggleDone(entry.copy(status = CalendarEntry.STATUS_DONE)) }
-            else -> write { edit.completeInEvent(entry, event) }
-        }
+        write { if (event == null) edit.toggleDone(entry) else edit.toggleDoneInEvent(entry, event) }
     }
 
     /** Runs a write; the window reloads when it is done, which also takes the preview of a drag away. */
@@ -140,7 +130,7 @@ abstract class CalendarGestureViewModel internal constructor(
     }
 
     private fun writeFailed(kind: FailureKind?) {
-        update { it.copy(busy = false, drag = null, problem = true, problemFailure = kind) }
+        update { it.copy(busy = false, drag = null, sleepDrag = null, problem = true, problemFailure = kind) }
     }
 }
 

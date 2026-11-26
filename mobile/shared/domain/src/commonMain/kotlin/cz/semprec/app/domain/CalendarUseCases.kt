@@ -70,10 +70,20 @@ class EditCalendarEntry(private val repository: CalendarRepository) {
         return if (fits) repository.putTaskInEvent(task, event) else refused(false)
     }
 
-    /** Marks [task] done in [event]: only an editable task in an editable event. */
-    suspend fun completeInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
-        val fits = task.isEditable && task.kind == CalendarEntryKind.TASK && event.kind == CalendarEntryKind.EVENT
-        return if (fits) repository.completeTaskInEvent(task, event) else refused(false)
+    /**
+     * The checkbox of [task] in [event]. A task done there opens again, and any other is marked done in that event:
+     * one missed there, still open, or done elsewhere, whose completion then counts in this event. A task the event
+     * does not list is toggled as on its own row. Only an editable task is changed; the event only says where.
+     */
+    suspend fun toggleDoneInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        val stateThere = event.tasks.firstOrNull { it.id == task.id }?.state
+        return when {
+            stateThere == null -> toggleDone(task)
+            stateThere == EventTaskState.DONE -> toggleDone(task.copy(status = CalendarEntry.STATUS_DONE))
+            task.isEditable && task.kind == CalendarEntryKind.TASK && event.kind == CalendarEntryKind.EVENT ->
+                repository.completeTaskInEvent(task, event)
+            else -> refused(false)
+        }
     }
 
     suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> =

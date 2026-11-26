@@ -169,21 +169,24 @@ export async function readSleepTimelineItems(
     from,
     to: context.to,
     timezone: context.timezone,
-  }).map((night) => ({
-    kind: "sleep",
-    id: `sleep:${night.night}`,
-    night: night.night,
-    planId: night.planId,
-    bedTime: night.bedTime,
-    wakeTime: night.wakeTime,
-    alarm: night.alarm,
-    changed: night.changed,
-    planBedTime: plans.find((plan) => plan.id === night.planId)?.bedTime ?? null,
-    planWakeTime: plans.find((plan) => plan.id === night.planId)?.wakeTime ?? null,
-    goalMinutes: readGoalMinutes(settings),
-    bedAt: night.bedAt,
-    wakeAt: night.wakeAt,
-    prepReminderAt: night.prepReminderAt,
-    readOnly: false,
-  }));
+  }).map((night) => {
+    const plan = plans.find((candidate) => candidate.id === night.planId);
+    return {
+      kind: "sleep",
+      id: `sleep:${night.night}`,
+      night: night.night,
+      planId: night.planId,
+      bedTime: night.bedTime,
+      wakeTime: night.wakeTime,
+      alarm: night.alarm,
+      changed: night.changed,
+      planBedTime: plan?.bedTime ?? null,
+      planWakeTime: plan?.wakeTime ?? null,
+      goalMinutes: readGoalMinutes(settings),
+      bedAt: night.bedAt,
+      wakeAt: night.wakeAt,
+      prepReminderAt: night.prepReminderAt,
+      readOnly: false,
+    };
+  });
 }
