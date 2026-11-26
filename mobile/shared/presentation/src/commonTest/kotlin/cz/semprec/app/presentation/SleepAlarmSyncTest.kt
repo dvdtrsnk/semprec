@@ -200,6 +200,17 @@ class SleepAlarmSyncTest : MainDispatcherTest() {
         }
     }
 
+    @Test fun `a refusal keeps the alarms the device already holds in the ledger`() = runTest(dispatcher) {
+        sync(repository(night(SYNC_TODAY), night(SYNC_TODAY.plusDays(1)))).sync()
+        device.scheduleAnswers = ArrayDeque(listOf(DeviceAlarmScheduling.Refused(DeviceAlarmFailure.LIMIT_REACHED)))
+
+        val result = sync(repository(night(SYNC_TODAY), night(SYNC_TODAY.plusDays(2)))).sync()
+
+        assertEquals(SleepAlarmSyncResult.LIMIT_REACHED, result)
+        assertEquals(listOf("d2"), device.cancelled)
+        assertEquals(mapOf(FIRST_RING to "d1"), ledger.load())
+    }
+
     @Test fun `an unexplained failure of one alarm does not keep the others from ringing`() = runTest(dispatcher) {
         device.scheduleAnswers = ArrayDeque(listOf(DeviceAlarmScheduling.Failed))
 

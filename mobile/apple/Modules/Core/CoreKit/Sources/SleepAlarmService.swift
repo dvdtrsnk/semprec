@@ -7,8 +7,10 @@ import Foundation
 public protocol SleepAlarmService: AnyObject {
 
     /// Reads the sleep plan and brings the device's alarms in step with it. A plan that cannot be read keeps them.
+    @discardableResult
     func syncSleepAlarms() async -> SleepAlarmSyncResult?
 
     /// Nobody is signed in: removes the alarms of the person who was, apart from one that rings now.
+    @discardableResult
     func removeSleepAlarms() async -> SleepAlarmSyncResult?
 }
