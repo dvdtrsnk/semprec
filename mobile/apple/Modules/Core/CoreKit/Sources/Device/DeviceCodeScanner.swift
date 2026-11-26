@@ -98,11 +98,15 @@ private extension DeviceCodeScanner {
         session.beginConfiguration()
         session.addInput(input)
         let metadata = AVCaptureMetadataOutput()
-        if session.canAddOutput(metadata) {
-            session.addOutput(metadata)
-            metadata.setMetadataObjectsDelegate(output, queue: queue)
-            metadata.metadataObjectTypes = Self.codeTypes.filter(metadata.availableMetadataObjectTypes.contains)
+        // A preview that reads no code is no scanner, so a camera that cannot be given the reader is unavailable.
+        guard session.canAddOutput(metadata) else {
+            session.removeInput(input)
+            session.commitConfiguration()
+            return false
         }
+        session.addOutput(metadata)
+        metadata.setMetadataObjectsDelegate(output, queue: queue)
+        metadata.metadataObjectTypes = Self.codeTypes.filter(metadata.availableMetadataObjectTypes.contains)
         let video = AVCaptureVideoDataOutput()
         video.alwaysDiscardsLateVideoFrames = true
         if session.canAddOutput(video) {

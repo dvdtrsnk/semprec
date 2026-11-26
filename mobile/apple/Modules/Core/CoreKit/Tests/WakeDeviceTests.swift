@@ -47,6 +47,23 @@ final class WakeDeviceTests: XCTestCase {
         XCTAssertEqual(storage.loadMissions().count, 0)
     }
 
+    // MARK: - The device services
+    @MainActor
+    func testFactoriesGivenTheSameDeviceServicesShareTheWakeSettingsAndOthersDoNot() throws {
+        let services = SharedDeviceNotifications(sessionStore: .memory).deviceServices
+        let first = SharedScreenModelFactory(sessionStore: .memory, deviceServices: services)
+        let second = SharedScreenModelFactory(sessionStore: .memory, deviceServices: services)
+        let apart = isolatedFactory()
+        let firstSettings = first.makeWakeSettings()
+        let secondSettings = second.makeWakeSettings()
+        let apartSettings = apart.makeWakeSettings()
+
+        firstSettings.send(.addCode("123"))
+
+        XCTAssertEqual(secondSettings.state.codes, ["123"])
+        XCTAssertEqual(apartSettings.state.codes, [])
+    }
+
     // MARK: - The beep
     func testTheBeepSoundsTwiceAndIsSilentInThePausesOfEverySecond() {
         let samples = stride(from: 0.0, to: 3.0, by: 0.0005).map { ($0, BeepTone.value(at: $0)) }

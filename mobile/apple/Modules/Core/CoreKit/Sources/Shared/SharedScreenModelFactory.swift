@@ -22,7 +22,9 @@ public final class SharedScreenModelFactory {
     let sdk: SharedSDK.HomeSDK
 
     // MARK: - Init
-    public init(sessionStore: SessionStore = .keychain) {
+    /// `deviceServices` are the process's, which every scene's factory is given by the owner of the process's
+    /// notifications; a factory creates none of its own.
+    public init(sessionStore: SessionStore = .keychain, deviceServices: DeviceServices) {
         let storage: any SharedSDK.SessionStorage = switch sessionStore {
         case .keychain: KeychainSessionStorage()
         case .memory: SharedSDK.InMemorySessionStorage()
@@ -39,10 +41,6 @@ public final class SharedScreenModelFactory {
         case .keychain: Self.offlineDirectory()
         case .memory: nil
         }
-        let wake: SharedSDK.DevicePushSDK? = switch sessionStore {
-        case .keychain: ProcessServices.devicePush
-        case .memory: nil
-        }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
@@ -51,8 +49,8 @@ public final class SharedScreenModelFactory {
             pushSubscriptions: subscriptions,
             cacheDirectory: cacheDirectory,
             dataDirectory: dataDirectory,
-            wake: wake?.wake,
-            sleepAlarms: wake?.sleepAlarms
+            wake: deviceServices.wake,
+            sleepAlarms: deviceServices.sleepAlarms
         )
     }
 

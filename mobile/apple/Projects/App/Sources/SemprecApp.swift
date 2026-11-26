@@ -19,6 +19,12 @@ struct SemprecApp: App {
 
     // MARK: - Body
     var body: some Scene {
-        WindowGroup { AppScene().appAppearance() }
+        WindowGroup {
+            AppScene(composition: AppComposition(
+                deviceServices: AppNotifications.shared.deviceServices,
+                notifications: .shared
+            ))
+            .appAppearance()
+        }
     }
 }

@@ -1,3 +1,4 @@
+import CoreKit
 import XCTest
 
 @testable import Semprec
@@ -44,6 +45,26 @@ final class SleepRoutingTests: XCTestCase {
         composition.sleepRouter.showWakeSettings()
 
         XCTAssertEqual(calendar.sheets, [.sleepWakeSettings])
+    }
+
+    @MainActor
+    func testTwoCompositionsOverTheSameDeviceServicesShareThemAndOtherServicesAreApart() {
+        let services = SharedDeviceNotifications(sessionStore: .memory).deviceServices
+        let first = AppComposition(deviceServices: services, notifications: nil)
+        let second = AppComposition(deviceServices: services, notifications: nil)
+        let apart = AppComposition(
+            deviceServices: SharedDeviceNotifications(sessionStore: .memory).deviceServices,
+            notifications: nil
+        )
+        let firstSettings = first.models.makeWakeSettings()
+        let secondSettings = second.models.makeWakeSettings()
+        let apartSettings = apart.models.makeWakeSettings()
+
+        firstSettings.send(.setRequiresCode(true))
+
+        XCTAssertTrue(firstSettings.state.requiresCode)
+        XCTAssertTrue(secondSettings.state.requiresCode, "The windows share the one wake storage of the device")
+        XCTAssertFalse(apartSettings.state.requiresCode, "A composition holds no services but the ones it was given")
     }
 
     func testTheWakeSettingsAreASheetThatCoversTheSempBubble() {

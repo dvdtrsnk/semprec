@@ -165,6 +165,7 @@ extension AppNotificationsTests {
             alarms: service,
             center: center,
             environment: environment,
+            deviceServices: SharedDeviceNotifications(sessionStore: .memory).deviceServices,
             now: { Self.now }
         )
         return (notifications, service, center)
