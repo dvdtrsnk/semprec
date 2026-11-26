@@ -22,6 +22,8 @@ final class AppNotifications {
     private let service: any DeviceNotificationService
     private let alarms: any SleepAlarmService
     private let center: any LocalNotificationCenter
+    /// The wake missions and the sleep alarm sync of the device, which this owner gives to every scene.
+    let deviceServices: DeviceServices
     private let environment: PushEnvironment
     private let now: @MainActor () -> Date
     /// Asks APNs for this device's token, which arrives through `didRegister(deviceToken:)`. Nil where the app
@@ -42,8 +44,10 @@ final class AppNotifications {
         alarms: any SleepAlarmService,
         center: any LocalNotificationCenter,
         environment: PushEnvironment,
+        deviceServices: DeviceServices,
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
+        self.deviceServices = deviceServices
         self.service = service
         self.alarms = alarms
         self.center = center
@@ -128,7 +132,8 @@ extension AppNotifications {
             service: shared,
             alarms: shared,
             center: SystemNotificationCenter(),
-            environment: AppNotifications.buildEnvironment()
+            environment: AppNotifications.buildEnvironment(),
+            deviceServices: shared.deviceServices
         )
     }
 

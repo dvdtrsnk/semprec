@@ -31,7 +31,12 @@ can be silenced with its Stop button, so something has to ring again without the
 - **The device keeps what it must.** The wake settings and the missions (the alarm, its watch alarms and the codes it
   was made for) are kept on the device through `WakeStorage` of `:shared:core`, implemented in the user defaults, and
   written only when they change. `WakeMissions` holds them for the whole process; `SleepAlarmSync` and the guard of every
-  window share that one instance, because the sync schedules what the guards watch. `DeviceAlarms.schedule` says whether
+  window share that one instance, because the sync schedules what the guards watch. Device alarms and wake missions are
+  state of the device, not of a window: two windows each holding their own would schedule every alarm twice and ring
+  two guards. So they are owned once per process by `AppNotifications`, the process's existing owner, which creates them
+  with its `SharedDeviceNotifications` and gives them as `DeviceServices` to each scene's `AppComposition`, and from there
+  to its `SharedScreenModelFactory`, as constructor arguments without a default. No view or factory reaches a static,
+  and a factory creates none of its own. `DeviceAlarms.schedule` says whether
   the alert opens the guard; removing an alarm stops one that rings.
 - **Two ViewModels.** `WakeSettingsViewModel` keeps each change and runs the sync, and `WakeGuardViewModel` shows the
   guard while a mission rings. The guard waits with one delay to the next ring or to the opening of the fallback,

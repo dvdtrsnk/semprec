@@ -12,6 +12,9 @@ public final class DeviceAlarmBeep: ObservableObject {
     // MARK: - Properties
     private let engine = AVAudioEngine()
     private var isPlaying = false
+    /// The source node the engine renders the beep with while it plays; detached when it stops, so that the next
+    /// play does not add a second one beside it.
+    private(set) var source: AVAudioSourceNode?
 
     // MARK: - Init
     public init() {}
@@ -29,14 +32,15 @@ public final class DeviceAlarmBeep: ObservableObject {
     }
 }
 
-// MARK: - Private
-private extension DeviceAlarmBeep {
+// MARK: - Engine
+extension DeviceAlarmBeep {
 
     func start() -> Bool {
         guard !isPlaying else { return true }
         guard AudioSessionConfiguration.activate(recording: false) else { return false }
         let format = engine.outputNode.inputFormat(forBus: 0)
         let source = AVAudioSourceNode(renderBlock: Self.beep(sampleRate: format.sampleRate))
+        self.source = source
         engine.attach(source)
         engine.connect(
             source,
@@ -47,7 +51,7 @@ private extension DeviceAlarmBeep {
         do {
             try engine.start()
         } catch {
-            engine.detach(source)
+            detachSource()
             return false
         }
         isPlaying = true
@@ -57,7 +61,18 @@ private extension DeviceAlarmBeep {
     func stop() {
         guard isPlaying else { return }
         engine.stop()
+        detachSource()
         isPlaying = false
+    }
+}
+
+// MARK: - Private
+private extension DeviceAlarmBeep {
+
+    func detachSource() {
+        guard let source else { return }
+        engine.detach(source)
+        self.source = nil
     }
 
     /// The render block of the beep, which reads its position from an atomic the audio thread alone advances.
