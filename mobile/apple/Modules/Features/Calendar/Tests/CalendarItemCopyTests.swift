@@ -83,8 +83,13 @@ final class CalendarItemCopyTests: XCTestCase {
         XCTAssertTrue(note(.moved, "Review")?.contains("Review") == true)
         XCTAssertTrue(note(.doneElsewhere, "Review")?.contains("Review") == true)
         XCTAssertNotEqual(note(.doneElsewhere, "2026-10-17"), note(.doneElsewhere, "Review"))
-        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isDone)
+        // Done elsewhere is not done in this event, and says so as a missed task does.
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .done, note: nil).isDone)
+        XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isDone)
         XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .missed, note: nil).isDone)
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isNotDoneHere)
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .missed, note: nil).isNotDoneHere)
+        XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .open, note: nil).isNotDoneHere)
     }
 
     func testTheCarriedFromTextNamesTheDay() {
