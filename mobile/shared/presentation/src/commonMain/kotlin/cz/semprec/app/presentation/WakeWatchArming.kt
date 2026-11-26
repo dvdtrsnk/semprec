@@ -32,8 +32,10 @@ internal class WakeWatchArming(private val schedule: suspend (Long) -> DeviceAla
 
     /**
      * Schedules the watch alarms of the mission at [index] that it does not hold yet, in order, so that a run that was
-     * cancelled half way is finished by the next one. The mission is armed once the device was asked for all of them
-     * or refused one; answers `null` then, otherwise the answer that stopped it.
+     * cancelled half way is finished by the next one. Answers `null` when all of them were scheduled. When the device
+     * refused one, the mission is armed, because the device was asked, and the refusal is the answer; when one failed
+     * for a reason the app cannot explain, the mission stays unarmed so that the next run tries the rest, and the
+     * failure is the answer.
      */
     private suspend fun armWatches(missions: MutableList<WakeMission>, index: Int): DeviceAlarmScheduling? {
         var stopped: DeviceAlarmScheduling? = null
