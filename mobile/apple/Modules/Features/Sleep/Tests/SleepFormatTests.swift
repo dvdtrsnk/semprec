@@ -25,6 +25,12 @@ final class SleepFormatTests: XCTestCase {
         XCTAssertEqual(SleepFormat.duration(465), "7 h 45 min")
     }
 
+    func testTheEditorsLengthIsWrittenInMinutesHoursOrBoth() {
+        XCTAssertEqual(SleepFormat.longDuration(45), "45 min")
+        XCTAssertEqual(SleepFormat.longDuration(480), "8 hr")
+        XCTAssertEqual(SleepFormat.longDuration(450), "7 hr 30 min")
+    }
+
     func testAReminderLeadOfOneHourHasItsOwnText() {
         XCTAssertEqual(SleepFormat.lead(30), "30 min before bedtime")
         XCTAssertEqual(SleepFormat.lead(60), "1 h before bedtime")
