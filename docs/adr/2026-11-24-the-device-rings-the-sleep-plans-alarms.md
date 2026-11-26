@@ -33,7 +33,12 @@ wants the sleep settings to offer waking up with a code.
   `WakeMission.armHorizon` (36 hours), so a week of alarms stays within what the system allows an app.
 - The wake settings (the switch and the codes) are kept on the device, not on the server: a code belongs to a thing in
   the person's home, and the device is what rings. The sleep sheet opens them through a screen the app hands the Sleep
-  feature, so the feature imports nothing of the app.
+  feature, so the feature imports nothing of the app: `SleepScreenFactory` takes an optional
+  `@MainActor () -> AnyView` builder, the only view a feature module is handed from outside, type-erased because
+  the feature cannot name the app's `SleepWakeScreen`; nil hides the row. `SleepWakeScreen` is driven by
+  `SleepAlarmClock`, a native `ObservableObject` rather than a shared ViewModel: it holds only this device's settings
+  and alarms and none of the person's data on the server, which is the exception of
+  [[2026-11-24-apple-app-rings-system-alarms-through-alarmkit]].
 - The alarms ring with the system's alarm sound and without snooze; the sleep settings' sound and snooze are not
   applied on the device yet.
 

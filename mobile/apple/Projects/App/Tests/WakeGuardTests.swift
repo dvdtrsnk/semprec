@@ -157,6 +157,19 @@ final class WakeGuardTests: XCTestCase {
     }
 
     @MainActor
+    func testTheCodeEndsEveryAlarmOfTheMissionEvenWhenTheSystemsListCannotBeRead() async throws {
+        let fixture = try await ringing(.once(start.addingTimeInterval(60)))
+        let mission = try XCTUnwrap(fixture.wakeGuard.ringing)
+        fixture.scheduler.readFailure = ScriptedAlarmFailure()
+
+        let ended = await fixture.wakeGuard.submit(code: "123")
+
+        XCTAssertTrue(ended)
+        XCTAssertEqual(Set(fixture.scheduler.cancelled), Set([mission.alarmID] + mission.watchIDs))
+        XCTAssertTrue(fixture.scheduler.held.isEmpty)
+    }
+
+    @MainActor
     func testTheCodeCancelsAWatchAlarmThatCountsDownOrIsPausedInsteadOfStoppingIt() async throws {
         let fixture = try await ringing(.once(start.addingTimeInterval(60)))
         let mission = try XCTUnwrap(fixture.wakeGuard.ringing)
@@ -297,7 +310,9 @@ private struct Fixture {
     let clock: TestClock
 }
 
-/// The clock the guard reads, moved by the test.
+/// The clock the guard reads, moved by the test. Tests and the code they drive
+/// run on the main actor, which is what makes the unchecked `Sendable` sound; a test that hands it to another
+/// isolation must make it safe first.
 private final class TestClock: @unchecked Sendable {
 
     var now: Date

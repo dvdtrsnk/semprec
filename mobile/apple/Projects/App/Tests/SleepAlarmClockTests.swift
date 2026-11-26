@@ -290,7 +290,9 @@ private final class ScriptedSleepAlarms: SleepAlarmSource {
     }
 }
 
-/// The settings and the scheduled plain alarms in memory.
+/// The settings and the scheduled plain alarms in memory. Tests and the code they drive
+/// run on the main actor, which is what makes the unchecked `Sendable` sound; a test that hands it to another
+/// isolation must make it safe first.
 private final class MemorySleepAlarmStore: SleepAlarmStore, @unchecked Sendable {
 
     var settings = SleepWakeSettings()

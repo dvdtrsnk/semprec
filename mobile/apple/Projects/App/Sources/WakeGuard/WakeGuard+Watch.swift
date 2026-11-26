@@ -55,6 +55,7 @@ extension WakeGuard {
             held = Dictionary(try scheduler.alarms().map { ($0.id, $0.phase) }) { first, _ in first }
         } catch {
             failure = String(describing: error)
+            silenceUnread(ids, keeping: kept)
             return
         }
         for id in ids {
@@ -67,6 +68,22 @@ extension WakeGuard {
                 }
             } catch {
                 failure = String(describing: error)
+            }
+        }
+    }
+
+    /// `silence` without the system's list: each of `ids` but `kept` is cancelled, and stopped where it already rings,
+    /// so no alarm of a mission that ended stays live because the list could not be read.
+    func silenceUnread(_ ids: [UUID], keeping kept: UUID?) {
+        for id in ids where id != kept {
+            do {
+                try scheduler.cancel(id: id)
+            } catch {
+                do {
+                    try scheduler.stop(id: id)
+                } catch {
+                    failure = String(describing: error)
+                }
             }
         }
     }

@@ -7,7 +7,9 @@ struct ScriptedAlarmFailure: Error, CustomStringConvertible {
     var description: String { "scripted failure" }
 }
 
-/// A scheduler that holds its alarms in memory and fails where a test scripts it to.
+/// A scheduler that holds its alarms in memory and fails where a test scripts it to. Tests and the code they drive
+/// run on the main actor, which is what makes the unchecked `Sendable` sound; a test that hands it to another
+/// isolation must make it safe first.
 final class SchedulerSpy: AlarmScheduler, @unchecked Sendable {
 
     var authorizationState: AlarmAuthorization
