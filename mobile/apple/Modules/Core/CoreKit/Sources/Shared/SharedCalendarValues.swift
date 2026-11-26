@@ -116,7 +116,12 @@ extension CalendarSleep {
             changed: sleep.changed,
             prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) },
             fromMinutes: Int(sleep.fromMinutes),
-            toMinutes: Int(sleep.toMinutes)
+            toMinutes: Int(sleep.toMinutes),
+            planBedMinutes: sleep.planBedMinutes.map { Int(truncating: $0) },
+            planWakeMinutes: sleep.planWakeMinutes.map { Int(truncating: $0) },
+            durationMinutes: Int(sleep.durationMinutes),
+            goalMinutes: sleep.goalMinutes.map { Int(truncating: $0) },
+            meetsGoal: sleep.meetsGoal.map { $0.boolValue }
         )
     }
 }
@@ -143,11 +148,14 @@ extension CalendarItem {
             editable: item.editable,
             column: Int(item.column),
             columns: Int(item.columns),
+            depth: Int(item.depth),
             tasks: item.tasks.map(CalendarEventTask.init),
             hostEventTitle: item.hostEventTitle,
             carriedFrom: item.carriedFrom,
             trace: item.trace.map(CalendarTraceOutcome.init),
-            traceNote: item.traceNote
+            traceNote: item.traceNote,
+            timeFrom: item.timeFrom.map { Int(truncating: $0) },
+            timeTo: item.timeTo.map { Int(truncating: $0) }
         )
     }
 }
@@ -199,14 +207,6 @@ extension CalendarClipboard {
 
     init(_ clipboard: SharedSDK.CalendarClipboard) {
         self.init(mode: CalendarClipboardMode(clipboard.mode), title: clipboard.title)
-    }
-}
-
-// MARK: - CalendarDeleteRequest
-extension CalendarDeleteRequest {
-
-    init(_ request: SharedSDK.CalendarDeleteRequest) {
-        self.init(itemId: request.itemId, title: request.title, kind: CalendarItemKind(request.kind))
     }
 }
 
@@ -363,5 +363,21 @@ extension NewItemCalendarQualifier {
         case .accountName: self = .accountName
         case .accountAddress: self = .accountAddress
         }
+    }
+}
+
+// MARK: - CalendarSleepDrag
+extension CalendarSleepDrag {
+
+    init(_ drag: SharedSDK.CalendarSleepDrag) {
+        self.init(
+            night: drag.night,
+            bedMinutes: Int(drag.bedMinutes),
+            wakeMinutes: Int(drag.wakeMinutes),
+            committing: drag.committing,
+            evening: drag.evening.map(CalendarSleep.init),
+            morning: drag.morning.map(CalendarSleep.init),
+            morningDay: drag.morningDay
+        )
     }
 }

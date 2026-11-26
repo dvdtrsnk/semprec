@@ -85,6 +85,21 @@ class HttpCalendarRepository(
         }
     }
 
+    override suspend fun completeTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        val storedTask = stored(task)
+        val storedEvent = stored(event)
+        return when {
+            storedTask is RepositoryResult.Failure -> storedTask
+            storedEvent is RepositoryResult.Failure -> storedEvent
+            storedTask is RepositoryResult.Content && storedEvent is RepositoryResult.Content ->
+                api.send(
+                    HttpMethod.Put,
+                    "/api/tasks/${storedTask.value.id}/completed-in-event/${storedEvent.value.id}",
+                ).ignoreBody().alsoChanged()
+            else -> RepositoryResult.Failure(FailureKind.INVALID_DATA)
+        }
+    }
+
     override suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> =
         when (val item = stored(entry)) {
             is RepositoryResult.Failure -> item

@@ -15,9 +15,6 @@ enum CalendarIdentifiers {
     static let monthGrid = "calendar.monthGrid"
     static let yearGrid = "calendar.yearGrid"
     static let menu = "calendar.menu"
-    /// The buttons of the question before an item is deleted.
-    static let deleteConfirm = "calendar.delete.confirm"
-    static let deleteCancel = "calendar.delete.cancel"
     static let clipboard = "calendar.clipboard"
     static let agenda = "calendar.agenda"
     static let agendaList = "calendar.agenda.list"

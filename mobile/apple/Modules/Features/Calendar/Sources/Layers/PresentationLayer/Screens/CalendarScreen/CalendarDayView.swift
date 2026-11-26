@@ -17,50 +17,92 @@ struct CalendarDayView: View {
 
     // MARK: - State
     /// Where the shown day's timeline is, read by gestures and followed by the header's backdrop.
-    @State private var frames = CalendarDayFrames()
-    @State private var eventFrames: [String: CGRect] = [:]
-    @State private var lastAutoScroll = Date.distantPast
+    @State var frames = CalendarDayFrames()
+    @State var eventFrames: [String: CGRect] = [:]
+    @State var itemFrames: [String: CGRect] = [:]
+    /// Where the selected block is, which its menu is placed by.
+    @State var selectedFrame: CGRect?
+    @State var menuSize = CGSize(width: 280, height: 44)
+    /// The item being carried about the day, by the system's drag or by a sliding finger; where the finger is lives in
+    /// `frames`, outside the view's state.
+    @State var carry: CalendarCarry?
+    /// The item that last lifted into a drag, which the drag coming over the day carries.
+    @State var lifted: CalendarLift?
+    /// The night held on the timeline, whose ends show handles; it is the day view's alone, as the server has no
+    /// item to select.
+    @State var selectedNight: String?
+    /// The night a finger holds, from the hold until the finger lifts.
+    @State var nightHold: CalendarNightHold?
+    /// Where the part of the header a drag puts an item into the all-day row begins: the date line, under the week.
+    @State var allDayZoneTop: CGFloat = 0
+    /// Until when a tap on an item is no tap: the lift of a drag that ends where it began also lifts the finger.
+    @State var tapsHeldBackUntil: Date?
+    /// What the system's drag did over the day, waiting to be handled.
+    @State var dropQueue = CalendarDropQueue()
+    /// Where the carried block follows the finger to, read only by that block.
+    @State var dragFollower = CalendarDragFollower()
+    /// An item dropped from another window, once read from the drag.
+    @State var droppedItem: CalendarDroppedItem?
+    /// The item a drag carried out of the day, carried on should it come back.
+    @State var reentry: CalendarReentry?
+    /// How fast the day scrolls under a sliding finger, in points a second; zero when it does not.
+    @State var autoScrollSpeed: CGFloat = 0
+    /// Which side edge of the screen a held item is at: -1 the left, 1 the right, 0 neither.
+    @State var sideEdge = 0
+    /// Counts the moments a held item has rested at a side edge, each of which turns a day.
+    @State var edgeMoments = 0
     /// The height of an hour the person pinched the timeline to, kept for the next time.
     @AppStorage("calendarHourHeight")
-    private var hourHeight = Double(CalendarGeometry.standardHourHeight)
+    var hourHeight = Double(CalendarGeometry.standardHourHeight)
     /// Counts the day changes that tick: a turn of the day pager, a tap on a day, or a day selected elsewhere.
-    @State private var dayTicks = 0
+    @State var dayTicks = 0
     /// The day this view already ticked for, whose arrival from the shared state then ticks no more.
-    @State private var tickedDay: String?
+    @State var tickedDay: String?
     /// Set while the week strip turns to another week, whose new day comes without a haptic.
-    @State private var isTurningWeek = false
+    @State var isTurningWeek = false
     /// Where the fingers of a zoom are, in global coordinates, while one is under way.
-    @State private var pinchY: CGFloat?
+    @State var pinchY: CGFloat?
     /// The day a turn or a tap just chose, shown at once until the shared state arrives at it.
-    @State private var chosenDay: String?
+    @State var chosenDay: String?
     /// The height of the glass header, which the timeline starts below and scrolls on under.
-    @State private var headerHeight: CGFloat = 0
+    @State var headerHeight: CGFloat = 0
     /// How far the day view sits below the top of the screen, under the status and navigation bars, and how tall it
     /// is: the paper the header shows is a screen tall, as the page's.
-    @State private var topBarsHeight: CGFloat = 0
-    @State private var dayHeight: CGFloat = 0
+    @State var topBarsHeight: CGFloat = 0
+    @State var dayHeight: CGFloat = 0
+    @State var dayWidth: CGFloat = 0
 
     // MARK: - Body
     var body: some View {
-        ScrollViewReader { scroll in
-            ZStack(alignment: .top) {
-                CalendarPager(
-                    current: shownDay,
-                    neighbour: { CalendarDates.shifted($0, by: $1) },
-                    isEnabled: state.drag == nil && state.selectedItemId == nil,
-                    onTurn: { steps in
-                        let day = CalendarDates.shifted(shownDay, by: steps)
-                        tick(for: day)
-                        chosenDay = day
-                        viewModel.navigate(.page(steps: steps))
-                    },
-                    page: { timeline(scroll, day: $0) }
-                )
-                .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
-                headerBackdrop
-                header(scroll)
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
-            }
+        ZStack(alignment: .top) {
+            CalendarPager(
+                current: shownDay,
+                neighbour: { CalendarDates.shifted($0, by: $1) },
+                // A carried item turns the day when it rests at a side edge, a day at a time; the pager does not scroll
+                // under it, which the system's drag would otherwise do at the edge, many days at once.
+                isEnabled: carry == nil && state.drag == nil && state.selectedItemId == nil && state.sleepDrag == nil
+                    && nightHold == nil,
+                onTurn: { steps in
+                    let day = CalendarDates.shifted(shownDay, by: steps)
+                    tick(for: day)
+                    chosenDay = day
+                    viewModel.navigate(.page(steps: steps))
+                },
+                page: { timeline(day: $0) }
+            )
+            .modifier(CalendarVerticalPinch(hourHeight: $hourHeight, pinchY: $pinchY))
+            // A night held on a day moves with the finger that holds it. Attached to the pager, a scroll view, rather
+            // than to the night inside it, it never takes the touches of the scroll; and as it begins only once the
+            // finger moves, it leaves a still finger to the system's lift of an event or a task.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .calendarDay)
+                    .onChanged { followNight($0) }
+                    .onEnded { _ in letGoOfNight() }
+            )
+            headerBackdrop
+            header
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { headerHeight = $0 })
+            editMenu
         }
         // A new day ticks as moving a selected row to another place does in a note.
         .sensoryFeedback(.selection, trigger: dayTicks)
@@ -72,6 +114,12 @@ struct CalendarDayView: View {
             if new == tickedDay || isTurningWeek { return }
             tick(for: new)
         }
+        .task(id: sideEdge) { await countEdgeMoments() }
+        .onChange(of: edgeMoments) {
+            guard carry?.moved == true, sideEdge != 0 else { return }
+            turnDay(sideEdge)
+            sendMove()
+        }
         .onChange(of: todayRequests) {
             chosenDay = nil
             // Today plays its own haptic where it is asked for; the day it brings does not tick again.
@@ -79,14 +127,66 @@ struct CalendarDayView: View {
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }, action: { topBarsHeight = $0 })
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { dayHeight = $0 })
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { dayWidth = $0 })
         .coordinateSpace(.calendarDay)
         .onPreferenceChange(CalendarEventFramesKey.self) { eventFrames = $0 }
+        .onPreferenceChange(CalendarItemFramesKey.self) { itemFrames = $0 }
+        .onPreferenceChange(CalendarSelectedFrameKey.self) { selectedFrame = $0 }
+        // The held item's movement is read here, on the view that stays while the day turns under the finger.
+        #if os(iOS)
+        // The drag of the day's items, as the system Calendar's: the card of the drag shows only away from the day.
+        .background(CalendarDragSource(model: dragSourceModel))
+        #endif
+        // The whole calendar is where a drag of an item is taken, the all-day row in the header included.
+        .onDrop(of: [.init(exportedAs: CalendarItemTransfer.typeIdentifier)], delegate: dropTarget)
+        // What the system's drag did is handled by a view of its own, so the day is not drawn again for each report.
+        .background(CalendarDropPump(queue: dropQueue) { handleDropEvents($0) })
+        .onChange(of: droppedItem) { _, dropped in
+            if let dropped { placeDropped(dropped) }
+        }
+        // A day turned or scrolled under the finger of a drag that rests: the item is placed on the day now there.
+        .onChange(of: shownDay) {
+            if carry?.moved == true { sendMove() }
+        }
         .accessibilityIdentifier(CalendarIdentifiers.screen)
     }
 }
 
 // MARK: - Subviews
-private extension CalendarDayView {
+extension CalendarDayView {
+
+    /// The menu of the selected item, a capsule beside it that comes out of it; it is there while the item is held and
+    /// not being dragged.
+    @ViewBuilder var editMenu: some View {
+        ZStack(alignment: .topLeading) {
+            if let item = selectedItem, let anchor = selectedFrame, state.drag == nil {
+                let origin = CalendarMenuPlacement.origin(
+                    menu: menuSize,
+                    anchor: anchor,
+                    container: CGSize(width: dayWidth, height: dayHeight),
+                    top: headerHeight + Self.menuInset,
+                    bottom: dayHeight - Self.menuInset
+                )
+                CalendarEditMenu { menu($0, item) }
+                    .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { menuSize = $0 })
+                    .offset(x: origin.x, y: origin.y)
+                    .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(.spring(duration: 0.3, bounce: 0.2), value: state.selectedItemId)
+        .animation(.spring(duration: 0.3, bounce: 0.2), value: state.drag == nil)
+        .zIndex(10)
+    }
+
+    /// The item that is selected on the shown day.
+    var selectedItem: CalendarItem? {
+        guard let id = state.selectedItemId else { return nil }
+        return dayState(shownDay).items.first { $0.id == id }
+    }
+
+    /// The room the menu keeps from the header and from the bars at the bottom.
+    static var menuInset: CGFloat { 4 }
 
     /// Whether `day` lies strictly between `start` and `end`, in either order.
     static func lies(_ day: String, between start: String, and end: String) -> Bool {
@@ -102,13 +202,19 @@ private extension CalendarDayView {
         dayTicks += 1
     }
 
+    /// The item a drag is carrying, wherever the window holds it.
+    var heldItem: CalendarItem? {
+        guard let held = state.drag else { return nil }
+        return state.days.lazy.flatMap(\.items).first { $0.id == held.itemId }
+    }
+
     func dayState(_ key: String) -> CalendarDayState {
         state.days.first { $0.date == key } ?? CalendarDayState(date: key)
     }
 
     /// The week strip, the date and the all-day items of the shown day, over `headerBackdrop`, which reaches up under
     /// the navigation bar. It changes to a new day at once, while the timeline below slides to it.
-    func header(_ scroll: ScrollViewProxy) -> some View {
+    var header: some View {
         VStack(spacing: 0) {
             CalendarWeekStrip(
                 selectedDay: shownDay,
@@ -129,20 +235,27 @@ private extension CalendarDayView {
             headerDivider
             Text(CalendarDates.dayTitle(shownDay))
                 .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
                 .overlay(alignment: .leading) { weekNumber(shownDay) }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+                .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .calendarDay).minY }, action: {
+                    allDayZoneTop = $0
+                })
                 .accessibilityAddTraits(.isHeader)
             CalendarAllDayRow(
                 items: allDayItems(shownDay),
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
-                handlers: handlers(scroll, day: shownDay)
+                handlers: handlers(day: shownDay)
             )
             // Ends the header: below it is the timeline itself.
             headerDivider
         }
+        // The header keeps its shape at the largest text sizes, as the system Calendar's: a week still fits a line.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 
     /// The colours of the shown day's timeline that lie under the header and the bars above it, blurred until only the
@@ -203,7 +316,7 @@ private extension CalendarDayView {
         return items
     }
 
-    func timeline(_ scroll: ScrollViewProxy, day key: String) -> some View {
+    func timeline(day key: String) -> some View {
         CalendarZoomableTimeline(
             hourHeight: hourHeight,
             pinchY: pinchY,
@@ -212,7 +325,13 @@ private extension CalendarDayView {
             // Today brings today's timeline back to the current time.
             startRequests: key == state.today ? todayRequests : 0,
             // Only the shown day's timeline moves the haze; the pages beside it are laid out but not looked at.
-            paper: key == shownDay ? paper : nil
+            paper: key == shownDay ? paper : nil,
+            // Only the shown day scrolls under a held item.
+            autoScroll: key == shownDay ? CalendarAutoScroll(
+                speed: autoScrollSpeed,
+                onStep: { moveCarry(to: carryLocation) },
+                isHolding: carry?.isSystemDrag == false || state.sleepDrag != nil || nightHold != nil
+            ) : .none
         ) { geometry in
             CalendarTimelineView(
                 day: dayState(key),
@@ -221,19 +340,27 @@ private extension CalendarDayView {
                 nowMinutes: state.nowMinutes,
                 selectedItemId: state.selectedItemId,
                 drag: state.drag,
-                handlers: handlers(scroll, day: key),
-                onResize: { item, edge, location in
-                    viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: minutes(at: location.y)))
+                dragFollower: dragFollower,
+                heldItem: heldItem,
+                handlers: handlers(day: key),
+                onResize: { item, edge, travel in
+                    // The edge follows the finger from where it was grabbed, rather than jumping to the finger.
+                    let from = (edge == .start ? item.startMinutes : item.endMinutes) ?? 0
+                    let moved = Int((travel / CGFloat(hourHeight) * 60).rounded())
+                    viewModel.gesture(.dragResize(itemId: item.id, edge: edge, rawMinutes: from + moved))
                 },
                 onResizeEnd: { viewModel.gesture(.endDrag(commit: true)) },
-                onMenu: menu,
-                onDeselect: { viewModel.gesture(.tapBackground) },
-                onOpenSleep: { viewModel.open(.sleep(night: $0)) },
+                selectedNight: selectedNight,
+                sleepDrag: state.sleepDrag,
+                sleepHandlers: sleepHandlers,
                 onPaste: state.clipboard == nil ? nil : { location in
                     viewModel.edit(.paste(day: key, rawStart: minutes(at: location.y), allDay: false))
+                },
+                onTapBackground: {
+                    selectedNight = nil
+                    viewModel.gesture(.tapBackground)
                 }
             )
-            .onTapGesture { viewModel.gesture(.tapBackground) }
             // Several pages are laid out at once; only the selected day's page measures the timeline.
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .calendarDay) }, action: { frame in
                 if key == shownDay { frames.update(content: frame) }
@@ -242,82 +369,6 @@ private extension CalendarDayView {
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .calendarDay) }, action: { frame in
             if key == shownDay { frames.viewport = frame }
         })
-    }
-}
-
-// MARK: - Gestures
-private extension CalendarDayView {
-
-    func handlers(_ scroll: ScrollViewProxy, day key: String) -> CalendarItemHandlers {
-        CalendarItemHandlers(
-            tap: { viewModel.gesture(.tap(itemId: $0.id)) },
-            select: { viewModel.gesture(.select(itemId: $0.id)) },
-            move: { item, location, start in
-                viewModel.gesture(.dragMove(
-                    itemId: item.id,
-                    day: key,
-                    rawStart: rawStart(item, location: location, start: start),
-                    overAllDayRow: location.y < headerHeight,
-                    overEventId: item.isTask ? eventId(at: location, excluding: item.id) : nil
-                ))
-                autoScroll(scroll, day: key, finger: location)
-            },
-            end: { _, moved in viewModel.gesture(.endDrag(commit: moved)) },
-            toggle: { viewModel.gesture(.toggleDone(itemId: $0)) },
-            openTask: { viewModel.gesture(.tap(itemId: $0)) }
-        )
-    }
-
-    func menu(_ action: CalendarEditAction, _ item: CalendarItem) {
-        switch action {
-        case .cut: viewModel.edit(.cut(itemId: item.id))
-        case .copy: viewModel.edit(.copy(itemId: item.id))
-        case .duplicate: viewModel.edit(.duplicate(itemId: item.id))
-        case .delete: viewModel.edit(.requestDelete(itemId: item.id))
-        }
-    }
-
-    /// The minutes of the day at a vertical place of the day view; not snapped, the shared layer does that.
-    func minutes(at position: CGFloat) -> Int {
-        Int(((position - frames.content.minY) / CGFloat(hourHeight) * 60).rounded())
-    }
-
-    /// Where the top of the held item is: the finger's place less the distance it grabbed the item below its top.
-    func rawStart(_ item: CalendarItem, location: CGPoint, start: CGPoint) -> Int {
-        let grabbed = item.startMinutes.map { minutes(at: start.y) - $0 } ?? 15
-        return minutes(at: location.y) - grabbed
-    }
-
-    func eventId(at location: CGPoint, excluding id: String) -> String? {
-        eventFrames.first { $0.key != id && $0.value.contains(location) }?.key
-    }
-
-    /// The hour a day opens at: two hours before now on today, seven in the morning otherwise.
-    func startHour(day key: String) -> Int {
-        key == state.today ? max(state.nowMinutes / 60 - 2, 0) : 7
-    }
-
-    /// Scrolls the timeline an hour when the finger holding an item is near the header or the bottom edge.
-    func autoScroll(_ scroll: ScrollViewProxy, day key: String, finger: CGPoint) {
-        let edge: CGFloat = 48
-        let viewportFrame = frames.viewport
-        guard Date().timeIntervalSince(lastAutoScroll) > 0.3, viewportFrame != .zero else { return }
-        let visibleTop = max(viewportFrame.minY, headerHeight)
-        let top = Int(((visibleTop - frames.content.minY) / CGFloat(hourHeight)).rounded(.down))
-        let target: Int
-        if finger.y > visibleTop, finger.y < visibleTop + edge {
-            target = max(top - 1, 0)
-        } else if finger.y > viewportFrame.maxY - edge {
-            target = min(top + 1, 23)
-        } else {
-            return
-        }
-        lastAutoScroll = Date()
-        let below = viewportFrame.height > 0 ? (visibleTop - viewportFrame.minY) / viewportFrame.height : 0
-        let anchor = UnitPoint(x: 0, y: below)
-        withAnimation(.linear(duration: 0.25)) {
-            scroll.scrollTo(CalendarGeometry.hourId(target, day: key), anchor: anchor)
-        }
     }
 }
 

@@ -7,6 +7,7 @@ import cz.semprec.app.domain.CalendarAgendaRepository
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarEntryKind
+import cz.semprec.app.domain.agendaDays
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -26,8 +27,7 @@ class CalendarAgendaViewModel internal constructor(
     private val first: CalendarDay? = CalendarDay.parse(from)
     private var job: Job? = null
     private var cursor: String? = null
-    private var entries: List<CalendarAgendaEntry> = emptyList()
-    private var entryDays: Map<String, String> = emptyMap()
+    private var entries: List<CalendarEntry> = emptyList()
 
     init {
         reloadOnChanges(changes) { load() }
@@ -47,7 +47,6 @@ class CalendarAgendaViewModel internal constructor(
         job?.cancel()
         cursor = null
         entries = emptyList()
-        entryDays = emptyMap()
         val day = first
         if (day == null) {
             update { CalendarAgendaState(phase = CalendarAgendaPhase.ERROR, failure = FailureKind.INVALID_DATA) }
@@ -84,10 +83,10 @@ class CalendarAgendaViewModel internal constructor(
 
     private fun show(page: CalendarAgendaPage) {
         cursor = page.nextCursor
-        val added = page.entries.mapNotNull { entry -> entry.toAgenda()?.let { entry.date.toString() to it } }
-        entryDays = entryDays + added.associate { (day, entry) -> entry.id to day }
-        entries = entries + added.map { it.second }
-        val days = entries.groupBy { entryDays.getValue(it.id) }.map { (day, list) -> CalendarAgendaDay(day, list) }
+        entries = entries + page.entries.filter { it.toAgenda() != null }
+        val days = entries.agendaDays().map { (day, list) ->
+            CalendarAgendaDay(day.toString(), list.mapNotNull { it.toAgenda() })
+        }
         update {
             it.copy(
                 phase = CalendarAgendaPhase.CONTENT,
@@ -101,7 +100,7 @@ class CalendarAgendaViewModel internal constructor(
     }
 
     private fun open(id: String) {
-        val entry = entries.firstOrNull { it.id == id } ?: return
+        val entry = entries.firstOrNull { it.id == id }?.toAgenda() ?: return
         emit(CalendarAgendaEffect.OpenDetails(entry.kind, entry.id))
     }
 }

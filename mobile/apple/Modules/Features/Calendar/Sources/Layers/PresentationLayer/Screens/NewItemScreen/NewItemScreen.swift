@@ -12,12 +12,17 @@ struct NewItemScreen: View {
     @Environment(\.dismiss)
     private var dismiss
     @State private var form: NewItemForm
+    /// The form as it opened, which tells whether closing it would lose anything.
+    private let opened: NewItemForm
+    @State private var isConfirmingDiscard = false
 
     // MARK: - Init
     /// `day` (`YYYY-MM-DD`) is the day the form starts on, the one the model was made for.
     init(day: String, viewModel: @autoclosure @escaping () -> NewItemViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel())
-        _form = State(initialValue: NewItemForm(day: day))
+        let opened = NewItemForm(day: day)
+        self.opened = opened
+        _form = State(initialValue: opened)
     }
 
     // MARK: - Body
@@ -28,6 +33,9 @@ struct NewItemScreen: View {
             .toolbar { toolbar }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CalendarSheetIdentifiers.newItemScreen)
+            // Closing a form that holds something asks first, as the system Calendar's sheet does; a swipe down does
+            // not close it at all then.
+            .interactiveDismissDisabled(hasChanges)
             .onChange(of: form) { viewModel.edited() }
             .onChange(of: viewModel.createdItemId) { _, created in
                 if created != nil { dismiss() }
@@ -47,6 +55,11 @@ private extension NewItemScreen {
         state.phase == .saving
     }
 
+    /// Whether the person has typed or chosen anything since the form opened.
+    var hasChanges: Bool {
+        form != opened
+    }
+
     /// The form opens at once: what is typed needs no list of calendars, whose row comes in once they are read.
     var content: some View {
         NewItemFormView(form: $form, groups: state.groups, failure: failure)
@@ -62,7 +75,7 @@ private extension NewItemScreen {
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         PlainToolbarItem(placement: .cancellationAction) {
-            Button { dismiss() } label: {
+            Button { if hasChanges { isConfirmingDiscard = true } else { dismiss() } } label: {
                 Label {
                     Text("newItem.cancel", tableName: "Sheets", bundle: .module)
                 } icon: {
@@ -70,6 +83,21 @@ private extension NewItemScreen {
                 }
             }
             .accessibilityIdentifier(CalendarSheetIdentifiers.newItemCancel)
+            // It comes out of the button that asked, as the system Calendar's does.
+            .confirmationDialog(
+                Text("newItem.discard", tableName: "Sheets", bundle: .module),
+                isPresented: $isConfirmingDiscard,
+                titleVisibility: .hidden
+            ) {
+                Button(role: .destructive) { dismiss() } label: {
+                    Text("newItem.discard", tableName: "Sheets", bundle: .module)
+                }
+                .accessibilityIdentifier(CalendarSheetIdentifiers.newItemDiscard)
+                Button(role: .cancel) {} label: {
+                    Text("newItem.keepEditing", tableName: "Sheets", bundle: .module)
+                }
+                .accessibilityIdentifier(CalendarSheetIdentifiers.newItemKeepEditing)
+            }
         }
         ToolbarItem(placement: .principal) {
             Picker(selection: $form.kind) {

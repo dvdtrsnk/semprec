@@ -4,8 +4,6 @@ import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarKind
-import cz.semprec.app.domain.EventTaskEntry
-import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -29,6 +27,9 @@ private val STANDUP =
     entry("series@2026-10-16", schedule = schedule("09:00", "09:30"), readOnly = true, seriesId = "series")
 private val HOLIDAY = entry("holiday", CalendarEntryKind.HOLIDAY, schedule(null, null), readOnly = true)
 private val TRIP = entry("trip", schedule = schedule(null, null, endDay = DAY_ZERO.plusDays(2)))
+private val BLINK = entry("blink", schedule = schedule("08:00", "08:05"))
+private val AFTER_BLINK = entry("after", schedule = schedule("08:10", "08:40"))
+private val CASCADED = entry("cascaded", schedule = schedule("10:45", "11:45"))
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarViewModelTest : MainDispatcherTest() {
@@ -118,6 +119,24 @@ class CalendarViewModelTest : MainDispatcherTest() {
         assertEquals(14 * 60, invoice.startMinutes)
         assertEquals(14 * 60 + 30, invoice.endMinutes)
         assertFalse(invoice.hasEnd)
+        vm.close()
+    }
+
+    @Test fun `an item that starts well after one it overlaps is stepped in over it`() = runTest(dispatcher) {
+        serve(MEETING, CASCADED)
+        val vm = loaded()
+        val cascaded = vm.item("cascaded")
+        assertEquals(listOf(0, 1), listOf(vm.item("meeting").depth, cascaded.depth))
+        assertEquals(0 to 1, cascaded.column to cascaded.columns)
+        vm.close()
+    }
+
+    @Test fun `a short item keeps its real end and the next one is laid out beside it`() = runTest(dispatcher) {
+        serve(BLINK, AFTER_BLINK)
+        val vm = loaded()
+        val blink = vm.item("blink")
+        assertEquals(8 * 60 to 8 * 60 + 5, blink.startMinutes to blink.endMinutes)
+        assertEquals(listOf(0, 1), listOf(blink.column, vm.item("after").column))
         vm.close()
     }
 
@@ -302,14 +321,14 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a tap on the selected item opens it and deselects`() = runTest(dispatcher) {
+    @Test fun `a tap on the selected item only lets go of it`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
         val effects = effectsOf(vm)
         act(vm, CalendarAction.Gesture.Select("meeting"))
         act(vm, CalendarAction.Gesture.Tap("meeting"))
         assertNull(vm.state.value.selectedItemId)
-        assertEquals(1, effects.size)
+        assertTrue(effects.isEmpty())
         vm.close()
     }
 
@@ -466,33 +485,6 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a task listed inside an event can be opened and ticked off`() = runTest(dispatcher) {
-        val agenda = EventTaskEntry("agenda", "Agenda", EventTaskState.OPEN, null)
-        val review = EventTaskEntry("review", "Review", EventTaskState.DONE, null)
-        serve(MEETING.copy(tasks = listOf(agenda, review)))
-        val vm = loaded()
-        val effects = effectsOf(vm)
-        act(vm, CalendarAction.Gesture.Tap("agenda"))
-        assertEquals(CalendarEffect.OpenDetails("agenda", CalendarItemKind.TASK, "2026-10-16"), effects.single())
-        act(vm, CalendarAction.Gesture.ToggleDone("agenda"))
-        act(vm, CalendarAction.Gesture.ToggleDone("review"))
-        assertEquals(listOf("done agenda true", "done review false"), repository.calls.filter { it.startsWith("done") })
-        val states = vm.item("meeting").tasks.map { it.state }
-        assertEquals(listOf(CalendarTaskInEvent.OPEN, CalendarTaskInEvent.DONE), states)
-        vm.close()
-    }
-
-    @Test fun `a listed task is not a separate item of the day and does not shadow a task of the window`() =
-        runTest(dispatcher) {
-            val same = EventTaskEntry("invoice", "Invoice", EventTaskState.OPEN, null)
-            serve(MEETING.copy(tasks = listOf(same)), INVOICE)
-            val vm = loaded()
-            assertEquals(listOf("meeting", "invoice"), vm.day("2026-10-16").items.map { it.id })
-            act(vm, CalendarAction.Gesture.ToggleDone("invoice"))
-            assertEquals(listOf("done invoice true"), repository.calls.filter { it.startsWith("done") })
-            vm.close()
-        }
-
     @Test fun `an item dropped on a day of the month view moves there and keeps its time`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
@@ -562,30 +554,21 @@ class CalendarViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `delete closes the menu and asks a confirmation that can be given or refused`() = runTest(dispatcher) {
+    @Test fun `delete closes the menu and removes the item at once`() = runTest(dispatcher) {
         serve(MEETING)
         val vm = loaded()
         act(vm, CalendarAction.Gesture.Select("meeting"))
-        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
+        act(vm, CalendarAction.Edit.Delete("meeting"))
         assertNull(vm.state.value.selectedItemId)
-        val request = CalendarDeleteRequest("meeting", "Title meeting", CalendarItemKind.EVENT)
-        assertEquals(request, vm.state.value.pendingDelete)
-        act(vm, CalendarAction.Edit.CancelDelete)
-        assertNull(vm.state.value.pendingDelete)
-        assertTrue(repository.calls.none { it.startsWith("delete") })
-        act(vm, CalendarAction.Edit.RequestDelete("meeting"))
-        act(vm, CalendarAction.Edit.ConfirmDelete)
         assertTrue("delete meeting" in repository.calls)
-        assertNull(vm.state.value.pendingDelete)
         vm.close()
     }
 
-    @Test fun `a holiday cannot be deleted and a confirm without a request does nothing`() = runTest(dispatcher) {
+    @Test fun `a holiday cannot be deleted and an unknown item changes nothing`() = runTest(dispatcher) {
         serve(HOLIDAY)
         val vm = loaded()
-        act(vm, CalendarAction.Edit.RequestDelete("holiday"))
-        assertNull(vm.state.value.pendingDelete)
-        act(vm, CalendarAction.Edit.ConfirmDelete)
+        act(vm, CalendarAction.Edit.Delete("holiday"))
+        act(vm, CalendarAction.Edit.Delete("nothing"))
         assertEquals(listOf("window"), repository.calls)
         vm.close()
     }

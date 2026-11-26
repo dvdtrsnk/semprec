@@ -11,3 +11,12 @@ interface CalendarAgendaRepository {
     /** The page that starts at [cursor], or at [from] when [cursor] is `null`. */
     suspend fun page(from: CalendarDay, cursor: String?): RepositoryResult<CalendarAgendaPage>
 }
+
+/**
+ * The agenda's entries by day, the days in the order the pages bring them: on each day the entries without a time
+ * first, then by their start.
+ */
+fun List<CalendarEntry>.agendaDays(): List<Pair<CalendarDay, List<CalendarEntry>>> {
+    val byTime = compareBy<CalendarEntry> { it.timeFrom != null }.thenBy { it.timeFrom?.minutes }
+    return groupBy { it.date }.map { (day, entries) -> day to entries.sortedWith(byTime) }
+}

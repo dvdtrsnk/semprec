@@ -72,6 +72,11 @@ internal class RecordingCalendarRepository(
         return RepositoryResult.Content(Unit)
     }
 
+    override suspend fun completeTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        calls += "complete ${task.id} in ${event.id}"
+        return RepositoryResult.Content(Unit)
+    }
+
     override suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> {
         calls += "duplicate ${entry.id}"
         return RepositoryResult.Content("copy")
@@ -196,6 +201,54 @@ class CalendarUseCasesTest {
         assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), edit.putTaskInEvent(entry(), entry(id = "ev")))
         assertEquals(RepositoryResult.Failure(FailureKind.REJECTED), edit.putTaskInEvent(task, task))
         assertEquals(listOf("host t ev"), repository.calls)
+    }
+
+    @Test fun `a task's checkbox in an event completes it there and opens one done there and toggles one not listed`() =
+        runTest {
+            val repository = RecordingCalendarRepository()
+            val edit = EditCalendarEntry(repository)
+            val states = listOf(
+                "open" to EventTaskState.OPEN,
+                "missed" to EventTaskState.MISSED,
+                "elsewhere" to EventTaskState.DONE_ELSEWHERE,
+                "moved" to EventTaskState.MOVED,
+                "done" to EventTaskState.DONE,
+            )
+            val listed = states.map { (id, state) -> EventTaskEntry(id, id, state, null) }
+            val event = entry(id = "ev").copy(tasks = listed)
+            for ((id, _) in states + ("other" to null)) {
+                edit.toggleDoneInEvent(entry(id = id, kind = CalendarEntryKind.TASK), event)
+            }
+            assertEquals(
+                RepositoryResult.Failure(FailureKind.REJECTED),
+                edit.toggleDoneInEvent(entry(id = "open", kind = CalendarEntryKind.TASK, readOnly = true), event),
+            )
+            assertEquals(
+                RepositoryResult.Failure(FailureKind.REJECTED),
+                edit.toggleDoneInEvent(entry(id = "done", kind = CalendarEntryKind.TASK, readOnly = true), event),
+            )
+            assertEquals(
+                listOf(
+                    "complete open in ev",
+                    "complete missed in ev",
+                    "complete elsewhere in ev",
+                    "complete moved in ev",
+                    "done done false",
+                    "done other true",
+                ),
+                repository.calls,
+            )
+        }
+
+    @Test fun `the agenda lists each day's entries without a time first and the rest by their start`() {
+        val next = CalendarDay(2026, 10, 17)
+        val late = entry(id = "late", schedule = CalendarSchedule(DAY, null, ClockTime(900), ClockTime(960)))
+        val early = entry(id = "early", schedule = CalendarSchedule(DAY, null, ClockTime(480), ClockTime(540)))
+        val allDay = entry(id = "allDay", schedule = CalendarSchedule(DAY, null, null, null))
+        val tomorrow = entry(id = "tomorrow", schedule = CalendarSchedule(next, null, ClockTime(600), null))
+        val days = listOf(late, tomorrow, early, allDay).agendaDays()
+        assertEquals(listOf(DAY, next), days.map { it.first })
+        assertEquals(listOf("allDay", "early", "late"), days.first().second.map { it.id })
     }
 
     @Test fun `a copy and a delete reach the repository for an editable entry`() = runTest {

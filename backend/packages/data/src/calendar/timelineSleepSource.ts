@@ -127,6 +127,12 @@ function readPrepReminder(settings: SleepSettingsItem): SleepNightsSettings {
   return { prepReminder: false, prepReminderMinutes: 0 };
 }
 
+/** The goal is shown only as a whole, positive number of minutes; anything else shows no goal. */
+function readGoalMinutes(settings: SleepSettingsItem): number | null {
+  const goal = settings.properties.goalMinutes;
+  return typeof goal === "number" && Number.isInteger(goal) && goal > 0 ? goal : null;
+}
+
 /**
  * Starts the day before `from`, so a night that begins the evening before is included. Entries are derived, not
  * item rows, yet not read-only: a night is edited on its own, not through the item routes. With `includeSleep`
@@ -163,18 +169,24 @@ export async function readSleepTimelineItems(
     from,
     to: context.to,
     timezone: context.timezone,
-  }).map((night) => ({
-    kind: "sleep",
-    id: `sleep:${night.night}`,
-    night: night.night,
-    planId: night.planId,
-    bedTime: night.bedTime,
-    wakeTime: night.wakeTime,
-    alarm: night.alarm,
-    changed: night.changed,
-    bedAt: night.bedAt,
-    wakeAt: night.wakeAt,
-    prepReminderAt: night.prepReminderAt,
-    readOnly: false,
-  }));
+  }).map((night) => {
+    const plan = plans.find((candidate) => candidate.id === night.planId);
+    return {
+      kind: "sleep",
+      id: `sleep:${night.night}`,
+      night: night.night,
+      planId: night.planId,
+      bedTime: night.bedTime,
+      wakeTime: night.wakeTime,
+      alarm: night.alarm,
+      changed: night.changed,
+      planBedTime: plan?.bedTime ?? null,
+      planWakeTime: plan?.wakeTime ?? null,
+      goalMinutes: readGoalMinutes(settings),
+      bedAt: night.bedAt,
+      wakeAt: night.wakeAt,
+      prepReminderAt: night.prepReminderAt,
+      readOnly: false,
+    };
+  });
 }

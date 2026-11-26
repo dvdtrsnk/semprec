@@ -14,6 +14,9 @@ enum CalendarDates {
         return calendar
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    private static var clocks: [Int: String] = [:]
+    private static var dates: [String: Date] = [:]
+    private static let minutesPerDay = 24 * 60
 
     // MARK: - Parsing
     /// The device's current day. The server answers with its own today, which the calendar adopts once loaded.
@@ -22,10 +25,16 @@ enum CalendarDates {
         return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 
+    /// Read once per day and kept: the week strip and the pages ask for the same few days on every frame.
     static func date(_ key: String) -> Date? {
+        if let cached = dates[key] { return cached }
         let parts = key.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        guard parts.count == 3,
+            let made = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) else {
+            return nil
+        }
+        dates[key] = made
+        return made
     }
 
     static func key(_ date: Date) -> String {
@@ -159,10 +168,33 @@ enum CalendarDates {
         return "\(weekday) \(parts.day ?? 0). \(parts.month ?? 0)."
     }
 
-    /// `9:05` for minutes since midnight; 24:00 closes a day.
+    /// A time of day for minutes since midnight, written as the person's region writes it (`09:05`, or `9:05 AM`);
+    /// 24:00 closes a day and reads as midnight.
     static func clock(minutes: Int) -> String {
-        String(format: "%d:%02d", minutes / 60, minutes % 60)
+        let time = minutes % minutesPerDay
+        if let cached = clocks[time] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: time / 60, minute: time % 60)
+        let written = calendar.date(from: parts).map { formatted($0, template: "jmm") }
+            ?? String(format: "%02d:%02d", time / 60, time % 60)
+        clocks[time] = written
+        return written
     }
+
+    /// The label of an hour line in the gutter: `14:00` where the region writes 24 hours, `2 PM` where it writes 12.
+    static func hourLabel(_ hour: Int) -> String {
+        guard uses12Hours else { return clock(minutes: hour * 60) }
+        let key = -1 - hour
+        if let cached = clocks[key] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: hour % 24)
+        let written = calendar.date(from: parts).map { formatted($0, template: "j") } ?? clock(minutes: hour * 60)
+        clocks[key] = written
+        return written
+    }
+
+    /// Whether the person's region writes times with AM and PM.
+    /// Read once: the locale's clock does not change while the app runs.
+    private static let uses12Hours: Bool =
+        (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
 
     /// `14:00–15:30`.
     static func range(from start: Int, to end: Int) -> String {

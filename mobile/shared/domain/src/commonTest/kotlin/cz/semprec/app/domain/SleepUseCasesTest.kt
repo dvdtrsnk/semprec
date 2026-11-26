@@ -122,11 +122,14 @@ class SleepUseCasesTest {
         val edit = EditSleepNight(repository)
         assertEquals(rejected, edit(night, SleepNightChange()))
         assertEquals(rejected, edit(night, SleepNightChange(wake = time("24:00"))))
+        assertEquals(rejected, edit(night, SleepNightChange(bed = time("23:00"), wake = time("23:30"))))
+        assertEquals(rejected, edit(night, SleepNightChange(bed = time("18:00"), wake = time("11:00"))))
         assertTrue(repository.calls.isEmpty())
         edit(night, SleepNightChange(bed = time("22:00")))
         edit(night, SleepNightChange(alarm = false))
         edit(night, SleepNightChange(reset = true))
-        assertEquals(3, repository.calls.size)
+        edit(night, SleepNightChange(bed = time("23:00"), wake = time("07:00")))
+        assertEquals(4, repository.calls.size)
     }
 
     @Test fun `a night change with both times needs a night of an allowed length`() = runTest {

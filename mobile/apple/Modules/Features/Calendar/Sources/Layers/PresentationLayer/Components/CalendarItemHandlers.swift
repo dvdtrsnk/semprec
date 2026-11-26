@@ -7,10 +7,17 @@ struct CalendarItemHandlers {
 
     // MARK: - Closures
     let tap: (CalendarItem) -> Void
-    let select: (CalendarItem) -> Void
-    /// The finger moved while an item is held: `location` and `start` are in the day view's space.
-    let move: (_ item: CalendarItem, _ location: CGPoint, _ start: CGPoint) -> Void
-    let end: (_ item: CalendarItem, _ moved: Bool) -> Void
-    let toggle: (_ itemId: String) -> Void
+    /// A finger rested on the item: it is held, selected with its menu.
+    let hold: (CalendarItem) -> Void
+    /// A finger slides on a selected item, which follows it; the place is in the day view's coordinates.
+    let slide: (CalendarItem, DragGesture.Value) -> Void
+    /// The sliding finger lifted.
+    let slideEnd: () -> Void
+    /// What a drag of the item carries.
+    let transfer: (CalendarItem) -> CalendarItemTransfer
+    /// The system's drag of an item ended, dropped anywhere or not at all.
+    let dragEnded: () -> Void
+    /// The checkbox of a task, on its own row or in the event `inEventId`.
+    let toggle: (_ itemId: String, _ inEventId: String?) -> Void
     let openTask: (_ taskId: String) -> Void
 }

@@ -135,6 +135,11 @@ export interface CalendarSleepTimelineItem {
   wakeTime: string;
   alarm: boolean;
   changed: boolean;
+  /** The plan's own times for the night, which `changed` departs from; `null` without a plan. */
+  planBedTime: string | null;
+  planWakeTime: string | null;
+  /** The sleep goal of the settings, in minutes; `null` when it is not a whole number of minutes. */
+  goalMinutes: number | null;
   /** ISO with the tenant zone's offset. */
   bedAt: string;
   wakeAt: string;

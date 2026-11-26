@@ -137,6 +137,38 @@ class ScheduleEditingTest {
         assertEquals(listOf(3, 3, 3), lanes.map { it.columns })
     }
 
+    @Test fun `a block that starts well after the one it overlaps is drawn over it in the same column`() {
+        // 11:00-12:00, 11:45-12:45 and 12:30-13:30: each starts 45 minutes after the one before.
+        val lanes = layoutTimeline(listOf(660..720, 705..765, 750..810))
+        assertEquals(listOf(0, 0, 0), lanes.map { it.column })
+        assertEquals(listOf(1, 1, 1), lanes.map { it.columns })
+        assertEquals(listOf(0, 1, 2), lanes.map { it.depth })
+    }
+
+    @Test fun `a block that starts soon after the one it overlaps stands beside it`() {
+        val lanes = layoutTimeline(listOf(540..600, 570..630))
+        assertEquals(listOf(TimelineLane(0, 2, 0), TimelineLane(1, 2, 0)), lanes)
+    }
+
+    @Test fun `the start that separates a column from a cascade is 33 minutes after the other`() {
+        assertEquals(1, layoutTimeline(listOf(540..600, 572..640))[1].column)
+        assertEquals(0, layoutTimeline(listOf(540..600, 573..640))[1].column)
+    }
+
+    @Test fun `blocks nested in a long one share its column when late and take the next when soon`() {
+        // 14:00-18:00 with 14:30-15:30, 15:00-16:00 and 15:15-15:30 inside it.
+        val lanes = layoutTimeline(listOf(840..1080, 870..930, 900..960, 915..930))
+        assertEquals(listOf(0, 1, 0, 1), lanes.map { it.column })
+        assertEquals(listOf(2, 2, 2, 2), lanes.map { it.columns })
+        assertEquals(listOf(0, 0, 1, 1), lanes.map { it.depth })
+    }
+
+    @Test fun `a block shorter than the minimum is laid out as long as the minimum`() {
+        // The five-minute block at 08:00 would end before the one at 08:10 starts, but they would be drawn over each other.
+        val lanes = layoutTimeline(listOf(480..485, 490..520))
+        assertEquals(listOf(TimelineLane(0, 2, 0), TimelineLane(1, 2, 0)), lanes)
+    }
+
     @Test fun `no blocks give no lanes`() {
         assertEquals(emptyList(), layoutTimeline(emptyList()))
     }

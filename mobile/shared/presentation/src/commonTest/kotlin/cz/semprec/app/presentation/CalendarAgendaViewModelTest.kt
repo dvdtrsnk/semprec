@@ -91,6 +91,26 @@ class CalendarAgendaViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a day lists what has no time first and the rest by time whatever it is`() = runTest(dispatcher) {
+        agenda.onPage = {
+            RepositoryResult.Content(
+                CalendarAgendaPage(
+                    listOf(
+                        agendaEntry("late", CalendarEntryKind.EVENT, AGENDA_MONDAY, "18:00"),
+                        agendaEntry("reminder", CalendarEntryKind.TASK, AGENDA_MONDAY, "14:45"),
+                        agendaEntry("early", CalendarEntryKind.EVENT, AGENDA_MONDAY, "08:00"),
+                        agendaEntry("open", CalendarEntryKind.TASK, AGENDA_MONDAY),
+                    ),
+                    null,
+                ),
+            )
+        }
+        val vm = viewModel()
+        runCurrent()
+        assertEquals(listOf("open", "early", "reminder", "late"), vm.state.value.days.single().entries.map { it.id })
+        vm.close()
+    }
+
     @Test fun `a further page joins the days and the last page ends the agenda`() = runTest(dispatcher) {
         val vm = viewModel()
         runCurrent()

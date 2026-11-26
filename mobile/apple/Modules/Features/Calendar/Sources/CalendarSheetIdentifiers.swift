@@ -49,6 +49,8 @@ enum CalendarSheetIdentifiers {
     // MARK: - New item
     static let newItemScreen = "newItem.screen"
     static let newItemCancel = "newItem.cancel"
+    static let newItemDiscard = "newItem.discard"
+    static let newItemKeepEditing = "newItem.keepEditing"
     static let newItemAdd = "newItem.add"
     static let newItemKind = "newItem.kind"
     static let newItemTitle = "newItem.title"

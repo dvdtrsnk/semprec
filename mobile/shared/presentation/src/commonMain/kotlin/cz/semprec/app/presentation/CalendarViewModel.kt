@@ -5,6 +5,7 @@ import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.EditCalendarEntry
+import cz.semprec.app.domain.EditSleepNight
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.ScheduleEditing
 import cz.semprec.app.domain.SyncAccountCalendars
@@ -29,7 +30,8 @@ class CalendarViewModel internal constructor(
     edit: EditCalendarEntry,
     private val syncAccounts: SyncAccountCalendars,
     dataChanges: Flow<Unit> = emptyFlow(),
-) : CalendarGestureViewModel(initialDay, loadWindow, changes, edit) {
+    editSleep: EditSleepNight? = null,
+) : CalendarNightViewModel(initialDay, loadWindow, changes, edit, editSleep) {
     private var copied: CalendarEntry? = null
 
     init {
@@ -64,7 +66,7 @@ class CalendarViewModel internal constructor(
 
     /** Nothing is dragged or written, so the window can be read again without losing what the person does. */
     private val idle: Boolean
-        get() = state.value.drag == null && !state.value.busy
+        get() = state.value.drag == null && state.value.sleepDrag == null && !state.value.busy
 
     private fun gesture(action: CalendarAction.Gesture) {
         when (action) {
@@ -73,7 +75,9 @@ class CalendarViewModel internal constructor(
                 update { it.copy(selectedItemId = null) }
             }
             is CalendarAction.Gesture.Select -> select(action.itemId)
-            is CalendarAction.Gesture.ToggleDone -> toggleDone(action.itemId)
+            is CalendarAction.Gesture.ToggleDone -> toggleDone(action.itemId, action.inEventId)
+            is CalendarAction.Gesture.SleepDrag -> sleepDrag(action)
+            is CalendarAction.Gesture.EndSleepDrag -> endSleepDrag(action.commit)
             is CalendarAction.Gesture.DragMove -> dragMove(action)
             is CalendarAction.Gesture.DragResize -> dragResize(action)
             is CalendarAction.Gesture.EndDrag -> endDrag(action.commit)
@@ -87,9 +91,7 @@ class CalendarViewModel internal constructor(
             is CalendarAction.Edit.Copy -> hold(action.itemId, CalendarClipboardMode.COPIED)
             is CalendarAction.Edit.Duplicate -> duplicate(action.itemId)
             is CalendarAction.Edit.Paste -> paste(action)
-            is CalendarAction.Edit.RequestDelete -> requestDelete(action.itemId)
-            CalendarAction.Edit.ConfirmDelete -> confirmDelete()
-            CalendarAction.Edit.CancelDelete -> update { it.copy(pendingDelete = null) }
+            is CalendarAction.Edit.Delete -> delete(action.itemId)
             CalendarAction.Edit.DismissProblem -> update { it.copy(problem = false, problemFailure = null) }
         }
     }
@@ -146,24 +148,11 @@ class CalendarViewModel internal constructor(
         }
     }
 
-    /** Asks before deleting; the item's menu closes, so the question is not shown on top of it. */
-    private fun requestDelete(itemId: String) {
+    /** Deletes at once and closes the item's menu; an item the person cannot edit stays. */
+    private fun delete(itemId: String) {
         val entry = entryOf(itemId)
-        if (entry != null && entry.isEditable) {
-            update {
-                it.copy(
-                    pendingDelete = CalendarDeleteRequest(itemId, entry.title, entry.kind.toItemKind()),
-                    selectedItemId = null,
-                )
-            }
-        }
-    }
-
-    private fun confirmDelete() {
-        val request = state.value.pendingDelete
-        val entry = request?.let { entryOf(it.itemId) }
-        update { it.copy(pendingDelete = null, selectedItemId = null) }
-        if (entry != null) write { edit.delete(entry) }
+        update { it.copy(selectedItemId = null) }
+        if (entry != null && entry.isEditable) write { edit.delete(entry) }
     }
 }
 

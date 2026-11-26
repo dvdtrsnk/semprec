@@ -25,7 +25,17 @@ internal fun TimelineEntryDto.toSleep(): CalendarEntry? {
         place = null,
         readOnly = false,
         version = null,
-        sleep = SleepNightEntry(evening, bed, wake, alarm ?: false, changed ?: false, prepReminderAt),
+        sleep = SleepNightEntry(
+            night = evening,
+            bedTime = bed,
+            wakeTime = wake,
+            alarm = alarm ?: false,
+            changed = changed ?: false,
+            prepReminderAt = prepReminderAt,
+            planBed = parseTime(planBedTime),
+            planWake = parseTime(planWakeTime),
+            goalMinutes = goalMinutes?.takeIf { it > 0 },
+        ),
     )
 }
 

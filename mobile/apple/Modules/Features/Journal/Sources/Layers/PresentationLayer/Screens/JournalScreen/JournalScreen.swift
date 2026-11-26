@@ -108,6 +108,17 @@ private extension JournalScreen {
                 axisMotion.centerRequests += 1
             } else {
                 todayBrings = today
+                // From another day the page turns to today from its side, as a swipe or a day picked on the axis
+                // turns it; from a week, a month or a year it changes in place.
+                if let request = JournalPageTurnRequest(
+                    to: today,
+                    from: state.selection,
+                    after: turnRequest,
+                    leaving: pageState
+                ) {
+                    hold.turnStarted()
+                    turnRequest = request
+                }
             }
             viewModel.goToday()
         }

@@ -1,3 +1,4 @@
+import CoreKit
 import SwiftUI
 
 /// The coordinate space of the whole day view, in which every gesture of an item reports where the finger is.
@@ -6,82 +7,76 @@ extension CoordinateSpaceProtocol where Self == NamedCoordinateSpace {
     static var calendarDay: NamedCoordinateSpace { .named("calendarDay") }
 }
 
-/// What a finger does on one item: a tap opens it, a long press selects it, and a drag after the long press moves
-/// it. Positions are in the day view's space; the day view turns them into minutes.
+/// What a finger does on one item. A tap opens it. Held, an event or a task lifts into the system's drag, which holds
+/// it, which the day view receives as its drop target, and which can also carry the item to another app, while other
+/// fingers go on using the calendar; nothing here may claim the touch before it lifts, or the system never lifts it.
+/// On iOS the drag is the day view's `CalendarDragSource`; on macOS the item is SwiftUI's draggable. A selected item
+/// also follows a finger that slides on it straight away, as the system Calendar's selected event does.
 struct CalendarItemGestures: ViewModifier {
 
     // MARK: - Constants
-    private static let pressDuration = 0.35
-    /// How far the finger has to travel before a long press counts as a move rather than a selection.
-    private static let moveThreshold: CGFloat = 4
+    /// How far a finger slides on a selected item before it moves it, rather than leaving the touch to a tap or a lift.
+    private static let slideDistance: CGFloat = 6
 
     // MARK: - Dependencies
+    let item: CalendarItem
+    /// Whether the item can be moved; one that cannot still travels to other apps.
     let enabled: Bool
-    let onTap: () -> Void
-    let onSelect: () -> Void
-    let onMove: (_ location: CGPoint, _ start: CGPoint) -> Void
-    let onEnd: (_ moved: Bool) -> Void
-
-    // MARK: - State
-    @State private var selected = false
-    @State private var moved = false
+    let selected: Bool
+    let handlers: CalendarItemHandlers
 
     // MARK: - Body
     func body(content: Content) -> some View {
-        content
+        let tappable = content
             .contentShape(Rectangle())
-            .onTapGesture(perform: onTap)
-            .gesture(moveGesture, isEnabled: enabled)
+            .onTapGesture { handlers.tap(item) }
+            .gesture(
+                DragGesture(minimumDistance: Self.slideDistance, coordinateSpace: .calendarDay)
+                    .onChanged { handlers.slide(item, $0) }
+                    .onEnded { _ in handlers.slideEnd() },
+                isEnabled: enabled && selected
+            )
+        #if os(iOS)
+        tappable
+        #else
+        if item.kind == .event || item.kind == .task {
+            tappable
+                .onLongPressGesture(minimumDuration: 0.35) { if enabled, !selected { handlers.hold(item) } }
+                .draggable(handlers.transfer(item)) { CalendarDragPreview(item: item) }
+                .modifier(CalendarDragConfiguration(onEnd: handlers.dragEnded))
+        } else {
+            tappable
+        }
+        #endif
     }
 }
 
-// MARK: - Gesture
-private extension CalendarItemGestures {
+#if os(macOS)
+/// Lets a drag move its item within the app and copy it to another app, and tells when the drag ended.
+private struct CalendarDragConfiguration: ViewModifier {
 
-    var moveGesture: some Gesture {
-        LongPressGesture(minimumDuration: Self.pressDuration)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .calendarDay))
-            .onChanged { value in
-                switch value {
-                case .first:
-                    break
-                case .second(_, let drag):
-                    if !selected {
-                        selected = true
-                        onSelect()
-                    }
-                    guard let drag else { return }
-                    let travelled = hypot(
-                        drag.location.x - drag.startLocation.x,
-                        drag.location.y - drag.startLocation.y
-                    )
-                    if moved || travelled >= Self.moveThreshold {
-                        moved = true
-                        onMove(drag.location, drag.startLocation)
-                    }
-                }
-            }
-            .onEnded { value in
-                if case .second = value { onEnd(moved) }
-                selected = false
-                moved = false
+    let onEnd: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .dragConfiguration(DragConfiguration(allowMove: true))
+            .onDragSessionUpdated { session in
+                if case .ended = session.phase { onEnd() }
             }
     }
 }
+#endif
 
 // MARK: - View
 extension View {
 
-    /// Makes the view an item of the calendar: tap, long press to select, drag after the long press to move.
+    /// Makes the view an item of the calendar: a tap, a lift into a drag, and a slide while it is selected.
     func calendarItemGestures(
+        _ item: CalendarItem,
         enabled: Bool,
-        onTap: @escaping () -> Void,
-        onSelect: @escaping () -> Void,
-        onMove: @escaping (_ location: CGPoint, _ start: CGPoint) -> Void,
-        onEnd: @escaping (_ moved: Bool) -> Void
+        selected: Bool,
+        handlers: CalendarItemHandlers
     ) -> some View {
-        modifier(
-            CalendarItemGestures(enabled: enabled, onTap: onTap, onSelect: onSelect, onMove: onMove, onEnd: onEnd)
-        )
+        modifier(CalendarItemGestures(item: item, enabled: enabled, selected: selected, handlers: handlers))
     }
 }

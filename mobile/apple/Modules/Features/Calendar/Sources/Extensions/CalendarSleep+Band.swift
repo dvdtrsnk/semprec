@@ -33,3 +33,16 @@ extension CalendarDayState {
         return parts
     }
 }
+
+// MARK: - A night moved by a finger
+extension CalendarDayState {
+
+    /// The parts of the sleep on this day while `drag` moves a night: that night's evening and morning are the parts
+    /// the shared layer cut for the times it is moving to.
+    func sleepParts(dragging drag: CalendarSleepDrag?) -> [CalendarSleepPart] {
+        guard let drag else { return sleepParts }
+        let evening = date == drag.night ? drag.evening : sleepEvening
+        let morning = date == drag.morningDay ? drag.morning : sleepMorning
+        return CalendarDayState(date: date, items: items, sleepEvening: evening, sleepMorning: morning).sleepParts
+    }
+}
