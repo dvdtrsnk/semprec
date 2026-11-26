@@ -5,6 +5,7 @@ import XCTest
 
 /// What the app carries between the shared layer and the system: the permission, the registration, the reminders it
 /// schedules, the icon's number and where a tapped notification leads, over a scripted service and notification center.
+/// The sleep alarms are in `SleepAlarmNotificationsTests`.
 final class AppNotificationsTests: XCTestCase {
 
     // MARK: - Permission and registration
@@ -120,14 +121,15 @@ final class AppNotificationsTests: XCTestCase {
     }
 
     @MainActor
-    func testSigningOutRemovesTheRemindersAndTheBadge() async {
-        let (notifications, _, center) = Self.make(authorized: true)
+    func testSigningOutRemovesTheRemindersTheBadgeAndTheSleepAlarms() async {
+        let (notifications, service, center) = Self.make(authorized: true)
         center.pending = ["reminder.e1", "other.kept"]
 
         await notifications.signedOut()
 
         XCTAssertEqual(center.removed, [["reminder.e1"]])
         XCTAssertEqual(center.badges, [0])
+        XCTAssertEqual(service.alarmRuns, [.removal])
     }
 
     // MARK: - Taps
@@ -148,7 +150,7 @@ final class AppNotificationsTests: XCTestCase {
 }
 
 // MARK: - Helpers
-private extension AppNotificationsTests {
+extension AppNotificationsTests {
 
     @MainActor
     static func make(
@@ -160,6 +162,7 @@ private extension AppNotificationsTests {
         let center = CenterSpy(authorized: authorized, grants: grants)
         let notifications = AppNotifications(
             service: service,
+            alarms: service,
             center: center,
             environment: environment,
             now: { Self.now }
@@ -181,18 +184,20 @@ private extension AppNotificationsTests {
     }
 }
 
-private struct Registration: Equatable {
+struct Registration: Equatable {
 
     let token: Data
     let environment: PushEnvironment
 }
 
 @MainActor
-private final class ServiceSpy: DeviceNotificationService {
+final class ServiceSpy: DeviceNotificationService, SleepAlarmService {
 
     // MARK: - Properties
     var reminders: [DeviceReminder]? = []
     var badge: Int?
+    var alarmResult: SleepAlarmSyncResult? = .synced
+    private(set) var alarmRuns: [AlarmRun] = []
     private(set) var registrations: [Registration] = []
     private(set) var reminderReads = 0
 
@@ -222,12 +227,32 @@ private final class ServiceSpy: DeviceNotificationService {
         }
     }
 
-    func asksForReminders(_ payload: [String: String]) -> Bool {
-        payload["kind"] == "remindersResync"
+    func resync(of payload: [String: String]) -> DeviceResync? {
+        switch payload["kind"] {
+        case "remindersResync": .reminders
+        case "sleepResync": .sleepAlarms
+        default: nil
+        }
+    }
+
+    func syncSleepAlarms() async -> SleepAlarmSyncResult? {
+        alarmRuns.append(.sync)
+        return alarmResult
+    }
+
+    func removeSleepAlarms() async -> SleepAlarmSyncResult? {
+        alarmRuns.append(.removal)
+        return alarmResult
     }
 }
 
-private final class CenterSpy: LocalNotificationCenter, @unchecked Sendable {
+enum AlarmRun: Equatable {
+
+    case sync
+    case removal
+}
+
+final class CenterSpy: LocalNotificationCenter, @unchecked Sendable {
 
     // MARK: - Properties
     // Unchecked: each test awaits every call before the next one and before it reads, so no two calls overlap.

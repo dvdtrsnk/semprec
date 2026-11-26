@@ -4,26 +4,23 @@ import Foundation
 import UserNotifications
 
 /// The notifications of the process: the permission, this device's push registration, the reminders it schedules
-/// itself, the number on its icon and the notification the person tapped, which the first signed-in scene opens. What
-/// each step reads and where a tap leads is decided by the shared `DeviceNotificationService`; this class only carries
-/// it to the system.
+/// itself, the number on its icon, the system alarms of the sleep plan and the notification the person tapped, which
+/// the first signed-in scene opens. What each step reads, which alarms ring and where a tap leads is decided by the
+/// shared `DeviceNotificationService` and `SleepAlarmService`; this class only carries it to the system.
 @MainActor
 final class AppNotifications {
 
     // MARK: - Shared
     /// The one instance of the process: the app delegate hands it what the system delivers, and every scene's
     /// composition reaches it.
-    static let shared = AppNotifications(
-        service: SharedDeviceNotifications(),
-        center: SystemNotificationCenter(),
-        environment: AppNotifications.buildEnvironment()
-    )
+    static let shared = AppNotifications(shared: SharedDeviceNotifications())
 
     /// The prefix of the identifiers of the reminders this class schedules, so a new read replaces only them.
     static let reminderPrefix = "reminder."
 
     // MARK: - Dependencies
     private let service: any DeviceNotificationService
+    private let alarms: any SleepAlarmService
     private let center: any LocalNotificationCenter
     private let environment: PushEnvironment
     private let now: @MainActor () -> Date
@@ -42,11 +39,13 @@ final class AppNotifications {
     // MARK: - Init
     init(
         service: any DeviceNotificationService,
+        alarms: any SleepAlarmService,
         center: any LocalNotificationCenter,
         environment: PushEnvironment,
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.service = service
+        self.alarms = alarms
         self.center = center
         self.environment = environment
         self.now = now
@@ -76,10 +75,19 @@ final class AppNotifications {
         await updateBadge()
     }
 
-    /// Nobody is signed in: the reminders and the number of the person who was are removed.
+    /// Brings the system alarms in step with the sleep plan; a plan that cannot be read keeps the alarms the device
+    /// holds. The alarms depend on the person's permission for alarms, not on the one for notifications. Nil when the
+    /// task awaiting it was cancelled.
+    @discardableResult
+    func syncSleepAlarms() async -> SleepAlarmSyncResult? {
+        await alarms.syncSleepAlarms()
+    }
+
+    /// Nobody is signed in: the reminders, the number and the sleep alarms of the person who was are removed.
     func signedOut() async {
         center.removePending(await scheduledReminders())
         await center.setBadge(0)
+        await alarms.removeSleepAlarms()
     }
 
     /// APNs issued `deviceToken` for this device.
@@ -89,8 +97,11 @@ final class AppNotifications {
 
     /// A silent push arrived; answers whether it brought new data.
     func didReceiveRemoteNotification(_ payload: [String: String]) async -> Bool {
-        guard service.asksForReminders(payload) else { return false }
-        return await resyncReminders()
+        switch service.resync(of: payload) {
+        case .reminders: return await resyncReminders()
+        case .sleepAlarms: return await alarms.syncSleepAlarms() == .synced
+        case nil: return false
+        }
     }
 
     /// The person tapped a notification with `payload`.
@@ -109,6 +120,17 @@ final class AppNotifications {
 
 // MARK: - Build
 extension AppNotifications {
+
+    /// The notifications of the process over the shared layer, which serves both as the notification service and as
+    /// the sleep alarm service, and over the system's notification center.
+    convenience init(shared: SharedDeviceNotifications) {
+        self.init(
+            service: shared,
+            alarms: shared,
+            center: SystemNotificationCenter(),
+            environment: AppNotifications.buildEnvironment()
+        )
+    }
 
     /// Debug builds get their tokens from the APNs sandbox, Release builds from production, as the build's Info.plist
     /// says under `SemprecApnsEnvironment`.

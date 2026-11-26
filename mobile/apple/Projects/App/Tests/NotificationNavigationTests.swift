@@ -51,8 +51,10 @@ final class NotificationNavigationTests: XCTestCase {
 
     @MainActor
     func testTheSceneOpensATappedNotificationThatWaitsAndOnlyOnce() {
+        let shared = SharedDeviceNotifications(sessionStore: .memory)
         let notifications = AppNotifications(
-            service: SharedDeviceNotifications(sessionStore: .memory),
+            service: shared,
+            alarms: shared,
             center: SystemNotificationCenter(),
             environment: .sandbox
         )

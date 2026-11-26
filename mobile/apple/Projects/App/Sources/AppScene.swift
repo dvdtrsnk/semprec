@@ -41,6 +41,7 @@ struct AppScene: View {
         SessionGate(viewModel: SessionViewModel(model: composition.models.makeSession())) {
             Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
                 .modifier(LiveUpdates(models: composition.models))
+                .modifier(SleepAlarmUpkeep(notifications: composition.notifications))
         } signedOut: {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
                 .task { await composition.notifications?.signedOut() }

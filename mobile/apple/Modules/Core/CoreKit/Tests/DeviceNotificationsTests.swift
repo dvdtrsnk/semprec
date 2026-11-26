@@ -102,8 +102,30 @@ final class DeviceNotificationsTests: XCTestCase {
             startsAt: Date(timeIntervalSince1970: 1_763_714_700)
         )
         XCTAssertEqual(notifications.target(of: notifications.userInfo(of: reminder)), .task(id: "t1"))
-        XCTAssertTrue(notifications.asksForReminders(["kind": "remindersResync"]))
-        XCTAssertFalse(notifications.asksForReminders(["event_id": "e1"]))
+        XCTAssertEqual(notifications.resync(of: ["kind": "remindersResync"]), .reminders)
+        XCTAssertEqual(notifications.resync(of: ["kind": "sleepResync"]), .sleepAlarms)
+        XCTAssertNil(notifications.resync(of: ["event_id": "e1"]))
+    }
+
+    @MainActor
+    func testEveryResyncAndSleepAlarmResultMaps() {
+        XCTAssertEqual(SharedDeviceNotifications.resync(.reminders), .reminders)
+        XCTAssertEqual(SharedDeviceNotifications.resync(.sleepAlarms), .sleepAlarms)
+        XCTAssertEqual(SharedDeviceNotifications.result(.synced), .synced)
+        XCTAssertEqual(SharedDeviceNotifications.result(.unsupported), .unsupported)
+        XCTAssertEqual(SharedDeviceNotifications.result(.readFailed), .readFailed)
+        XCTAssertEqual(SharedDeviceNotifications.result(.notAuthorized), .notAuthorized)
+        XCTAssertEqual(SharedDeviceNotifications.result(.limitReached), .limitReached)
+        XCTAssertEqual(SharedDeviceNotifications.result(.deviceFailed), .deviceFailed)
+    }
+
+    @MainActor
+    func testADeviceWithoutAlarmsHasNoSleepAlarmsToKeepInStep() async {
+        let notifications = SharedDeviceNotifications(sessionStore: .memory)
+        let synced = await notifications.syncSleepAlarms()
+        let removed = await notifications.removeSleepAlarms()
+        XCTAssertEqual(synced, .unsupported)
+        XCTAssertEqual(removed, .unsupported)
     }
 
     @MainActor
