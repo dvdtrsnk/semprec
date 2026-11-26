@@ -78,17 +78,17 @@ class DebugAlarmViewModel internal constructor(
 
     init {
         // Whatever changes the missions, the guard ending one among it, reads the alarms again; the first value too.
-        debug.changes.onEach { enqueue { refresh() } }.launchIn(viewModelScope)
+        debug.changes.onEach { enqueue { refresh(clearsReadFailure = true) } }.launchIn(viewModelScope)
     }
 
     override fun onAction(action: DebugAlarmAction) {
         if (isClosed) return
         when (action) {
-            DebugAlarmAction.Refresh -> enqueue { refresh() }
+            DebugAlarmAction.Refresh -> enqueue { refresh(clearsReadFailure = true) }
             DebugAlarmAction.RequestAuthorization -> enqueue {
                 val decided = debug.requestAuthorization()
                 update { it.copy(authorization = decided) }
-                refresh()
+                refresh(clearsReadFailure = false)
             }
             is DebugAlarmAction.RingIn -> enqueue {
                 finish(debug.ring(DebugSchedule.In(action.delay.seconds), action.withCodes))
@@ -120,17 +120,27 @@ class DebugAlarmViewModel internal constructor(
     /** Shows [failure], or none when the action did what was asked, and reads the alarms the device holds now. */
     private suspend fun finish(failure: DebugAlarmFailure?) {
         update { it.copy(failure = failure) }
-        refresh()
+        refresh(clearsReadFailure = false)
     }
 
-    private suspend fun refresh() {
+    /**
+     * Reads the alarms the device holds; a read that fails is the failure and keeps the list. A read that works ends a
+     * failed read before it, but only where nothing else was asked since, so [clearsReadFailure] is set for a refresh
+     * that is the request itself and not for the one that follows another action.
+     */
+    private suspend fun refresh(clearsReadFailure: Boolean) {
         val rows = debug.rows()
         update {
+            val readFailure = it.failure == DebugAlarmFailure.READ_FAILED
             it.copy(
                 authorization = debug.authorization(),
                 alarms = rows ?: it.alarms,
                 codeCount = debug.codes().size,
-                failure = if (rows == null) DebugAlarmFailure.READ_FAILED else it.failure,
+                failure = when {
+                    rows == null -> DebugAlarmFailure.READ_FAILED
+                    clearsReadFailure && readFailure -> null
+                    else -> it.failure
+                },
             )
         }
     }

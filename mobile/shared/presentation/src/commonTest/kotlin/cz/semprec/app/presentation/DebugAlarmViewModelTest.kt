@@ -381,6 +381,41 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
+    @Test fun `a refresh that reads the device ends the failed read before it and keeps any other failure`() =
+        runTest(dispatcher) {
+            device.phases["a"] = DeviceAlarmPhase.SCHEDULED
+            val vm = viewModel()
+            runCurrent()
+            device.unreadable = true
+            vm.act(DebugAlarmAction.Refresh)
+            assertEquals(DebugAlarmFailure.READ_FAILED, vm.state.value.failure)
+
+            device.unreadable = false
+            vm.act(DebugAlarmAction.Refresh)
+            assertNull(vm.state.value.failure)
+
+            vm.act(DebugAlarmAction.RingIn(DebugAlarmDelay.TEN_SECONDS, withCodes = true))
+            assertEquals(DebugAlarmFailure.NO_CODES, vm.state.value.failure)
+            vm.act(DebugAlarmAction.Refresh)
+            assertEquals(DebugAlarmFailure.NO_CODES, vm.state.value.failure, "a failure of an action is not a read's")
+            vm.close()
+        }
+
+    @Test fun `a change of the missions that reads the device ends a failed read too`() = runTest(dispatcher) {
+        val vm = viewModel()
+        runCurrent()
+        device.unreadable = true
+        vm.act(DebugAlarmAction.Refresh)
+        assertEquals(DebugAlarmFailure.READ_FAILED, vm.state.value.failure)
+
+        device.unreadable = false
+        wake.changeSettings { WakeSettings(requiresCode = true, codes = listOf("1")) }
+        runCurrent()
+
+        assertNull(vm.state.value.failure)
+        vm.close()
+    }
+
     @Test fun `the alarms are listed by their moment with the unknown last and watch alarms inside their mission`() =
         runTest(dispatcher) {
             val early = Instant.parse("2026-11-26T05:45:00Z")
