@@ -1,9 +1,9 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-25
 area: [mobile, cross-cutting]
 supersedes: []
-superseded-by: null
+superseded-by: 2026-11-24-mobile-verification-follows-the-android-and-apple-areas
 ---
 
 # Verify mobile changes in CI and Relay, with device tests run locally

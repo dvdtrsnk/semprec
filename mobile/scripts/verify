@@ -36,6 +36,7 @@ usage: mobile/scripts/verify [all|architecture|shared|android|apple]... [--ios-s
   architecture    node scripts/architecture.mjs; node --test scripts/*.test.mjs
   shared          ./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false
   android         ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+                  detektAll -PdetektAutoFix=false
   apple           tuist and swiftlint version checks, swiftlint lint, tuist install/generate, Debug and Release
                   builds for the iOS Simulator, an iOS device and macOS, a build of the UI tests for the iOS
                   Simulator, tests on macOS
@@ -436,8 +437,9 @@ step_android() {
     else
         prerequisites require_java require_android_sdk
     fi
-    run "gradle assemble + unit tests + lint" "$mobile_root" \
-        ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+    run "gradle assemble + unit tests + lint + detekt" "$mobile_root" \
+        ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug \
+        detektAll -PdetektAutoFix=false
     if [[ -n $android_serial ]]; then
         run "connectedDebugAndroidTest on $android_serial" "$mobile_root" \
             env "ANDROID_SERIAL=$android_serial" ./gradlew connectedDebugAndroidTest
