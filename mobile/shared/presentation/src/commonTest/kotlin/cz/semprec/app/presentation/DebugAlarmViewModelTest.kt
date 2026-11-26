@@ -123,7 +123,7 @@ class DebugAlarmViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `a mission rings with the stored codes, the guard watches it and its watch alarms are armed`() =
+    @Test fun `a mission rings with the stored codes and the guard watches it and its watch alarms are armed`() =
         runTest(dispatcher) {
             wake.changeSettings { WakeSettings(requiresCode = false, codes = listOf(" 123 ", "456", "123")) }
             val vm = viewModel()
