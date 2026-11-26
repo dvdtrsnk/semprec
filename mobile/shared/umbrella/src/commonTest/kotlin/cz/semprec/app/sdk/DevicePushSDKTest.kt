@@ -8,13 +8,13 @@ import cz.semprec.app.core.HeldDeviceAlarm
 import cz.semprec.app.core.InMemorySleepAlarmLedger
 import cz.semprec.app.core.InMemoryWakeStorage
 import cz.semprec.app.core.WakeMission
-import cz.semprec.app.presentation.WakeGuardPhase
-import kotlinx.coroutines.test.runCurrent
 import cz.semprec.app.presentation.SleepAlarmSyncResult
+import cz.semprec.app.presentation.WakeGuardPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlin.test.AfterTest
@@ -28,7 +28,11 @@ private class HoldingAlarms : DeviceAlarms {
 
     override fun authorization() = DeviceAlarmAuthorization.AUTHORIZED
 
-    override fun schedule(ringAtEpochSeconds: Long, opensWakeGuard: Boolean, callback: (DeviceAlarmScheduling) -> Unit) =
+    override fun schedule(
+        ringAtEpochSeconds: Long,
+        opensWakeGuard: Boolean,
+        callback: (DeviceAlarmScheduling) -> Unit,
+    ) =
         callback(DeviceAlarmScheduling.Failed)
 
     override fun cancel(id: String): Boolean = cancelled.add(id)
@@ -63,7 +67,8 @@ class DevicePushSDKTest {
             val guard = HomeSDK(wake = push.wake, sleepAlarms = push.sleepAlarms).sleep.wakeGuardViewModel()
 
             assertEquals(listOf("sleep:k"), push.wake.missions.value.map { it.key })
-            assertEquals(WakeGuardPhase.SCANNING, run { runCurrent(); guard.state.value.phase })
+            runCurrent()
+            assertEquals(WakeGuardPhase.SCANNING, guard.state.value.phase)
             guard.close()
         }
 

@@ -50,7 +50,11 @@ interface DeviceAlarms {
 class UnavailableDeviceAlarms : DeviceAlarms {
     override fun authorization(): DeviceAlarmAuthorization = DeviceAlarmAuthorization.UNSUPPORTED
 
-    override fun schedule(ringAtEpochSeconds: Long, opensWakeGuard: Boolean, callback: (DeviceAlarmScheduling) -> Unit) =
+    override fun schedule(
+        ringAtEpochSeconds: Long,
+        opensWakeGuard: Boolean,
+        callback: (DeviceAlarmScheduling) -> Unit,
+    ) =
         callback(DeviceAlarmScheduling.Refused(DeviceAlarmFailure.UNSUPPORTED))
 
     override fun cancel(id: String): Boolean = true

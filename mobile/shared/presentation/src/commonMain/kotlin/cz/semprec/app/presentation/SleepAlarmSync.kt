@@ -13,6 +13,7 @@ import cz.semprec.app.domain.PlanSleepAlarms
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SleepAlarmNights
 import cz.semprec.app.domain.SleepAlarmPlan
+import cz.semprec.app.domain.SleepAlarmRequest
 import cz.semprec.app.domain.SleepRepository
 import cz.semprec.app.domain.WakeCodes
 import cz.semprec.app.domain.WakeMissionRules
@@ -105,13 +106,8 @@ class SleepAlarmSync internal constructor(
                 if (!alarms.cancel(id)) result = SleepAlarmSyncResult.DEVICE_FAILED
             }
             for (request in plan.schedule) {
-                when (val scheduling = schedule(request.ringAt.epochSeconds, mission = request.codes.isNotEmpty())) {
-                    is DeviceAlarmScheduling.Scheduled ->
-                        if (request.codes.isEmpty()) {
-                            entries[request.key] = scheduling.id
-                        } else {
-                            missions += WakeMission(request.key, request.ringAt.epochSeconds, scheduling.id, request.codes)
-                        }
+                when (val scheduling = ring(request, entries, missions)) {
+                    is DeviceAlarmScheduling.Scheduled -> Unit
                     is DeviceAlarmScheduling.Refused -> return scheduling.failure.toResult()
                     DeviceAlarmScheduling.Failed -> result = SleepAlarmSyncResult.DEVICE_FAILED
                 }
@@ -122,6 +118,24 @@ class SleepAlarmSync internal constructor(
             wake.replaceMissions(missions)
         }
         return result
+    }
+
+    /** Rings [request] and records what the device answered: a plain alarm in [entries], a mission in [missions]. */
+    private suspend fun ring(
+        request: SleepAlarmRequest,
+        entries: MutableMap<String, String>,
+        missions: MutableList<WakeMission>,
+    ): DeviceAlarmScheduling {
+        val ringAt = request.ringAt.epochSeconds
+        val scheduling = schedule(ringAt, mission = request.codes.isNotEmpty())
+        if (scheduling is DeviceAlarmScheduling.Scheduled) {
+            if (request.codes.isEmpty()) {
+                entries[request.key] = scheduling.id
+            } else {
+                missions += WakeMission(request.key, ringAt, scheduling.id, request.codes)
+            }
+        }
+        return scheduling
     }
 
     /** Schedules the watch alarms of every mission that is close and has none; a refusal ends the arming. */
@@ -156,11 +170,12 @@ class SleepAlarmSync internal constructor(
     /** Runs [call] on the main thread, which every call of the device and every answer of it is on. */
     private suspend fun <T> onDevice(call: suspend () -> T): T = withContext(Dispatchers.Main) { call() }
 
-    private fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {
-        DeviceAlarmFailure.NOT_AUTHORIZED -> SleepAlarmSyncResult.NOT_AUTHORIZED
-        DeviceAlarmFailure.LIMIT_REACHED -> SleepAlarmSyncResult.LIMIT_REACHED
-        DeviceAlarmFailure.UNSUPPORTED -> SleepAlarmSyncResult.UNSUPPORTED
-    }
+}
+
+private fun DeviceAlarmFailure.toResult(): SleepAlarmSyncResult = when (this) {
+    DeviceAlarmFailure.NOT_AUTHORIZED -> SleepAlarmSyncResult.NOT_AUTHORIZED
+    DeviceAlarmFailure.LIMIT_REACHED -> SleepAlarmSyncResult.LIMIT_REACHED
+    DeviceAlarmFailure.UNSUPPORTED -> SleepAlarmSyncResult.UNSUPPORTED
 }
 
 /**

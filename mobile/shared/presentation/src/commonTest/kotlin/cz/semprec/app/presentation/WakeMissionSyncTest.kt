@@ -187,7 +187,7 @@ class WakeMissionSyncTest : MainDispatcherTest() {
         assertEquals(FIRST_KEY, wake.missions.value.single().key)
     }
 
-    @Test fun `a mission whose ring has come stays whatever the plan says, and so does an alarm that rings`() =
+    @Test fun `a mission whose ring has come stays whatever the plan says and and so does an alarm that rings`() =
         runTest(dispatcher) {
             requireCode("123")
             sync(nightOn(WAKE_DAY)).sync()

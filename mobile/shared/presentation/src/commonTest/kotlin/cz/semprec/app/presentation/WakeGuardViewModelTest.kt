@@ -97,7 +97,7 @@ class WakeGuardViewModelTest : MainDispatcherTest() {
         guard.close()
     }
 
-    @Test fun `a scanned code of the mission ends it, removes its alarms and says so`() = runTest(dispatcher) {
+    @Test fun `a scanned code of the mission ends it and removes its alarms and says so`() = runTest(dispatcher) {
         val ringing = mission(START)
         hold(ringing)
         val guard = guard()

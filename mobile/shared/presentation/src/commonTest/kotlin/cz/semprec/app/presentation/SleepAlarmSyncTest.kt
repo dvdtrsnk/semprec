@@ -57,7 +57,11 @@ internal class ScriptedAlarms(
 
     override fun authorization() = authorization
 
-    override fun schedule(ringAtEpochSeconds: Long, opensWakeGuard: Boolean, callback: (DeviceAlarmScheduling) -> Unit) {
+    override fun schedule(
+        ringAtEpochSeconds: Long,
+        opensWakeGuard: Boolean,
+        callback: (DeviceAlarmScheduling) -> Unit,
+    ) {
         scheduledAt += ringAtEpochSeconds
         this.opensWakeGuard += opensWakeGuard
         val answer = scheduleAnswers.removeFirstOrNull() ?: DeviceAlarmScheduling.Scheduled("d${next++}")

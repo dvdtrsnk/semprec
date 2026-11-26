@@ -92,7 +92,7 @@ class WakeSettingsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a code is added once, trimmed, and removed by its text`() = runTest(dispatcher) {
+    @Test fun `a code is added once and trimmed and and removed by its text`() = runTest(dispatcher) {
         val vm = viewModel()
 
         vm.onAction(WakeSettingsAction.AddCode("123"))

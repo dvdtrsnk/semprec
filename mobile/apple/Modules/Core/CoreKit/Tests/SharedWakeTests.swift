@@ -142,6 +142,16 @@ final class SharedWakeTests: XCTestCase {
     }
 
     @MainActor
+    func testTheWakeSettingsStatesReachAnObserverWhenAnActionChangesThem() async throws {
+        let model = try XCTUnwrap(isolatedFactory().makeWakeSettings() as? SharedWakeSettingsScreenModel)
+
+        model.send(.setRequiresCode(true))
+        let changed = await Self.firstState(of: model) { $0.requiresCode }
+
+        XCTAssertEqual(changed?.mode, .needsCode)
+    }
+
+    @MainActor
     func testReleasingTheWakeBridgesClosesTheirKotlinViewModels() throws {
         var settings: SharedWakeSettingsScreenModel? = try XCTUnwrap(
             isolatedFactory().makeWakeSettings() as? SharedWakeSettingsScreenModel

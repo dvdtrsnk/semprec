@@ -2,9 +2,9 @@ package cz.semprec.app.sdk
 
 import cz.semprec.app.core.DeviceAlarms
 import cz.semprec.app.core.InMemoryPushSubscriptionStorage
-import cz.semprec.app.core.InMemoryWakeStorage
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.InMemorySleepAlarmLedger
+import cz.semprec.app.core.InMemoryWakeStorage
 import cz.semprec.app.core.PushSubscriptionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.SleepAlarmLedger

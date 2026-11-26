@@ -42,7 +42,7 @@ private fun planMissions(
 )
 
 class WakeCodesTest {
-    @Test fun `codes lose their whitespace, blanks and repeats and keep their order`() {
+    @Test fun `codes lose their whitespace and blanks and repeats and keep their order`() {
         val cases = mapOf(
             listOf(" 123 ", "456", "123", "", "  ", "\n789\t") to listOf("123", "456", "789"),
             emptyList<String>() to emptyList(),
@@ -96,7 +96,7 @@ class WakeMissionRulesTest {
         assertEquals(FIRST_AT + 120.minutes, WakeMissionRules.watchRings(mission("k", FIRST_AT)).last())
     }
 
-    @Test fun `watch alarms are needed only for a ring that is ahead, within the horizon and not yet armed`() {
+    @Test fun `watch alarms are needed only for a ring that is ahead and within the horizon and not yet armed`() {
         val cases = listOf(
             Triple(FIRST_AT, false, true),
             Triple(WAKE_NOW + 36.hours, false, true),
@@ -106,7 +106,8 @@ class WakeMissionRulesTest {
             Triple(FIRST_AT, true, false),
         )
         for ((at, armed, expected) in cases) {
-            assertEquals(expected, WakeMissionRules.needsWatches(mission("k", at, armed = armed), WAKE_NOW), "$at $armed")
+            val needs = WakeMissionRules.needsWatches(mission("k", at, armed = armed), WAKE_NOW)
+            assertEquals(expected, needs, "$at $armed")
         }
     }
 
@@ -123,7 +124,11 @@ class WakeMissionRulesTest {
     }
 
     @Test fun `the next ring is the soonest one ahead`() {
-        val missions = listOf(mission("a", WAKE_NOW - 1.hours), mission("b", WAKE_NOW + 3.hours), mission("c", WAKE_NOW + 2.hours))
+        val missions = listOf(
+            mission("a", WAKE_NOW - 1.hours),
+            mission("b", WAKE_NOW + 3.hours),
+            mission("c", WAKE_NOW + 2.hours),
+        )
 
         assertEquals(WAKE_NOW + 2.hours, WakeMissionRules.nextRing(missions, WAKE_NOW))
         assertNull(WakeMissionRules.nextRing(missions, WAKE_NOW + 3.hours))
@@ -162,7 +167,10 @@ class PlanWakeMissionsTest {
 
         val plan = planMissions(
             listOf(held),
-            listOf("alarm-${held.key}" to DeviceAlarmPhase.SCHEDULED, "watch-${held.key}" to DeviceAlarmPhase.SCHEDULED),
+            listOf(
+                "alarm-${held.key}" to DeviceAlarmPhase.SCHEDULED,
+                "watch-${held.key}" to DeviceAlarmPhase.SCHEDULED,
+            ),
             codes = listOf("2", "1"),
         )
 
@@ -171,7 +179,7 @@ class PlanWakeMissionsTest {
         assertTrue(plan.cancel.isEmpty())
     }
 
-    @Test fun `a mission whose codes changed is replaced and its alarms removed, a ringing watch alarm excepted`() {
+    @Test fun `a mission whose codes changed is replaced and its alarms removed and a ringing watch alarm excepted`() {
         val held = mission(missionKey("2026-11-26T05:45:00Z"), FIRST_AT, listOf("1"))
 
         val plan = planMissions(
@@ -187,7 +195,8 @@ class PlanWakeMissionsTest {
 
     @Test fun `a mission that the plan no longer asks for or whose alarm is gone is replaced or removed`() {
         val gone = mission(missionKey("2026-11-26T05:45:00Z"), FIRST_AT)
-        val removed = planMissions(listOf(gone), listOf("alarm-${gone.key}" to DeviceAlarmPhase.SCHEDULED), nights = emptyList())
+        val onDevice = listOf("alarm-${gone.key}" to DeviceAlarmPhase.SCHEDULED)
+        val removed = planMissions(listOf(gone), onDevice, nights = emptyList())
         assertEquals(listOf("alarm-${gone.key}"), removed.cancel)
         assertTrue(removed.keepMissions.isEmpty())
 

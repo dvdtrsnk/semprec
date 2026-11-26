@@ -52,9 +52,9 @@ import cz.semprec.app.presentation.OverviewViewModelFactory
 import cz.semprec.app.presentation.SearchViewModel
 import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
+import cz.semprec.app.presentation.SleepAlarmSync
 import cz.semprec.app.presentation.SyncStatusViewModelFactory
 import cz.semprec.app.presentation.TasksStart
-import cz.semprec.app.presentation.SleepAlarmSync
 import cz.semprec.app.presentation.TasksViewModel
 import cz.semprec.app.presentation.WakeMissions
 import cz.semprec.app.presentation.WorkViewModelFactory
