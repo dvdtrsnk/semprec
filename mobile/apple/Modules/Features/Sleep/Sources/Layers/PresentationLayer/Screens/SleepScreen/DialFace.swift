@@ -13,7 +13,8 @@ struct DialFace: View {
             FaceMarks(radius: geometry.faceRadius * 0.95, hourLength: geometry.size * 0.022)
                 .stroke(Color.secondary.opacity(0.55), lineWidth: max(1, geometry.size / 300))
             ForEach(Array(stride(from: 0, to: 24, by: 2)), id: \.self) { hour in
-                Text(verbatim: "\(hour)")
+                // A numeral, not copy: the locale formats it, so no catalog key is needed.
+                Text(hour, format: .number)
                     .font(.system(size: geometry.size * 0.052, weight: .medium, design: .rounded))
                     .foregroundStyle(hour % 6 == 0 ? Color.primary : Color.secondary)
                     .offset(geometry.offset(minutes: Double(hour * 60), radius: geometry.faceRadius * 0.77))
