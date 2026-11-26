@@ -54,7 +54,9 @@ import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
 import cz.semprec.app.presentation.SyncStatusViewModelFactory
 import cz.semprec.app.presentation.TasksStart
+import cz.semprec.app.presentation.SleepAlarmSync
 import cz.semprec.app.presentation.TasksViewModel
+import cz.semprec.app.presentation.WakeMissions
 import cz.semprec.app.presentation.WorkViewModelFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +82,9 @@ import kotlinx.coroutines.flow.emptyFlow
  * and when the connection comes back. `null` keeps nothing and every request goes to the server
  * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
  * microphone and speaker; the defaults have neither. [pushSubscriptions] holds the id of this device's push
- * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session.
+ * subscription, which [DevicePushSDK] registers; signing out revokes it before the server ends the session. [wake]
+ * and [sleepAlarms] are the process's wake missions and sleep alarm sync of that [DevicePushSDK], which the sleep
+ * screens of every window share.
  *
  * The sync socket of the window ([sync]) tells the calendar, invitation and mailbox screens of this SDK when the
  * server changed what they show.
@@ -94,6 +98,8 @@ class HomeSDK(
     pushSubscriptions: PushSubscriptionStorage = InMemoryPushSubscriptionStorage(),
     cacheDirectory: String? = null,
     dataDirectory: String? = null,
+    wake: WakeMissions? = null,
+    sleepAlarms: SleepAlarmSync? = null,
 ) {
     private val repository = InMemoryPlaceholderRepository()
     private val offline: OfflineLayer? = dataDirectory?.let(OfflineLayer::shared)
@@ -201,7 +207,7 @@ class HomeSDK(
     val noteEditor: NoteEditorSDK = NoteEditorSDK(auth.api, pageChanges)
 
     /** The sleep plans, night exceptions and settings. */
-    val sleep: SleepSDK = SleepSDK(auth.api)
+    val sleep: SleepSDK = SleepSDK(auth.api, wake, sleepAlarms)
 
     /** The calendar, its calendars list, its invitations and the new item form. */
     val calendar: CalendarSDK = CalendarSDK(auth.api, syncChanges)
