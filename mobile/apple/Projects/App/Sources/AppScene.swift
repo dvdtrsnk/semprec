@@ -21,7 +21,7 @@ struct AppScene: View {
 
     // MARK: - Init
     /// `composition` runs once per scene, when SwiftUI creates the state object. The window opens on `selectedTab`.
-    init(composition: @autoclosure @escaping () -> AppComposition = AppComposition(), selectedTab: AppTab = .overview) {
+    init(composition: @autoclosure @escaping () -> AppComposition, selectedTab: AppTab = .overview) {
         _composition = StateObject(wrappedValue: composition())
         _selectedTab = State(initialValue: selectedTab)
     }

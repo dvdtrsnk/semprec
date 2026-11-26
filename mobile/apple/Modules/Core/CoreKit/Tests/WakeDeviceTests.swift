@@ -47,6 +47,23 @@ final class WakeDeviceTests: XCTestCase {
         XCTAssertEqual(storage.loadMissions().count, 0)
     }
 
+    // MARK: - The device services
+    @MainActor
+    func testFactoriesGivenTheSameDeviceServicesShareTheWakeSettingsAndOthersDoNot() throws {
+        let services = SharedDeviceNotifications(sessionStore: .memory).deviceServices
+        let first = SharedScreenModelFactory(sessionStore: .memory, deviceServices: services)
+        let second = SharedScreenModelFactory(sessionStore: .memory, deviceServices: services)
+        let apart = isolatedFactory()
+        let firstSettings = first.makeWakeSettings()
+        let secondSettings = second.makeWakeSettings()
+        let apartSettings = apart.makeWakeSettings()
+
+        firstSettings.send(.addCode("123"))
+
+        XCTAssertEqual(secondSettings.state.codes, ["123"])
+        XCTAssertEqual(apartSettings.state.codes, [])
+    }
+
     // MARK: - The beep
     func testTheBeepSoundsTwiceAndIsSilentInThePausesOfEverySecond() {
         let samples = stride(from: 0.0, to: 3.0, by: 0.0005).map { ($0, BeepTone.value(at: $0)) }
@@ -61,6 +78,21 @@ final class WakeDeviceTests: XCTestCase {
             }
         }
         XCTAssertTrue(samples.contains { $0.1 > 0 } && samples.contains { $0.1 < 0 }, "the wave swings both ways")
+    }
+
+    @MainActor
+    func testEveryStopDetachesTheSourceNodeSoThatPlayingAgainAddsNoSecondOne() throws {
+        let beep = DeviceAlarmBeep()
+        try XCTSkipUnless(beep.start(), "This host has no audio output to start the engine on")
+        XCTAssertNotNil(beep.source)
+
+        beep.stop()
+        XCTAssertNil(beep.source, "The node must leave the engine when the beep stops")
+
+        XCTAssertTrue(beep.start())
+        XCTAssertNotNil(beep.source)
+        beep.stop()
+        XCTAssertNil(beep.source)
     }
 
     // MARK: - The camera's codes

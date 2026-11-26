@@ -29,8 +29,10 @@ final class AppComposition: ObservableObject {
     let preparedTabs: PreparedTabModels
 
     // MARK: - Init
-    convenience init() {
-        self.init(models: SceneContainer().screenModelFactory()(), notifications: .shared)
+    /// A scene's composition over the device services of the process, which `notifications` owns and every scene is
+    /// given; the scene's screen models are made over them and the composition creates none of its own.
+    convenience init(deviceServices: DeviceServices, notifications: AppNotifications?) {
+        self.init(models: SceneContainer().screenModelFactory(deviceServices)(), notifications: notifications)
     }
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.

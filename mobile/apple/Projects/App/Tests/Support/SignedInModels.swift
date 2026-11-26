@@ -6,7 +6,13 @@ import CoreKit
 final class SignedInModels: ScreenModelFactory {
 
     // MARK: - Dependencies
-    private let real = SharedScreenModelFactory(sessionStore: .memory)
+    private let real: SharedScreenModelFactory
+
+    // MARK: - Init
+    /// `deviceServices` are the ones the test's composition was given; the models share them as the real scenes do.
+    init(deviceServices: DeviceServices = SharedDeviceNotifications(sessionStore: .memory).deviceServices) {
+        real = SharedScreenModelFactory(sessionStore: .memory, deviceServices: deviceServices)
+    }
 
     // MARK: - Properties
     /// Every call of `startLiveUpdates()` (`true`) and `stopLiveUpdates()` (`false`), in order.
