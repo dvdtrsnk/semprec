@@ -46,6 +46,7 @@ struct AppScene: View {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
                 .task { await composition.notifications?.signedOut() }
         }
+        .wakeGuard(makeModel: { composition.models.makeWakeGuard() }, navigation: composition.navigation)
     }
 }
 
@@ -161,7 +162,7 @@ private extension AppScene {
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: AppCollectionsRouter(context: composition.navigation, tab: tab, closesSheet: true)
             )
-        case .sleepPlan, .sleepNight:
+        case .sleepPlan, .sleepNight, .sleepWakeSettings:
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:
             calendarView(destination, composition: composition)

@@ -17,18 +17,14 @@ public final class SharedDeviceNotifications {
     public init(sessionStore: SharedScreenModelFactory.SessionStore = .keychain) {
         let sdk = switch sessionStore {
         case .keychain:
-            SharedSDK.DevicePushSDK(
-                sessionStorage: KeychainSessionStorage(),
-                subscriptions: DefaultsPushSubscriptionStorage(),
-                alarms: DeviceAlarmScheduler(),
-                sleepAlarmLedger: DefaultsSleepAlarmLedger()
-            )
+            ProcessServices.devicePush
         case .memory:
             SharedSDK.DevicePushSDK(
                 sessionStorage: SharedSDK.InMemorySessionStorage(),
                 subscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
                 alarms: SharedSDK.UnavailableDeviceAlarms(),
-                sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger()
+                sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger(),
+                wakeStorage: SharedSDK.InMemoryWakeStorage()
             )
         }
         notifications = sdk.notifications

@@ -24,6 +24,9 @@ enum AppDestination: Hashable {
     case sleepPlan(night: String?)
     /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
     case sleepNight(night: String)
+    /// The wake settings of this device: whether only a scanned code stops a sleep alarm, and the codes. They are
+    /// presented as a sheet over the stack of the tab the sleep sheet was opened from, in place of that sheet.
+    case sleepWakeSettings
     /// The calendars sheet: which calendars show, their colours and notifications.
     case calendars
     /// The invitations sheet.
@@ -70,8 +73,8 @@ extension AppDestination {
     /// Whether the destination is presented as a sheet over a stack, which covers the Semp bubble of the scene.
     var presentsAsSheet: Bool {
         switch self {
-        case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose,
-             .itemSheet: true
+        case .profile, .details, .sleepPlan, .sleepNight, .sleepWakeSettings, .calendars, .invitations, .newItem,
+             .mailCompose, .itemSheet: true
         case .pending, .tasks, .collection, .collectionItem, .area, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .projectMailSignals, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false

@@ -55,7 +55,7 @@ class WakeSettingsViewModelTest : MainDispatcherTest() {
 
         val vm = viewModel()
 
-        assertEquals(WakeSettingsState(true, listOf("123"), WakeMode.ON, null), vm.state.value)
+        assertEquals(WakeSettingsState(true, listOf("123"), WakeMode.ACTIVE, null), vm.state.value)
         vm.close()
     }
 
@@ -69,7 +69,7 @@ class WakeSettingsViewModelTest : MainDispatcherTest() {
 
         vm.onAction(WakeSettingsAction.AddCode("123"))
         runCurrent()
-        assertEquals(WakeMode.ON, vm.state.value.mode)
+        assertEquals(WakeMode.ACTIVE, vm.state.value.mode)
 
         vm.onAction(WakeSettingsAction.SetRequiresCode(false))
         runCurrent()

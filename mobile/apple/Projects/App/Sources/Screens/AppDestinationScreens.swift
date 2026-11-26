@@ -104,7 +104,7 @@ struct InboxDestination: View {
     }
 }
 
-/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations).
+/// The sleep sheets: the plan, one night, and the wake settings (`sleepPlan`, `sleepNight` and `sleepWakeSettings`).
 struct SleepDestination: View {
 
     let destination: AppDestination
@@ -113,9 +113,17 @@ struct SleepDestination: View {
     var body: some View {
         switch destination {
         case .sleepPlan(let night):
-            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+            SleepScreenFactory.plan(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
+                router: composition.sleepRouter
+            )
         case .sleepNight(let night):
-            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+            SleepScreenFactory.night(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: true) },
+                router: composition.sleepRouter
+            )
+        case .sleepWakeSettings:
+            SleepScreenFactory.wakeSettings { composition.models.makeWakeSettings() }
         default:
             EmptyView()
         }

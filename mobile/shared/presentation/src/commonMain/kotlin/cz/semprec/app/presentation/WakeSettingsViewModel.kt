@@ -16,7 +16,7 @@ enum class WakeMode {
     NEEDS_CODE,
 
     /** An alarm rings until one of the codes is scanned. */
-    ON,
+    ACTIVE,
 }
 
 /** Why the wake settings are not what the person asked for. */
@@ -45,7 +45,7 @@ data class WakeSettingsState(
 )
 
 sealed interface WakeSettingsAction {
-    data class SetRequiresCode(val on: Boolean) : WakeSettingsAction
+    data class SetRequiresCode(val required: Boolean) : WakeSettingsAction
     data class AddCode(val code: String) : WakeSettingsAction
     data class RemoveCode(val code: String) : WakeSettingsAction
     data object DismissFailure : WakeSettingsAction
@@ -67,7 +67,7 @@ class WakeSettingsViewModel internal constructor(
     override fun onAction(action: WakeSettingsAction) {
         if (isClosed) return
         when (action) {
-            is WakeSettingsAction.SetRequiresCode -> change { it.copy(requiresCode = action.on) }
+            is WakeSettingsAction.SetRequiresCode -> change { it.copy(requiresCode = action.required) }
             is WakeSettingsAction.AddCode -> add(action.code)
             is WakeSettingsAction.RemoveCode -> {
                 val code = action.code.trim()
@@ -110,7 +110,7 @@ private fun stateOf(settings: WakeSettings, failure: WakeSettingsFailure?): Wake
     mode = when {
         !settings.requiresCode -> WakeMode.OFF
         WakeCodes.active(settings).isEmpty() -> WakeMode.NEEDS_CODE
-        else -> WakeMode.ON
+        else -> WakeMode.ACTIVE
     },
     failure = failure,
 )

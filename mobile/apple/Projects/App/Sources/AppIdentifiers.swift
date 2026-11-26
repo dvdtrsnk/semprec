@@ -19,4 +19,12 @@ enum AppIdentifiers {
     static let syncFailed = "sync.status.failed"
     /// The button that dismisses the refused changes.
     static let syncDismiss = "sync.status.dismiss"
+    /// The screen that covers a window while a wake mission rings; Apple-only until Android has sleep alarms.
+    static let wakeGuard = "wake.guard"
+    /// The button that opens the tap challenge.
+    static let wakeGuardTapOpen = "wake.guard.tapOpen"
+    /// The tap challenge, which takes a tap anywhere.
+    static let wakeGuardTap = "wake.guard.tap"
+    /// The button that goes back from the tap challenge to scanning.
+    static let wakeGuardTapBack = "wake.guard.tapBack"
 }

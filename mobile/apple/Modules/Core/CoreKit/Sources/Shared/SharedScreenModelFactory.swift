@@ -39,6 +39,10 @@ public final class SharedScreenModelFactory {
         case .keychain: Self.offlineDirectory()
         case .memory: nil
         }
+        let wake: SharedSDK.DevicePushSDK? = switch sessionStore {
+        case .keychain: ProcessServices.devicePush
+        case .memory: nil
+        }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
@@ -46,7 +50,9 @@ public final class SharedScreenModelFactory {
             player: DeviceAudioPlayer(),
             pushSubscriptions: subscriptions,
             cacheDirectory: cacheDirectory,
-            dataDirectory: dataDirectory
+            dataDirectory: dataDirectory,
+            wake: wake?.wake,
+            sleepAlarms: wake?.sleepAlarms
         )
     }
 
@@ -132,6 +138,14 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
+
+    public func makeWakeSettings() -> any WakeSettingsScreenModel {
+        SharedWakeSettingsScreenModel(sdk.sleep.wakeSettingsViewModel())
+    }
+
+    public func makeWakeGuard() -> any WakeGuardScreenModel {
+        SharedWakeGuardScreenModel(sdk.sleep.wakeGuardViewModel())
     }
 
     // Calendar slice

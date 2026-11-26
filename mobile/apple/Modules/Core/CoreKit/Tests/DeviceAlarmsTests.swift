@@ -42,7 +42,8 @@ final class DeviceAlarmsTests: XCTestCase {
             sessionStorage: SharedSDK.InMemorySessionStorage(),
             subscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
             alarms: device,
-            sleepAlarmLedger: ledger
+            sleepAlarmLedger: ledger,
+            wakeStorage: SharedSDK.InMemoryWakeStorage()
         )
 
         let result = try await sdk.sleepAlarms.signedOut()
@@ -60,7 +61,8 @@ final class DeviceAlarmsTests: XCTestCase {
             sessionStorage: SharedSDK.InMemorySessionStorage(),
             subscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
             alarms: device,
-            sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger()
+            sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger(),
+            wakeStorage: SharedSDK.InMemoryWakeStorage()
         )
 
         let result = try await sdk.sleepAlarms.sync()
@@ -87,6 +89,21 @@ final class DeviceAlarmsTests: XCTestCase {
     }
 
     @MainActor
+    func testOnlyAnAlarmThatRingsIsStoppedAndEveryOtherIsCancelled() {
+        XCTAssertEqual(DeviceAlarmScheduler.removal(.alerting), .stop)
+        XCTAssertEqual(DeviceAlarmScheduler.removal(.scheduled), .cancel)
+        XCTAssertEqual(DeviceAlarmScheduler.removal(.countdown), .cancel)
+        XCTAssertEqual(DeviceAlarmScheduler.removal(.paused), .cancel)
+    }
+
+    @MainActor
+    func testTheTwoAlertsDifferByTheSecondButton() {
+        XCTAssertNil(DeviceAlarmScheduler.alert(opensWakeGuard: false).secondaryButton)
+        XCTAssertNotNil(DeviceAlarmScheduler.alert(opensWakeGuard: true).secondaryButton)
+        XCTAssertEqual(DeviceAlarmScheduler.alert(opensWakeGuard: true).secondaryButtonBehavior, .custom)
+    }
+
+    @MainActor
     func testTheLimitIsRefusedAndAnyOtherFailureIsNotExplained() {
         let limit = DeviceAlarmScheduler.failure(AlarmManager.AlarmError.maximumLimitReached)
         XCTAssertEqual((limit as? SharedSDK.DeviceAlarmSchedulingRefused)?.failure, .limitReached)
@@ -108,7 +125,7 @@ final class DeviceAlarmsTests: XCTestCase {
     func testMacOSRefusesToScheduleAnAlarmAsUnsupported() async throws {
         let scheduler = DeviceAlarmScheduler()
         var answer: SharedSDK.DeviceAlarmScheduling?
-        scheduler.schedule(ringAtEpochSeconds: 1_800_000_000) { answer = $0 }
+        scheduler.schedule(ringAtEpochSeconds: 1_800_000_000, opensWakeGuard: true) { answer = $0 }
         for _ in 0..<500 where answer == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual((answer as? SharedSDK.DeviceAlarmSchedulingRefused)?.failure, .unsupported)
     }
@@ -141,7 +158,11 @@ extension ScriptedDevice: @preconcurrency SharedSDK.DeviceAlarms {
 
     func authorization() -> SharedSDK.DeviceAlarmAuthorization { state }
 
-    func schedule(ringAtEpochSeconds: Int64, callback: @escaping (SharedSDK.DeviceAlarmScheduling) -> Void) {
+    func schedule(
+        ringAtEpochSeconds: Int64,
+        opensWakeGuard: Bool,
+        callback: @escaping (SharedSDK.DeviceAlarmScheduling) -> Void
+    ) {
         callback(SharedSDK.DeviceAlarmSchedulingFailed.shared)
     }
 

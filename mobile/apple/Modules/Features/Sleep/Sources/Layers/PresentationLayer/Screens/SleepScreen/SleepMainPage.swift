@@ -9,6 +9,7 @@ struct SleepMainPage: View {
     // MARK: - Dependencies
     let state: SleepState
     let send: (SleepAction) -> Void
+    let openWakeSettings: () -> Void
 
     // MARK: - Body
     var body: some View {
@@ -95,6 +96,16 @@ private extension SleepMainPage {
             }
             .listRowButton()
             .accessibilityIdentifier(SleepIdentifiers.sound)
+            Button(action: openWakeSettings) {
+                SleepNavigationRow(row: SleepRow(
+                    symbol: "qrcode.viewfinder",
+                    tint: .indigo,
+                    title: Text("sleep.wake.row.title", bundle: .module),
+                    subtitle: Text("sleep.wake.row.sub", bundle: .module)
+                ))
+            }
+            .listRowButton()
+            .accessibilityIdentifier(SleepIdentifiers.wakeSettings)
             Toggle(isOn: SleepBindings.isOn(state.alarmSnooze) { send(.setSwitch(.alarmSnooze, isOn: $0)) }) {
                 SleepRow(
                     symbol: "zzz",
@@ -128,5 +139,5 @@ private extension SleepMainPage {
 
 // MARK: - Preview
 #Preview("Overview") {
-    SleepMainPage(state: .previewReady, send: { _ in })
+    SleepMainPage(state: .previewReady, send: { _ in }, openWakeSettings: {})
 }

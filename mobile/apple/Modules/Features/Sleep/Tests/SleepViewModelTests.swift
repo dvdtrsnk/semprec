@@ -5,11 +5,14 @@ import XCTest
 
 final class SleepViewModelTests: XCTestCase {
 
+    // MARK: - Properties
+    private let router = RouterSpy()
+
     // MARK: - Tests
     @MainActor
     func testStartsFromTheCurrentStateAndRepublishesChanges() async throws {
         let model = ScriptedSleepScreenModel(state: SleepState())
-        let viewModel = SleepViewModel(model: model)
+        let viewModel = SleepViewModel(model: model, router: router)
         XCTAssertEqual(viewModel.state.phase, .loading)
         let ended = expectation(description: "The observation ended")
         let observer = Task {
@@ -31,7 +34,7 @@ final class SleepViewModelTests: XCTestCase {
     @MainActor
     func testEveryIntentIsForwardedToTheModel() {
         let model = ScriptedSleepScreenModel(state: .previewReady)
-        let viewModel = SleepViewModel(model: model)
+        let viewModel = SleepViewModel(model: model, router: router)
 
         viewModel.retry()
         viewModel.send(.open(.night))
@@ -64,9 +67,21 @@ final class SleepViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testTheWakeSettingsAreOpenedThroughTheRouterAndNeverThroughTheModel() {
+        let model = ScriptedSleepScreenModel(state: .previewReady)
+        let viewModel = SleepViewModel(model: model, router: router)
+
+        viewModel.showWakeSettings()
+        viewModel.showWakeSettings()
+
+        XCTAssertEqual(router.wakeSettingsOpened, 2)
+        XCTAssertTrue(model.actions.isEmpty)
+    }
+
+    @MainActor
     func testTheEditorAndTheNightDraftAreRepublishedLikeAnyOtherState() async throws {
         let model = ScriptedSleepScreenModel(state: .previewReady)
-        let viewModel = SleepViewModel(model: model)
+        let viewModel = SleepViewModel(model: model, router: router)
         let observer = Task { await viewModel.observe() }
 
         model.publish(.previewReady.editing(.previewWeekdays))
@@ -86,7 +101,7 @@ final class SleepViewModelTests: XCTestCase {
         autoreleasepool {
             let model = ScriptedSleepScreenModel(state: .previewReady)
             weakModel = model
-            let viewModel = SleepViewModel(model: model)
+            let viewModel = SleepViewModel(model: model, router: router)
             withExtendedLifetime(viewModel) {}
         }
         XCTAssertNil(weakModel, "The view model must own the only reference to its model")
@@ -96,5 +111,16 @@ final class SleepViewModelTests: XCTestCase {
     @MainActor
     private func eventually(_ condition: @MainActor () -> Bool) async throws {
         for _ in 0..<500 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+    }
+}
+
+// MARK: - Test doubles
+@MainActor
+private final class RouterSpy: SleepRouting {
+
+    private(set) var wakeSettingsOpened = 0
+
+    func showWakeSettings() {
+        wakeSettingsOpened += 1
     }
 }

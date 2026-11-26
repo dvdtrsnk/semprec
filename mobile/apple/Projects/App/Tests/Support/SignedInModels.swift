@@ -14,6 +14,8 @@ final class SignedInModels: ScreenModelFactory {
     /// The days the calendar's and the diary's models were made for, in order.
     private(set) var calendarDays: [String] = []
     private(set) var journalDays: [String] = []
+    /// When set, the scene's wake guard is this scripted model, so that a test decides when a mission rings.
+    var scriptedWakeGuard: ScriptedWakeGuardScreenModel?
 
     // MARK: - Protocol conformance
     func startLiveUpdates() {
@@ -59,6 +61,14 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         real.makeSleep(night: night, startOnNight: startOnNight)
+    }
+
+    func makeWakeSettings() -> any WakeSettingsScreenModel {
+        real.makeWakeSettings()
+    }
+
+    func makeWakeGuard() -> any WakeGuardScreenModel {
+        scriptedWakeGuard ?? real.makeWakeGuard()
     }
 
     func makeCalendar(initialDay: String) -> any CalendarScreenModel {

@@ -76,6 +76,12 @@ final class AppComposition: ObservableObject {
     }
 
     // MARK: - Routers
+    /// The router of the sleep sheet, which opens the wake settings over the stack of the tab the person is on.
+    private(set) lazy var sleepRouter = AppSleepRouter(
+        context: navigation,
+        tab: { [weak self] in self?.currentTab ?? .overview }
+    )
+
     /// The router of an Inbox that sits on the stack of `tab`; what a decision created opens over that stack.
     func inboxRouter(in tab: AppTab) -> AppInboxRouter {
         AppInboxRouter(context: navigation, tab: tab)
