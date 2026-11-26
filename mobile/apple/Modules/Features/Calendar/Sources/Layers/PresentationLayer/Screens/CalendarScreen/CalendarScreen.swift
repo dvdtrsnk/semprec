@@ -57,18 +57,6 @@ struct CalendarScreen: View {
                     )
                 }
             }
-            .alert(deleteTitle, isPresented: deleting, presenting: viewModel.state.pendingDelete) { _ in
-                Button(role: .destructive) { viewModel.edit(.confirmDelete) } label: {
-                    Text("calendar.delete.confirm", bundle: .module)
-                }
-                .accessibilityIdentifier(CalendarIdentifiers.deleteConfirm)
-                Button(role: .cancel) { viewModel.edit(.cancelDelete) } label: {
-                    Text("calendar.delete.cancel", bundle: .module)
-                }
-                .accessibilityIdentifier(CalendarIdentifiers.deleteCancel)
-            } message: { request in
-                Text(deleteMessage(request.kind), bundle: .module)
-            }
             .alert(
                 Text("calendar.problem.title", bundle: .module),
                 isPresented: problem
@@ -229,29 +217,11 @@ private extension CalendarScreen {
 
     var displayedZoom: CalendarZoom { shownZoom ?? viewModel.state.zoom }
 
-    var deleting: Binding<Bool> {
-        Binding(
-            get: { viewModel.state.pendingDelete != nil },
-            set: { if !$0, viewModel.state.pendingDelete != nil { viewModel.edit(.cancelDelete) } }
-        )
-    }
-
     var problem: Binding<Bool> {
         Binding(
             get: { viewModel.state.problem },
             set: { if !$0, viewModel.state.problem { viewModel.edit(.dismissProblem) } }
         )
-    }
-
-    func deleteMessage(_ kind: CalendarItemKind) -> LocalizedStringKey {
-        kind == .task ? "calendar.delete.task.message" : "calendar.delete.event.message"
-    }
-
-    var deleteTitle: Text {
-        let isTask = viewModel.state.pendingDelete?.kind == .task
-        let key = isTask ? "calendar.delete.task.title" : "calendar.delete.event.title"
-        let name = viewModel.state.pendingDelete?.title ?? ""
-        return Text(String(format: String(localized: String.LocalizationValue(key), bundle: .module), name))
     }
 }
 

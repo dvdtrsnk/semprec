@@ -31,12 +31,11 @@ abstract class CalendarGestureViewModel internal constructor(
     private var dragSchedule: CalendarSchedule? = null
 
     internal fun tap(itemId: String) {
-        val selected = state.value.selectedItemId
-        if (selected != null && selected != itemId) {
+        // A tap while an item is held only lets go of it; opening is for a tap on an item nothing holds.
+        if (state.value.selectedItemId != null) {
             update { it.copy(selectedItemId = null) }
             return
         }
-        update { it.copy(selectedItemId = null) }
         entryOf(itemId)?.let { emit(CalendarEffect.OpenDetails(itemId, it.kind.toItemKind(), it.date.toString())) }
     }
 
@@ -85,8 +84,14 @@ abstract class CalendarGestureViewModel internal constructor(
         }
     }
 
-    internal fun toggleDone(itemId: String) {
-        entryOf(itemId)?.let { entry -> write { edit.toggleDone(entry) } }
+    /** The checkbox of a task, on its own row or in the event [inEventId]; in an event no longer shown, nothing. */
+    internal fun toggleDone(itemId: String, inEventId: String?) {
+        val entry = entryOf(itemId) ?: return
+        val event = inEventId?.let { entryOf(it) }
+        when {
+            inEventId == null -> write { edit.toggleDone(entry) }
+            event != null -> write { edit.toggleDoneInEvent(entry, event) }
+        }
     }
 
     /** Runs a write; the window reloads when it is done, which also takes the preview of a drag away. */
@@ -128,7 +133,7 @@ abstract class CalendarGestureViewModel internal constructor(
     }
 
     private fun writeFailed(kind: FailureKind?) {
-        update { it.copy(busy = false, drag = null, problem = true, problemFailure = kind) }
+        update { it.copy(busy = false, drag = null, sleepDrag = null, problem = true, problemFailure = kind) }
     }
 }
 

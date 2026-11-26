@@ -224,6 +224,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "event occurrence materialize": "packages/data/src/calendar/eventOccurrenceRouteHandlers.ts",
   "task occurrence materialize": "packages/data/src/tasks/taskOccurrenceRoutes.ts",
   "task host event put": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "task complete in event": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host event remove": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host events clear": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "event people": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",

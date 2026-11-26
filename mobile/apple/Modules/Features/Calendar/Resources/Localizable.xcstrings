@@ -92,7 +92,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "all day"
+            "value" : "all-day"
           }
         }
       }
@@ -161,102 +161,6 @@
         }
       }
     },
-    "calendar.delete.cancel" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zrušit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cancel"
-          }
-        }
-      }
-    },
-    "calendar.delete.confirm" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazat"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delete"
-          }
-        }
-      }
-    },
-    "calendar.delete.event.message" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Úkoly v události zůstanou ve sbírce Úkoly. Smazanou událost jde 30 dní obnovit."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Its tasks stay in the Tasks collection. A deleted event can be restored for 30 days."
-          }
-        }
-      }
-    },
-    "calendar.delete.event.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazat událost „%@“?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delete the event “%@”?"
-          }
-        }
-      }
-    },
-    "calendar.delete.task.message" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazaný úkol jde 30 dní obnovit."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A deleted task can be restored for 30 days."
-          }
-        }
-      }
-    },
-    "calendar.delete.task.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazat úkol „%@“?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delete the task “%@”?"
-          }
-        }
-      }
-    },
     "calendar.dropInto" : {
       "localizations" : {
         "cs" : {
@@ -301,6 +205,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Change the start"
+          }
+        }
+      }
+    },
+    "calendar.hostedFrom" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "z %@ · nesplněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "from %@ · not done"
           }
         }
       }
@@ -481,6 +401,86 @@
         }
       }
     },
+    "calendar.sleep.goalMet" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "splňuje cíl spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "reaches the sleep goal"
+          }
+        }
+      }
+    },
+    "calendar.sleep.goalMissed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "kratší než cíl spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "shorter than the sleep goal"
+          }
+        }
+      }
+    },
+    "calendar.sleep.handle.bed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čas spánku"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bedtime"
+          }
+        }
+      }
+    },
+    "calendar.sleep.handle.wake" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čas probuzení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wake time"
+          }
+        }
+      }
+    },
+    "calendar.sleep.plan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "plán %@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "plan %@"
+          }
+        }
+      }
+    },
     "calendar.sleep.prep" : {
       "localizations" : {
         "cs" : {
@@ -518,13 +518,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "splněno v %@"
+            "value" : "nesplněno zde · splněno v %@"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "done in %@"
+            "value" : "not done here · done in %@"
           }
         }
       }
@@ -534,13 +534,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "splněno později (%@)"
+            "value" : "nesplněno zde · splněno %@"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "done later (%@)"
+            "value" : "not done here · done %@"
           }
         }
       }
@@ -685,6 +685,86 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "not done · moved to the event %@"
+          }
+        }
+      }
+    },
+    "calendar.transfer.allDay" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, celý den"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, all day"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task.done" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol · splněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task · done"
+          }
+        }
+      }
+    },
+    "calendar.transfer.task.open" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Úkol · nesplněno"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Task · to do"
+          }
+        }
+      }
+    },
+    "calendar.transfer.untitled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez názvu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Untitled"
           }
         }
       }

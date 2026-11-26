@@ -152,6 +152,11 @@ class FakeCalendarRepository(val changes: CalendarChanges = CalendarChanges()) :
         return write()
     }
 
+    override suspend fun completeTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit> {
+        calls += "complete ${task.id} in ${event.id}"
+        return write()
+    }
+
     override suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String> {
         calls += "duplicate ${entry.id}"
         lastSchedule = schedule

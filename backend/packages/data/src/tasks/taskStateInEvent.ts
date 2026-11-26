@@ -67,8 +67,9 @@ export interface TaskStateInEventInput {
 /**
  * The state of a task in `event`, the first that applies:
  *
- * 1. `done`, no `completedInEvent` edge, `completedOn` differs from the Event's `date`: `doneElsewhere` (that day).
- * 2. The edge points here, or `done` without an edge on the Event's `date` (or with no `completedOn`): `done`.
+ * 1. `done`, no `completedInEvent` edge and a `completedOn`: `doneElsewhere` (that day). A task is done in an Event
+ *    only when it was completed there; completed from its own row, on whatever day, it was not done in the Event.
+ * 2. The edge points here, or `done` without an edge and without a `completedOn`: `done`.
  * 3. The edge points to another Event: `doneElsewhere` with its name.
  * 4. Not the last of `hostEvents`: `moved` to the last one.
  * 5. The Event has ended (end at or before `now`; no `date` means no end): `missed`.
@@ -78,7 +79,7 @@ export interface TaskStateInEventInput {
  */
 export function taskStateInEvent({ task, event, hostEvents, now, timezone }: TaskStateInEventInput): EventTaskState {
   const done = task.status === "done";
-  if (done && task.completedIn === null && task.completedOn !== null && task.completedOn !== event.date) {
+  if (done && task.completedIn === null && task.completedOn !== null) {
     return { kind: "doneElsewhere", completedOn: task.completedOn };
   }
   if (task.completedIn?.eventId === event.eventId || (done && task.completedIn === null)) return { kind: "done" };

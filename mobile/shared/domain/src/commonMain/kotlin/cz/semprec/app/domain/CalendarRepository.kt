@@ -93,6 +93,9 @@ interface CalendarRepository {
     /** Puts a task into an event; the task is shown there until the event ends. Occurrences are stored first. */
     suspend fun putTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit>
 
+    /** Marks [task] done in [event], one of the events it sits in, ended or not. */
+    suspend fun completeTaskInEvent(task: CalendarEntry, event: CalendarEntry): RepositoryResult<Unit>
+
     /** Copies an event or a task to [schedule]; answers the id of the copy. */
     suspend fun duplicate(entry: CalendarEntry, schedule: CalendarSchedule): RepositoryResult<String>
 

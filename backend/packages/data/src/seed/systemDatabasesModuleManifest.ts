@@ -34,6 +34,7 @@ export { createTaskSeriesPatchRouteHandler } from "../tasks/taskSeriesRoutes.js"
 export { createTaskOccurrenceMaterializeRouteHandler } from "../tasks/taskOccurrenceRoutes.js";
 export {
   createTaskHostEventPutRouteHandler,
+  createTaskCompleteInEventRouteHandler,
   createTaskHostEventRemoveRouteHandler,
   createTaskHostEventsClearRouteHandler,
 } from "../tasks/taskHostEventRouteHandlers.js";
@@ -496,6 +497,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "createTaskHostEventPutRouteHandler",
       // Writes a system-owned edge with server-filled metadata (`addedAt`), which the generic relation endpoint
       // refuses and cannot fill.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "completeTaskInEvent",
+      method: "PUT",
+      path: "/api/tasks/:id/completed-in-event/:eventId",
+      handlerExport: "createTaskCompleteInEventRouteHandler",
+      // Writes the system-owned `completedInEvent` edge, which the generic relation endpoint refuses, and the task's
+      // status in one transaction.
       justification: "transactional-semantics",
     },
     {

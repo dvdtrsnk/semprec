@@ -2,17 +2,19 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.CalendarEntry
+import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.EventTaskEntry
 import cz.semprec.app.domain.EventTaskState
 import cz.semprec.app.domain.SleepNightEntry
 import cz.semprec.app.domain.SleepRules
+import cz.semprec.app.domain.TimelineLane
 import cz.semprec.app.domain.TraceOutcome
 import cz.semprec.app.domain.isEditable
 
-internal fun CalendarEntry.toItem(day: CalendarDay, color: String, column: Int, columns: Int): CalendarItem {
-    val timedHere = isTimedOn(day)
-    val range = if (timedHere) minutes() else null
+internal fun CalendarEntry.toItem(day: CalendarDay, color: String, lane: TimelineLane?): CalendarItem {
+    val range = timedRange(day)
+    val timedHere = range != null
     return CalendarItem(
         id = id,
         kind = kind.toItemKind(),
@@ -23,19 +25,22 @@ internal fun CalendarEntry.toItem(day: CalendarDay, color: String, column: Int, 
         allDay = !timedHere,
         startMinutes = range?.first,
         endMinutes = range?.last,
-        hasEnd = timeTo != null,
+        hasEnd = timeTo != null && !continuesAfter(day),
         done = isDone,
         missed = isMissed,
         place = place,
         tentative = tentative,
         editable = isEditable,
-        column = column,
-        columns = columns,
+        column = lane?.column ?: 0,
+        columns = lane?.columns ?: 1,
+        depth = lane?.depth ?: 0,
         tasks = tasks.map { it.toState() },
         hostEventTitle = hostEventTitle,
         carriedFrom = carriedFrom?.toString(),
         trace = trace?.toState(),
         traceNote = traceNote,
+        timeFrom = timeFrom?.minutes,
+        timeTo = (timeTo ?: if (kind == CalendarEntryKind.EVENT) effectiveTo else null)?.minutes,
     )
 }
 
@@ -81,9 +86,21 @@ internal fun SleepNightEntry.toState(day: CalendarDay): CalendarSleep? {
         else -> bed to maxOf(bed, wake)
     }
     val prep = prepReminderAt?.takeIf { it.substringBefore('T') == day.toString() }?.timeOfDay()
-    return if (from == to && prep == null) {
-        null
-    } else {
-        CalendarSleep(night.toString(), bed, wake, alarm, changed, prep, from, to)
-    }
+    if (from == to && prep == null) return null
+    val duration = SleepRules.durationMinutes(bedTime, wakeTime)
+    return CalendarSleep(
+        night = night.toString(),
+        bedMinutes = bed,
+        wakeMinutes = wake,
+        alarm = alarm,
+        changed = changed,
+        prepMinutes = prep,
+        fromMinutes = from,
+        toMinutes = to,
+        planBedMinutes = planBed?.minutes,
+        planWakeMinutes = planWake?.minutes,
+        durationMinutes = duration,
+        goalMinutes = goalMinutes,
+        meetsGoal = goalMinutes?.let { SleepRules.meetsGoal(duration, it) },
+    )
 }

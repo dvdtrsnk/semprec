@@ -45,6 +45,15 @@ let project = Project(
                 // The APNs environment the device token is registered for, by build configuration.
                 "SemprecApnsEnvironment": "$(SEMPREC_APNS_ENVIRONMENT)",
                 "UILaunchScreen": [:],
+                // The type a drag of a calendar item carries within the app and between its windows; other apps take
+                // the iCalendar and plain-text forms the same drag also offers.
+                "UTExportedTypeDeclarations": [
+                    [
+                        "UTTypeIdentifier": "cz.semprec.calendar-item",
+                        "UTTypeDescription": "Semprec calendar item",
+                        "UTTypeConformsTo": ["public.data"],
+                    ],
+                ],
                 "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",

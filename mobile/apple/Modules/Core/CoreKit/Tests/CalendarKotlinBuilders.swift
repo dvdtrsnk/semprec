@@ -32,11 +32,14 @@ enum CalendarKotlin {
             editable: false,
             column: 1,
             columns: 3,
+            depth: 2,
             tasks: tasks,
             hostEventTitle: "Review",
             carriedFrom: "2026-10-14",
             trace: trace,
-            traceNote: "2026-10-15"
+            traceNote: "2026-10-15",
+            timeFrom: start.map { KotlinInt(int: $0) },
+            timeTo: end.map { KotlinInt(int: $0) }
         )
     }
 
@@ -49,7 +52,12 @@ enum CalendarKotlin {
             changed: true,
             prepMinutes: KotlinInt(int: 1350),
             fromMinutes: 1380,
-            toMinutes: 1440
+            toMinutes: 1440,
+            planBedMinutes: KotlinInt(int: 1350),
+            planWakeMinutes: KotlinInt(int: 405),
+            durationMinutes: 465,
+            goalMinutes: KotlinInt(int: 480),
+            meetsGoal: KotlinBoolean(bool: false)
         )
     }
 
@@ -63,7 +71,12 @@ enum CalendarKotlin {
             changed: false,
             prepMinutes: prepMinutes.map { KotlinInt(int: $0) },
             fromMinutes: 0,
-            toMinutes: 405
+            toMinutes: 405,
+            planBedMinutes: nil,
+            planWakeMinutes: nil,
+            durationMinutes: 0,
+            goalMinutes: nil,
+            meetsGoal: nil
         )
     }
 
@@ -73,8 +86,8 @@ enum CalendarKotlin {
         zoom: SharedSDK.CalendarZoom = .day,
         days: [SharedSDK.CalendarDayState] = [],
         drag: SharedSDK.CalendarDrag? = nil,
+        sleepDrag: SharedSDK.CalendarSleepDrag? = nil,
         clipboard: SharedSDK.CalendarClipboard? = nil,
-        pendingDelete: SharedSDK.CalendarDeleteRequest? = nil,
         problemFailure: SharedSDK.FailureKind? = nil
     ) -> SharedSDK.CalendarState {
         SharedSDK.CalendarState(
@@ -84,14 +97,15 @@ enum CalendarKotlin {
             selectedDay: "2026-10-16",
             today: "2026-10-15",
             nowMinutes: 804,
+            timezone: "Europe/Prague",
             days: days,
             monthGrid: ["2026-09-28", "2026-09-29"],
             months: [SharedSDK.CalendarMonthState(year: 2026, month: 10, leading: 3, length: 31)],
             pendingInvitations: 3,
             selectedItemId: "e1",
             drag: drag,
+            sleepDrag: sleepDrag,
             clipboard: clipboard,
-            pendingDelete: pendingDelete,
             busy: true,
             problem: true,
             problemFailure: problemFailure

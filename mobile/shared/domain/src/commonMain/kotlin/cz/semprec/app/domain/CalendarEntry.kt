@@ -15,6 +15,8 @@ enum class TraceOutcome { CARRIED, DONE, MOVED_TO_EVENT, MISSED }
 /**
  * A night of sleep derived by the server (`kind` sleep): the evening it starts on, the times and whether they were
  * changed for this night alone. [prepReminderAt] is an ISO instant with the tenant zone's offset, or `null`.
+ * [planBed] and [planWake] are the plan's own times the night departs from when [changed] (`null` without a plan),
+ * [goalMinutes] the sleep goal of the settings (`null` when unknown).
  */
 data class SleepNightEntry(
     val night: CalendarDay,
@@ -23,6 +25,9 @@ data class SleepNightEntry(
     val alarm: Boolean,
     val changed: Boolean,
     val prepReminderAt: String?,
+    val planBed: ClockTime? = null,
+    val planWake: ClockTime? = null,
+    val goalMinutes: Int? = null,
 )
 
 /**

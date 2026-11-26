@@ -22,6 +22,12 @@ extension CalendarItem {
         carriedFrom.map { String(format: String(localized: "calendar.carriedFrom", bundle: .module), dayName($0)) }
     }
 
+    /// `z Schůzka s klientem · nesplněno`, for a task that was put into an event that ended without it being done.
+    @MainActor var hostedDescription: String? {
+        guard let hostEventTitle, !done else { return nil }
+        return String(format: String(localized: "calendar.hostedFrom", bundle: .module), hostEventTitle)
+    }
+
     /// The label of the checkbox in front of a task.
     var toggleLabel: String {
         let key = done ? "calendar.toggle.open" : "calendar.toggle.done"
@@ -64,5 +70,9 @@ extension CalendarEventTask {
         return String(format: String(localized: "calendar.task.doneIn", bundle: .module), note ?? "")
     }
 
-    var isDone: Bool { state == .done || state == .doneElsewhere }
+    /// Done in this event: a task completed elsewhere, on its own row or in another event, was not done here.
+    var isDone: Bool { state == .done }
+
+    /// Whether the note says the task was not done in this event: missed there, or done somewhere else.
+    var isNotDoneHere: Bool { state == .missed || state == .doneElsewhere }
 }

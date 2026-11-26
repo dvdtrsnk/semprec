@@ -1649,15 +1649,10 @@
         "calendar.carriedFrom",
         "calendar.clipboard.copied",
         "calendar.clipboard.cut",
-        "calendar.delete.cancel",
-        "calendar.delete.confirm",
-        "calendar.delete.event.message",
-        "calendar.delete.event.title",
-        "calendar.delete.task.message",
-        "calendar.delete.task.title",
         "calendar.dropInto",
         "calendar.handle.end",
         "calendar.handle.start",
+        "calendar.hostedFrom",
         "calendar.invitations",
         "calendar.invitations.new",
         "calendar.item.task",
@@ -1828,7 +1823,19 @@
         "calendar.agenda.allDay",
         "calendar.agenda.empty",
         "calendar.agenda.noMatch",
-        "calendar.agenda.search"
+        "calendar.agenda.search",
+        "calendar.sleep.goalMet",
+        "calendar.sleep.goalMissed",
+        "calendar.sleep.handle.bed",
+        "calendar.sleep.handle.wake",
+        "calendar.sleep.plan",
+        "calendar.transfer.allDay",
+        "calendar.transfer.task",
+        "calendar.transfer.task.done",
+        "calendar.transfer.task.open",
+        "calendar.transfer.untitled",
+        "newItem.discard",
+        "newItem.keepEditing"
       ]
     }
   ]

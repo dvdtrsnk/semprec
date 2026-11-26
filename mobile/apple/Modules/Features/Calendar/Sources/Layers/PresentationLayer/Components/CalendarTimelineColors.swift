@@ -27,11 +27,12 @@ struct CalendarTimelineColors: View {
             for item in timedItems {
                 let columns = CGFloat(max(item.columns, 1))
                 let columnWidth = width / columns
+                let stepIn = CGFloat(item.depth) * CalendarTimelineView.cascadeStep
                 let start = item.startMinutes ?? 0
                 let rect = CGRect(
-                    x: CalendarGeometry.gutter + CGFloat(item.column) * columnWidth,
+                    x: CalendarGeometry.gutter + CGFloat(item.column) * columnWidth + stepIn,
                     y: geometry.y(minutes: start),
-                    width: max(columnWidth - 2, 0),
+                    width: max(columnWidth - stepIn - 2, 0),
                     height: geometry.blockHeight(start: start, end: item.endMinutes ?? start)
                 )
                 context.fill(Path(rect), with: .color(item.tint.opacity(item.isTask ? 0.08 : 0.16)))

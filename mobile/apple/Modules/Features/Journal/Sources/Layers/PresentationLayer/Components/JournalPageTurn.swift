@@ -316,11 +316,21 @@ extension JournalPageTurnRequest {
         after previous: Self?,
         leaving: JournalState
     ) {
-        guard cell.kind == selection.kind, cell.start != selection.start else { return nil }
+        self.init(
+            to: JournalSelection(kind: cell.kind, start: cell.start),
+            from: selection,
+            after: previous,
+            leaving: leaving
+        )
+    }
+
+    /// The turn to `target` from `selection`, to its side: `nil` for a period of another kind or the selected one.
+    init?(to target: JournalSelection, from selection: JournalSelection, after previous: Self?, leaving: JournalState) {
+        guard target.kind == selection.kind, target.start != selection.start else { return nil }
         self.init(
             id: (previous?.id ?? 0) + 1,
-            steps: cell.start > selection.start ? 1 : -1,
-            target: JournalSelection(kind: cell.kind, start: cell.start),
+            steps: target.start > selection.start ? 1 : -1,
+            target: target,
             leaving: leaving
         )
     }

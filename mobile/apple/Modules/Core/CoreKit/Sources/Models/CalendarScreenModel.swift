@@ -76,7 +76,10 @@ public struct CalendarEventTask: Equatable, Sendable, Identifiable {
 }
 
 /// One item of one day. A timed item has `startMinutes` and `endMinutes` (minutes of the day, `endMinutes` a short
-/// block after the start when `hasEnd` is false); `column` of `columns` places it next to the ones it overlaps.
+/// block after the start when `hasEnd` is false); `column` of `columns` places it next to the ones it overlaps, and
+/// `depth` steps it in from the left of its column when it starts well after one it overlaps and is drawn over it.
+/// `timeFrom` and `timeTo` are its own start and end as minutes of the day, whichever day it is drawn on (`timeTo` the
+/// end the server decides for an event without a stored one); both are `nil` for an item without a time.
 public struct CalendarItem: Equatable, Sendable {
 
     public let id: String
@@ -97,11 +100,14 @@ public struct CalendarItem: Equatable, Sendable {
     public let editable: Bool
     public let column: Int
     public let columns: Int
+    public let depth: Int
     public let tasks: [CalendarEventTask]
     public let hostEventTitle: String?
     public let carriedFrom: String?
     public let trace: CalendarTraceOutcome?
     public let traceNote: String?
+    public let timeFrom: Int?
+    public let timeTo: Int?
 
     public init(
         id: String,
@@ -121,11 +127,14 @@ public struct CalendarItem: Equatable, Sendable {
         editable: Bool = true,
         column: Int = 0,
         columns: Int = 1,
+        depth: Int = 0,
         tasks: [CalendarEventTask] = [],
         hostEventTitle: String? = nil,
         carriedFrom: String? = nil,
         trace: CalendarTraceOutcome? = nil,
-        traceNote: String? = nil
+        traceNote: String? = nil,
+        timeFrom: Int? = nil,
+        timeTo: Int? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -144,11 +153,14 @@ public struct CalendarItem: Equatable, Sendable {
         self.editable = editable
         self.column = column
         self.columns = columns
+        self.depth = depth
         self.tasks = tasks
         self.hostEventTitle = hostEventTitle
         self.carriedFrom = carriedFrom
         self.trace = trace
         self.traceNote = traceNote
+        self.timeFrom = timeFrom
+        self.timeTo = timeTo
     }
 }
 
@@ -235,23 +247,10 @@ public struct CalendarClipboard: Equatable, Sendable {
     }
 }
 
-/// The delete a person has to confirm.
-public struct CalendarDeleteRequest: Equatable, Sendable {
-
-    public let itemId: String
-    public let title: String
-    public let kind: CalendarItemKind
-
-    public init(itemId: String, title: String, kind: CalendarItemKind) {
-        self.itemId = itemId
-        self.title = title
-        self.kind = kind
-    }
-}
-
 /// The calendar. `days` are the days of the loaded window (the six weeks of the selected month and a week on each
 /// side), `monthGrid` the 42 days of the month view in order, `months` the twelve months of the selected year.
-/// `nowMinutes` is the time of day on `today`. `problem` is true after a write that failed, with `problemFailure`.
+/// `nowMinutes` is the time of day on `today`, in `timezone`, the IANA zone of the server every time of the state is
+/// in (empty until the server first answers). `problem` is true after a write that failed, with `problemFailure`.
 public struct CalendarState: Equatable, Sendable {
 
     public var phase: CalendarPhase
@@ -259,14 +258,15 @@ public struct CalendarState: Equatable, Sendable {
     public var selectedDay: String
     public var today: String
     public var nowMinutes: Int
+    public var timezone: String
     public var days: [CalendarDayState]
     public var monthGrid: [String]
     public var months: [CalendarMonthState]
     public var pendingInvitations: Int
     public var selectedItemId: String?
     public var drag: CalendarDrag?
+    public var sleepDrag: CalendarSleepDrag?
     public var clipboard: CalendarClipboard?
-    public var pendingDelete: CalendarDeleteRequest?
     public var busy: Bool
     public var problem: Bool
     public var problemFailure: FailureKind?
@@ -277,14 +277,15 @@ public struct CalendarState: Equatable, Sendable {
         selectedDay: String,
         today: String,
         nowMinutes: Int = 0,
+        timezone: String = "",
         days: [CalendarDayState] = [],
         monthGrid: [String] = [],
         months: [CalendarMonthState] = [],
         pendingInvitations: Int = 0,
         selectedItemId: String? = nil,
         drag: CalendarDrag? = nil,
+        sleepDrag: CalendarSleepDrag? = nil,
         clipboard: CalendarClipboard? = nil,
-        pendingDelete: CalendarDeleteRequest? = nil,
         busy: Bool = false,
         problem: Bool = false,
         problemFailure: FailureKind? = nil
@@ -294,14 +295,15 @@ public struct CalendarState: Equatable, Sendable {
         self.selectedDay = selectedDay
         self.today = today
         self.nowMinutes = nowMinutes
+        self.timezone = timezone
         self.days = days
         self.monthGrid = monthGrid
         self.months = months
         self.pendingInvitations = pendingInvitations
         self.selectedItemId = selectedItemId
         self.drag = drag
+        self.sleepDrag = sleepDrag
         self.clipboard = clipboard
-        self.pendingDelete = pendingDelete
         self.busy = busy
         self.problem = problem
         self.problemFailure = problemFailure
@@ -327,10 +329,14 @@ public enum CalendarGesture: Equatable, Sendable {
     case tap(itemId: String)
     case tapBackground
     case select(itemId: String)
-    case toggleDone(itemId: String)
+    /// The checkbox of a task: on its own row, or in the event `inEventId` it sits in.
+    case toggleDone(itemId: String, inEventId: String?)
     case dragMove(itemId: String, day: String, rawStart: Int, overAllDayRow: Bool, overEventId: String?)
     case dragResize(itemId: String, edge: CalendarEdge, rawMinutes: Int)
     case endDrag(commit: Bool)
+    /// The night of the evening `night` moved (no `edge`) or stretched at one end, by `deltaMinutes`.
+    case sleepDrag(night: String, edge: CalendarEdge?, deltaMinutes: Int)
+    case endSleepDrag(commit: Bool)
     case moveToDay(itemId: String, day: String)
 }
 
@@ -341,9 +347,8 @@ public enum CalendarEdit: Equatable, Sendable {
     case copy(itemId: String)
     case duplicate(itemId: String)
     case paste(day: String, rawStart: Int, allDay: Bool)
-    case requestDelete(itemId: String)
-    case confirmDelete
-    case cancelDelete
+    /// Deletes the item at once, as the system Calendar does.
+    case delete(itemId: String)
     case dismissProblem
 }
 
