@@ -80,6 +80,21 @@ final class WakeDeviceTests: XCTestCase {
         XCTAssertTrue(samples.contains { $0.1 > 0 } && samples.contains { $0.1 < 0 }, "the wave swings both ways")
     }
 
+    @MainActor
+    func testEveryStopDetachesTheSourceNodeSoThatPlayingAgainAddsNoSecondOne() throws {
+        let beep = DeviceAlarmBeep()
+        try XCTSkipUnless(beep.start(), "This host has no audio output to start the engine on")
+        XCTAssertNotNil(beep.source)
+
+        beep.stop()
+        XCTAssertNil(beep.source, "The node must leave the engine when the beep stops")
+
+        XCTAssertTrue(beep.start())
+        XCTAssertNotNil(beep.source)
+        beep.stop()
+        XCTAssertNil(beep.source)
+    }
+
     // MARK: - The camera's codes
     func testTheCameraOutputYieldsACodeOnceWhileItIsSeenAndAgainAfterTheInterval() async {
         let (codes, codeContinuation) = AsyncStream.makeStream(of: String.self)
