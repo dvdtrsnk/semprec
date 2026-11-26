@@ -111,6 +111,25 @@ final class SleepAlarmClockTests: XCTestCase {
     }
 
     @MainActor
+    func testAnAlarmNeitherTheLedgerNorACancelCouldRemoveIsCancelledOnTheNextSync() async {
+        let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
+        fixture.store.saveScheduledFailure = ScriptedAlarmFailure()
+        fixture.scheduler.cancelFailure = ScriptedAlarmFailure()
+        await fixture.clock.sync()
+        XCTAssertEqual(fixture.scheduler.held.count, 1)
+        let stray = fixture.scheduler.requests[0].id
+
+        fixture.store.saveScheduledFailure = nil
+        fixture.scheduler.cancelFailure = nil
+        await fixture.clock.sync()
+
+        XCTAssertTrue(fixture.scheduler.cancelled.contains(stray))
+        XCTAssertEqual(fixture.scheduler.held.count, 1, "Only the ring scheduled again remains")
+        XCTAssertNotEqual(fixture.scheduler.held.first?.id, stray)
+        XCTAssertEqual(fixture.store.scheduled.count, 1)
+    }
+
+    @MainActor
     func testAFailedReadChangesNothing() async {
         let fixture = make(alarms: [alarm(wakeDay: "2026-11-26", 405)])
         await fixture.clock.sync()

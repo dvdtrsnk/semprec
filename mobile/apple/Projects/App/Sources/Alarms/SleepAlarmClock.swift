@@ -26,6 +26,9 @@ final class SleepAlarmClock: ObservableObject {
     /// The sync the last settings change asked for. An earlier one is never cancelled: a cancelled pass would read
     /// nothing and keep the old alarms, while a running pass picks the new settings up through `syncAgain`.
     private(set) var pendingSync: Task<Void, Never>?
+    /// Alarms neither the ledger keeps nor a cancel removed, because both failed; each sync cancels them again. They
+    /// live in memory: the store that could not keep the ledger cannot keep them either.
+    private var strays: Set<UUID> = []
 
     // MARK: - Init
     init(
@@ -133,6 +136,7 @@ private extension SleepAlarmClock {
     /// Schedules a plain system alarm for each of `rings` that has none and cancels the ones no ring needs.
     func schedulePlain(_ rings: [String: SleepAlarmRing]) async {
         var scheduled = loadScheduled()
+        strays = strays.filter { !cancel($0) }
         // An alarm whose cancel failed stays in the ledger, so the next sync cancels it again.
         for (key, id) in scheduled where rings[key] == nil {
             if cancel(id) { scheduled[key] = nil }
@@ -153,7 +157,7 @@ private extension SleepAlarmClock {
         } catch {
             failure = Self.message(error)
             // The ledger does not know them, so the next sync would schedule them again beside these.
-            for id in added { _ = cancel(id) }
+            for id in added where !cancel(id) { strays.insert(id) }
         }
     }
 
