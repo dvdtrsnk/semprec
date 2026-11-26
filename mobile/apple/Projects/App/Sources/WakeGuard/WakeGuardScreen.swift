@@ -140,9 +140,9 @@ private extension WakeGuardScreen {
         if rejectedCode == code { rejectedCode = nil }
     }
 
-    /// `m:ss` until `date`.
+    /// The minutes and seconds until `date`, written as the person's locale writes a time span.
     static func remaining(until date: Date, from now: Date) -> String {
         let seconds = max(0, Int(date.timeIntervalSince(now).rounded(.up)))
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))
     }
 }

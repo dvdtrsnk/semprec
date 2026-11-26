@@ -60,7 +60,8 @@ or `VideoToolbox`, and the Apple app imports no UIKit.
   or let the two hours of watch alarms run out without opening the app. A daily mission whose ring was never ended
   does not arm the next day's watch alarms until the app runs again; its own alarm still rings.
 - Holding the volume up uses the system slider in a way it was not designed for; Apple may change it, and App Review
-  may question it. It only runs while the guard is on screen.
+  may question it. It only runs while the guard is on screen. Where the slider is not found, the volume is not held,
+  and the guard still rings through its system watch alarms and the app's own beep.
 - Watch alarms count against the system's limit of alarms per app; how many a device accepts is not documented, and a
   refusal is shown on the debug screen.
 - Wiring the sleep plans' alarms to missions, and any Android counterpart, need decisions of their own.
