@@ -36,6 +36,8 @@ let project = Project(
                 ],
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
+                // AlarmKit asks for this when the first sleep alarm is scheduled; macOS has no AlarmKit and ignores it.
+                "NSAlarmKitUsageDescription": "Semprec rings your alarms even in silent mode and through a Focus.",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 // `remote-notification` lets a silent push wake the app to read its reminders again.
