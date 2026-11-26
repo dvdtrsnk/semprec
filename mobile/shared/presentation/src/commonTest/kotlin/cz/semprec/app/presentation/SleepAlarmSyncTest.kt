@@ -250,7 +250,7 @@ class SleepAlarmSyncTest : MainDispatcherTest() {
         assertEquals(1, device.scheduledAt.size, "the second run found the alarm the first one rang")
     }
 
-    @Test fun `cancelling a run rethrows, keeps what was done in the ledger and frees the next run`() =
+    @Test fun `cancelling a run rethrows keeps what was done in the ledger and frees the next run`() =
         runTest(dispatcher) {
             val sync = sync(repository(night(SYNC_TODAY), night(SYNC_TODAY.plusDays(1))))
             val gate = CompletableDeferred<Unit>()

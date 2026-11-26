@@ -86,7 +86,7 @@ class PlanSleepAlarmsTest {
         assertEquals(listOf(key("2026-11-26T05:45:00Z")), plan.schedule.map { it.key })
     }
 
-    @Test fun `the wake time is read on the wall clock of the zone, also on the day the clocks change`() {
+    @Test fun `the wake time is read on the wall clock of the zone also on the day the clocks change`() {
         val cases = listOf(
             Triple(PRAGUE, CalendarDay(2026, 3, 28) to "07:00", "2026-03-29T05:00:00Z"),
             Triple(PRAGUE, CalendarDay(2026, 3, 27) to "07:00", "2026-03-28T06:00:00Z"),
@@ -143,7 +143,7 @@ class PlanSleepAlarmsTest {
         assertTrue(plan.keep.isEmpty())
     }
 
-    @Test fun `a ring that left the plan is cancelled, and one that moved is replaced`() {
+    @Test fun `a ring that left the plan is cancelled and one that moved is replaced`() {
         val old = key("2026-11-26T05:45:00Z")
         val plan = plan(
             on(night(TODAY, "07:15")),
@@ -155,7 +155,7 @@ class PlanSleepAlarmsTest {
         assertTrue(plan.keep.isEmpty())
     }
 
-    @Test fun `an alarm that is ringing now is never cancelled, whatever the plan says`() {
+    @Test fun `an alarm that is ringing now is never cancelled whatever the plan says`() {
         val ringing = key("2026-11-25T05:45:00Z")
         val cases = listOf(
             plan(on(), held(mapOf(ringing to "a1"), "a1" to DeviceAlarmPhase.ALERTING)),
