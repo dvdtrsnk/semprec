@@ -125,7 +125,7 @@ private extension WakeSettingsScreen {
 
     func failureSection(_ failure: WakeSettingsFailure) -> some View {
         Section {
-            Text(failure.message)
+            failure.message
                 .font(.footnote)
                 .foregroundStyle(Theme.Colors.destructive)
             Button { viewModel.send(.dismissFailure) } label: {

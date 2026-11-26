@@ -182,7 +182,17 @@ final class SharedWakeTests: XCTestCase {
             sleepAlarmLedger: SharedSDK.InMemorySleepAlarmLedger(),
             wakeStorage: storage
         )
-        let home = SharedSDK.HomeSDK(wake: push.wake, sleepAlarms: push.sleepAlarms)
+        let home = SharedSDK.HomeSDK(
+            sessionStorage: SharedSDK.InMemorySessionStorage(),
+            device: DeviceIdentity.current(),
+            recorder: SharedSDK.UnavailableAudioRecorder(),
+            player: SharedSDK.UnavailableAudioPlayer(),
+            pushSubscriptions: SharedSDK.InMemoryPushSubscriptionStorage(),
+            cacheDirectory: nil,
+            dataDirectory: nil,
+            wake: push.wake,
+            sleepAlarms: push.sleepAlarms
+        )
         let model = SharedWakeGuardScreenModel(home.sleep.wakeGuardViewModel())
         let covered = await Self.firstState(of: model) { $0.phase == .scanning }
         XCTAssertEqual(covered?.codeCount, 1)

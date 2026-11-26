@@ -7,7 +7,7 @@ import SwiftUI
 struct WakeCodeCapture: View {
 
     // MARK: - Dependencies
-    let captured: (String) -> Void
+    let captured: @MainActor @Sendable (String) -> Void
 
     // MARK: - State
     @StateObject private var scanner = DeviceCodeScanner()

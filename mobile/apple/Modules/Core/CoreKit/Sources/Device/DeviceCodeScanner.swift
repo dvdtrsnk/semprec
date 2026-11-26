@@ -50,7 +50,7 @@ public final class DeviceCodeScanner: ObservableObject {
     // MARK: - Methods
     /// Asks for the camera the first time, runs it and hands over each code it reads, until the surrounding task is
     /// cancelled, which stops the camera. A camera that cannot run is the `state`, and the call returns at once.
-    public func run(onCode: @escaping @MainActor (String) -> Void) async {
+    public func run(onCode: @escaping @MainActor @Sendable (String) -> Void) async {
         state = .starting
         guard await AVCaptureDevice.requestAccess(for: .video) else {
             state = .denied
@@ -63,21 +63,23 @@ public final class DeviceCodeScanner: ObservableObject {
         let session = session
         queue.async { session.startRunning() }
         state = .running
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { @MainActor in
-                for await image in self.frames { self.frame = image }
-            }
-            group.addTask { @MainActor in
-                for await code in self.codes { onCode(code) }
-            }
-            await group.waitForAll()
-        }
+        async let publishing: Void = publishFrames()
+        async let delivering: Void = deliverCodes(to: onCode)
+        _ = await (publishing, delivering)
         queue.async { session.stopRunning() }
     }
 }
 
 // MARK: - Private
 private extension DeviceCodeScanner {
+
+    func publishFrames() async {
+        for await image in frames { frame = image }
+    }
+
+    func deliverCodes(to onCode: @MainActor @Sendable (String) -> Void) async {
+        for await code in codes { onCode(code) }
+    }
 
     static let codeTypes: [AVMetadataObject.ObjectType] = [
         .ean8, .ean13, .upce, .code39, .code93, .code128, .itf14, .interleaved2of5, .qr, .dataMatrix, .pdf417, .aztec
