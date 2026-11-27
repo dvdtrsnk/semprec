@@ -105,7 +105,13 @@ private extension TasksScreen {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.small) {
                 ForEach(chips) { chip in
-                    FilterChip(title: chip.title, color: chip.color, clearLabel: chip.title, clear: chip.clear)
+                    FilterChip(title: chip.title, color: Color(hex: chip.color) ?? Theme.Colors.accent) {
+                        Button(action: chip.clear) {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.Colors.secondaryText)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(removeLabel(chip.title))
+                    }
                 }
                 Button { filterOpen = true } label: {
                     Label {
@@ -259,6 +265,10 @@ private extension TasksScreen {
             )
         }
         return chips
+    }
+
+    func removeLabel(_ title: String) -> String {
+        String(format: String(localized: "tasks.chip.remove", bundle: .module), locale: .current, title)
     }
 
     func chipTitle(_ key: String.LocalizationValue, _ name: String) -> String {

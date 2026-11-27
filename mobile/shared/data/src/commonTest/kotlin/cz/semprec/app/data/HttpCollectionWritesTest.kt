@@ -3,6 +3,7 @@ package cz.semprec.app.data
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CollectionDatabase
 import cz.semprec.app.domain.FieldValue
+import cz.semprec.app.domain.PropertyOption
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 private fun <T> RepositoryResult<T>.content(): T = assertIs<RepositoryResult.Content<T>>(this).value
@@ -214,5 +216,29 @@ class HttpCollectionWritesTest {
         assertEquals(null, request.headers["X-Attach-To-Item"])
         assertEquals(null, request.headers["X-Attach-Relation"])
         assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(result).kind)
+    }
+
+    @Test
+    fun aNewOptionIsPostedByItsLabelToTheOptionsRouteOfItsProperty() = runTest {
+        val f = fixture { json("""{"key":"client","label":"Client","color":"#FF9500"}""", HttpStatusCode.Created) }
+        val tags = assertNotNull(projects(f).property("tags"))
+        val option = f.writes.addOption(tags, "Client").content()
+        val request = f.recorder.requests.last()
+        assertEquals(HttpMethod.Post, request.method)
+        assertEquals("/api/properties/p7/options", request.url.encodedPath)
+        assertEquals("Client", f.recorder.bodyJson(f.recorder.bodies.lastIndex).getValue("label").jsonPrimitive.content)
+        assertEquals(PropertyOption("client", "Client", "#FF9500"), option)
+    }
+
+    @Test
+    fun aRefusedNewOptionIsRejectedAndAnUnreadableAnswerIsInvalidData() = runTest {
+        val refused = fixture { json("""{"error":"conflict"}""", HttpStatusCode.Conflict) }
+        val tags = assertNotNull(projects(refused).property("tags"))
+        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused.writes.addOption(tags, "A")).kind)
+        val unreadable = fixture { json("""{"label":"A"}""", HttpStatusCode.Created) }
+        assertEquals(
+            FailureKind.INVALID_DATA,
+            assertIs<RepositoryResult.Failure>(unreadable.writes.addOption(tags, "A")).kind,
+        )
     }
 }

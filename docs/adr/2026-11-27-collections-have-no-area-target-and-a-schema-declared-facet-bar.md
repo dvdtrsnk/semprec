@@ -35,7 +35,9 @@ areas and stay as they are; the area examples no longer exist.
   published per database by `GET /api/schema`. When the collection's database declares one, the shared
   `CollectionViewModel` reads that property's facet with the screen and after every change of the query, and shows
   its values as a row of chips above the list. A chip toggles the value in the same selection the filter sheet edits,
-  so the bar and the sheet cannot disagree. The bar is hidden when the facet has no value.
+  and the sheet offers the bar's property even before the schema knows any of its values, so the bar and the sheet
+  cannot disagree. The bar is hidden when the facet has no value, and a collection row lists the item's values of
+  that property in its subtitle.
 - Projects declares `facetBarProperty: "tags"`; no other database declares one.
 
 ## Consequences

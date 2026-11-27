@@ -22,7 +22,7 @@ const val FILES_ID = "33333333-3333-4333-8333-333333333333"
 const val PROJECT_ITEM = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const val AREA_ITEM = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-/** A schema with Projects (status, date, area, company), Areas and Files (type, file, projects). */
+/** A schema with Projects (status, date, area, company, tags in a facet bar), Areas and Files (type, file, projects). */
 const val SCHEMA_JSON = """{
   "tenant": {"timezone": "Europe/Prague", "today": "2026-10-16"},
   "viewTypes": [], "agentTools": [],
@@ -35,6 +35,7 @@ const val SCHEMA_JSON = """{
      "collectionFilter": {"type": "is_empty", "property": "systemActive"},
      "areaFilter": {"type": "relation_contains", "property": "area", "value": {"areaValue": true}},
      "pickerFilter": {"type": "is_empty", "property": "systemActive"},
+     "facetBarProperty": "tags",
      "quickFilters": [
        {"key": "active", "label": "Aktivní", "isDefault": true,
         "filter": {"type": "in", "property": "status", "value": ["inProgress", "longTerm"]}},

@@ -60,6 +60,7 @@ extension SharedCollectionScreenModel {
             layout: layout(state.layout),
             sections: state.sections.map(section),
             filterSheet: state.filterSheet.map(sheet),
+            facetBar: state.facetBar.map(bar),
             activeFilterCount: Int(state.activeFilterCount),
             hasMore: state.hasMore,
             loadingMore: state.loadingMore,
@@ -224,17 +225,23 @@ extension SharedCollectionScreenModel {
                     propertyKey: group.propertyKey,
                     name: group.name,
                     kind: FieldKind(group.kind),
-                    options: group.options.map { option in
-                        FilterOption(
-                            value: option.value,
-                            label: option.label,
-                            color: option.color,
-                            count: option.count.map { Int($0.int32Value) },
-                            selected: option.selected
-                        )
-                    }
+                    options: group.options.map(option)
                 )
             }
+        )
+    }
+
+    static func bar(_ bar: SharedSDK.FacetBar) -> FacetBar {
+        FacetBar(propertyKey: bar.propertyKey, chips: bar.chips.map(option))
+    }
+
+    static func option(_ option: SharedSDK.FilterOption) -> FilterOption {
+        FilterOption(
+            value: option.value,
+            label: option.label,
+            color: option.color,
+            count: option.count.map { Int($0.int32Value) },
+            selected: option.selected
         )
     }
 }

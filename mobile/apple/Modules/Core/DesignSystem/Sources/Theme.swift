@@ -46,6 +46,8 @@ public enum Theme {
 
         /// The content of a control while it is pressed.
         public static let pressed: Double = 0.5
+        /// The fill of a selected chip in its own color.
+        public static let selectedFill: Double = 0.18
     }
 
     // MARK: - Spacing

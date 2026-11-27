@@ -18,8 +18,10 @@ import kotlinx.coroutines.launch
 /**
  * One collection of any database: a list, gallery or board of its items, with the quick filters, search, order and
  * filter sheet the server's schema offers. It is configured, not subclassed: Projects, People, Companies, Events and
- * Files are this same ViewModel over different targets. A newer query supersedes an older one, and an answer that
- * arrives after the ViewModel was closed or superseded is dropped.
+ * Files are this same ViewModel over different targets. A database that declares a facet bar property gets that
+ * property's facet read with the screen and after every query, shown as chips that toggle the filter sheet's own
+ * selection. A newer query supersedes an older one, and an answer that arrives after the ViewModel was closed or
+ * superseded is dropped.
  */
 class CollectionViewModel internal constructor(
     private val config: CollectionConfig,
@@ -31,7 +33,9 @@ class CollectionViewModel internal constructor(
     private var inputs = Inputs()
     private var loaded: CollectionLoaded? = null
     private var facets: List<FacetResult> = emptyList()
+    private var bar: FacetResult? = null
     private var loadJob: Job? = null
+    private var barJob: Job? = null
     private var moreJob: Job? = null
     private var sheetJob: Job? = null
     private val host =
@@ -67,9 +71,11 @@ class CollectionViewModel internal constructor(
         loadJob?.cancel()
         moreJob?.cancel()
         sheetJob?.cancel()
+        barJob?.cancel()
         adding.cancel()
         loaded = null
         facets = emptyList()
+        bar = null
         update { CollectionState() }
         loadJob = viewModelScope.launch {
             val opening = answer { openCollection(config.databaseKey, config.databaseId, config.scope) }
@@ -83,6 +89,7 @@ class CollectionViewModel internal constructor(
                     val page = answer { reads.query(database, inputs.queryOf(config, database, null)) }
                     ensureActive()
                     publish(opening.value, page, previous = emptyList())
+                    if (page is Answer.Done) loadBar()
                 }
             }
         }
@@ -93,12 +100,14 @@ class CollectionViewModel internal constructor(
         val current = loaded ?: return
         loadJob?.cancel()
         moreJob?.cancel()
+        barJob?.cancel()
         update { it.copy(refreshing = true) }
         loadJob = viewModelScope.launch {
             val database = current.opened.database
             val page = answer { reads.query(database, inputs.queryOf(config, database, null)) }
             ensureActive()
             publish(current.opened, page, previous = emptyList())
+            if (page is Answer.Done) loadBar()
             if (state.value.filterSheet != null) loadFacets()
         }
     }
@@ -112,7 +121,7 @@ class CollectionViewModel internal constructor(
         val current = loaded ?: return
         if (layout !in state.value.layouts) return
         inputs = inputs.copy(layout = layout)
-        update { collectionState(current, inputs, facets, it) }
+        update { collectionState(current, inputs, facets, bar, it) }
     }
 
     private fun loadMore() {
@@ -169,13 +178,32 @@ class CollectionViewModel internal constructor(
         }
     }
 
+    /**
+     * Reads the facet of the database's bar property under the current query. A bar that cannot be read keeps the
+     * chips it had (none on the first read); the list is shown either way.
+     */
+    private fun loadBar() {
+        val current = loaded ?: return
+        val database = current.opened.database
+        val key = database.facetBarProperty ?: return
+        barJob?.cancel()
+        barJob = viewModelScope.launch {
+            val answered = answer { reads.facets(database, inputs.queryOf(config, database, null), listOf(key)) }
+            ensureActive()
+            if (answered is Answer.Done) {
+                bar = answered.value.firstOrNull { it.propertyKey == key }
+                update { it.copy(facetBar = facetBar(database, bar, inputs.selections)) }
+            }
+        }
+    }
+
     private fun publish(opened: OpenedCollection, page: Answer<CollectionPage>, previous: List<CollectionItem>) {
         when (page) {
             is Answer.Rejected -> update { collectionFailure(page.kind, opened.database) }
             is Answer.Done -> {
                 val now = CollectionLoaded(opened, previous + page.value.items, page.value.nextCursor)
                 loaded = now
-                update { collectionState(now, inputs, facets, it) }
+                update { collectionState(now, inputs, facets, bar, it) }
             }
         }
     }

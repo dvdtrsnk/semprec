@@ -2,9 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The settings of a project: its status, its area, its deadline (which a long-term project does not have), whether it
-/// is pinned to the overview, and the entry to its mail signals, which the project opens on its stack once the sheet is
-/// closed.
+/// The settings of a project: its status, its area, its deadline (which a long-term project does not have), its tags
+/// with a field that creates a new one, whether it is pinned to the overview, and the entry to its mail signals, which
+/// the project opens on its stack once the sheet is closed.
 struct ProjectSettingsSheet: View {
 
     // MARK: - Dependencies
@@ -13,6 +13,9 @@ struct ProjectSettingsSheet: View {
     let close: () -> Void
     let openMailSignals: () -> Void
 
+    // MARK: - State
+    @State private var newTag = ""
+
     // MARK: - Body
     var body: some View {
         NavigationStack {
@@ -20,6 +23,7 @@ struct ProjectSettingsSheet: View {
                 statusSection
                 areaSection
                 deadlineSection
+                tagsSection
                 pinnedSection
                 mailSignalsSection
             }
@@ -33,6 +37,12 @@ struct ProjectSettingsSheet: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(CollectionsIdentifiers.projectSettings + ".sheet")
+    }
+
+    // MARK: - Methods
+    /// The intent that creates a tag named `label` and sets it on the project.
+    static func newChoice(_ label: String, of field: FieldView) -> ItemAction {
+        .edit(.addChoice(propertyKey: field.propertyKey, label: label))
     }
 }
 
@@ -99,6 +109,30 @@ private extension ProjectSettingsSheet {
         }
     }
 
+    @ViewBuilder var tagsSection: some View {
+        if let tags = field("tags") {
+            Section {
+                FieldRowView(field: tags, fields: state.fields, format: FieldFormat(), send: send)
+                if tags.editable {
+                    HStack {
+                        TextField(text: $newTag) { Text("project.tags.new", bundle: .module) }
+                            .onSubmit { addTag(to: tags) }
+                            .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsNewTag)
+                        Button { addTag(to: tags) } label: { Text("project.tags.add", bundle: .module) }
+                            .disabled(newTag.isEmpty || state.saving)
+                            .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsAddTag)
+                    }
+                }
+            } header: {
+                Text(tags.name).accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
+            } footer: {
+                if let failure = state.writeFailure, failure.propertyKey == tags.propertyKey {
+                    Text(FailureKind.message(for: failure.kind)).foregroundStyle(Theme.Colors.destructive)
+                }
+            }
+        }
+    }
+
     @ViewBuilder var pinnedSection: some View {
         if let pinned = field("pinned") {
             Section {
@@ -127,6 +161,12 @@ private extension ProjectSettingsSheet {
         } footer: {
             Text("project.settings.mailSignals.footer", bundle: .module)
         }
+    }
+
+    /// Sends the typed name as a new tag of the project and empties the field for the next one.
+    func addTag(to tags: FieldView) {
+        send(Self.newChoice(newTag, of: tags))
+        newTag = ""
     }
 
     var selectedStatus: String? {

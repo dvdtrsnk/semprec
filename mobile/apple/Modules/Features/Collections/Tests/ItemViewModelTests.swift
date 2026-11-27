@@ -46,6 +46,23 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testANewTagOfTheProjectSettingsIsSentAsANewChoiceOfTheTags() {
+        let model = ScriptedItemScreenModel(state: state(databaseKey: "projects"))
+        let viewModel = ItemViewModel(itemId: "i1", model: model, router: RouterSpy())
+        let tags = FieldView(
+            propertyKey: "tags",
+            name: "Tags",
+            kind: .multiSelect,
+            content: .choices([FieldOption(key: "home", label: "Home", color: nil)]),
+            options: [FieldOption(key: "home", label: "Home", color: nil)],
+            editable: true,
+            origin: nil
+        )
+        viewModel.send(ProjectSettingsSheet.newChoice("Client", of: tags))
+        XCTAssertEqual(model.actions, [.edit(.addChoice(propertyKey: "tags", label: "Client"))])
+    }
+
+    @MainActor
     func testOpenItemEffectsGoToTheScreenOfTheirKind() async throws {
         let model = ScriptedItemScreenModel(
             state: state(databaseKey: "projects"),

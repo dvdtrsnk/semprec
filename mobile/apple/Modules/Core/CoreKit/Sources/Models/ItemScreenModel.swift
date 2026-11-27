@@ -262,6 +262,9 @@ public enum ItemAction: Equatable, Sendable {
         case setNumber(propertyKey: String, number: Double?)
         case setFlag(propertyKey: String, isOn: Bool)
         case setChoices(propertyKey: String, keys: [String])
+        /// Adds a new choice named `label` to a select or multi-select and sets it on the item, a multi-select keeping
+        /// the choices it holds; a blank name changes nothing.
+        case addChoice(propertyKey: String, label: String)
         /// Ends the link that makes a value follow its source; the value stays as the item's own.
         case unlink(propertyKey: String)
         /// Makes the value follow its source again.

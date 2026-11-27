@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The layout of a project over the generic item: its status, title, area and deadline, its notes, the agent that
+/// The layout of a project over the generic item: its status, title, area, deadline and tags, its notes, the agent that
 /// works in it, its tasks and the collections connected to it. The tasks, the mail, the notes and the agent are
 /// screens of other features, reached through the router.
 struct ProjectContent: View {
@@ -74,6 +74,23 @@ private extension ProjectContent {
             }
             .font(.subheadline)
             .foregroundStyle(Theme.Colors.secondaryText)
+            tagChips
+        }
+    }
+
+    /// The project's tags as chips; nothing while it has none.
+    @ViewBuilder var tagChips: some View {
+        if case .choices(let tags) = field("tags")?.content {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Spacing.small) {
+                    ForEach(tags, id: \.key) { tag in
+                        let color = Color(hex: tag.color) ?? Theme.Colors.accent
+                        FilterChip(title: tag.label, color: color) { EmptyView() }
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(CollectionsIdentifiers.projectTags)
         }
     }
 

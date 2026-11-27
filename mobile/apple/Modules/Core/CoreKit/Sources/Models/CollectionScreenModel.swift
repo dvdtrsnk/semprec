@@ -177,6 +177,19 @@ public struct FilterGroup: Equatable, Sendable, Identifiable {
     }
 }
 
+/// The chips above the list, one per value of the database's facet bar property that items hold. A chip toggles its
+/// value in the same selection the filter sheet edits (`.filter(.toggle(propertyKey:value:))` with `propertyKey`).
+public struct FacetBar: Equatable, Sendable {
+
+    public let propertyKey: String
+    public let chips: [FilterOption]
+
+    public init(propertyKey: String, chips: [FilterOption]) {
+        self.propertyKey = propertyKey
+        self.chips = chips
+    }
+}
+
 /// The filter sheet once it was opened: its groups, or why they are missing.
 public struct FilterSheet: Equatable, Sendable {
 
@@ -208,6 +221,8 @@ public struct CollectionState: Equatable, Sendable {
     public var layout: CollectionLayout
     public var sections: [CollectionSection]
     public var filterSheet: FilterSheet?
+    /// Nil when the database declares no bar or no item holds a value of it.
+    public var facetBar: FacetBar?
     public var activeFilterCount: Int
     public var hasMore: Bool
     public var loadingMore: Bool
@@ -231,6 +246,7 @@ public struct CollectionState: Equatable, Sendable {
         layout: CollectionLayout = .list,
         sections: [CollectionSection] = [],
         filterSheet: FilterSheet? = nil,
+        facetBar: FacetBar? = nil,
         activeFilterCount: Int = 0,
         hasMore: Bool = false,
         loadingMore: Bool = false,
@@ -253,6 +269,7 @@ public struct CollectionState: Equatable, Sendable {
         self.layout = layout
         self.sections = sections
         self.filterSheet = filterSheet
+        self.facetBar = facetBar
         self.activeFilterCount = activeFilterCount
         self.hasMore = hasMore
         self.loadingMore = loadingMore

@@ -68,6 +68,8 @@ class HttpCollectionReadsTest {
         assertEquals("#007AFF", projects.property("status")?.options?.first()?.color)
         assertTrue(projects.property("completedAt")!!.system)
         assertNull(schema.database("areas")?.areaFilter)
+        assertEquals("tags", projects.facetBarProperty)
+        assertNull(schema.database("areas")?.facetBarProperty)
         assertEquals("/api/schema", recorder.requests.single().url.encodedPath)
         assertEquals("Bearer tok", recorder.requests.single().headers[HttpHeaders.Authorization])
     }

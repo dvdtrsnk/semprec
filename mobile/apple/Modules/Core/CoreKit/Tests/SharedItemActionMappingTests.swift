@@ -39,6 +39,10 @@ final class SharedItemActionMappingTests: XCTestCase {
             action(.setChoices(propertyKey: "status", keys: ["done"])),
             SharedSDK.ItemActionEditSetChoices(propertyKey: "status", keys: ["done"])
         )
+        XCTAssertEqual(
+            action(.addChoice(propertyKey: "tags", label: "Client")),
+            SharedSDK.ItemActionEditAddChoice(propertyKey: "tags", label: "Client")
+        )
         XCTAssertEqual(action(.unlink(propertyKey: "status")), SharedSDK.ItemActionEditUnlink(propertyKey: "status"))
         XCTAssertEqual(action(.relink(propertyKey: "status")), SharedSDK.ItemActionEditRelink(propertyKey: "status"))
         XCTAssertEqual(

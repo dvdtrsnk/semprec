@@ -11,11 +11,15 @@ internal fun CollectionDatabase.header() = CollectionHeader(id, key, name, icon,
 /** What the last answers hold: the database, the loaded items and where the next page starts. */
 internal class CollectionLoaded(val opened: OpenedCollection, val items: List<CollectionItem>, val nextCursor: String?)
 
-/** What the screen shows for [loaded] under [inputs]; the filter sheet, creation and write failure carry over. */
+/**
+ * What the screen shows for [loaded] under [inputs], with the sheet's [facets] and the [bar]'s facet; the filter sheet,
+ * creation and write failure carry over.
+ */
 internal fun collectionState(
     loaded: CollectionLoaded,
     inputs: Inputs,
     facets: List<FacetResult>,
+    bar: FacetResult?,
     previous: CollectionState,
 ): CollectionState {
     val opened = loaded.opened
@@ -38,6 +42,7 @@ internal fun collectionState(
         layout = layout,
         sections = sectionsOf(rows, database, layout, axis, opened.today),
         filterSheet = previous.filterSheet?.copy(groups = filterGroups(database, facets, inputs.selections)),
+        facetBar = facetBar(database, bar, inputs.selections),
         activeFilterCount = inputs.selections.count,
         hasMore = loaded.nextCursor != null,
         canCreate = database.title != null && database.uploadProperty() == null,

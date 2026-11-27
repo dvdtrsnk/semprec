@@ -22,6 +22,12 @@ sealed interface ItemAction {
         /** Writes a select (one key or none) or multi-select (any number of keys). */
         data class SetChoices(val propertyKey: String, val keys: List<String>) : Edit
 
+        /**
+         * Adds a new choice named [label] to a select or multi-select and sets it on the item, a multi-select keeping
+         * the choices it holds; a blank name changes nothing.
+         */
+        data class AddChoice(val propertyKey: String, val label: String) : Edit
+
         /** Ends the link that makes a value follow its source; the value stays as the item's own. */
         data class Unlink(val propertyKey: String) : Edit
 

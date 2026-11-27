@@ -36,6 +36,7 @@ internal data class SchemaDatabaseDto(
     val collectionFilter: JsonElement? = null,
     val areaFilter: JsonElement? = null,
     val pickerFilter: JsonElement? = null,
+    val facetBarProperty: String? = null,
 ) {
     fun toDomain(): CollectionDatabase = CollectionDatabase(
         id = databaseId,
@@ -51,6 +52,7 @@ internal data class SchemaDatabaseDto(
         collectionFilter = collectionFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
         areaFilter = areaFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
         pickerFilter = pickerFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
+        facetBarProperty = facetBarProperty,
     )
 }
 
@@ -70,7 +72,7 @@ internal data class SchemaPropertyDto(
         key = key,
         name = name,
         kind = propertyKind(type),
-        options = options.map { PropertyOption(it.key, it.label, it.color) },
+        options = options.map { it.toDomain() },
         targetDatabaseId = config.targetDatabaseId,
         system = owner == "system",
         filterable = filterable,
@@ -81,7 +83,9 @@ internal data class SchemaPropertyDto(
 internal data class PropertyConfigDto(val targetDatabaseId: String? = null)
 
 @Serializable
-internal data class OptionDto(val key: String, val label: String = "", val color: String? = null)
+internal data class OptionDto(val key: String, val label: String = "", val color: String? = null) {
+    fun toDomain(): PropertyOption = PropertyOption(key, label, color)
+}
 
 @Serializable
 internal data class QuickFilterDto(

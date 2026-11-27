@@ -99,6 +99,7 @@ extension SharedItemScreenModel {
             SharedSDK.ItemActionEditSetNumber(propertyKey: key, number: number.map { KotlinDouble(double: $0) })
         case .setFlag(let key, let isOn): SharedSDK.ItemActionEditSetFlag(propertyKey: key, on: isOn)
         case .setChoices(let key, let keys): SharedSDK.ItemActionEditSetChoices(propertyKey: key, keys: keys)
+        case .addChoice(let key, let label): SharedSDK.ItemActionEditAddChoice(propertyKey: key, label: label)
         case .unlink(let key): SharedSDK.ItemActionEditUnlink(propertyKey: key)
         case .relink(let key): SharedSDK.ItemActionEditRelink(propertyKey: key)
         case .removeTarget(let key, let targetId):

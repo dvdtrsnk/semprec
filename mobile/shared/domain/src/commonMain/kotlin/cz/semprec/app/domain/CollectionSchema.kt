@@ -61,7 +61,8 @@ data class DateLabels(val past: String, val noDate: String)
 /**
  * One database as `/api/schema` describes it. [collectionFilter] selects the items that belong in the collection,
  * [areaFilter] is the template that selects the items of one area (`null` when the database is not area-filterable),
- * [pickerFilter] the items a picker of this database offers by default.
+ * [pickerFilter] the items a picker of this database offers by default. [facetBarProperty] is the key of the select or
+ * multi-select property whose values the collection shows as a bar of chips above its list (`null` for no bar).
  */
 data class CollectionDatabase(
     val id: String,
@@ -77,6 +78,7 @@ data class CollectionDatabase(
     val collectionFilter: FilterTree?,
     val areaFilter: FilterTree?,
     val pickerFilter: FilterTree?,
+    val facetBarProperty: String? = null,
 ) {
     val title: CollectionProperty? get() = properties.firstOrNull { it.kind == PropertyKind.TITLE }
 

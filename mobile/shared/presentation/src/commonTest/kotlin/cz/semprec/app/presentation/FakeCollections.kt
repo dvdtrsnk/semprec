@@ -202,6 +202,8 @@ class FakeCollections : CollectionReads, CollectionWrites {
         RepositoryResult.Content(PageContent("saved", "e1"))
     }
     var uploadAnswer: suspend () -> RepositoryResult<CollectionItem> = { RepositoryResult.Content(fileItem("f", "F")) }
+    var addOptionAnswer: suspend (String) -> RepositoryResult<PropertyOption> =
+        { label -> RepositoryResult.Content(PropertyOption(label.lowercase(), label, null)) }
 
     val queries = mutableListOf<CollectionQuery>()
     val facetQueries = mutableListOf<Pair<CollectionQuery, List<String>>>()
@@ -213,7 +215,10 @@ class FakeCollections : CollectionReads, CollectionWrites {
     var itemReads = 0
 
     override suspend fun schema() = schemaAnswer()
-    override suspend fun refreshSchema() = schemaAnswer()
+    override suspend fun refreshSchema(): RepositoryResult<CollectionSchema> {
+        calls += "refreshSchema"
+        return schemaAnswer()
+    }
 
     override suspend fun query(database: CollectionDatabase, query: CollectionQuery): RepositoryResult<CollectionPage> {
         queries += query
@@ -287,6 +292,11 @@ class FakeCollections : CollectionReads, CollectionWrites {
     override suspend fun delete(itemId: String): RepositoryResult<Unit> {
         calls += "delete:$itemId"
         return unitAnswer()
+    }
+
+    override suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption> {
+        calls += "addOption:${property.id}:$label"
+        return addOptionAnswer(label)
     }
 
     override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageContent> {

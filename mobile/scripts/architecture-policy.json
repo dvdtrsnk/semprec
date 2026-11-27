@@ -798,6 +798,8 @@
         "project.settings.done",
         "project.settings.mailSignals",
         "project.settings.mailSignals.footer",
+        "project.tags.add",
+        "project.tags.new",
         "project.tasks",
         "project.tasks.all",
         "relation.add",

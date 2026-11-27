@@ -2,12 +2,15 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.AddPropertyOption
+import cz.semprec.app.domain.CollectionProperty
 import cz.semprec.app.domain.CollectionReads
 import cz.semprec.app.domain.CollectionWrites
 import cz.semprec.app.domain.FieldValue
 import cz.semprec.app.domain.FindRelationTargets
 import cz.semprec.app.domain.ItemDetail
 import cz.semprec.app.domain.LoadItemDetail
+import cz.semprec.app.domain.PropertyKind
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -39,6 +42,7 @@ class ItemViewModel internal constructor(
     private val page = ItemPageFlow(host, reads, writes, itemId)
     private val preview = ItemPreviewFlow(host, reads)
     private val deletion = ItemDeletionFlow(host, reads, writes, itemId)
+    private val addOption = AddPropertyOption(reads, writes)
     private val picker = ItemPickerFlow(host, findTargets, writes, itemId, { detail?.database }, ::mutate)
 
     init {
@@ -93,6 +97,7 @@ class ItemViewModel internal constructor(
                 write(action.propertyKey, mapOf(action.propertyKey to FieldValue.Flag(action.on)))
             is ItemAction.Edit.SetChoices ->
                 write(action.propertyKey, mapOf(action.propertyKey to choiceValue(action.keys)))
+            is ItemAction.Edit.AddChoice -> addChoice(action.propertyKey, action.label)
             is ItemAction.Edit.Unlink -> mutate(action.propertyKey) { writes.unlinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.Relink -> mutate(action.propertyKey) { writes.relinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.RemoveTarget ->
@@ -114,16 +119,48 @@ class ItemViewModel internal constructor(
     private fun write(propertyKey: String?, changes: Map<String, FieldValue?>) {
         val current = detail
         if (current == null || changes.isEmpty()) return
-        val blocked = changes.keys.any { key ->
-            current.database.property(key)?.system != false ||
-                state.value.fields.firstOrNull { it.propertyKey == key }?.editable == false
-        }
-        if (blocked) {
+        if (changes.keys.any { isBlocked(current, it) }) {
             update { it.copy(writeFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
         } else {
             mutate(propertyKey) { writes.update(current.database, itemId, current.item.version, changes) }
         }
     }
+
+    /**
+     * Adds the choice, then writes it into the item's value. A refused add writes nothing and is reported like a
+     * refused write; a property that is not a select or multi-select is refused without a request.
+     */
+    private fun addChoice(propertyKey: String, label: String) {
+        val current = detail
+        val name = label.trim()
+        if (current == null || name.isEmpty()) return
+        val property = current.database.property(propertyKey)
+        if (property == null || property.kind !in CHOICE_KINDS || isBlocked(current, propertyKey)) {
+            update { it.copy(writeFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
+        } else {
+            mutate(propertyKey) {
+                when (val added = addOption(property, name)) {
+                    is RepositoryResult.Failure -> added
+                    is RepositoryResult.Content -> {
+                        val change = FieldValue.Choices(chosenWith(current, property, added.value.key))
+                        writes.update(current.database, itemId, current.item.version, mapOf(propertyKey to change))
+                    }
+                }
+            }
+        }
+    }
+
+    /** The keys a choice property holds once [key] is chosen: a multi-select adds it, a select holds only it. */
+    private fun chosenWith(current: ItemDetail, property: CollectionProperty, key: String): List<String> {
+        if (property.kind != PropertyKind.MULTI_SELECT) return listOf(key)
+        val held = (current.item.values[property.key] as? FieldValue.Choices)?.keys.orEmpty()
+        return if (key in held) held else held + key
+    }
+
+    /** Whether the person cannot write the property here: it is system-owned, derived, or not in the item's database. */
+    private fun isBlocked(current: ItemDetail, propertyKey: String): Boolean =
+        current.database.property(propertyKey)?.system != false ||
+            state.value.fields.firstOrNull { it.propertyKey == propertyKey }?.editable == false
 
     /**
      * Runs a write, then reads the item again so its values, origins and version are the server's. A refused write
@@ -143,3 +180,5 @@ class ItemViewModel internal constructor(
         }
     }
 }
+
+private val CHOICE_KINDS = setOf(PropertyKind.SELECT, PropertyKind.MULTI_SELECT)
