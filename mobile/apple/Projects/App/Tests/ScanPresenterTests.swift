@@ -1,0 +1,215 @@
+import CoreKit
+import Foundation
+import PDFKit
+import XCTest
+
+@testable import Semprec
+
+/// The presenter between `AddToInboxIntent` and the scanner: which scene shows it, and what each way a scan ends
+/// captures and answers, over a capture double and a fixed clock.
+@MainActor
+final class ScanPresenterTests: XCTestCase {
+
+    private let scene = UUID()
+
+    // MARK: - Finishing
+    func testAFinishedScanCapturesOnePdfWithTheChosenValuesAndAnswersSaved() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+        let request = ScanPresenter.Request(typeId: "type-1", text: "Receipt for the bike", day: nil)
+
+        let scan = Task { await presenter.scan(request) }
+        try await eventually { presenter.request != nil }
+        presenter.claim(scene: scene)
+        XCTAssertEqual(presenter.scene, scene)
+        presenter.finish(pages: [page(), page()])
+        XCTAssertNil(presenter.request, "Finishing closes the scanner at once")
+        XCTAssertNil(presenter.scene)
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .saved)
+        XCTAssertEqual(captures.calls.count, 1)
+        let call = try XCTUnwrap(captures.calls.first)
+        XCTAssertEqual(call.text, "Receipt for the bike")
+        XCTAssertEqual(call.day, "2026-11-27", "Without a chosen day the scan is kept on the day it is finished")
+        XCTAssertEqual(call.time, "07:45")
+        XCTAssertEqual(call.typeId, "type-1")
+        XCTAssertEqual(call.file.filename, "Scan 2026-11-27 07-45.pdf")
+        XCTAssertEqual(call.file.mimeType, "application/pdf")
+        XCTAssertEqual(call.file.source, .camera)
+        let document = try XCTUnwrap(PDFDocument(data: try XCTUnwrap(Data(base64Encoded: call.file.base64))))
+        XCTAssertEqual(document.pageCount, 2)
+    }
+
+    func testAFinishedScanKeepsTheChosenDayAndNoType() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+        let day = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 20)))
+
+        let scan = Task { await presenter.scan(ScanPresenter.Request(typeId: nil, text: "", day: day)) }
+        try await eventually { presenter.request != nil }
+        presenter.finish(pages: [page()])
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .saved)
+        let call = try XCTUnwrap(captures.calls.first)
+        XCTAssertEqual(call.day, "2026-11-20")
+        XCTAssertEqual(call.time, "07:45")
+        XCTAssertNil(call.typeId)
+        XCTAssertEqual(call.text, "")
+    }
+
+    func testACaptureTheOutboxRefusesAnswersItsFailure() async throws {
+        let captures = CaptureRecorder(answer: Failed(kind: .unauthorized))
+        let presenter = try presenter(captures)
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.finish(pages: [page()])
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .failed(Failed(kind: .unauthorized)))
+        XCTAssertEqual(captures.calls.count, 1)
+    }
+
+    func testAScanFinishedWithNoPageCapturesNothingAndAnswersCancelled() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.finish(pages: [])
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertTrue(captures.calls.isEmpty)
+        XCTAssertNil(presenter.request)
+    }
+
+    func testFinishingWithoutARequestCapturesNothing() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+
+        presenter.finish(pages: [page()])
+        await Task.yield()
+
+        XCTAssertTrue(captures.calls.isEmpty)
+    }
+
+    // MARK: - Cancelling and failing
+    func testACancelledScanCapturesNothingAndAnswersCancelled() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.claim(scene: scene)
+        presenter.cancel()
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertTrue(captures.calls.isEmpty)
+        XCTAssertNil(presenter.request)
+        XCTAssertNil(presenter.scene)
+    }
+
+    func testAFailedScannerCapturesNothingAndAnswersAnUnexpectedFailure() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.fail()
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .failed(Failed(kind: nil)))
+        XCTAssertTrue(captures.calls.isEmpty)
+        XCTAssertNil(presenter.request)
+    }
+
+    func testANewScanEndsTheOneThatWaitsAsCancelledAndTakesItsPlace() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures)
+        let second = ScanPresenter.Request(typeId: "type-2", text: "", day: nil)
+
+        let first = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.claim(scene: scene)
+        let next = Task { await presenter.scan(second) }
+        let firstOutcome = await first.value
+        try await eventually { presenter.request == second }
+
+        XCTAssertEqual(firstOutcome, .cancelled)
+        XCTAssertEqual(presenter.request, second)
+        XCTAssertNil(presenter.scene, "The new request waits for a scene to claim it")
+        presenter.finish(pages: [page()])
+        let nextOutcome = await next.value
+        XCTAssertEqual(nextOutcome, .saved)
+        XCTAssertEqual(captures.calls.map(\.typeId), ["type-2"])
+    }
+
+    // MARK: - Claiming
+    func testOnlyTheFirstSceneToClaimARequestShowsTheScanner() async throws {
+        let presenter = try presenter(CaptureRecorder())
+
+        presenter.claim(scene: scene)
+        XCTAssertNil(presenter.scene, "Nothing is shown while no scan is asked for")
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.claim(scene: scene)
+        presenter.claim(scene: UUID())
+        XCTAssertEqual(presenter.scene, scene)
+
+        presenter.cancel()
+        _ = await scan.value
+    }
+
+    // MARK: - Private
+    private static let request = ScanPresenter.Request(typeId: "type-1", text: "", day: nil)
+
+    private func presenter(_ captures: CaptureRecorder) throws -> ScanPresenter {
+        let parts = DateComponents(year: 2026, month: 11, day: 27, hour: 7, minute: 45)
+        let now = try XCTUnwrap(Calendar.current.date(from: parts))
+        return ScanPresenter(
+            capture: { text, day, time, typeId, file in
+                captures.record(CaptureRecorder.Call(text: text, day: day, time: time, typeId: typeId, file: file))
+            },
+            now: { now }
+        )
+    }
+
+    private func page() -> PDFPage {
+        let page = PDFPage()
+        page.setBounds(CGRect(x: 0, y: 0, width: 600, height: 800), for: .mediaBox)
+        return page
+    }
+}
+
+/// The captures a presenter wrote, answering each with `answer`.
+@MainActor
+private final class CaptureRecorder {
+
+    struct Call {
+        let text: String
+        let day: String
+        let time: String
+        let typeId: String?
+        let file: InboxShortcutCapture.File
+    }
+
+    // MARK: - Properties
+    private(set) var calls: [Call] = []
+    private let answer: Failed?
+
+    // MARK: - Init
+    init(answer: Failed? = nil) {
+        self.answer = answer
+    }
+
+    // MARK: - Methods
+    func record(_ call: Call) -> Failed? {
+        calls.append(call)
+        return answer
+    }
+}

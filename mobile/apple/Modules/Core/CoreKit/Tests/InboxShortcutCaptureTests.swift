@@ -49,6 +49,31 @@ final class InboxShortcutCaptureTests: XCTestCase {
         }
     }
 
+    func testAFileMapsWithEveryValueAndEverySource() {
+        let sources: [(InboxCaptureSource, SharedSDK.InboxCaptureAttachmentSource)] = [
+            (.camera, .camera),
+            (.photoLibrary, .photoLibrary),
+            (.files, .files)
+        ]
+        for (source, expected) in sources {
+            let file = InboxShortcutCapture.File(
+                filename: "Scan 2026-11-27 07-45.pdf",
+                mimeType: "application/pdf",
+                base64: "JVBERg==",
+                source: source
+            )
+            XCTAssertEqual(
+                InboxShortcutCapture.file(file),
+                SharedSDK.InboxCaptureFileInput(
+                    filename: "Scan 2026-11-27 07-45.pdf",
+                    mimeType: "application/pdf",
+                    base64: "JVBERg==",
+                    source: expected
+                )
+            )
+        }
+    }
+
     // MARK: - Kotlin SDK
     func testNobodySignedInIsUnauthorizedAndNothingIsSent() async {
         let storage = SharedSDK.InMemorySessionStorage()
@@ -57,7 +82,7 @@ final class InboxShortcutCaptureTests: XCTestCase {
         XCTAssertFalse(capture.isSignedIn)
         let types = await capture.types()
         XCTAssertEqual(types, .failed(Failed(kind: .unauthorized)))
-        let captured = await capture.capture(text: "Buy milk", day: "2026-11-27", time: "07:45", typeId: nil)
+        let captured = await capture.capture(text: "Buy milk", day: "2026-11-27", time: "07:45", typeId: nil, file: nil)
         XCTAssertEqual(captured, Failed(kind: .unauthorized))
         let sent = await capture.send()
         XCTAssertFalse(sent)
@@ -69,8 +94,39 @@ final class InboxShortcutCaptureTests: XCTestCase {
         let capture = InboxShortcutCapture(sessionStorage: storage, dataDirectory: directory())
 
         XCTAssertTrue(capture.isSignedIn)
-        let captured = await capture.capture(text: "  \n ", day: "2026-11-27", time: "07:45", typeId: nil)
+        let captured = await capture.capture(text: "  \n ", day: "2026-11-27", time: "07:45", typeId: nil, file: nil)
         XCTAssertEqual(captured, Failed(kind: .invalidData))
+    }
+
+    func testABlankTextWithAFileReachesTheOutboxAndAnUnreadableFileIsRefusedAsInvalid() async {
+        let storage = SharedSDK.InMemorySessionStorage()
+        storage.save(session: SharedSDK.StoredSession(serverUrl: "http://127.0.0.1:9", token: "tok"))
+        let capture = InboxShortcutCapture(sessionStorage: storage, dataDirectory: directory())
+        let pdf = InboxShortcutCapture.File(
+            filename: "Scan 2026-11-27 07-45.pdf",
+            mimeType: "application/pdf",
+            base64: "JVBERg==",
+            source: .camera
+        )
+        let unreadable = InboxShortcutCapture.File(
+            filename: "Scan 2026-11-27 07-45.pdf",
+            mimeType: "application/pdf",
+            base64: "not base64 !",
+            source: .camera
+        )
+
+        // The file passes the input checks, so the outbox answers: it keeps no person for this session, so nobody
+        // is known to keep the capture for. Without the file the blank text would be invalid.
+        let withFile = await capture.capture(text: "", day: "2026-11-27", time: "07:45", typeId: nil, file: pdf)
+        XCTAssertEqual(withFile, Failed(kind: .unauthorized))
+        let withUnreadable = await capture.capture(
+            text: "",
+            day: "2026-11-27",
+            time: "07:45",
+            typeId: nil,
+            file: unreadable
+        )
+        XCTAssertEqual(withUnreadable, Failed(kind: .invalidData))
     }
 
     // MARK: - Private

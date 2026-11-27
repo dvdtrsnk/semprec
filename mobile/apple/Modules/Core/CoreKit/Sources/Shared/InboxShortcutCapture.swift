@@ -17,6 +17,22 @@ public final class InboxShortcutCapture {
         case failed(Failed)
     }
 
+    /// A file kept with a capture: its name, its media type, its bytes as Base64 text and where it came from.
+    public struct File: Equatable, Sendable {
+
+        public let filename: String
+        public let mimeType: String
+        public let base64: String
+        public let source: InboxCaptureSource
+
+        public init(filename: String, mimeType: String, base64: String, source: InboxCaptureSource) {
+            self.filename = filename
+            self.mimeType = mimeType
+            self.base64 = base64
+            self.source = source
+        }
+    }
+
     // MARK: - Dependencies
     private let sdk: SharedSDK.InboxCaptureSDK
 
@@ -44,11 +60,13 @@ public final class InboxShortcutCapture {
         return Self.types(answer)
     }
 
-    /// Keeps a capture of `text` on `day` (`yyyy-MM-dd`) at `time` (`HH:mm`) with the type `typeId`, nil for none, in
-    /// the device's outbox; nil once it is kept, or why it is not: `.invalidData` for a blank text, `.unauthorized`
-    /// when nobody is signed in, `.unavailable` when the device could not write it.
-    public func capture(text: String, day: String, time: String, typeId: String?) async -> Failed? {
-        guard let answer = try? await sdk.capture(text: text, day: day, time: time, typeId: typeId, file: nil)
+    /// Keeps a capture of `text` on `day` (`yyyy-MM-dd`) at `time` (`HH:mm`) with the type `typeId`, nil for none, and
+    /// `file`, nil for none, in the device's outbox; nil once it is kept, or why it is not: `.invalidData` for a blank
+    /// text without a file or a file whose Base64 does not decode, `.unauthorized` when nobody is signed in,
+    /// `.unavailable` when the device could not write it.
+    public func capture(text: String, day: String, time: String, typeId: String?, file: File?) async -> Failed? {
+        let input: SharedSDK.InboxCaptureFileInput? = if let file { Self.file(file) } else { nil }
+        guard let answer = try? await sdk.capture(text: text, day: day, time: time, typeId: typeId, file: input)
         else { return Failed(kind: nil) }
         return Self.capture(answer)
     }
@@ -72,6 +90,16 @@ extension InboxShortcutCapture {
         case .refused(let refused):
             .failed(Failed(refused.failure))
         }
+    }
+
+    /// `sending`: the Kotlin value is made here for the one call that takes it, so it can cross into that call.
+    static func file(_ file: File) -> sending SharedSDK.InboxCaptureFileInput {
+        SharedSDK.InboxCaptureFileInput(
+            filename: file.filename,
+            mimeType: file.mimeType,
+            base64: file.base64,
+            source: SharedInboxCaptureScreenModel.source(file.source)
+        )
     }
 
     static func capture(_ answer: any SharedSDK.InboxCaptureAnswer) -> Failed? {

@@ -38,8 +38,9 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 // AlarmKit asks for this when the first sleep alarm is scheduled; macOS has no AlarmKit and ignores it.
                 "NSAlarmKitUsageDescription": "Semprec rings your alarms even in silent mode and through a Focus.",
-                // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS.
-                "NSCameraUsageDescription": "Semprec reads the barcodes and QR codes that stop your wake-up alarm.",
+                // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS; on iOS the
+                // document scanner of Add to Inbox uses it too.
+                "NSCameraUsageDescription": "Semprec reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox.",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 // `remote-notification` lets a silent push wake the app to read its reminders again.

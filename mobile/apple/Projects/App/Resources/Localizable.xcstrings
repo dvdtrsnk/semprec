@@ -985,6 +985,38 @@
         }
       }
     },
+    "intent.addToInbox.content" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obsah"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Content"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.content.request" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text, nebo sken?"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A text or a scan?"
+          }
+        }
+      }
+    },
     "intent.addToInbox.day" : {
       "localizations" : {
         "cs" : {
@@ -1006,13 +1038,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapíše text do Inboxu v Semprecu, i bez připojení."
+            "value" : "Zapíše text nebo naskenovaný dokument do Inboxu v Semprecu, i bez připojení."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Writes a text down into the Semprec Inbox, also without a connection."
+            "value" : "Writes a text or a scanned document into the Semprec Inbox, also without a connection."
           }
         }
       }
@@ -1045,6 +1077,70 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Saved. It reaches the Inbox once the device is online."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.cancelled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skenování bylo zrušeno. Nic se neuložilo."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scanning was cancelled. Nothing was saved."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sken se v tomto zařízení nepodařilo uložit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The scan could not be saved on this device."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sken je uložený. Do Inboxu se dostane, jakmile bude zařízení online."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan saved. It reaches the Inbox once the device is online."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.unavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toto zařízení neumí skenovat dokumenty."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device cannot scan documents."
           }
         }
       }
@@ -1157,6 +1253,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Which type?"
+          }
+        }
+      }
+    },
+    "intent.inboxContent.name" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obsah do Inboxu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inbox content"
+          }
+        }
+      }
+    },
+    "intent.inboxContent.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat dokument"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan a document"
+          }
+        }
+      }
+    },
+    "intent.inboxContent.text" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
           }
         }
       }

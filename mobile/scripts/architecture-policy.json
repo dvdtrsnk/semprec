@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "AlarmKit", "AppIntents", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "CoreImage", "Foundation", "ImageIO", "MediaPlayer", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "XCTest"],
+    "systemModules": ["AVFoundation", "AlarmKit", "AppIntents", "AuthenticationServices", "Combine", "CoreGraphics", "CoreHaptics", "CoreImage", "Foundation", "ImageIO", "MediaPlayer", "PDFKit", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "VisionKit", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -190,6 +190,15 @@
         "intent.addToInbox.saved",
         "intent.addToInbox.signIn",
         "intent.addToInbox.failed",
+        "intent.inboxContent.name",
+        "intent.inboxContent.text",
+        "intent.inboxContent.scan",
+        "intent.addToInbox.content",
+        "intent.addToInbox.content.request",
+        "intent.addToInbox.scan.saved",
+        "intent.addToInbox.scan.cancelled",
+        "intent.addToInbox.scan.unavailable",
+        "intent.addToInbox.scan.failed",
         "Add to ${applicationName} Inbox",
         "Add to Inbox in ${applicationName}",
         "Capture in ${applicationName}"

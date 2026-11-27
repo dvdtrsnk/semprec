@@ -54,6 +54,8 @@ struct AppScene: View {
                 .task { await composition.notifications?.signedOut() }
         }
         .wakeGuard(makeModel: { composition.models.makeWakeGuard() }, navigation: composition.navigation)
+        // The document scanner `AddToInboxIntent` asks for, shown by the one active scene that claims it.
+        .modifier(ScanPresentation(presenter: .shared))
     }
 }
 
