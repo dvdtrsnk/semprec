@@ -197,6 +197,13 @@ class OfflineLayer internal constructor(
         captures.sendSoon()
     }
 
+    /**
+     * Sends the Inbox captures that wait now, through the sender attached last, or joins the round under way; answers
+     * whether no capture of the person signed in is left ([CaptureOutbox.send]). For an entry without a window, such
+     * as an App Intent's `InboxCaptureSDK`, which cannot wait for a window's triggers.
+     */
+    suspend fun sendCaptures(): Boolean = captures.send()
+
     /** The sync socket of a window received a frame: something the server keeps changed. */
     internal suspend fun frameArrived() {
         state.locked { state.freshness.changed() }
