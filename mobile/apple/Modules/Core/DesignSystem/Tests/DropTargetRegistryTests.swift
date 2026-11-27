@@ -35,4 +35,42 @@ final class DropTargetRegistryTests: XCTestCase {
         registry.remove(id: id)
         XCTAssertNil(registry.target(at: CGPoint(x: 105, y: 105)))
     }
+
+    func testWithLayersOnlyTheObjectsOfThePresentationOnTopCount() throws {
+        let scene = NSObject()
+        let sheet = NSObject()
+        let registry = DropTargetRegistry()
+        registry.update(
+            id: UUID(),
+            frame: CGRect(x: 10, y: 100, width: 300, height: 50),
+            payload: "covered row",
+            layer: PresentationLayer { scene }
+        )
+        registry.update(
+            id: UUID(),
+            frame: CGRect(x: 0, y: 0, width: 400, height: 800),
+            payload: "sheet",
+            layer: PresentationLayer { sheet }
+        )
+        registry.topLayer = { _ in sheet }
+        XCTAssertEqual(try XCTUnwrap(registry.target(at: CGPoint(x: 20, y: 120))).payload as? String, "sheet")
+        registry.topLayer = { _ in scene }
+        XCTAssertEqual(try XCTUnwrap(registry.target(at: CGPoint(x: 20, y: 120))).payload as? String, "covered row")
+    }
+
+    func testWithLayersAnObjectOfNoKnownPresentationOrNoPresentationOnTopIsNoTarget() {
+        let registry = DropTargetRegistry()
+        registry.update(id: UUID(), frame: CGRect(x: 0, y: 0, width: 100, height: 100), payload: "row")
+        registry.topLayer = { _ in NSObject() }
+        XCTAssertNil(registry.target(at: CGPoint(x: 50, y: 50)))
+        let scene = NSObject()
+        registry.update(
+            id: UUID(),
+            frame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            payload: "scene row",
+            layer: PresentationLayer { scene }
+        )
+        registry.topLayer = { _ in nil }
+        XCTAssertNil(registry.target(at: CGPoint(x: 50, y: 50)))
+    }
 }

@@ -894,14 +894,16 @@ describe("createSchemaRequestListener (issue #147)", () => {
   });
 
   it.each([
-    ["is not a select or multi_select property", "UPDATE properties SET type = 'text', config = '{}'"],
-    ["is missing from the database", "UPDATE properties SET key = 'formerTags'"],
-  ])("fails with a bare 500 and publishes nothing when the declared facet bar property %s", async (_name, change) => {
+    ["is not a select or multi_select property", { type: "text", key: "tags", config: "{}" }],
+    ["is missing from the database", { type: "multi_select", key: "formerTags", config: null }],
+  ])("fails with a bare 500 and publishes nothing when the declared facet bar property %s", async (_name, drift) => {
     const headers = await authHeader("en");
     // Raw SQL: no API retypes or renames a property of a schema-locked system database. This is the drifted tenant
     // schema the pre-publish check exists for.
     const drifted = await pool.query(
-      `${change} WHERE key = 'tags' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'projects' AND system)`,
+      `UPDATE properties SET type = $1, key = $2, config = COALESCE($3::jsonb, config)
+        WHERE key = 'tags' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'projects' AND system)`,
+      [drift.type, drift.key, drift.config],
     );
     expect(drifted.rowCount).toBe(1);
 
