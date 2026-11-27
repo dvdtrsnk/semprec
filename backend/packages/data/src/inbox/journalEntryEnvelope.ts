@@ -6,18 +6,15 @@ import { getItemById } from "../chokePoint/itemsStore.js";
 import { relationTargetBlock } from "../chokePoint/relationTargetState.js";
 import { ValidationError } from "../errors.js";
 import { parseJournalPeriodKey } from "../journal/journalPeriods.js";
-import { AREAS_MODULE_ID, JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { assertJournalEntryAreaNotDerived } from "./proposalDerivedRelations.js";
+import { JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 
 // A `journalEntry` envelope's `target` is the tenant's Journal database; the day it names usually has no Journal item
 // yet, and `journalEntryConfirm.ts` creates it.
 
-/** Setting both `areaId` and `projectId` is refused by `assertJournalEntryAreaNotDerived`. */
 const journalEntryPropertiesSchema = z.strictObject({
   date: z.string(),
   markdown: z.string(),
-  areaId: z.uuid().optional(),
   projectId: z.uuid().optional(),
 });
 
@@ -66,7 +63,7 @@ function assertValidMarkdown(markdown: string): void {
 }
 
 export interface JournalEntryReferenceProblem {
-  field: "target" | "areaId" | "projectId";
+  field: "target" | "projectId";
   message: string;
 }
 
@@ -87,25 +84,19 @@ export async function findJournalEntryReferenceProblem(
   if (!journal || journal.id !== target) {
     return { field: "target", message: `A journal entry proposal's target '${target}' is not the Journal database` };
   }
-  const references = [
-    { field: "areaId", moduleId: AREAS_MODULE_ID, itemId: properties.areaId },
-    { field: "projectId", moduleId: PROJECTS_MODULE_ID, itemId: properties.projectId },
-  ] as const;
-  for (const { field, moduleId, itemId } of references) {
-    if (itemId !== undefined && !(await isLinkableItemOf(client, moduleId, itemId))) {
-      return {
-        field,
-        message: `A journal entry proposal's ${field} '${itemId}' is not a live item of ${moduleId} that a relation may point at`,
-      };
-    }
+  const { projectId } = properties;
+  if (projectId !== undefined && !(await isLinkableItemOf(client, PROJECTS_MODULE_ID, projectId))) {
+    return {
+      field: "projectId",
+      message: `A journal entry proposal's projectId '${projectId}' is not a live item of ${PROJECTS_MODULE_ID} that a relation may point at`,
+    };
   }
   return null;
 }
 
 /**
  * Reached through `assertValidProposalEnvelope` from both the tick and a revise. Refuses `operations`, `relations`, a
- * non-calendar `date`, blank or invalid markdown or a `page` block, both `projectId` and `areaId`, and references that
- * do not resolve in the current tenant. Resolves to `null` (no target database row).
+ * non-calendar `date`, blank or invalid markdown or a `page` block, and a project reference that does not resolve in the current tenant. Resolves to `null` (no target database row).
  */
 export async function assertValidJournalEntryEnvelope(client: PoolClient, envelope: ProposalEnvelope): Promise<null> {
   if (envelope.operations !== undefined)
@@ -115,7 +106,6 @@ export async function assertValidJournalEntryEnvelope(client: PoolClient, envelo
   const properties = parseJournalEntryProperties(envelope.properties);
   assertValidDay(properties.date);
   assertValidMarkdown(properties.markdown);
-  assertJournalEntryAreaNotDerived(properties);
   const problem = await findJournalEntryReferenceProblem(client, envelope.target, properties);
   if (problem) throw new ValidationError(problem.message, { field: problem.field });
   return null;

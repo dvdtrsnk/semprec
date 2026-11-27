@@ -92,10 +92,6 @@ export const SYSTEM_DATABASES_EDITOR_SCHEMAS: Record<string, EditorSchemaDescrip
       field("project", "tags", "multi"),
     ],
   }),
-  area: schema({
-    key: "main",
-    fields: [field("area", "name", "text", { required: true, placeholder: true }), field("area", "color", "color")],
-  }),
   company: schema({
     key: "main",
     fields: [field("company", "name", "text", { required: true, placeholder: true })],

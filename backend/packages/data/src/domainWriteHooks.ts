@@ -85,7 +85,6 @@ import {
 } from "./mail/mailThreadChangeHooks.js";
 import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
 import {
-  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -605,7 +604,6 @@ registerItemReadProjection({
 registerItemSearchGroup({ type: "task", ownerModuleIds: [TASKS_MODULE_ID] });
 registerItemSearchGroup({ type: "event", ownerModuleIds: [EVENTS_MODULE_ID] });
 registerItemSearchGroup({ type: "project", ownerModuleIds: [PROJECTS_MODULE_ID] });
-registerItemSearchGroup({ type: "area", ownerModuleIds: [AREAS_MODULE_ID] });
 registerItemSearchGroup({ type: "contact", ownerModuleIds: [PEOPLE_MODULE_ID, COMPANIES_MODULE_ID] });
 registerItemSearchGroup({ type: "journal", ownerModuleIds: [JOURNAL_MODULE_ID] });
 registerItemSearchGroup({ type: "file", ownerModuleIds: [FILES_MODULE_ID] });
