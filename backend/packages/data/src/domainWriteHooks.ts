@@ -11,7 +11,6 @@ import {
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
 import { inboxTypeEdgeChangedHook } from "./inbox/inboxTypeEdgeHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
-import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { libraryCoverPreWriteTransform, prepareLibraryCoverWrite } from "./library/libraryCoverHooks.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./seed/libraryModuleKeys.js";
@@ -337,7 +336,6 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   mailboxConnectionLimitCreateHook,
   // An account created with Calendars on queues its first calendar sync pass.
   mailboxServiceItemCreateHook,
-  areaItemCreateHook,
   // A company created with a `web` feeds the resolver rules like an update of its `web`.
   linkRuleItemCreateHook,
   eventReminderValuesItemCreateHook,
@@ -384,7 +382,6 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   mailboxConnectionLimitUpdateHook,
   // Switching an account's Mail off pauses its sync and queues the removal of its mail; on resumes the sync.
   mailboxServiceItemUpdateHook,
-  areaItemUpdateHook,
   linkRuleItemHook,
   peopleLastContactItemUpdateHook,
   eventReminderValuesItemUpdateHook,

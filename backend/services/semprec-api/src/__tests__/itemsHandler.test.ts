@@ -515,24 +515,6 @@ describe("item routes", () => {
     });
   });
 
-  it("validates Areas icon and color through authenticated PATCH", async () => {
-    await seed();
-    const headers = await jsonAuth();
-    const areas = await moduleDatabase("areas");
-    const item = await inZero(() => chokePoint.createItem({ databaseId: areas.id, properties: { name: "Area" } }));
-    const patch = (properties: Properties) => patchCurrent(areas.id, item.id, headers, properties);
-    expect((await patch({ icon: "briefcase", color: "#5856D6" })).status).toBe(200);
-    expect((await getItemInZero(areas.id, item.id))?.properties).toMatchObject({ icon: "briefcase", color: "#5856D6" });
-    for (const [field, value] of [
-      ["icon", "rocket123"],
-      ["color", "#123456"],
-    ] as const) {
-      await expectError(await patch({ [field]: value }), 400, { code: "validation_failed", details: { field } });
-    }
-    expect((await patch({ icon: null, color: null })).status).toBe(200);
-    expect((await getItemInZero(areas.id, item.id))?.properties).toMatchObject({ icon: null, color: null });
-  });
-
   it("writes and reads People phones through item routes", async () => {
     await seed();
     const headers = await jsonAuth();
@@ -682,18 +664,18 @@ describe("item routes", () => {
     expect((await api(path)).status).toBe(401);
   });
 
-  it("refuses deletion of the unplanned system area through REST", async () => {
+  it("refuses deletion of a system project through REST", async () => {
     await seed();
     const headers = await authHeader();
-    const areas = await moduleDatabase("areas");
-    const item = (await inZero(() => chokePoint.listItems(areas.id))).items.find(
+    const projects = await moduleDatabase("projects");
+    const item = (await inZero(() => chokePoint.listItems(projects.id))).items.find(
       (row) => row.properties.systemActive === true,
     );
-    if (!item) throw new Error("System area missing");
+    if (!item) throw new Error("System project missing");
     await expectError(await api(`/api/items/${item.id}`, { method: "DELETE", headers }), 403, {
       details: { field: "systemActive" },
     });
-    expect(await getItemInZero(areas.id, item.id)).toEqual(item);
+    expect(await getItemInZero(projects.id, item.id)).toEqual(item);
   });
 
   it("returns project completion dates and refuses direct writes through REST", async () => {

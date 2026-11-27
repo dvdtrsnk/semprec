@@ -89,13 +89,13 @@ describe("link rule schema drift", () => {
         ruleKey: "fixtureInvalid.misspelledSource",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "missingSourceProperty",
-        property: "areas.nme",
+        property: "healthRecords.nme",
       },
       {
         ruleKey: "fixtureInvalid.misspelledVia",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "missingViaProperty",
-        property: "projects.areaa",
+        property: "projects.healthRecordss",
       },
       {
         ruleKey: "fixtureInvalid.viaNotRelation",
@@ -107,7 +107,7 @@ describe("link rule schema drift", () => {
         ruleKey: "fixtureInvalid.wrongDirection",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "viaDoesNotLeadToOtherDatabase",
-        property: "areas.company",
+        property: "healthRecords.files",
       },
     ]);
   });
@@ -197,10 +197,10 @@ describe("link rule schema drift", () => {
         findInvalidLinkRuleReferences(client, registry),
       );
       expect(findings.map((finding) => [finding.reason, finding.property])).toEqual([
-        ["missingSourceProperty", "areas.name"],
+        ["missingSourceProperty", "healthRecords.name"],
         ["missingTargetProperty", "projects.name"],
         ["missingValueFilterProperty", "systemSettings.selfPerson"],
-        ["missingViaProperty", "projects.area"],
+        ["missingViaProperty", "projects.healthRecords"],
       ]);
     } finally {
       spy.mockRestore();

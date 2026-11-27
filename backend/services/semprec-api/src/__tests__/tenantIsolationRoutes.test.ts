@@ -3888,31 +3888,6 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
-  // An overdue task is in the overview's list whatever day the test runs on.
-  "area overview": async () => {
-    const seed = async (tenant: TenantFixture): Promise<{ areaId: string; projectId: string; taskId: string }> => {
-      const create = (moduleId: string, properties: Record<string, unknown>) =>
-        createItemAs(tenant, moduleId, properties);
-      const relate = (itemId: string, key: string, targetId: string): Promise<string> =>
-        sendOk(tenant.member, PUT(`/api/items/${itemId}/relations/${key}/${targetId}`, {}));
-      const areaId = await create("areas", { name: "Overview probe" });
-      const projectId = await create("projects", { name: "Overview probe project" });
-      const taskId = await create("tasks", { name: "Overview probe task", date: "2026-01-05" });
-      await relate(projectId, "area", areaId);
-      await relate(taskId, "project", projectId);
-      return { areaId, projectId, taskId };
-    };
-    const [own, foreign] = [await seed(b), await seed(a)];
-    const overviewOf = (areaId: string | undefined): Request => GET(`/api/areas/${areaId}/overview`);
-    const asOwner = await sendOk(a.member, overviewOf(foreign.areaId));
-    expect([foreign.projectId, foreign.taskId].filter((id) => !asOwner.includes(id))).toEqual([]);
-    const listed = await expectExcludesA(b.member, overviewOf(own.areaId), [own.projectId, own.taskId]);
-    expectNoneOf(listed.text, Object.values(foreign), "B's area overview");
-    await expectForeign404(b.member, [foreign.areaId], ([id]) => overviewOf(id));
-    const invalid = await send(b.member, overviewOf("not-a-uuid"));
-    expect(invalid.status).toBe(400);
-    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
-  },
   "library automation retry": async () => {
     const seed = async (tenant: TenantFixture): Promise<{ itemId: string; blobId: string }> => {
       const created = await sendOk(
@@ -7719,6 +7694,14 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect((await patch(b.member, { databaseId: tasksId, access: "none" })).status).toBe(400);
     expect((await patch(b.member, { databaseId: healthId, access: "admin" })).status).toBe(400);
     expect(await grants()).toEqual([]);
+  });
+
+  it("routes no area overview: it answers like an unknown route", async () => {
+    const id = randomUUID();
+    const unknown = await send(b.member, GET(`/api/not-a-route/${id}/overview`));
+    const overview = await send(b.member, GET(`/api/areas/${id}/overview`));
+    expect(overview.status).toBe(404);
+    expect(overview).toEqual(unknown);
   });
 
   it("omits a historical foreign blob from an authenticated item envelope", async () => {

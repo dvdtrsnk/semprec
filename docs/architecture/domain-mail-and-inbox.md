@@ -887,7 +887,7 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
 
 - `GET /api/mail/threads` answers `changesCursor` beside each page, read in the page's own `repeatable_read`
   snapshot. `GET /api/mail/threads/changes?since=<cursor>` takes the list's view filters (`box`, `folderId`,
-  `mailboxId`, `projectId`, `areaId`, `personId`, `unread`; no `q`, a search is not a view) and answers
+  `mailboxId`, `projectId`, `personId`, `unread`; no `q`, a search is not a view) and answers
   `{ cursor, threads, removed, reset }` in one `repeatable_read` snapshot: `threads` are the stamped threads still in
   the view, shaped as the list shapes them, `removed` the stamped ids that are not (moved out, merged away,
   deleted). A malformed or missing `since` is 400. `reset: true` (no rows) when the cursor names another counter
@@ -908,7 +908,7 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
   threads); thread actions and every other `announceMailThreadChanged` caller (send, draft retirement, draft
   writes); an update of an Emails item's `read`, `flagged`, `name` or `date` (flag observations of a sync included),
   and its trash or restore; an edge of an Emails item's `folder` or `senderPeople`/`recipientsPeople`, of a Threads
-  item's `project` or `company`, or a project's `area`, created or deleted (a metadata update or a repeated create
+  item's `project` or `company`, created or deleted (a metadata update or a repeated create
   only on a Sent folder edge, whose UID decides `received`); a project's or company's `name`, trash or restore (its
   threads); a person's `name`, `relationship`, trash or restore and a released or claimed `person_email_index`
   address (threads with mail from those addresses). A mailbox's `name`, `provider` or `addresses`, a folder's
@@ -1170,11 +1170,11 @@ on-demand content and attachment reads and the provider search.
 
 - `readProposalWorkspaceContext` (via `services/semprec-api/src/proposalContext.ts`) reads as the tick's
   Semprec project; databases from `listUnreadableDatabaseIds` contribute nothing (no empty group or count).
-- Only five built-in kinds, ≤ 20 entries each (`CONTEXT_LIMIT_PER_KIND`), texts cut at 100 chars: projects
-  `id,name,status,areaId`; areas `id,name`; people `id,name,relationship`; companies
+- Only four built-in kinds, ≤ 20 entries each (`CONTEXT_LIMIT_PER_KIND`), texts cut at 100 chars: projects
+  `id,name,status`; people `id,name,relationship`; companies
   `id,name,registrationNumber`; events `id,name,type,date` (capture date −1 … +14 days).
 - Plus capture facts, `text` or `transcribedText`, and for recompute the card's previous state. Budget
-  900 KiB (`REQUEST_BUDGET_BYTES`); workspace entries are dropped events → companies → people → areas →
+  900 KiB (`REQUEST_BUDGET_BYTES`); workspace entries are dropped events → companies → people →
   projects; item text and facts are never cut.
 - Returned ids must be members of the request for the relation's exact target database; others are removed,
   and an update/link to a non-member takes the `needsClarification` path.
@@ -1210,7 +1210,7 @@ on-demand content and attachment reads and the provider search.
   `packages/module-registry/src/manifest.ts`.
 - Field keys are properties, relations or pseudo keys: `allDay`, `due`, `followupTask`, `followDate`,
   `credential`, `transport`, `access`, `mcpProjects`, `lang`, `speakers`, `recordedAt`, `day`, `page`,
-  `placement`, `heading`, `area`, `markdown`. Renaming any is a client contract change.
+  `placement`, `heading`, `markdown`. Renaming any is a client contract change.
 - Rules (`inbox/proposalEditorRules.ts`) read effective values (step properties overlaid by `userOverrides`).
   Missing visible required fields fail confirm (`ValidationError`) and are warnings on edit; hidden fields are
   neither validated nor written. Pseudo values live in `userOverrides` and are never written to items.

@@ -632,7 +632,6 @@ export {
 } from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
-export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
 export { setThreadTaskPeopleDelivery, type ThreadTaskPeopleDelivery } from "./mail/threadTaskPeople.js";
 export {

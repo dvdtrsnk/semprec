@@ -40,10 +40,8 @@ interface Fixture {
   proposals: string;
   tasks: string;
   healthRecords: string;
-  areas: string;
   tasksHealthRecords: string;
   recordsTasks: string;
-  recordsArea: string;
   followUpDefinition: string;
 }
 
@@ -71,10 +69,8 @@ async function loadFixture(tenantId: string): Promise<Fixture> {
         proposals: await database("processingProposals"),
         tasks,
         healthRecords,
-        areas: await database("areas"),
         tasksHealthRecords,
         recordsTasks: await property(healthRecords, "tasks"),
-        recordsArea: await property(healthRecords, "area"),
         followUpDefinition: definition.id,
       };
     }),
@@ -245,7 +241,7 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     });
   }
 
-  it("creates the record and the task dated 30 October, linked through the new relation, and no area edge", async () => {
+  it("creates the record and the task dated 30 October, linked through the new relation", async () => {
     const card = await createHealthCard(RECORD_WITH_FOLLOW_UP);
     expect(card.properties.status).toBe("proposed");
     expect(storedEnvelope(card).operations).toEqual([
@@ -274,7 +270,6 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     if (!taskId) throw new Error("Follow-up task missing");
     expect(await linkedThrough(recordId, ids.recordsTasks)).toEqual([taskId]);
     expect(await linkedThrough(taskId, ids.tasksHealthRecords)).toEqual([recordId]);
-    expect(await linkedThrough(recordId, ids.recordsArea)).toEqual([]);
 
     const foreign = await loadFixture(other);
     expect(await itemsOf(other, foreign.healthRecords)).toEqual([]);
@@ -325,10 +320,9 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     const recordId = resultItemId(confirmed);
     expect((await itemsOf(tenant, ids.healthRecords)).map((record) => record.id)).toEqual([recordId]);
     expect(await linkedThrough(recordId, ids.recordsTasks)).toEqual([]);
-    expect(await linkedThrough(recordId, ids.recordsArea)).toEqual([]);
   });
 
-  it("still confirms a single-item health record envelope: no task, and no area edge until the user sets one", async () => {
+  it("still confirms a single-item health record envelope: no task", async () => {
     const card = await createHealthCard({ properties: RECORD });
     expect(storedEnvelope(card)).toEqual({ entityKind: "database", target: ids.healthRecords, properties: RECORD });
 
@@ -340,19 +334,5 @@ describe("a health record and its follow-up task on confirm (issue #1836)", () =
     const records = await itemsOf(tenant, ids.healthRecords);
     expect(records.map((record) => record.id)).toEqual([recordId]);
     expect(records[0]?.properties).toMatchObject(RECORD);
-    expect(await linkedThrough(recordId, ids.recordsArea)).toEqual([]);
-
-    // The same read lists an area once the user links one, so the empty answers above are not a blind read.
-    const chokePoint = createChokePoint(runtime);
-    const area = await runInTenant(tenant, async () => {
-      const created = await chokePoint.createItem({ databaseId: ids.areas, properties: { name: "Health" } });
-      await chokePoint.createRelation({
-        relationPropertyId: ids.recordsArea,
-        callerItemId: recordId,
-        targetItemId: created.id,
-      });
-      return created.id;
-    });
-    expect(await linkedThrough(recordId, ids.recordsArea)).toEqual([area]);
   });
 });

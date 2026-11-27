@@ -1,4 +1,3 @@
-import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import { EMAILS_MODULE_ID } from "./emailModuleKeys.js";
 import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
@@ -11,7 +10,6 @@ import {
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
 } from "../transcription/transcriptionActions.js";
 import {
-  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -77,7 +75,6 @@ export {
 export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
 export { createMaterializeEventOccurrenceRouteHandler } from "../calendar/eventOccurrenceRouteHandlers.js";
 export { createRemindersFeedRouteHandler } from "../calendar/remindersFeedRouteHandler.js";
-export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
 type QuickFilters = NonNullable<ModuleDatabaseDescriptor["quickFilters"]>;
 
@@ -156,31 +153,6 @@ export const manifest: ModuleManifest = {
   systemProject: true,
   databases: [
     {
-      key: AREAS_MODULE_ID,
-      relatedOrder: {
-        order: [
-          PROJECTS_MODULE_ID,
-          TASKS_MODULE_ID,
-          EVENTS_MODULE_ID,
-          FILES_MODULE_ID,
-          "threads",
-          HEALTH_RECORDS_MODULE_ID,
-          COMPANIES_MODULE_ID,
-          PEOPLE_MODULE_ID,
-          BOOKS_MODULE_ID,
-          MOVIES_MODULE_ID,
-        ],
-        omit: [JOURNAL_MODULE_ID],
-      },
-      name: "Areas",
-      searchFields: ["name", "note"],
-      icon: "compass",
-      color: "#30B0C7",
-      overviewOrder: null,
-      switcherOrder: null,
-      clientVisible: true,
-    },
-    {
       key: PROJECTS_MODULE_ID,
       relatedOrder: {
         order: [
@@ -196,7 +168,7 @@ export const manifest: ModuleManifest = {
         omit: [TASKS_MODULE_ID],
       },
       name: "Projects",
-      searchFields: ["name", "status", "tags", "agents", "area", "company"],
+      searchFields: ["name", "status", "tags", "agents", "company"],
       icon: "folder",
       color: "#007AFF",
       overviewOrder: 1,
@@ -631,14 +603,6 @@ export const manifest: ModuleManifest = {
       // The existence check, the copy of the series Event and its edges commit together under the occurrence's
       // advisory lock.
       justification: "transactional-semantics",
-    },
-    {
-      name: "areaOverview",
-      method: "GET",
-      path: "/api/areas/:id/overview",
-      handlerExport: "createAreaOverviewRouteHandler",
-      // The head of an area's page: project and task counts and upcoming tasks and events, read in one transaction.
-      justification: "single-consumer-read",
     },
     {
       name: "createTranscriptActionItemTask",
