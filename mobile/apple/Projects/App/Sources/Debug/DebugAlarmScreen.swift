@@ -6,8 +6,9 @@ import SwiftUI
 /// The debug tool of system alarms: asks for the permission, rings a test alarm in 10 seconds, a minute or five
 /// minutes or at a chosen time once or every day, as a plain alarm or as a wake mission that a stored code stops, and
 /// lists and cancels the alarms the app holds. Everything it shows and decides comes from the shared ViewModel; this
-/// screen holds only the time being picked. The stored codes are edited in the sleep plan's own wake settings, which
-/// this screen opens in a sheet of its own: a sheet opened from a row of a form inside a sheet closes that sheet.
+/// screen holds only the time being picked and whether the codes are being edited. The stored codes are edited in the
+/// sleep plan's own wake settings, which the form opens as its sheet: a sheet opened from a row of a form inside a
+/// sheet closes that sheet.
 struct DebugAlarmScreen: View {
 
     // MARK: - Dependencies
