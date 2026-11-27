@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-9b0a6b32-dcee-4cd0-863e-bea5ea2e15a3"
 title: "[areas-removal 05/06] Remove the area filter contract, the derived area and the area fields of mail and sleep"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-7ff00d8e-6c3e-49f2-b5a8-89ca1157e807"
 assignees: []
 milestone: null
 createdAt: "2026-11-27T18:55:41.305Z"
-updatedAt: "2026-11-27T18:55:42.571Z"
-closedAt: null
+updatedAt: "2026-11-27T20:13:41.547Z"
+closedAt: "2026-11-27T20:13:41.547Z"
 source: null
 approval: {"specSha256":"bf7e54f1da712657b8fa1d5657ba18dacccb4fecfae3aa97e6d265c7a2b532ae","source":"repository","actor":"david","at":"2026-11-27T18:55:42.571Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"14b377534c696d7b853d59a7e313746a89dff3d1","at":"2026-11-27T20:13:41.547Z"}
 ---
 **Blocked by:** sp-ba084bcb-8d4f-4a0d-939c-06276354ce46
 **Model tier:** high
