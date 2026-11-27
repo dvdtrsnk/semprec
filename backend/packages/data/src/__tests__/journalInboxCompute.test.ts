@@ -474,7 +474,11 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       expect(entry).toMatchObject({ status: "computeFailed", processing: "failed", proposalSummary: null });
     });
 
-    it("summarises a proposed Files card: target database, project and the follow-up step", async () => {
+    it("summarises a proposed Files card in a tenant without an Areas database: target database, project and the follow-up step", async () => {
+      const { rows: areas } = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'areas'",
+      );
+      expect(areas).toEqual([]);
       const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Renovation" } });
       const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
       const dayId = await journalDayIdFor(item.id);

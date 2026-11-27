@@ -231,7 +231,6 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "event people replace": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
   "event person invite": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
   "event tasks": "packages/data/src/tasks/eventTasksRouteHandler.ts",
-  "area overview": "packages/data/src/areas/areaOverviewRouteHandler.ts",
   "transcript action item task create": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript action item task remove": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "event transcript action items": "packages/data/src/transcription/transcriptionRouteHandlers.ts",

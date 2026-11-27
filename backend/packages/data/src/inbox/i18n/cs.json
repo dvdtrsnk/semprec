@@ -23,7 +23,6 @@
   "property.inboxItemTypes.processingMethod.option.database": "Databáze",
   "property.inboxItemTypes.processingMethod.option.journal": "Deník",
   "property.inboxItemTypes.targetDatabase.name": "Cílová databáze",
-  "property.inboxItemTypes.targetDatabase.option.areas": "Oblasti",
   "property.inboxItemTypes.targetDatabase.option.projects": "Projekty",
   "property.inboxItemTypes.targetDatabase.option.tasks": "Úkoly",
   "property.inboxItemTypes.targetDatabase.option.people": "Lidé",

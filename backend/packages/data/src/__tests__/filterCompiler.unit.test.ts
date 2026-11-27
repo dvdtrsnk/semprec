@@ -197,14 +197,14 @@ describe("compileFilterNode", () => {
 
 describe("relation_path_contains", () => {
   const value = "11111111-1111-4111-8111-111111111111";
-  const node = parseFilterNode({ type: "relation_path_contains", path: ["project", "area"], value });
+  const node = parseFilterNode({ type: "relation_path_contains", path: ["project", "company"], value });
   const second: FilterProperty = { type: "relation", relationDefinitionId: "second-id", relationSide: "b" };
   const first: FilterProperty = {
     type: "relation",
     relationDefinitionId: "first-id",
     relationSide: "a",
     targetDatabaseId: "22222222-2222-4222-8222-222222222222",
-    targetRelationProperties: properties([["area", second]]),
+    targetRelationProperties: properties([["company", second]]),
   };
 
   it.each(["a", "b"] as const)("binds every id and prunes the live intermediate for first side %s", (side) => {
@@ -218,7 +218,7 @@ describe("relation_path_contains", () => {
             {
               ...first,
               relationSide: side,
-              targetRelationProperties: properties([["area", { ...second, relationSide: secondSide }]]),
+              targetRelationProperties: properties([["company", { ...second, relationSide: secondSide }]]),
             },
           ],
         ]),
@@ -227,7 +227,7 @@ describe("relation_path_contains", () => {
       expect(params).toEqual(["existing", "first-id", first.targetDatabaseId, "second-id", value]);
       for (const id of params) expect(sql).not.toContain(String(id));
       expect(sql).not.toContain("project");
-      expect(sql).not.toContain("area");
+      expect(sql).not.toContain("company");
       expect(sql).toContain("CROSS JOIN LATERAL");
       expect(sql).toContain("intermediate.database_id = $3::uuid");
       expect(sql).toContain("intermediate.deleted_at IS NULL");
@@ -257,7 +257,7 @@ describe("relation_path_contains", () => {
       ] satisfies Array<[string, FilterProperty]>
     ).map(([name, property]): [string, FilterProperties] => [
       name,
-      properties([["project", { ...first, targetRelationProperties: properties([["area", property]]) }]]),
+      properties([["project", { ...first, targetRelationProperties: properties([["company", property]]) }]]),
     ]),
   ];
   it.each(invalidProperties)("rejects %s on field filter without adding parameters", (_name, props) => {
@@ -271,18 +271,18 @@ describe("relation_path_contains", () => {
 
   it("keeps the condition lists and path-condition schema acceptance identical", () => {
     expect(FILTER_CONDITION_TYPES).toEqual(sharedTypes);
-    const valid = { type: "relation_path_contains", path: ["project", "area"], value };
+    const valid = { type: "relation_path_contains", path: ["project", "company"], value };
     const cases = [
       valid,
       { type: "not", node: valid },
       ...[
         { path: [] },
         { path: ["project"] },
-        { path: ["project", "area", "more"] },
-        { path: ["", "area"] },
+        { path: ["project", "company", "more"] },
+        { path: ["", "company"] },
         { path: ["project", ""] },
-        { path: [1, "area"] },
-        { path: "project.area" },
+        { path: [1, "company"] },
+        { path: "project.company" },
         { value: "invalid" },
         { value: null },
         { property: "project" },
@@ -479,14 +479,14 @@ describe("a closed sensitive database (issue #2000)", () => {
   });
 
   it("refuses a path whose first hop or second hop reaches a closed database, and compiles one over open databases", () => {
-    const path = { type: "relation_path_contains", path: ["project", "area"], value };
+    const path = { type: "relation_path_contains", path: ["project", "company"], value };
     const pathProperties = (firstTarget: string, secondTarget: string) =>
       properties([
         [
           "project",
           {
             ...relation(firstTarget),
-            targetRelationProperties: properties([["area", relation(secondTarget)]]),
+            targetRelationProperties: properties([["company", relation(secondTarget)]]),
           },
         ],
       ]);

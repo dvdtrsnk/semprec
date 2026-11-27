@@ -23,7 +23,6 @@
   "property.inboxItemTypes.processingMethod.option.database": "Database",
   "property.inboxItemTypes.processingMethod.option.journal": "Journal",
   "property.inboxItemTypes.targetDatabase.name": "Target database",
-  "property.inboxItemTypes.targetDatabase.option.areas": "Areas",
   "property.inboxItemTypes.targetDatabase.option.projects": "Projects",
   "property.inboxItemTypes.targetDatabase.option.tasks": "Tasks",
   "property.inboxItemTypes.targetDatabase.option.people": "People",

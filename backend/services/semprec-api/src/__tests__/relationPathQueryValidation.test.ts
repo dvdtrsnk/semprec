@@ -33,17 +33,17 @@ const testMetadataResolver: CollectionMetadataResolver = {
 };
 
 const value = "11111111-1111-4111-8111-111111111111";
-const valid = { type: "relation_path_contains", path: ["project", "area"], value };
+const valid = { type: "relation_path_contains", path: ["project", "company"], value };
 const invalidConditions = [
   { name: "invalid UUID", node: { ...valid, value: "invalid" } },
   { name: "non-string UUID", node: { ...valid, value: 123 } },
   { name: "missing UUID", node: { type: valid.type, path: valid.path } },
   { name: "short path", node: { ...valid, path: ["project"] } },
-  { name: "long path", node: { ...valid, path: ["project", "area", "extra"] } },
+  { name: "long path", node: { ...valid, path: ["project", "company", "extra"] } },
   { name: "empty path", node: { ...valid, path: [] } },
   { name: "missing path", node: { type: valid.type, value } },
-  { name: "non-array path", node: { ...valid, path: "project.area" } },
-  { name: "empty first key", node: { ...valid, path: ["", "area"] } },
+  { name: "non-array path", node: { ...valid, path: "project.company" } },
+  { name: "empty first key", node: { ...valid, path: ["", "company"] } },
   { name: "empty second key", node: { ...valid, path: ["project", ""] } },
   { name: "non-string key", node: { ...valid, path: ["project", null] } },
 ];
@@ -146,7 +146,7 @@ describe("relation path query validation at the REST operation boundary", () => 
         expect(response.status).toBe(200);
         const body: unknown = await response.json();
         expect(body).toMatchObject({ items: [], nextCursor: null });
-        const filter: FilterNode = { type: "relation_path_contains", path: ["project", "area"], value };
+        const filter: FilterNode = { type: "relation_path_contains", path: ["project", "company"], value };
         await expect(
           runInTenant(getTenantZeroId(), () =>
             dispatchGenericOperation(

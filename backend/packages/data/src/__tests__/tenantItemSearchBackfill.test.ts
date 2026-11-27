@@ -479,9 +479,9 @@ describe("item search create/update hooks", () => {
     });
   });
 
-  it("declares seeded title/text/select fields and the requested relation fields for all ten databases", async () => {
+  it("declares seeded title/text/select fields and the requested relation fields for all nine core databases", async () => {
     await runInTenant(tenant, async () => {
-      expect(manifest.databases).toHaveLength(10);
+      expect(manifest.databases).toHaveLength(9);
       for (const descriptor of manifest.databases) {
         const props = await pool.query<{ key: string; type: string; owner: string; owner_process: string | null }>(
           "SELECT key, type, owner, owner_process FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
@@ -507,8 +507,6 @@ describe("item search create/update hooks", () => {
         for (const property of props.rows) {
           // An event's place is an address or a call link; it is deliberately not searched (asserted below).
           if (descriptor.key === "events" && property.key === "place") continue;
-          // An area's icon is a closed key validated by the area write hook, not searchable free text.
-          if (descriptor.key === "areas" && property.key === "icon") continue;
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
@@ -524,7 +522,6 @@ describe("item search create/update hooks", () => {
         }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
-      expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "tasks")?.searchFields).not.toContain("seriesId");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("seriesId");
@@ -537,7 +534,7 @@ describe("item search create/update hooks", () => {
       for (const [key, fields] of Object.entries({
         tasks: ["project"],
         events: ["project", "people"],
-        projects: ["area", "company"],
+        projects: ["company"],
         people: ["companies"],
         files: ["projects", "healthRecords", "companies"],
         healthRecords: ["projects"],

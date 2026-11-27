@@ -511,9 +511,9 @@ describe("createSchemaRequestListener (issue #147)", () => {
   });
 
   it.each([
-    ["cs", "Oblast", "Termín"],
-    ["en", "Area", "Deadline"],
-  ])("returns the updated project labels through schema for %s", async (locale, area, date) => {
+    ["cs", "Firma", "Termín"],
+    ["en", "Company", "Deadline"],
+  ])("returns the updated project labels through schema for %s", async (locale, company, date) => {
     const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
@@ -522,7 +522,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
         expect.objectContaining({
           key: "projects",
           properties: expect.arrayContaining([
-            expect.objectContaining({ key: "area", name: area }),
+            expect.objectContaining({ key: "company", name: company }),
             expect.objectContaining({ key: "date", name: date }),
           ]),
         }),
@@ -542,13 +542,6 @@ describe("createSchemaRequestListener (issue #147)", () => {
       });
     expect(body).toMatchObject({
       databases: expect.arrayContaining([
-        expect.objectContaining({
-          key: "areas",
-          properties: expect.arrayContaining([
-            property("company", "Firmy"),
-            property("healthRecord", "Zdravotní záznamy"),
-          ]),
-        }),
         expect.objectContaining({
           key: "people",
           properties: expect.arrayContaining([option("relationship", "girlfriend", "Partnerka")]),
@@ -806,7 +799,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
     ]);
   });
 
-  it("publishes no areaFilter", async () => {
+  it("publishes no areaFilter and no Areas database", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
     expect(res.status).toBe(200);
     const body = z
@@ -814,6 +807,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
       .parse(await res.json());
     expect(body.databases.length).toBeGreaterThan(1);
     expect(body.databases.filter((db) => Object.hasOwn(db, "areaFilter")).map((db) => db.key)).toEqual([]);
+    expect(body.databases.map((db) => db.key)).not.toContain("areas");
   });
 
   const facetBarBody = z.object({
@@ -905,8 +899,8 @@ describe("createSchemaRequestListener (issue #147)", () => {
       clientVisible: true,
     });
     expect(body.databases.find((db) => db.key === "tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2 });
-    expect(body.databases.find((db) => db.key === "areas")).toMatchObject({
-      icon: "compass",
+    expect(body.databases.find((db) => db.key === "transcripts")).toMatchObject({
+      icon: "waveform",
       overviewOrder: null,
       switcherOrder: null,
       clientVisible: true,
