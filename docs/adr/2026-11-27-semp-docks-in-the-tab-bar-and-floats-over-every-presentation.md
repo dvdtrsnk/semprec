@@ -30,10 +30,17 @@ What the SDK offers (Xcode 27.2, iOS 27 SDK):
   presentations either.
 - SwiftUI on iOS shows a view over a presentation only from inside that presentation, and has no window of its own.
 
+[[2026-10-24-kotlin-multiplatform-below-native-mobile-ui]] set the Apple deployment targets to iOS 26.0 and macOS
+26.0, and [[2026-11-26-sleep-alarms-ring-on-the-device-through-alarmkit]] relied on that iOS minimum. This ADR
+changes only the iOS minimum; both decisions otherwise stand, and AlarmKit (iOS 26) needs no availability check at 27.0
+either.
+
 ## Decision
 
 - **The minimum is iOS 27.0** (`ProjectConfiguration.iosMinimum`, `mobile/gradle/project.properties`), so the button is
-  `TabRole.prominent` with no branch for iOS 26. The iPhone app is portrait only, so the button's place changes only
+  `TabRole.prominent` with no branch for iOS 26. This narrows [[2026-10-24-kotlin-multiplatform-below-native-mobile-ui]]:
+  its "iOS 26.0" no longer holds, and macOS stays 26.0. The `mobile-apple` CI job runs on the `xcode-27` runner image,
+  because the `macos-26` image's default Xcode has no iOS 27 SDK. The iPhone app is portrait only, so the button's place changes only
   with the window's size.
 - **The tab is a button, not a destination.** `AppScene` adds a fourth `Tab("tab.semp", role: .prominent)` with empty
   content. The tab view selects through `SceneTab.selection`: selecting Semp opens the chat and keeps the selected tab.

@@ -25,6 +25,8 @@ struct SempBubbleScreen: View {
     @State private var drag = SempBubbleDrag()
     /// Set while a bubble let go is on its way back into its dock, where it is shown until it arrives.
     @State private var returning = false
+    /// Clears `returning` once the bubble is back; a release while one is pending replaces it.
+    @State private var returningEnd: Task<Void, Never>?
 
     // MARK: - Init
     /// `registry` holds the objects the bubble can be dragged onto; `dock` is the place it is docked in, in global
@@ -248,9 +250,12 @@ private extension SempBubbleScreen {
                 restingY = Double(placement.rest(top: last.y - SempBubblePlacement.diameter / 2))
             }
         }
+        returningEnd?.cancel()
+        returningEnd = nil
         if docked, moved {
-            Task { @MainActor in
+            returningEnd = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.15)) { returning = false }
             }
         }
