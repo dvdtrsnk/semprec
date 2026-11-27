@@ -35,8 +35,8 @@ struct DocumentScanner: UIViewControllerRepresentable {
         Coordinator(presenter: presenter)
     }
 
-    /// The pages of `scan` in order, each made a PDF page from its image one at a time, so only one camera image is
-    /// held at once.
+    /// The pages of `scan` in order, each made a PDF page from its image in its own autorelease pool, so the camera's
+    /// images are loaded one at a time rather than all together.
     static func pages(of scan: VNDocumentCameraScan) -> [PDFPage] {
         (0..<scan.pageCount).compactMap { index in
             autoreleasepool {

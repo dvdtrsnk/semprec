@@ -48,7 +48,7 @@ Rejected:
   new request ends a waiting one as cancelled and takes its place, so a request whose window went away does not block
   later ones.
 - **The app writes the capture.** When the person finishes, the presenter makes the pages one PDF with PDFKit (each page
-  from its image, JPEG-compressed, one image at a time; the document written once and encoded to Base64 once), named
+  from its image, JPEG-compressed, the images loaded one at a time; the document written once and encoded to Base64 once), named
   `Scan YYYY-MM-DD HH-mm.pdf`, media type `application/pdf`, source camera, and captures it through the CoreKit bridge
   `InboxShortcutCapture` with the type, day, time and text the intent passed. It does so in a task of the app, not of
   the intent's run, so a finished scan is kept even when the run ended first. A cancelled or failed scan captures
