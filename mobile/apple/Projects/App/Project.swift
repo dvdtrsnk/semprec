@@ -123,7 +123,8 @@ let project = Project(
             ]
         ),
         // XCUITest drives the app from outside, by the accessibility identifiers the app and the features declare; it
-        // compiles their identifier files (the app's and the Sleep feature's), since it links none of their modules. iPhone and iPad only: on macOS
+        // compiles their identifier files (the app's and those of the Sleep and Overview features), since it links none
+        // of their modules. iPhone and iPad only: on macOS
         // XCUITest needs the Accessibility permission to control the app, which a build machine does not grant.
         .target(
             name: "\(app)UITests",
@@ -139,6 +140,7 @@ let project = Project(
             sources: [
                 "UITests/**",
                 "Sources/AppIdentifiers.swift",
+                "../../Modules/Features/Overview/Sources/OverviewIdentifiers.swift",
                 "../../Modules/Features/Sleep/Sources/SleepIdentifiers.swift",
             ],
             dependencies: [.target(name: app)]

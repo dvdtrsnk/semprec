@@ -206,7 +206,8 @@ final class SharedWakeTests: XCTestCase {
             cacheDirectory: nil,
             dataDirectory: nil,
             wake: push.wake,
-            sleepAlarms: push.sleepAlarms
+            sleepAlarms: push.sleepAlarms,
+            debugAlarms: push.debugAlarms
         )
         let model = SharedWakeGuardScreenModel(home.sleep.wakeGuardViewModel())
         let covered = await Self.firstState(of: model) { $0.phase == .scanning }

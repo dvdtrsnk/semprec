@@ -164,6 +164,10 @@ extension ScriptedDevice: @preconcurrency SharedSDK.DeviceAlarms {
 
     func authorization() -> SharedSDK.DeviceAlarmAuthorization { state }
 
+    func requestAuthorization(callback: @escaping (SharedSDK.DeviceAlarmAuthorization) -> Void) {
+        callback(state)
+    }
+
     func schedule(
         ringAtEpochSeconds: Int64,
         opensWakeGuard: Bool,

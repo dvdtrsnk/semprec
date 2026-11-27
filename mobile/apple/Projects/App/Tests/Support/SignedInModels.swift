@@ -77,6 +77,10 @@ final class SignedInModels: ScreenModelFactory {
         scriptedWakeGuard ?? real.makeWakeGuard()
     }
 
+    func makeDebugAlarms() -> any DebugAlarmScreenModel {
+        real.makeDebugAlarms()
+    }
+
     func makeCalendar(initialDay: String) -> any CalendarScreenModel {
         calendarDays.append(initialDay)
         return real.makeCalendar(initialDay: initialDay)

@@ -73,7 +73,9 @@ class LoadSleepAlarmNights(private val repository: SleepRepository) {
  * Decides which system alarms the device holds for the sleep plan. A ring is the wake time of a night whose alarm
  * is on, on the day after its evening, read in the time zone of the device, so a day whose clocks change still
  * rings at the wake time on the wall clock. A ring that has passed is dropped, a key rings once, and an alarm that is
- * ringing now is never cancelled. The alarms of the app that the ledger does not know are cancelled as well.
+ * ringing now is never cancelled. The alarms of the app that the ledger does not know are cancelled as well, but a
+ * ledger entry or mission whose key is not a sleep key belongs to another owner (the debug alarms) and is kept as long
+ * as the device holds its alarm.
  *
  * With active wake [codes] every ring is a mission that one of the codes stops, otherwise a plain alarm; a mission
  * whose codes are not the active ones, in any order, is replaced, and one whose ring has come belongs to the guard,
@@ -81,6 +83,13 @@ class LoadSleepAlarmNights(private val repository: SleepRepository) {
  */
 object PlanSleepAlarms {
     private const val KEY_PREFIX = "sleep:"
+
+    /** Whether [key] names a ring of the sleep plan; any other key belongs to another owner, who keeps its alarm. */
+    fun isSleepKey(key: String): Boolean = key.startsWith(KEY_PREFIX)
+
+    /** The moment the sleep ring [key] rings at, or `null` when [key] is not a sleep key. */
+    fun ringAt(key: String): Instant? =
+        if (isSleepKey(key)) runCatching { Instant.parse(key.removePrefix(KEY_PREFIX)) }.getOrNull() else null
 
     /** The day of [now] in [zone]. */
     fun today(now: Instant, zone: TimeZone): CalendarDay {
@@ -101,11 +110,14 @@ object PlanSleepAlarms {
         val cancel = mutableListOf<String>()
         for ((key, id) in held.ledger) {
             val alarm = onDevice[id] ?: continue
-            if (key in wanted && codes.isEmpty()) keep[key] = id else if (alarm.canBeCancelled()) cancel += id
+            when {
+                !isSleepKey(key) || (key in wanted && codes.isEmpty()) -> keep[key] = id
+                alarm.canBeCancelled() -> cancel += id
+            }
         }
         val keepMissions = mutableListOf<WakeMission>()
         for (mission in held.missions) {
-            if (stays(mission, wanted, onDevice, codes, now)) {
+            if (!isSleepKey(mission.key) || stays(mission, wanted, onDevice, codes, now)) {
                 keepMissions += mission
             } else {
                 cancel += (listOf(mission.alarmId) + mission.watchIds).filter { onDevice[it]?.canBeCancelled() == true }

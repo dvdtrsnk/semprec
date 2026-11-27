@@ -52,6 +52,19 @@ extension AppAccountRouter: AccountRouting {
     }
 }
 
+// MARK: - Debug
+// The debug menu is the app's own page of the sheet, not a route of the Account feature, which does not know it.
+extension AppAccountRouter {
+
+    func showDebugMenu() {
+        push(.debug)
+    }
+
+    func showDebugAlarms() {
+        push(.debugAlarms)
+    }
+}
+
 // MARK: - Private
 private extension AppAccountRouter {
 

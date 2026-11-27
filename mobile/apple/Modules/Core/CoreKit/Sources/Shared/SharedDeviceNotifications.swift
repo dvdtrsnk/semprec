@@ -37,7 +37,7 @@ public final class SharedDeviceNotifications {
         }
         notifications = sdk.notifications
         sleepAlarms = sdk.sleepAlarms
-        deviceServices = DeviceServices(wake: sdk.wake, sleepAlarms: sdk.sleepAlarms)
+        deviceServices = DeviceServices(wake: sdk.wake, sleepAlarms: sdk.sleepAlarms, debugAlarms: sdk.debugAlarms)
         platform = DeviceIdentity.current().platform
     }
 }

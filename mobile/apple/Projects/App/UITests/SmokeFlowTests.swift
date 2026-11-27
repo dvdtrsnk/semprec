@@ -44,4 +44,26 @@ final class SmokeFlowTests: XCTestCase {
         XCTAssertTrue(screen.waitForExistence(timeout: 10), "The wake settings must open")
         XCTAssertTrue(app.descendants(matching: .any)[SleepIdentifiers.wakeRequiresCode].firstMatch.exists)
     }
+
+    /// Opens the debug alarm tool from the profile sheet, which is in every build. It needs a signed-in session, so it
+    /// is skipped on a fresh simulator. The Simulator has no AlarmKit, so the tool shows its permission as unavailable.
+    @MainActor
+    func testTheDebugAlarmToolOpensFromTheProfileSheet() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let profile = app.descendants(matching: .any)[OverviewIdentifiers.profile].firstMatch
+        try XCTSkipUnless(profile.waitForExistence(timeout: 15), "The app is signed out, so it has no profile button")
+        profile.tap()
+        let debugOpen = app.descendants(matching: .any)[AppIdentifiers.debugOpen].firstMatch
+        XCTAssertTrue(debugOpen.waitForExistence(timeout: 10), "The profile sheet must offer the debug menu")
+        debugOpen.tap()
+
+        let menu = app.descendants(matching: .any)[AppIdentifiers.debugMenu].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "The debug menu must open")
+        app.descendants(matching: .any)[AppIdentifiers.debugAlarmsRow].firstMatch.tap()
+
+        let screen = app.descendants(matching: .any)[AppIdentifiers.debugAlarmScreen].firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 10), "The alarm tool must open")
+        XCTAssertTrue(app.descendants(matching: .any)[AppIdentifiers.debugAlarmPermission].firstMatch.exists)
+    }
 }
