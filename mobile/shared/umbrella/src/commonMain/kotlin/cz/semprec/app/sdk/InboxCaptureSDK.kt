@@ -86,7 +86,9 @@ class InboxCaptureSDK(sessionStorage: SessionStorage, dataDirectory: String) {
     ): InboxCaptureAnswer {
         val calendarDay = CalendarDay.parse(day)
         val attached = file?.let { input -> decode(input.base64)?.let(input::domain) }
-        if (calendarDay == null || (file != null && attached == null) || (text.isBlank() && file == null)) {
+        val unreadableFile = file != null && attached == null
+        val empty = text.isBlank() && file == null
+        if (calendarDay == null || unreadableFile || empty) {
             return InboxCaptureAnswer.Refused(Failed(FailureKind.INVALID_DATA))
         }
         val capture = InboxCapture(text.trim(), calendarDay, time, typeId, attached)

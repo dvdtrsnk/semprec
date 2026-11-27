@@ -26,7 +26,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-private const val TYPES_ANSWER = """{"types":[{"id":"t1","label":"Receipt","emoji":"R"},{"id":"t2","label":"Idea","emoji":"I"}]}"""
+private const val TYPES_ANSWER =
+    """{"types":[{"id":"t1","label":"Receipt","emoji":"R"},{"id":"t2","label":"Idea","emoji":"I"}]}"""
 private const val SESSION_ANSWER = """{"user":{"id":"u1","email":"ada@example.com","locale":"en","role":"member"}}"""
 private const val CREATED_ANSWER = """{"item":{"id":"i1"},"attachments":[]}"""
 private val DEVICE = DeviceInfo(AppPlatform.IOS, "00000000-0000-4000-8000-000000000000", "Device", "iphone", "0", "0")
@@ -158,10 +159,12 @@ class InboxCaptureSDKTest {
         server.status = 503
         val file = InboxCaptureFileInput("scan.pdf", "application/pdf", "AQID", InboxCaptureAttachmentSource.CAMERA)
 
-        assertEquals(InboxCaptureAnswer.Kept, InboxCaptureSDK(storage, directory).capture("", "2026-11-27", "08:00", null, file))
+        val sdk = InboxCaptureSDK(storage, directory)
+        assertEquals(InboxCaptureAnswer.Kept, sdk.capture("", "2026-11-27", "08:00", null, file))
         val json = keptCaptures().single()
         assertTrue(""""name":"scan.pdf"""" in json.readText(), json.readText())
-        assertEquals(listOf<Byte>(1, 2, 3), File(json.parentFile, "${json.nameWithoutExtension}.bin").readBytes().toList())
+        val bytes = File(json.parentFile, "${json.nameWithoutExtension}.bin").readBytes()
+        assertEquals(listOf<Byte>(1, 2, 3), bytes.toList())
     }
 
     @Test fun `a blank text, a day that is none and a file that does not decode are refused and nothing is kept`() =

@@ -697,6 +697,7 @@ describe("COPY-PARITY", () => {
     const other = copyOfTree();
     remove(other, APP_CATALOG);
     remove(other, APP_CATALOG.replace("Localizable.xcstrings", "InfoPlist.xcstrings"));
+    remove(other, APP_CATALOG.replace("Localizable.xcstrings", "AppShortcuts.xcstrings"));
     assertViolations(other, ["COPY-PARITY"], /Semprec has no String Catalog/, /Semprec lacks the key tab.overview/);
   });
 
