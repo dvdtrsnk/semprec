@@ -165,18 +165,6 @@ describe("collection metadata resolver (issue #1407)", () => {
     });
   });
 
-  it("resolves the declared area filter of a system database only, as a copy (issue #1839)", async () => {
-    const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
-    const declared = resolver.areaFilter?.({ key: "projects", system: true });
-    expect(declared).toEqual({ type: "relation_contains", property: "area", value: { areaValue: true } });
-    if (declared?.type === "relation_contains") declared.property = "changed";
-    expect(resolver.areaFilter?.({ key: "projects", system: true })).toMatchObject({ property: "area" });
-    for (const key of ["transcripts", "unknownInternal", null]) {
-      expect(resolver.areaFilter?.({ key, system: true })).toBeUndefined();
-    }
-    expect(resolver.areaFilter?.({ key: "projects", system: false })).toBeUndefined();
-  });
-
   it("orders switcher rows, then overview-only rows, then the rest by name then id", () => {
     const rows = [
       { id: "6", name: "beta", switcherOrder: null, overviewOrder: null },

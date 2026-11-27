@@ -83,8 +83,7 @@ export function mailThreadCopyCtes(
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'mailboxes') AS mailboxes,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'people') AS people,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'threads') AS threads,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'projects') AS projects,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'areas') AS areas
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'projects') AS projects
 ), folder_definition AS (
   SELECT rd.id, rd.property_id_a = p.id AS email_is_a
   FROM properties p JOIN relation_definitions rd ON p.id IN (rd.property_id_a, rd.property_id_b)
@@ -266,7 +265,6 @@ export async function listMailThreads(
   cursor: { at: string; id: string } | null,
   filters: MailThreadFilters & {
     projectId?: string | null;
-    areaId?: string | null;
     personId?: string | null;
     /** Detail-only mode: one thread in any box or folder, drafts included. The list never sets it. */
     threadId?: string | null;
@@ -293,10 +291,10 @@ export async function listMailThreads(
     if (!folder.rows.length) throw new NotFoundError("Folder not found");
   }
   const predicates: string[] = [
-    `($4::uuid IS NOT NULL OR $9::uuid IS NOT NULL OR $10::uuid[] IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
-    `($9::uuid IS NULL OR l.thread_id = $9::uuid)`,
+    `($4::uuid IS NOT NULL OR $8::uuid IS NOT NULL OR $9::uuid[] IS NOT NULL OR ${mailThreadPredicates[filters.box]})`,
+    `($8::uuid IS NULL OR l.thread_id = $8::uuid)`,
+    `($9::uuid[] IS NULL OR l.thread_id = ANY($9::uuid[]))`,
     `($10::uuid[] IS NULL OR l.thread_id = ANY($10::uuid[]))`,
-    `($11::uuid[] IS NULL OR l.thread_id = ANY($11::uuid[]))`,
     `($4::uuid IS NULL OR ${mailThreadPredicates.inFolder(4)})`,
     `($5::uuid IS NULL OR ${mailThreadPredicates.inMailbox(5)})`,
   ];
@@ -305,17 +303,14 @@ export async function listMailThreads(
     `($6::uuid IS NULL OR EXISTS (SELECT 1 FROM thread_project tp WHERE tp.thread_id = l.thread_id AND tp.project_id = $6))`,
   );
   predicates.push(
-    `($7::uuid IS NULL OR EXISTS (SELECT 1 FROM thread_project tp JOIN project_area pa ON pa.project_id = tp.project_id WHERE tp.thread_id = l.thread_id AND pa.area_id = $7))`,
+    `($7::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $7))`,
   );
-  predicates.push(
-    `($8::uuid IS NULL OR EXISTS (SELECT 1 FROM message_person mp WHERE mp.thread_id = l.thread_id AND mp.person_id = $8))`,
-  );
-  const search = filters.search ? matchesSearch(filters.search, 12, filters.searchMessageItemIds) : null;
+  const search = filters.search ? matchesSearch(filters.search, 11, filters.searchMessageItemIds) : null;
   if (search) predicates.push(search.sql);
   const queryPage = (window: readonly string[] | null) =>
     client.query<{ thread: unknown; thread_item_id: string | null; activity_key: string }>(
       `
-WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
+WITH ${mailThreadCopyCtes(8, { threadIdsParameter: 10 })}, thread_project AS (
   SELECT t.id AS thread_id, project.id AS project_id
   FROM mail_threads t
   JOIN properties p ON p.tenant_id = t.tenant_id AND p.database_id = (SELECT threads FROM schema_ids) AND p.key = 'project'
@@ -325,16 +320,6 @@ WITH ${mailThreadCopyCtes(9, { threadIdsParameter: 11 })}, thread_project AS (
   CROSS JOIN LATERAL (SELECT i.id FROM items i WHERE i.tenant_id = t.tenant_id AND i.database_id = (SELECT projects FROM schema_ids)
     AND i.id = CASE WHEN rd.property_id_a = p.id THEN r.item_b ELSE r.item_a END OFFSET 0) project
   WHERE t.tenant_id = app_tenant_default()
-), project_area AS (
-  SELECT project.id AS project_id, area.id AS area_id
-  FROM thread_project tp
-  CROSS JOIN LATERAL (SELECT i.id FROM items i WHERE i.tenant_id = app_tenant_default() AND i.database_id = (SELECT projects FROM schema_ids) AND i.id = tp.project_id OFFSET 0) project
-  JOIN properties p ON p.tenant_id = app_tenant_default() AND p.database_id = (SELECT projects FROM schema_ids) AND p.key = 'area'
-  JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
-  JOIN item_relations r ON r.tenant_id = p.tenant_id AND r.relation_definition_id = rd.id
-    AND (CASE WHEN rd.property_id_a = p.id THEN r.item_a ELSE r.item_b END) = project.id
-  CROSS JOIN LATERAL (SELECT i.id FROM items i WHERE i.tenant_id = p.tenant_id AND i.database_id = (SELECT areas FROM schema_ids)
-    AND i.id = CASE WHEN rd.property_id_a = p.id THEN r.item_b ELSE r.item_a END OFFSET 0) area
 ), message_person AS (
   SELECT m.thread_id, person.id AS person_id
   FROM mail_message_meta m
@@ -413,7 +398,6 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
         filters.folderId,
         filters.mailboxId,
         filters.projectId ?? null,
-        filters.areaId ?? null,
         filters.personId ?? null,
         filters.threadId ?? null,
         filters.threadIds ?? null,

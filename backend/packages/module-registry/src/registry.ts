@@ -3,7 +3,6 @@ import { z } from "zod";
 import { CAPABILITY_IDS, type RiskClass } from "@semprec/shared";
 import {
   moduleManifestSchema,
-  type AreaFilterTemplate,
   type CustomRouteMethod,
   type EditorSchemaDescriptor,
   type ModuleDatabaseDescriptor,
@@ -52,7 +51,6 @@ export interface ModuleDatabaseProjection {
   switcherOrder?: number | null;
   clientVisible?: boolean;
   overviewHideable?: boolean;
-  areaFilter?: AreaFilterTemplate;
   quickFilters?: ModuleDatabaseDescriptor["quickFilters"];
   defaultSort?: ModuleDatabaseDescriptor["defaultSort"];
   dateLabels?: ModuleDatabaseDescriptor["dateLabels"];
@@ -472,7 +470,6 @@ export class ModuleRegistry {
         ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
         ...(db.overviewHideable !== undefined ? { overviewHideable: db.overviewHideable } : {}),
-        ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
         ...(db.quickFilters !== undefined ? { quickFilters: structuredClone(db.quickFilters) } : {}),
         ...(db.defaultSort !== undefined ? { defaultSort: structuredClone(db.defaultSort) } : {}),
         ...(db.dateLabels !== undefined ? { dateLabels: structuredClone(db.dateLabels) } : {}),

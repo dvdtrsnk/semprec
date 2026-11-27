@@ -4,16 +4,15 @@ import { getDatabaseByModuleId, listDatabaseLabelsByIds } from "../chokePoint/da
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds, listRelationsForItems } from "../chokePoint/relationsStore.js";
-import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { DERIVED_VALUE_SOURCES } from "./derivedValueSources.js";
 
 export interface DerivedValue {
-  values: Array<{ id: string; title: string; color?: string | null; icon?: string | null }>;
+  values: Array<{ id: string; title: string }>;
   via: "project";
   projectIds: string[];
 }
 export interface DerivedValues {
-  area?: DerivedValue;
   company?: DerivedValue;
 }
 
@@ -46,7 +45,6 @@ export async function getDerivedValuesForItems(
     labels.map((label) => label.id),
   );
   const projectsDatabase = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
-  const areasDatabase = await getDatabaseByModuleId(client, AREAS_MODULE_ID);
   if (!projectsDatabase) return result;
   const projectIdsByItem = new Map<string, string[]>();
   const databaseById = new Map(labels.map((label) => [label.id, label.ownerModuleId]));
@@ -63,20 +61,8 @@ export async function getDerivedValuesForItems(
   const projectIds = [...new Set([...projectIdsByItem.values()].flat())];
   const projects = (await getItemsByIds(client, projectIds)).filter((item) => item.databaseId === projectsDatabase.id);
   const liveProjects = new Map(projects.map((item) => [item.id, item]));
-  const targetSchemas = await listPropertiesByDatabases(client, [
-    projectsDatabase.id,
-    ...(areasDatabase ? [areasDatabase.id] : []),
-  ]);
-  const projectProperties = targetSchemas.get(projectsDatabase.id) ?? [];
-  const areaProperty = projectProperties.find((p) => p.key === "area" && p.type === "relation");
-  const companyProperty = projectProperties.find((p) => p.key === "company" && p.type === "relation");
-  const areaEdges = areaProperty
-    ? await readEdges(
-        client,
-        areaProperty,
-        projects.map((p) => p.id),
-      )
-    : new Map<string, string[]>();
+  const projectProperties = (await listPropertiesByDatabases(client, [projectsDatabase.id])).get(projectsDatabase.id);
+  const companyProperty = projectProperties?.find((p) => p.key === "company" && p.type === "relation");
   const companyEdges = companyProperty
     ? await readEdges(
         client,
@@ -84,50 +70,33 @@ export async function getDerivedValuesForItems(
         projects.map((p) => p.id),
       )
     : new Map<string, string[]>();
-  const targets = await getItemsByIds(client, [...new Set([...areaEdges.values(), ...companyEdges.values()].flat())]);
+  const targets = await getItemsByIds(client, [...new Set([...companyEdges.values()].flat())]);
   const targetsById = new Map(targets.map((target) => [target.id, target]));
   const targetLabels = await listDatabaseLabelsByIds(client, [...new Set(targets.map((target) => target.databaseId))]);
   const targetLabelById = new Map(targetLabels.map((label) => [label.id, label]));
-  const areaKeys = new Set((areasDatabase ? targetSchemas.get(areasDatabase.id) : [])?.map((p) => p.key) ?? []);
   for (const item of items) {
+    if (databaseById.get(item.databaseId) !== EVENTS_MODULE_ID) continue;
     const paths = (projectIdsByItem.get(item.id) ?? []).filter((id) => liveProjects.has(id));
-    const values: DerivedValues = {};
-    for (const [kind, edges] of [
-      ["area", areaEdges],
-      ["company", companyEdges],
-    ] as const) {
-      if (kind === "company" && databaseById.get(item.databaseId) !== EVENTS_MODULE_ID) continue;
-      const found = new Map<string, { id: string; title: string; color?: string | null; icon?: string | null }>();
-      const contributing = new Set<string>();
-      for (const projectId of paths)
-        for (const targetId of edges.get(projectId) ?? []) {
-          const target = targetsById.get(targetId);
-          if (!target) continue;
-          if (kind === "area" && target.databaseId !== areasDatabase?.id) continue;
-          const label = targetLabelById.get(target.databaseId);
-          if (kind === "company" && label?.ownerModuleId !== COMPANIES_MODULE_ID) continue;
-          const titleValue = target.properties[label?.titlePropertyKey ?? ""];
-          const entry: { id: string; title: string; color?: string | null; icon?: string | null } = {
-            id: target.id,
-            title: typeof titleValue === "string" ? titleValue : "",
-          };
-          if (kind === "area") {
-            entry.color =
-              areaKeys.has("color") && typeof target.properties.color === "string" ? target.properties.color : null;
-            entry.icon =
-              areaKeys.has("icon") && typeof target.properties.icon === "string" ? target.properties.icon : null;
-          }
-          found.set(target.id, entry);
-          contributing.add(projectId);
-        }
-      if (found.size)
-        values[kind] = {
+    const found = new Map<string, { id: string; title: string }>();
+    const contributing = new Set<string>();
+    for (const projectId of paths)
+      for (const targetId of companyEdges.get(projectId) ?? []) {
+        const target = targetsById.get(targetId);
+        if (!target) continue;
+        const label = targetLabelById.get(target.databaseId);
+        if (label?.ownerModuleId !== COMPANIES_MODULE_ID) continue;
+        const titleValue = target.properties[label.titlePropertyKey ?? ""];
+        found.set(target.id, { id: target.id, title: typeof titleValue === "string" ? titleValue : "" });
+        contributing.add(projectId);
+      }
+    if (found.size)
+      result.set(item.id, {
+        company: {
           values: [...found.values()].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
           via: "project",
           projectIds: [...contributing].sort(),
-        };
-    }
-    if (values.area || values.company) result.set(item.id, values);
+        },
+      });
   }
   return result;
 }
