@@ -1115,7 +1115,7 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(JSON.stringify(card)).not.toContain(areaId);
     });
 
-    it("drops a project the context did not list, and logs a count without the id", async () => {
+    it("drops a project the context did not list, and logs it without the id", async () => {
       const archivedProject = (await createIn("projects", { name: "Done long ago", status: "archived" })).id;
       const itemId = await createJournalItem();
       observedLogs.chunks.length = 0;
@@ -1124,7 +1124,7 @@ describe("createProposalComputation (issue #1434)", () => {
 
       const card = await onlyCard();
       expect(card).toMatchObject({ status: "proposed", proposal: { properties: run } });
-      const { output } = loggedRecord("Dropped journal entry references");
+      const { output } = loggedRecord("Dropped an unlisted projectId from a journal entry answer");
       expect(JSON.stringify(card)).not.toContain(archivedProject);
       expect(output).not.toContain(archivedProject);
     });

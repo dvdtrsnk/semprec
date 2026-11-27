@@ -4397,7 +4397,7 @@ describe("Markdown page proposal validation", () => {
       await runInTenant(foreign, () => seedSystem(runtime));
       const setup = (tenant: string) =>
         runInTenant(tenant, async () => {
-          const dbs = await systemDatabases(runtime, ["projects", "tasks", "journal"] as const);
+          const dbs = await systemDatabases(runtime, ["projects", "tasks", "journal", "areas"] as const);
           const cp = createChokePoint(runtime);
           const journalItem = (period: "day" | "week") =>
             withTransaction(runtime, (client) =>
@@ -4407,6 +4407,8 @@ describe("Markdown page proposal validation", () => {
             project: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } }),
             otherProject: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Other project" } }),
             task: await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } }),
+            // An area item is no page host any more: only projects and Journal days are.
+            area: await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } }),
             day: await journalItem("day"),
             week: await journalItem("week"),
           };
@@ -4431,7 +4433,7 @@ describe("Markdown page proposal validation", () => {
       for (const target of [own.project.id, own.otherProject.id, own.day.id])
         await expect(validate(target, hello("end"))).resolves.toBeNull();
       expect((await docCount()).rows).toEqual(before.rows);
-      for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
+      for (const target of [own.task.id, own.area.id, own.week.id, other.project.id, randomUUID()])
         await expect(validate(target, hello("end"))).rejects.toMatchObject({
           status: 400,
           details: { field: "target" },
