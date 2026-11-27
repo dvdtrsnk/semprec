@@ -88,7 +88,7 @@ internal class ScriptedMailRepository(
     val threads: MailCall<MailThreadQuery, MailThreadPage> = MailCall(mailContent(mailPage())),
     val changes: MailCall<Pair<MailThreadQuery, String>, MailThreadChanges> =
         MailCall(mailContent(MailThreadChanges("c-next", emptyList(), emptyList(), reset = false))),
-    val facets: MailCall<String?, MailFacets> = MailCall(mailContent(mailFacets())),
+    val facets: MailCall<Unit, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
     val read: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(false)),
@@ -106,7 +106,7 @@ internal class ScriptedMailRepository(
 
     override suspend fun threadChanges(query: MailThreadQuery, since: String) = changes.answer(query to since)
 
-    override suspend fun facets(projectId: String?) = facets.answer(projectId)
+    override suspend fun facets() = facets.answer(Unit)
 
     override suspend fun summary() = summary.answer(Unit)
 
@@ -283,14 +283,13 @@ internal fun mailSearch(
     remote = MailRemoteSearch(listOf("m1"), failed, unindexed),
 )
 
-internal fun mailFacets(selectedProjectName: String? = null) = MailFacets(
+internal fun mailFacets() = MailFacets(
     total = 9,
     projectsTotal = 7,
     projects = listOf(
         MailFacetOption("pr1", "Web", "#FF9500", 3),
         MailFacetOption("pr2", "Koupelna", null, 2),
     ),
-    selectedProjectName = selectedProjectName,
 )
 
 internal fun mailSummary() = MailSummary(5, 2, 1, 2, emptyList())

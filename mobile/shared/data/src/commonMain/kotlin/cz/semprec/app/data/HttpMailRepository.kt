@@ -51,11 +51,9 @@ class HttpMailRepository internal constructor(
                 MailThreadChanges(changes.cursor, changes.threads.map { it.toDomain() }, changes.removed, changes.reset)
             }
 
-    override suspend fun facets(projectId: String?): RepositoryResult<MailFacets> {
-        val parameters = listOfNotNull(projectId?.let { "projectId" to it })
-        return api.send(HttpMethod.Get, "/api/mail/threads/facets", parameters).decode<MailFacetsDto>()
-            .then { counts -> names(PROJECTS_KEY).map { projectNames -> counts.toDomain(projectNames, projectId) } }
-    }
+    override suspend fun facets(): RepositoryResult<MailFacets> =
+        api.send(HttpMethod.Get, "/api/mail/threads/facets").decode<MailFacetsDto>()
+            .then { counts -> names(PROJECTS_KEY).map { projectNames -> counts.toDomain(projectNames) } }
 
     override suspend fun summary(): RepositoryResult<MailSummary> =
         api.send(HttpMethod.Get, "/api/mail/summary").decode<MailSummaryDto>().map { it.toDomain() }
@@ -114,14 +112,10 @@ private fun MailBox.wire(): String = when (this) {
 }
 
 /** The options of the filter; one whose item is gone or has no name is left out, as it could not be shown. */
-private fun MailFacetsDto.toDomain(
-    projectNames: Map<String, MailNameAndColor>,
-    selectedProjectId: String?,
-) = MailFacets(
+private fun MailFacetsDto.toDomain(projectNames: Map<String, MailNameAndColor>) = MailFacets(
     total = total,
     projectsTotal = projects.total,
     projects = projects.items.mapNotNull { item -> item.option(projectNames) },
-    selectedProjectName = selectedProjectId?.let { projectNames[it]?.name },
 )
 
 private fun MailFacetItemDto.option(names: Map<String, MailNameAndColor>): MailFacetOption? {

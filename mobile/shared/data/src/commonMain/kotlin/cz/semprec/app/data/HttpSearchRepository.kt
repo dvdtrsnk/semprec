@@ -62,7 +62,6 @@ private val SUBTITLE_KINDS: Map<String, SearchSubtitleKind> = mapOf(
     "phone" to SearchSubtitleKind.PHONE,
     "relationship" to SearchSubtitleKind.RELATIONSHIP,
     "status" to SearchSubtitleKind.STATUS,
-    "count" to SearchSubtitleKind.COUNT,
     "sender" to SearchSubtitleKind.SENDER,
     "movedFrom" to SearchSubtitleKind.MOVED_FROM,
     "missedInEvent" to SearchSubtitleKind.MISSED_IN_EVENT,

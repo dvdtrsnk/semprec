@@ -7,8 +7,8 @@ package cz.semprec.app.domain
 interface MailRepository {
     suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage>
 
-    /** The project counts of the filter, narrowed by the selected project. */
-    suspend fun facets(projectId: String?): RepositoryResult<MailFacets>
+    /** The thread counts of the filter, over every visible thread. */
+    suspend fun facets(): RepositoryResult<MailFacets>
 
     suspend fun summary(): RepositoryResult<MailSummary>
 

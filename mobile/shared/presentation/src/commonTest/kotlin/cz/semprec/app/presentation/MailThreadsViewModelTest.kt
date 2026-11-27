@@ -50,7 +50,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         runCurrent()
         val expected = MailThreadQuery(MailBox.SEMP_DRAFTS, "m1", "f1", "pr1")
         assertEquals(expected, mail.threads.asked.single())
-        assertEquals(listOf<String?>("pr1"), mail.facets.asked)
+        assertEquals(1, mail.facets.count)
         vm.close()
     }
 
@@ -380,7 +380,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
     }
 
     @Test fun `the facets fill the sheet and name the project the list starts with`() = runTest(dispatcher) {
-        val mail = ScriptedMailRepository(facets = MailCall(mailContent(mailFacets(selectedProjectName = "Web"))))
+        val mail = ScriptedMailRepository()
         val vm = viewModel(mail, start = MailListStart(projectId = "pr1"))
         runCurrent()
         val state = vm.state.value
@@ -412,7 +412,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         assertNull(vm.state.value.projectId)
         assertNull(vm.state.value.projectName)
         runCurrent()
-        assertEquals(listOf<String?>("pr2", "pr1", null), mail.facets.asked)
+        assertEquals(1, mail.facets.count)
         vm.onAction(MailThreadsAction.SetProject("pr2"))
         vm.onAction(MailThreadsAction.ClearContext)
         assertNull(vm.state.value.projectId)

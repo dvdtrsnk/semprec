@@ -45,7 +45,6 @@ extension SearchSubtitleKind {
         case .phone: self = .phone
         case .relationship: self = .relationship
         case .status: self = .status
-        case .count: self = .count
         case .sender: self = .sender
         case .movedFrom: self = .movedFrom
         case .missedInEvent: self = .missedInEvent

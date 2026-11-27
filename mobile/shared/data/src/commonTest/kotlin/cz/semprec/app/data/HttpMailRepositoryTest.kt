@@ -224,35 +224,19 @@ class HttpMailRepositoryTest {
     }
 
     @Test
-    fun theFacetsGetTheirNamesFromTheItemsAndDropWhatHasNone() = runTest {
+    fun theFacetsAskWithoutParametersAndGetTheirNamesFromTheItemsDroppingWhatHasNone() = runTest {
         val server = server(::routes)
 
-        val answer = server.mail().facets("pr1")
+        val answer = server.mail().facets()
         val facets = assertIs<RepositoryResult.Content<MailFacets>>(answer).value
 
         val sent = server.requests.first { it.url.encodedPath == "/api/mail/threads/facets" }
-        assertEquals(listOf("projectId"), sent.url.parameters.names().toList())
-        assertEquals("pr1", sent.query("projectId"))
-        assertEquals(9, facets.total)
-        assertEquals(7, facets.projectsTotal)
-        assertEquals(listOf(MailFacetOption("pr1", "Web", "#FF9500", 3)), facets.projects)
-        assertEquals("Web", facets.selectedProjectName)
+        assertTrue(sent.url.parameters.isEmpty())
+        assertEquals(MailFacets(9, 7, listOf(MailFacetOption("pr1", "Web", "#FF9500", 3))), facets)
         assertEquals(
             listOf("/api/mail/threads/facets", "/api/databases", "/api/databases/$PROJECTS_DB/query"),
             server.requests.map { it.url.encodedPath },
         )
-    }
-
-    @Test
-    fun theFacetsWithoutAProjectAskForEverythingAndNameNoSelection() = runTest {
-        val server = server(::routes)
-
-        val facets = assertIs<RepositoryResult.Content<MailFacets>>(server.mail().facets(null)).value
-
-        val sent = server.requests.first { it.url.encodedPath == "/api/mail/threads/facets" }
-        assertTrue(sent.url.parameters.isEmpty())
-        assertEquals(listOf("Web"), facets.projects.map { it.name })
-        assertNull(facets.selectedProjectName)
     }
 
     @Test
