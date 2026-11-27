@@ -65,6 +65,22 @@
         }
       }
     },
+    "debug.alarm.codes.edit" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nastavit kódy"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set Up Codes"
+          }
+        }
+      }
+    },
     "debug.alarm.empty" : {
       "localizations" : {
         "cs" : {
@@ -166,13 +182,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pro vstávání s kódem není uložený žádný kód. Přidej ho v nastavení spánku."
+            "value" : "Pro vstávání s kódem není uložený žádný kód. Přidej ho tlačítkem Nastavit kódy."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No code is stored for a wake mission. Add one in the sleep settings."
+            "value" : "No code is stored for a wake mission. Add one with Set Up Codes."
           }
         }
       }
@@ -394,13 +410,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Žádný kód není uložený. Přidej ho v nastavení spánku."
+            "value" : "Žádný kód není uložený. Přidej ho tlačítkem Nastavit kódy."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No code is stored. Add one in the sleep settings."
+            "value" : "No code is stored. Add one with Set Up Codes."
           }
         }
       }

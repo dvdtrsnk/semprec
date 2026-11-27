@@ -1,25 +1,34 @@
 import CoreKit
 import DesignSystem
+import SleepFeature
 import SwiftUI
 
 /// The debug tool of system alarms: asks for the permission, rings a test alarm in 10 seconds, a minute or five
 /// minutes or at a chosen time once or every day, as a plain alarm or as a wake mission that a stored code stops, and
 /// lists and cancels the alarms the app holds. Everything it shows and decides comes from the shared ViewModel; this
-/// screen holds only the time being picked.
+/// screen holds only the time being picked and whether the codes are being edited. The stored codes are edited in the
+/// sleep plan's own wake settings, which the form opens as its sheet: a sheet opened from a row of a form inside a
+/// sheet closes that sheet.
 struct DebugAlarmScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: DebugAlarmViewModel
+    private let makeWakeSettings: @MainActor () -> any WakeSettingsScreenModel
 
     // MARK: - State
     @State private var repeatsDaily = false
     @State private var withCodes = false
     @State private var time = Date().addingTimeInterval(120)
+    @State private var editingCodes = false
 
     // MARK: - Init
     /// `makeModel` runs once per screen, when SwiftUI creates the state object.
-    init(makeModel: @escaping @MainActor () -> any DebugAlarmScreenModel) {
+    init(
+        makeModel: @escaping @MainActor () -> any DebugAlarmScreenModel,
+        makeWakeSettings: @escaping @MainActor () -> any WakeSettingsScreenModel
+    ) {
         _viewModel = StateObject(wrappedValue: DebugAlarmViewModel(model: makeModel()))
+        self.makeWakeSettings = makeWakeSettings
     }
 
     // MARK: - Body
@@ -34,6 +43,12 @@ struct DebugAlarmScreen: View {
             }
         }
         .formStyle(.grouped)
+        // The codes may have changed in the wake settings, so the stored count is read again.
+        .sheet(
+            isPresented: $editingCodes,
+            onDismiss: { viewModel.send(.refresh) },
+            content: { SleepScreenFactory.wakeSettings(makeModel: makeWakeSettings) }
+        )
         .navigationTitle(Text("debug.alarm.title"))
         .inlineNavigationTitle()
         .toolbar {
@@ -87,6 +102,11 @@ private extension DebugAlarmScreen {
         Section {
             Toggle(isOn: $withCodes) { Text("debug.alarm.mission") }
                 .accessibilityIdentifier(AppIdentifiers.debugAlarmMission)
+            Button { editingCodes = true } label: {
+                Label { Text("debug.alarm.codes.edit") } icon: { Image(systemName: "qrcode.viewfinder") }
+            }
+            .listRowButton()
+            .accessibilityIdentifier(AppIdentifiers.debugAlarmEditCodes)
         } header: {
             Text("debug.alarm.options")
         } footer: {
@@ -293,18 +313,31 @@ private extension DebugAlarmScreen {
                 ],
                 codeCount: 2
             ))
+        } makeWakeSettings: {
+            previewWakeSettings()
         }
     }
 }
 
 #Preview("Permission not asked") {
     NavigationStack {
-        DebugAlarmScreen { ScriptedDebugAlarmScreenModel(state: DebugAlarmState(authorization: .notDetermined)) }
+        DebugAlarmScreen(
+            makeModel: { ScriptedDebugAlarmScreenModel(state: DebugAlarmState(authorization: .notDetermined)) },
+            makeWakeSettings: previewWakeSettings
+        )
     }
 }
 
 #Preview("Unsupported") {
     NavigationStack {
-        DebugAlarmScreen { ScriptedDebugAlarmScreenModel(state: DebugAlarmState(authorization: .unsupported)) }
+        DebugAlarmScreen(
+            makeModel: { ScriptedDebugAlarmScreenModel(state: DebugAlarmState(authorization: .unsupported)) },
+            makeWakeSettings: previewWakeSettings
+        )
     }
+}
+
+@MainActor
+private func previewWakeSettings() -> any WakeSettingsScreenModel {
+    ScriptedWakeSettingsScreenModel(state: WakeSettingsState())
 }
