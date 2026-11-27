@@ -1,6 +1,7 @@
 // Facets of one database: per requested property or relation path, its choices with item counts. Owns the
 // exclude-self filter rewrite and one counting statement per facet.
 import type { PoolClient } from "pg";
+import type { AreaFilterTemplate } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -13,6 +14,7 @@ import {
   type ResolvedProperty,
 } from "../manifest/catalogResolution.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { DatabaseRow, PropertyRow } from "../types.js";
 import {
   compileFilterNode,
@@ -69,6 +71,8 @@ export type DatabaseFacet = ({ property: string } | { path: [string, string] }) 
 
 export interface FacetMetadata {
   catalogResolver: CatalogResolver;
+  /** By database key. */
+  areaFilters: ReadonlyMap<string, AreaFilterTemplate>;
 }
 
 let facetMetadataPromise: Promise<FacetMetadata> | undefined;
@@ -79,7 +83,13 @@ let facetMetadataPromise: Promise<FacetMetadata> | undefined;
  */
 export function loadFacetMetadata(): Promise<FacetMetadata> {
   facetMetadataPromise ??= loadFullModuleRegistry()
-    .then(async (registry) => ({ catalogResolver: await createCatalogResolver(registry) }))
+    .then(async (registry) => {
+      const areaFilters = new Map<string, AreaFilterTemplate>();
+      for (const database of await registry.getDatabases()) {
+        if (database.areaFilter !== undefined) areaFilters.set(database.key, database.areaFilter);
+      }
+      return { catalogResolver: await createCatalogResolver(registry), areaFilters };
+    })
     .catch((error: unknown) => {
       facetMetadataPromise = undefined;
       throw error;
@@ -137,6 +147,20 @@ export function excludeFacetConditions(filter: FilterNode, facet: FacetTarget): 
       return filter;
     default:
       return isFacetCondition(filter, facet) ? undefined : filter;
+  }
+}
+
+function areaFilterNames(template: AreaFilterTemplate, facet: FacetTarget): boolean {
+  switch (template.type) {
+    case "and":
+    case "or":
+      return template.nodes.some((node) => areaFilterNames(node, facet));
+    case "relation_contains":
+      return facet.kind === "property" && template.property === facet.key;
+    case "relation_path_contains":
+      return facet.kind === "path" && template.path[0] === facet.path[0] && template.path[1] === facet.path[1];
+    case "relation_is_empty":
+      return false;
   }
 }
 
@@ -308,13 +332,15 @@ function assertHopNotClosed(key: string, hop: RelationHop, closedDatabaseIds: Re
 
 /**
  * Counts the live items a relation or two-relation path reaches (the middle item must be live too), most frequent
- * first, ties by id. `color` is the item's own `color` when its database has that property. Only the fixed
- * `item_a`/`item_b` column names are interpolated; every id is a bound parameter.
+ * first, ties by id; `everyTarget` returns every live item of the reached database, also with count 0. `color` is
+ * the area color for a Projects item, otherwise the item's own `color`. Only the fixed `item_a`/`item_b` column
+ * names are interpolated; every id is a bound parameter.
  */
 async function countRelationTargets(
   client: PoolClient,
   scope: FacetScope,
   hops: [RelationHop] | [RelationHop, RelationHop],
+  everyTarget: boolean,
 ): Promise<CountedValues> {
   const statement = startStatement(scope);
   const { bind } = statement;
@@ -349,8 +375,16 @@ async function countRelationTargets(
          AND ${liveDatabase("between_database", firstDatabase)}
          AND ${liveDatabase("reached_database", reachedDatabase)}`;
   }
-  const candidates = `SELECT counted.facet_value AS id, counted.item_count, counted.open_count
+  const candidates = everyTarget
+    ? `SELECT every_item.id, COALESCE(counted.item_count, 0) AS item_count,
+              COALESCE(counted.open_count, 0) AS open_count
+       FROM items every_item
+       LEFT JOIN counted ON NOT counted.is_total AND counted.facet_value = every_item.id
+       WHERE every_item.database_id = ${reachedDatabase}::uuid AND every_item.deleted_at IS NULL
+         AND ${liveDatabase("every_database", reachedDatabase)}`
+    : `SELECT counted.facet_value AS id, counted.item_count, counted.open_count
        FROM counted WHERE NOT counted.is_total AND counted.facet_value IS NOT NULL`;
+  const limit = everyTarget ? "" : `WHERE ranked.ordinal <= ${bind(FACET_TOP_VALUES)}::int`;
   const { rows } = await client.query<CountedValueRow>(
     `${countedValuesSql(statement, "NULL::jsonb", source)}, candidates AS (${candidates}), ranked AS (
        SELECT candidates.*, ROW_NUMBER() OVER (ORDER BY candidates.item_count DESC, candidates.id) AS ordinal
@@ -365,13 +399,36 @@ async function countRelationTargets(
             ) AS label,
             CASE
               WHEN EXISTS (
+                SELECT 1 FROM databases projects
+                WHERE projects.id = ${reachedDatabase}::uuid AND projects.system
+                  AND projects.key = ${bind(PROJECTS_MODULE_ID)}
+              ) THEN (
+                SELECT area.properties ->> 'color'
+                FROM properties area_property
+                JOIN relation_definitions area_definition
+                  ON area_property.id IN (area_definition.property_id_a, area_definition.property_id_b)
+                JOIN item_relations area_edge ON area_edge.relation_definition_id = area_definition.id
+                JOIN items area
+                  ON area.database_id = (area_property.config ->> 'targetDatabaseId')::uuid
+                 AND area.deleted_at IS NULL
+                 AND area.id = CASE WHEN area_definition.property_id_a = area_property.id
+                                    THEN area_edge.item_b ELSE area_edge.item_a END
+                JOIN databases area_database
+                  ON area_database.id = area.database_id AND area_database.archived_at IS NULL
+                WHERE area_property.database_id = ${reachedDatabase}::uuid
+                  AND area_property.key = 'area' AND area_property.type = 'relation'
+                  AND listed.id = CASE WHEN area_definition.property_id_a = area_property.id
+                                       THEN area_edge.item_a ELSE area_edge.item_b END
+                ORDER BY area.id LIMIT 1
+              )
+              WHEN EXISTS (
                 SELECT 1 FROM properties own_color
                 WHERE own_color.database_id = ${reachedDatabase}::uuid AND own_color.key = 'color'
               ) THEN listed.properties ->> 'color'
             END AS color
      FROM ranked
      JOIN items listed ON listed.database_id = ${reachedDatabase}::uuid AND listed.id = ranked.id
-     WHERE ranked.ordinal <= ${bind(FACET_TOP_VALUES)}::int
+     ${limit}
      UNION ALL
      SELECT CASE WHEN counted.is_total THEN 'total' ELSE 'none' END, 0, NULL,
             counted.item_count::text, counted.open_count::text, NULL, NULL
@@ -470,7 +527,8 @@ function emptyNumberCondition(propertyKey: string, matchZero: boolean): FilterNo
  * Computes the requested facets in the caller's transaction, one statement per facet, each counted under the
  * caller's filter minus its own conditions. Selects list held options (every option for `GROUP_SELECT_KEYS`), text
  * the top 20 values, checkbox `true`/`false` (false includes no value), date the matching relative presets, number
- * its stored presets, and a relation or path the top 20 reached items. Unresolvable keys are refused on `facets`.
+ * its stored presets, and a relation or path the top 20 reached items, or every reached item when the module's
+ * declared area filter goes through it. Unresolvable keys are refused on `facets`.
  */
 export async function computeDatabaseFacets(
   client: PoolClient,
@@ -511,6 +569,7 @@ export async function computeDatabaseFacets(
 
   const catalogs = await metadata.catalogResolver.getCatalogsForDbKey(database.key);
   const locale = toManifestLocale(options.locale ?? "en");
+  const areaFilter = database.system && database.key !== null ? metadata.areaFilters.get(database.key) : undefined;
 
   const facets: DatabaseFacet[] = [];
   for (const facet of requested) {
@@ -528,6 +587,7 @@ export async function computeDatabaseFacets(
       ...(open === undefined ? {} : { open: counts.open }),
       values,
     });
+    const everyArea = areaFilter !== undefined && areaFilterNames(areaFilter, facet);
 
     if (facet.kind === "path") {
       const first = relationHop(filterProperties.get(facet.path[0]));
@@ -544,7 +604,7 @@ export async function computeDatabaseFacets(
         throw new ValidationError("A path facet requires a resolvable two-relation path", { field: "facets" });
       }
       assertHopNotClosed(facet.path[1], second, closedDatabaseIds);
-      const counted = await countRelationTargets(client, scope, [first, second]);
+      const counted = await countRelationTargets(client, scope, [first, second], everyArea);
       facets.push(answer(counted, relationValues(counted)));
       continue;
     }
@@ -580,7 +640,7 @@ export async function computeDatabaseFacets(
           });
         }
         assertHopNotClosed(property.key, hop, closedDatabaseIds);
-        const counted = await countRelationTargets(client, scope, [hop]);
+        const counted = await countRelationTargets(client, scope, [hop], everyArea);
         facets.push(answer(counted, relationValues(counted)));
         break;
       }

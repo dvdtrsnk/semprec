@@ -13,7 +13,6 @@ import {
   createUser,
   decideAndEnqueueApprovalRequest,
   deleteRelationWithClient,
-  ensureJournalPeriodDoc,
   getApprovalRequest,
   hashPassword,
   loadFullModuleRegistry,
@@ -107,15 +106,14 @@ describe("relation invalidations across REST, agent and realtime", () => {
       const to = await cp.createItem({ databaseId: target.id, properties: {} });
       const projects = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "projects");
       const tasks = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "tasks");
-      const journal = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "journal");
-      if (!projects || !tasks || !journal) throw new Error("Missing seeded databases");
+      const files = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "files");
+      const areas = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "areas");
+      if (!projects || !tasks || !files || !areas) throw new Error("Missing seeded databases");
       const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
       const nextProject = await cp.createItem({ databaseId: projects.id, properties: { name: "Next" } });
       const task = await cp.createItem({ databaseId: tasks.id, properties: { name: "Moved task" } });
-      const { itemId: dayId } = await withTransaction(pool, (client) =>
-        ensureJournalPeriodDoc(client, "day", "2026-10-01"),
-      );
-      const day = { id: dayId };
+      const file = await cp.createItem({ databaseId: files.id, properties: { name: "File" } });
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
       const taskProject = (await cp.listProperties(tasks.id)).find((entry) => entry.key === "project");
       if (!taskProject) throw new Error("Missing task project relation");
       await cp.setRelation({ relationPropertyId: taskProject.id, callerItemId: task.id, targetItemId: project.id });
@@ -136,8 +134,10 @@ describe("relation invalidations across REST, agent and realtime", () => {
         tasks,
         projects,
         taskProject,
-        journal,
-        day,
+        files,
+        areas,
+        file,
+        area,
         run,
       };
     });
@@ -367,14 +367,11 @@ describe("relation invalidations across REST, agent and realtime", () => {
         ["PUT", "put"],
         ["DELETE", "delete"],
       ] as const) {
-        const response = await fetch(
-          `${baseUrl}/api/items/${fixture.day.id}/relations/project/${fixture.nextProject.id}`,
-          {
-            method,
-            headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
-            ...(method === "PUT" ? { body: "{}" } : {}),
-          },
-        );
+        const response = await fetch(`${baseUrl}/api/items/${fixture.file.id}/relations/area/${fixture.area.id}`, {
+          method,
+          headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
+          ...(method === "PUT" ? { body: "{}" } : {}),
+        });
         expect(response.status).toBe(200);
         const marker = randomUUID();
         await sentinel(tenantA, userA.id, marker);
@@ -384,16 +381,16 @@ describe("relation invalidations across REST, agent and realtime", () => {
         expect(ownerFrames).toContainEqual({
           type: "invalidate",
           scope: "relation",
-          databaseId: fixture.journal.id,
-          itemId: fixture.day.id,
-          propertyKey: "project",
+          databaseId: fixture.files.id,
+          itemId: fixture.file.id,
+          propertyKey: "area",
           op,
         });
         expect(ownerFrames).toContainEqual({
           type: "invalidate",
           scope: "relation",
-          databaseId: fixture.projects.id,
-          itemId: fixture.nextProject.id,
+          databaseId: fixture.areas.id,
+          itemId: fixture.area.id,
           propertyKey: null,
           op,
         });

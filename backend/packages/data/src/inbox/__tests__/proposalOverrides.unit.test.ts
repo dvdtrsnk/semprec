@@ -672,9 +672,9 @@ describe("relation lists and step switches in the overrides (issue #1920)", () =
     itemId: "00000000-0000-4000-8000-000000000002",
     role: "primary",
     properties: { name: "Move" },
-    relations: { company: [A] },
-    before: { properties: { name: "Move" }, relations: { company: [B] } },
-    after: { properties: { name: "Move" }, relations: { company: [A] } },
+    relations: { area: [A] },
+    before: { properties: { name: "Move" }, relations: { area: [B] } },
+    after: { properties: { name: "Move" }, relations: { area: [A] } },
   };
 
   describe("parseUserOverrides", () => {
@@ -747,9 +747,9 @@ describe("relation lists and step switches in the overrides (issue #1920)", () =
 
     it("reads the relations of an update step from its `after`", () => {
       const ai = multi({ ...updateRelationStep });
-      expect(mergeUserOverrides(ai, {}, { project: { relations: { company: [A] } } })).toEqual({});
-      expect(mergeUserOverrides(ai, {}, { project: { relations: { company: [C] } } })).toEqual({
-        project: { relations: { company: [C] } },
+      expect(mergeUserOverrides(ai, {}, { project: { relations: { area: [A] } } })).toEqual({});
+      expect(mergeUserOverrides(ai, {}, { project: { relations: { area: [C] } } })).toEqual({
+        project: { relations: { area: [C] } },
       });
     });
 
@@ -865,15 +865,12 @@ describe("relation lists and step switches in the overrides (issue #1920)", () =
 
     it("sets the list of an update step in `after`, and in `relations` where the step holds the key", () => {
       const ai = multi({ ...updateRelationStep, relations: undefined });
-      const effective = composeEffectiveEnvelope(ai, { project: { relations: { company: [C] } } });
+      const effective = composeEffectiveEnvelope(ai, { project: { relations: { area: [C] } } });
       const step = effective.operations?.[0];
-      expect(step?.after?.relations).toEqual({ company: [C] });
+      expect(step?.after?.relations).toEqual({ area: [C] });
       expect(step?.relations).toBeUndefined();
-      const holding = composeEffectiveEnvelope(multi(updateRelationStep), { project: { relations: { company: [C] } } });
-      expect(holding.operations?.[0]).toMatchObject({
-        relations: { company: [C] },
-        after: { relations: { company: [C] } },
-      });
+      const holding = composeEffectiveEnvelope(multi(updateRelationStep), { project: { relations: { area: [C] } } });
+      expect(holding.operations?.[0]).toMatchObject({ relations: { area: [C] }, after: { relations: { area: [C] } } });
     });
 
     it("sets a step's switch and leaves the other steps' as they are", () => {

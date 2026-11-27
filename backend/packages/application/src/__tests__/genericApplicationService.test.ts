@@ -19,6 +19,22 @@ import {
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
+/**
+ * The stored link of the production rule fileCompaniesFromProjects on a file with one project: the
+ * file's companies are inherited from that project's company, and the link is on even while the project has no
+ * company. It is a stored value link, so it is present whatever the derived-links flag says.
+ */
+function inheritedCompaniesLink(project: { id: string }, title: string) {
+  return {
+    companies: {
+      valueKind: "inherited",
+      brokenAt: null,
+      brokenBy: null,
+      sources: [{ kind: "item", itemId: project.id, databaseKey: "projects", title, propertyKey: "company" }],
+    },
+  };
+}
+
 let admin: Pool;
 let runtime: Pool;
 let writer: Pool;
@@ -140,18 +156,15 @@ describe("derived item reads in the generic application service", () => {
         if (!found) throw new Error(`Missing ${key}`);
         return found.id;
       };
-      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Work" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Work" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const event = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "Event", date: "2026-10-16" },
-      });
-      const companyProperty = (await cp.listProperties(db("projects"))).find((p) => p.key === "company");
-      const projectProperty = (await cp.listProperties(db("events"))).find((p) => p.key === "project");
-      if (!companyProperty || !projectProperty) throw new Error("Missing relation properties");
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const areaProperty = (await cp.listProperties(db("projects"))).find((p) => p.key === "area");
+      const projectProperty = (await cp.listProperties(db("files"))).find((p) => p.key === "projects");
+      if (!areaProperty || !projectProperty) throw new Error("Missing relation properties");
       await cp.createRelation({
         relationPropertyId: projectProperty.id,
-        callerItemId: event.id,
+        callerItemId: file.id,
         targetItemId: project.id,
       });
       const definition = await withTransaction(runtime, (client) =>
@@ -162,20 +175,20 @@ describe("derived item reads in the generic application service", () => {
       );
       if (definition.rows.length !== 1 || !definition.rows[0]) throw new Error("Missing project definition");
       const definitionId = definition.rows[0].id;
-      const view = await cp.createView({ databaseId: db("events"), type: "table", name: "Events" });
+      const view = await cp.createView({ databaseId: db("files"), type: "table", name: "Files" });
       const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
       const service = createGenericApplicationService(runtime, resolver);
       const actor = { userId: "00000000-0000-4000-8000-000000000001" };
-      const setCompany = (targetItemId: string | null) =>
-        writerCp.setRelation({ relationPropertyId: companyProperty.id, callerItemId: project.id, targetItemId });
+      const setArea = (targetItemId: string | null) =>
+        writerCp.setRelation({ relationPropertyId: areaProperty.id, callerItemId: project.id, targetItemId });
       const read = async (mode: "item" | "database" | "view", include: ItemReadInclude) => {
-        if (mode === "item") return service.getItem(actor, { itemId: event.id, include });
+        if (mode === "item") return service.getItem(actor, { itemId: file.id, include });
         const page =
           mode === "database"
-            ? await service.queryDatabase(actor, { databaseId: db("events"), include, limit: 50 })
+            ? await service.queryDatabase(actor, { databaseId: db("files"), include, limit: 50 })
             : await service.queryView(actor, { viewId: view.id, include, limit: 50 });
-        const row = page.items.find((entry) => entry.id === event.id);
-        if (!row) throw new Error("Missing event from query");
+        const row = page.items.find((entry) => entry.id === file.id);
+        if (!row) throw new Error("Missing file from query");
         return row;
       };
       async function observe<T>(action: () => Promise<T>, change?: () => Promise<unknown>) {
@@ -229,43 +242,44 @@ describe("derived item reads in the generic application service", () => {
         }
       }
       for (const mode of ["item", "database", "view"] as const) {
-        await setCompany(company.id);
+        await setArea(area.id);
         const observed = await observe(
           () => read(mode, ["links", "derived"]),
-          () => setCompany(null),
+          () => setArea(null),
         );
         expect(observed.changed).toBe(true);
         expect(observed.reads).toBe(1);
-        expect(observed.result.derived?.company?.values[0]?.id).toBe(company.id);
-        expect(observed.result.links?.company).toMatchObject({
+        expect(observed.result.derived?.area?.values[0]?.id).toBe(area.id);
+        expect(observed.result.links?.area).toMatchObject({
           valueKind: "derived",
-          sources: [{ itemId: project.id, propertyKey: "company" }],
+          sources: [{ itemId: project.id, propertyKey: "area" }],
         });
-        expect((await read(mode, ["links", "derived"])).derived?.company).toBeUndefined();
+        expect((await read(mode, ["links", "derived"])).derived?.area).toBeUndefined();
       }
-      await setCompany(null);
+      await setArea(null);
       const empty = await observe(
         () => read("item", ["links", "derived"]),
-        () => setCompany(company.id),
+        () => setArea(area.id),
       );
       expect(empty.changed).toBe(true);
       expect(empty.reads).toBe(1);
-      expect(empty.result.derived?.company).toBeUndefined();
-      expect(empty.result.links?.company).toBeUndefined();
-      expect((await read("item", ["derived"])).derived?.company?.values[0]?.id).toBe(company.id);
+      expect(empty.result.derived?.area).toBeUndefined();
+      expect(empty.result.links?.area).toBeUndefined();
+      expect((await read("item", ["derived"])).derived?.area?.values[0]?.id).toBe(area.id);
       const linksOnly = await observe(() => read("item", ["links"]));
       expect(linksOnly.reads).toBe(0);
       expect(linksOnly.result).not.toHaveProperty("derived");
-      const supplied = await cp.getDerivedValuesForItems([event.id]);
-      expect(supplied.get(event.id)?.company?.values[0]?.id).toBe(company.id);
-      const disabled = await observe(() => cp.getValueLinksForItems([event.id], false, supplied));
+      const supplied = await cp.getDerivedValuesForItems([file.id]);
+      expect(supplied.get(file.id)?.area?.values[0]?.id).toBe(area.id);
+      const disabled = await observe(() => cp.getValueLinksForItems([file.id], false, supplied));
       expect(disabled.reads).toBe(0);
-      // Derived links disabled: the event has no stored link, so nothing is reported.
-      expect(disabled.result.get(event.id)).toBeUndefined();
+      // Derived links disabled: no area, only the stored inherited companies link.
+      expect(disabled.result.get(file.id)).toEqual(inheritedCompaniesLink(project, "Project"));
       const emptyProjection = await cp.getDerivedValuesForItems([]);
-      const preloadedEmpty = await observe(() => cp.getValueLinksForItems([event.id], true, emptyProjection));
+      const preloadedEmpty = await observe(() => cp.getValueLinksForItems([file.id], true, emptyProjection));
       expect(preloadedEmpty.reads).toBe(0);
-      expect(preloadedEmpty.result.get(event.id)).toBeUndefined();
+      // An empty derived projection: no area, only the stored inherited companies link.
+      expect(preloadedEmpty.result.get(file.id)).toEqual(inheritedCompaniesLink(project, "Project"));
     });
   });
   it("requires both flags for derived links and independently opts into derived values", async () => {
@@ -278,15 +292,15 @@ describe("derived item reads in the generic application service", () => {
         if (!db) throw new Error(`Missing ${key}`);
         return db;
       };
-      const companies = database("companies"),
+      const areas = database("areas"),
         projects = database("projects"),
-        events = database("events");
-      const company = await cp.createItem({ databaseId: companies.id, properties: { name: "Work" } });
+        files = database("files");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Work" } });
       const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Web" } });
-      const event = await cp.createItem({ databaseId: events.id, properties: { name: "Event", date: "2026-10-16" } });
+      const file = await cp.createItem({ databaseId: files.id, properties: { name: "File" } });
       for (const [db, key, from, to] of [
-        [projects.id, "company", project.id, company.id],
-        [events.id, "project", event.id, project.id],
+        [projects.id, "area", project.id, area.id],
+        [files.id, "projects", file.id, project.id],
       ] as const) {
         const property = (await cp.listProperties(db)).find((entry) => entry.key === key);
         if (!property) throw new Error(`Missing ${key}`);
@@ -295,23 +309,23 @@ describe("derived item reads in the generic application service", () => {
       const resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
       const service = createGenericApplicationService(runtime, resolver);
       const actor = { userId: "00000000-0000-4000-8000-000000000001" };
-      const neither = await service.getItem(actor, { itemId: event.id });
-      const links = await service.getItem(actor, { itemId: event.id, include: ["links"] });
-      const derived = await service.getItem(actor, { itemId: event.id, include: ["derived"] });
-      const both = await service.getItem(actor, { itemId: event.id, include: ["links", "derived"] });
+      const neither = await service.getItem(actor, { itemId: file.id });
+      const links = await service.getItem(actor, { itemId: file.id, include: ["links"] });
+      const derived = await service.getItem(actor, { itemId: file.id, include: ["derived"] });
+      const both = await service.getItem(actor, { itemId: file.id, include: ["links", "derived"] });
       expect(neither).not.toHaveProperty("links");
       expect(neither).not.toHaveProperty("derived");
-      // Without the derived flag no company link: the event stores none.
-      expect(links.links).toEqual({});
+      // Without the derived flag no area link; the stored inherited companies link remains.
+      expect(links.links).toEqual(inheritedCompaniesLink(project, "Web"));
       expect(links).not.toHaveProperty("derived");
-      expect(derived.derived?.company?.values[0]?.id).toBe(company.id);
+      expect(derived.derived?.area?.values[0]?.id).toBe(area.id);
       expect(derived).not.toHaveProperty("links");
-      expect(both.derived?.company?.values[0]?.id).toBe(company.id);
-      expect(both.links?.company).toMatchObject({
+      expect(both.derived?.area?.values[0]?.id).toBe(area.id);
+      expect(both.links?.area).toMatchObject({
         valueKind: "derived",
-        sources: [{ itemId: project.id, propertyKey: "company" }],
+        sources: [{ itemId: project.id, propertyKey: "area" }],
       });
-      const view = await cp.createView({ databaseId: events.id, type: "table", name: "Events" });
+      const view = await cp.createView({ databaseId: files.id, type: "table", name: "Files" });
       for (const [include, hasLinks, hasDerived] of [
         [undefined, false, false],
         [["links"], true, false],
@@ -319,15 +333,15 @@ describe("derived item reads in the generic application service", () => {
         [["links", "derived"], true, true],
       ] satisfies Array<[ItemReadInclude, boolean, boolean]>) {
         for (const page of [
-          await service.queryDatabase(actor, { databaseId: events.id, include, limit: 50 }),
+          await service.queryDatabase(actor, { databaseId: files.id, include, limit: 50 }),
           await service.queryView(actor, { viewId: view.id, include, limit: 50 }),
         ]) {
-          const row = page.items.find((entry) => entry.id === event.id);
-          if (!row) throw new Error("Missing event from query");
-          if (hasDerived) expect(row.derived?.company?.values[0]?.id).toBe(company.id);
+          const row = page.items.find((entry) => entry.id === file.id);
+          if (!row) throw new Error("Missing file from query");
+          if (hasDerived) expect(row.derived?.area?.values[0]?.id).toBe(area.id);
           else expect(row).not.toHaveProperty("derived");
-          if (hasLinks && hasDerived) expect(row.links?.company?.valueKind).toBe("derived");
-          else if (hasLinks) expect(row.links).toEqual({});
+          if (hasLinks && hasDerived) expect(row.links?.area?.valueKind).toBe("derived");
+          else if (hasLinks) expect(row.links).toEqual(inheritedCompaniesLink(project, "Web"));
           else expect(row).not.toHaveProperty("links");
         }
       }

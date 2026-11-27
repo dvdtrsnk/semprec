@@ -14,13 +14,7 @@ import { NotFoundError } from "../../errors.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import {
-  isProposalOptionField,
-  listProposalOptions,
-  PROPOSAL_OPTION_FIELDS,
-  type ProposalOption,
-  type ProposalOptionField,
-} from "../proposalOptions.js";
+import { listProposalOptions, type ProposalOption, type ProposalOptionField } from "../proposalOptions.js";
 
 let pool: Pool;
 let runtime: Pool;
@@ -408,21 +402,14 @@ describe("the options of a proposal card", () => {
   });
 
   describe("the none choice and the labels", () => {
-    it("offers no area field", () => {
-      expect(PROPOSAL_OPTION_FIELDS).toEqual(["project", "people", "company", "page", "mcpProjects"]);
-      expect(isProposalOptionField("area")).toBe(false);
-    });
-
-    it("puts the none choice last for project and company, and none for the other fields", async () => {
+    it("puts the none choice last for project and company, first for area, and none for the other fields", async () => {
       const card = await createCard({ proposal: await taskEnvelope() });
-      await createProject("Home");
+      await createItem("areas", { name: "Home" });
       await createItem("companies", { name: "Acme" });
 
-      const projects = await optionsOf(card, "project");
-      expect(projects.at(-1)).toMatchObject({ id: null, none: true });
-      expect(projects.filter((option) => option.none)).toHaveLength(1);
-      expect(projects[0]).toMatchObject({ label: "Home" });
+      expect((await optionsOf(card, "project")).at(-1)).toMatchObject({ id: null, none: true });
       expect((await optionsOf(card, "company")).at(-1)).toMatchObject({ id: null, none: true });
+      expect((await optionsOf(card, "area"))[0]).toMatchObject({ id: null, none: true });
       for (const field of ["people", "page", "mcpProjects"] as const) {
         expect(
           (await optionsOf(card, field)).some((option) => option.none),
@@ -438,23 +425,25 @@ describe("the options of a proposal card", () => {
 
       expect(await noneLabel("project", "en")).toBe("No project");
       expect(await noneLabel("project", "cs")).toBe("Bez projektu");
+      expect(await noneLabel("area", "en")).toBe("No area");
+      expect(await noneLabel("area", "cs")).toBe("Bez oblasti");
       expect(await noneLabel("company", "en")).toBe("No company");
       expect(await noneLabel("company", "cs")).toBe("Bez firmy");
       expect(await noneLabel("project", "de")).toBe("No project");
     });
 
-    it("returns the color of a project, and none for an item that has no color", async () => {
+    it("returns the color of a project and of an area, and none for an item that has no color", async () => {
       const colored = await createProject("Colored", { color: "#3366FF" });
       const plain = await createProject("Plain");
-      const company = await createItem("companies", { name: "Acme" });
+      const area = await createItem("areas", { name: "Garden", color: "#FF2D55" });
       const card = await createCard({ proposal: await taskEnvelope() });
 
       const projects = await optionsOf(card, "project");
-      const companies = await optionsOf(card, "company");
+      const areas = await optionsOf(card, "area");
 
       expect(projects.find((option) => option.id === colored)).toMatchObject({ color: "#3366FF" });
       expect(projects.find((option) => option.id === plain)).not.toHaveProperty("color");
-      expect(companies.find((option) => option.id === company)).not.toHaveProperty("color");
+      expect(areas.find((option) => option.id === area)).toMatchObject({ label: "Garden", color: "#FF2D55" });
     });
   });
 
@@ -544,14 +533,14 @@ describe("the options of a proposal card", () => {
   });
 
   describe("the other fields", () => {
-    it("reads the value of the company field from the user's manual value, and of an mcp card from its list of projects", async () => {
-      const acme = await createItem("companies", { name: "Zzz company" });
-      await createItem("companies", { name: "Aaa company" });
+    it("reads the value of the area field from the user's manual value, and of an mcp card from its list of projects", async () => {
+      const home = await createItem("areas", { name: "Zzz home" });
+      await createItem("areas", { name: "Aaa work" });
       const projectA = await createProject("Zzz project");
       await createProject("Aaa project");
-      const companyCard = await createCard({
+      const areaCard = await createCard({
         proposal: await taskEnvelope(),
-        userOverrides: { primary: { company: acme } },
+        userOverrides: { primary: { area: home } },
       });
       const mcpCard = await createCard({
         proposal: {
@@ -561,11 +550,11 @@ describe("the options of a proposal card", () => {
         },
       });
 
-      const companies = await optionsOf(companyCard, "company");
+      const areas = await optionsOf(areaCard, "area");
       const mcp = await optionsOf(mcpCard, "mcpProjects");
 
-      expect(companies[0]).toMatchObject({ id: acme });
-      expect(companies.at(-1)).toMatchObject({ id: null, none: true });
+      expect(areas[0]).toMatchObject({ id: null, none: true });
+      expect(areas[1]).toMatchObject({ id: home });
       expect(mcp[0]).toMatchObject({ id: projectA });
       expect(mcp.some((option) => option.none)).toBe(false);
     });
@@ -587,9 +576,9 @@ describe("the options of a proposal card", () => {
       expect(withDone).toContain(done);
     });
 
-    it("lists projects and subpages for page, with the card's page first", async () => {
+    it("lists projects, areas and subpages for page, with the card's page first", async () => {
       const project = await createProject("Zzz host");
-      const otherProject = await createProject("Aaa project");
+      const area = await createItem("areas", { name: "Aaa area" });
       const subpage = await inA(async (client) => {
         const created = await createSubpageWithClient(
           client,
@@ -614,7 +603,7 @@ describe("the options of a proposal card", () => {
       const options = await optionsOf(card, "page");
 
       expect(options[0]).toMatchObject({ id: project, label: "Zzz host" });
-      expect(options.map((option) => option.id)).toEqual(expect.arrayContaining([otherProject, subpage]));
+      expect(options.map((option) => option.id)).toEqual(expect.arrayContaining([area, subpage]));
       expect(options.find((option) => option.id === subpage)).toMatchObject({ label: "Notes page", disabled: false });
       expect(options.map((option) => option.id)).not.toContain(trashedSubpage);
       expect(options.some((option) => option.none)).toBe(false);

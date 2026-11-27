@@ -265,6 +265,7 @@ describe("the snippet of an item-backed search result (issue #1996)", () => {
       task: await create("tasks", { name: "Úkol" }),
       event: await create("events", { name: "Schůzka", date: "2026-10-16" }),
       project: await create("projects", { name: "Projekt" }),
+      area: await create("areas", { name: "Oblast" }),
       contact: await create("people", { name: "Novák" }),
       file: await create("files", { name: "Soubor" }),
     };

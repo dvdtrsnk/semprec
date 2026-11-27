@@ -170,10 +170,19 @@ const INVALID_CREATES: ReadonlyArray<
 ];
 
 /**
- * The seven hardcoded system databases a 'database' type may target: the core databases without journal and
+ * The eight hardcoded system databases a 'database' type may target: the ten without journal and
  * transcripts. mcpServers has its own cases below.
  */
-const ACCEPTED_TARGETS = ["projects", "tasks", "people", "files", "events", "healthRecords", "companies"] as const;
+const ACCEPTED_TARGETS = [
+  "areas",
+  "projects",
+  "tasks",
+  "people",
+  "files",
+  "events",
+  "healthRecords",
+  "companies",
+] as const;
 
 describe("Inbox item type write hook: processingMethod and targetDatabase are checked on every write (issue #1436)", () => {
   beforeEach(async () => {

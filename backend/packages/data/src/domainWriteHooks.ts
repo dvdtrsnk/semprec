@@ -11,6 +11,7 @@ import {
 import { inboxTypeLockWriteHook, inboxTypeLockChangedHook } from "./inbox/inboxTypeLockHook.js";
 import { inboxTypeEdgeChangedHook } from "./inbox/inboxTypeEdgeHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
+import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
 import { libraryCoverPreWriteTransform, prepareLibraryCoverWrite } from "./library/libraryCoverHooks.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./seed/libraryModuleKeys.js";
@@ -84,6 +85,7 @@ import {
 } from "./mail/mailThreadChangeHooks.js";
 import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
 import {
+  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -223,6 +225,7 @@ import {
   peopleLastContactItemRestoreHook,
   peopleLastContactItemUpdateHook,
 } from "./people/lastContactHooks.js";
+import { projectAttachmentAreaEdgeChangedHook } from "./derived/projectAttachmentAreaHook.js";
 import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValueHook.js";
 import { hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
 import { mailboxItemRestoreHook } from "./mail/mailboxRestoreHook.js";
@@ -336,6 +339,7 @@ const itemCreateHooks: readonly ItemCreateHook[] = [
   mailboxConnectionLimitCreateHook,
   // An account created with Calendars on queues its first calendar sync pass.
   mailboxServiceItemCreateHook,
+  areaItemCreateHook,
   // A company created with a `web` feeds the resolver rules like an update of its `web`.
   linkRuleItemCreateHook,
   eventReminderValuesItemCreateHook,
@@ -382,6 +386,7 @@ const itemUpdateHooks: readonly ItemUpdateHook[] = [
   mailboxConnectionLimitUpdateHook,
   // Switching an account's Mail off pauses its sync and queues the removal of its mail; on resumes the sync.
   mailboxServiceItemUpdateHook,
+  areaItemUpdateHook,
   linkRuleItemHook,
   peopleLastContactItemUpdateHook,
   eventReminderValuesItemUpdateHook,
@@ -512,7 +517,7 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // file's `projects` link, which that hook deletes.
   eventAttachmentLinkReleaseEdgeChangedHook,
   linkRuleEdgeHook,
-  // An edge of an Emails or Threads item stamps the thread list rows it changes
+  // An edge of an Emails or Threads item, or between a project and an area, stamps the thread list rows it changes
   // and publishes their `mailThread` invalidations (the company and project edges, the link engine's included).
   mailThreadChangeEdgeChangedHook,
   peopleLastContactEdgeChangedHook,
@@ -523,6 +528,8 @@ const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
   // After `linkRuleEdgeHook`, which recomputes the links that are `on`.
   taskSourceEventLinkDetachEdgeChangedHook,
   projectDerivedValueEdgeChangedHook,
+  // An item that gets a project loses its own area edge: the area is derived from the project.
+  projectAttachmentAreaEdgeChangedHook,
   // Each reported create or delete of an Inbox type edge (a repeated create included) queues the Inbox tick and
   // the recompute of the item's Journal day.
   inboxTypeEdgeChangedHook,
@@ -598,6 +605,7 @@ registerItemReadProjection({
 registerItemSearchGroup({ type: "task", ownerModuleIds: [TASKS_MODULE_ID] });
 registerItemSearchGroup({ type: "event", ownerModuleIds: [EVENTS_MODULE_ID] });
 registerItemSearchGroup({ type: "project", ownerModuleIds: [PROJECTS_MODULE_ID] });
+registerItemSearchGroup({ type: "area", ownerModuleIds: [AREAS_MODULE_ID] });
 registerItemSearchGroup({ type: "contact", ownerModuleIds: [PEOPLE_MODULE_ID, COMPANIES_MODULE_ID] });
 registerItemSearchGroup({ type: "journal", ownerModuleIds: [JOURNAL_MODULE_ID] });
 registerItemSearchGroup({ type: "file", ownerModuleIds: [FILES_MODULE_ID] });

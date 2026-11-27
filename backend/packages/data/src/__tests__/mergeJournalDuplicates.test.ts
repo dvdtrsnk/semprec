@@ -50,6 +50,7 @@ function byCodeUnit(a: string, b: string): number {
 interface DatabaseIds {
   journal: string;
   inbox: string;
+  areas: string;
   projects: string;
   events: string;
   tasks: string;
@@ -89,6 +90,7 @@ async function databaseIds(tenantId: string): Promise<DatabaseIds> {
   return {
     journal: idOf("journal"),
     inbox: idOf("inbox"),
+    areas: idOf("areas"),
     projects: idOf("projects"),
     events: idOf("events"),
     tasks: idOf("tasks"),
@@ -168,7 +170,7 @@ async function relationProperty(databaseId: string, key: string, tenantId = tena
 }
 
 async function link(
-  key: "project",
+  key: "area" | "project",
   entryId: string,
   targetItemId: string,
   metadata: Record<string, unknown> = {},
@@ -582,23 +584,23 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       expect(await relatedIds(ids.journal, "project", newer)).toEqual([]);
     });
 
-    it("moves every project edge to the survivor and keeps an edge the survivor already has as it is", async () => {
+    it("moves every area edge to the survivor and keeps an edge the survivor already has as it is", async () => {
       const { older, newer } = await duplicatedDay();
-      const home = await createNamed(ids.projects, "Home");
-      const work = await createNamed(ids.projects, "Work");
-      await link("project", older, home, { from: "survivor" });
-      await link("project", newer, home, { from: "duplicate" });
-      await link("project", newer, work, { from: "duplicate" });
+      const home = await createNamed(ids.areas, "Home");
+      const work = await createNamed(ids.areas, "Work");
+      await link("area", older, home, { from: "survivor" });
+      await link("area", newer, home, { from: "duplicate" });
+      await link("area", newer, work, { from: "duplicate" });
 
       expect(await merge()).toEqual(mergedInto({ older, newer }));
 
-      expect(await related(ids.journal, "project", older)).toEqual(
+      expect(await related(ids.journal, "area", older)).toEqual(
         [
           { item: home, metadata: { from: "survivor" } },
           { item: work, metadata: { from: "duplicate" } },
         ].sort((a, b) => byCodeUnit(a.item, b.item)),
       );
-      expect(await relatedIds(ids.journal, "project", newer)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
       expect(refusedEdgeLog).not.toHaveBeenCalled();
     });
 
@@ -739,24 +741,20 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
   describe("edges that are not moved", () => {
     it("leaves an edge to a trashed item on the duplicate and reports it, but not one the survivor already holds", async () => {
       const pair = await duplicatedDay();
-      const shared = await createNamed(ids.projects, "Shared");
-      const gone = await createNamed(ids.projects, "Gone");
-      const work = await createNamed(ids.projects, "Work");
-      await link("project", pair.older, shared);
-      for (const project of [shared, gone, work]) await link("project", pair.newer, project);
-      await trash(ids.projects, shared);
-      await trash(ids.projects, gone);
+      const shared = await createNamed(ids.areas, "Shared");
+      const gone = await createNamed(ids.areas, "Gone");
+      const work = await createNamed(ids.areas, "Work");
+      await link("area", pair.older, shared);
+      for (const area of [shared, gone, work]) await link("area", pair.newer, area);
+      await trash(ids.areas, shared);
+      await trash(ids.areas, gone);
 
       await expectRefused(pair, [
-        {
-          relationPropertyId: await relationPropertyId(ids.journal, "project"),
-          otherItemId: gone,
-          field: "targetItemId",
-        },
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: gone, field: "targetItemId" },
       ]);
 
-      expect(await relatedIds(ids.journal, "project", pair.older)).toEqual([shared, work].sort(byCodeUnit));
-      expect(await relatedIds(ids.journal, "project", pair.newer)).toEqual([gone]);
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([shared, work].sort(byCodeUnit));
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([gone]);
     });
 
     it.each([
@@ -766,22 +764,38 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       "neither checks nor writes an edge to %s that the survivor already holds, keeps its metadata and deletes the duplicate's copy",
       async (_name, trashed) => {
         const pair = await duplicatedDay();
-        const shared = await createNamed(ids.projects, "Shared");
-        await link("project", pair.older, shared, { from: "survivor" });
-        await link("project", pair.newer, shared, { from: "duplicate" });
-        if (trashed) await trash(ids.projects, shared);
+        const shared = await createNamed(ids.areas, "Shared");
+        await link("area", pair.older, shared, { from: "survivor" });
+        await link("area", pair.newer, shared, { from: "duplicate" });
+        if (trashed) await trash(ids.areas, shared);
         // An insert on the survivor, or a check that its edge could be created, would fail the merge.
         failEdgeCreatedOn = pair.older;
         failEdgeCheckOf = pair.older;
 
         await expectRefused(pair, []);
 
-        expect(await related(ids.journal, "project", pair.older)).toEqual([
+        expect(await related(ids.journal, "area", pair.older)).toEqual([
           { item: shared, metadata: { from: "survivor" } },
         ]);
-        expect(await relatedIds(ids.journal, "project", pair.newer)).toEqual([]);
+        expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([]);
       },
     );
+
+    it("leaves a stored area on the duplicate when the survivor's area is derived from its project and reports it", async () => {
+      const pair = await duplicatedDay();
+      const project = await createNamed(ids.projects, "Garden");
+      const home = await createNamed(ids.areas, "Home");
+      await link("project", pair.older, project);
+      await link("area", pair.newer, home);
+
+      await expectRefused(pair, [
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: home, field: "area" },
+      ]);
+
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([home]);
+      expect(await relatedIds(ids.journal, "project", pair.older)).toEqual([project]);
+    });
 
     it("leaves the edge of a trashed Inbox item on the duplicate and reports it", async () => {
       const pair = await duplicatedDay();
@@ -803,32 +817,28 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
     it("leaves an edge a domain rule refuses for the survivor on the duplicate and reports it without a field", async () => {
       const pair = await duplicatedDay();
-      const home = await createNamed(ids.projects, "Home");
-      await link("project", pair.newer, home);
+      const home = await createNamed(ids.areas, "Home");
+      await link("area", pair.newer, home);
       refuseEdgeCheckOf = pair.older;
 
       await expectRefused(pair, [
-        { relationPropertyId: await relationPropertyId(ids.journal, "project"), otherItemId: home, field: null },
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: home, field: null },
       ]);
 
-      expect(await relatedIds(ids.journal, "project", pair.older)).toEqual([]);
-      expect(await relatedIds(ids.journal, "project", pair.newer)).toEqual([home]);
+      expect(await relatedIds(ids.journal, "area", pair.older)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", pair.newer)).toEqual([home]);
     });
 
     it("reports the edges left on the duplicate across relation properties, one log line each", async () => {
       const pair = await duplicatedDay();
-      const gone = await createNamed(ids.projects, "Gone");
-      await link("project", pair.newer, gone);
-      await trash(ids.projects, gone);
+      const gone = await createNamed(ids.areas, "Gone");
+      await link("area", pair.newer, gone);
+      await trash(ids.areas, gone);
       const trashed = await capture("Trashed note");
       await trash(ids.inbox, trashed);
 
       await expectRefused(pair, [
-        {
-          relationPropertyId: await relationPropertyId(ids.journal, "project"),
-          otherItemId: gone,
-          field: "targetItemId",
-        },
+        { relationPropertyId: await relationPropertyId(ids.journal, "area"), otherItemId: gone, field: "targetItemId" },
         {
           relationPropertyId: await relationPropertyId(ids.inbox, "journalDay"),
           otherItemId: trashed,
@@ -839,9 +849,9 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
     it("logs no refused edge when the caller's transaction is rolled back after the merge", async () => {
       const { newer } = await duplicatedDay();
-      const gone = await createNamed(ids.projects, "Gone");
-      await link("project", newer, gone);
-      await trash(ids.projects, gone);
+      const gone = await createNamed(ids.areas, "Gone");
+      await link("area", newer, gone);
+      await trash(ids.areas, gone);
       const before = await everything();
       let refused: number | undefined;
 
@@ -862,16 +872,16 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
     it("does not give the survivor an edge that was removed while the merge ran", async () => {
       const { older, newer } = await duplicatedDay();
-      const home = await createNamed(ids.projects, "Home");
-      await link("project", newer, home);
-      const { property } = await relationProperty(ids.journal, "project");
+      const home = await createNamed(ids.areas, "Home");
+      await link("area", newer, home);
+      const { property } = await relationProperty(ids.journal, "area");
       removeConcurrently = { relationPropertyId: property.id, callerItemId: newer, targetItemId: home };
 
       expect(await merge()).toEqual(mergedInto({ older, newer }));
 
       expect(removeConcurrently).toBeNull();
-      expect(await relatedIds(ids.journal, "project", older)).toEqual([]);
-      expect(await relatedIds(ids.journal, "project", newer)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", older)).toEqual([]);
+      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
       expect(refusedEdgeLog).not.toHaveBeenCalled();
     });
   });
@@ -881,7 +891,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       const { older, newer } = await duplicatedDay();
       await write(older, "# Friday\n\nOlder");
       await write(newer, "# Friday\n\nNewer");
-      await link("project", newer, await createNamed(ids.projects, "Home"));
+      await link("area", newer, await createNamed(ids.areas, "Home"));
       await capture("A note");
       expect(await merge()).toEqual(mergedInto({ older, newer }));
       const merged = await everything();
@@ -956,11 +966,12 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
   });
 
   describe("a merge that fails", () => {
-    /** Two live entries with a page each; the newer one also has a project and an Inbox item to move. */
+    /** Two live entries with a page each; the newer one also has an area, a project and an Inbox item to move. */
     async function populatedDuplicates(): Promise<{ older: string; newer: string }> {
       const { older, newer } = await duplicatedDay();
       await write(older, "# Friday\n\nOlder");
       await write(newer, "# Friday\n\nNewer");
+      await link("area", newer, await createNamed(ids.areas, "Home"));
       await link("project", newer, await createNamed(ids.projects, "Garden"));
       await capture("A note");
       return { older, newer };
@@ -1229,7 +1240,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
     const foreign = await duplicatedDay(other, otherIds);
     await write(foreign.older, "Foreign older", other);
     await write(foreign.newer, "Foreign newer", other);
-    await link("project", foreign.newer, await createNamed(otherIds.projects, "Foreign", other), {}, other, otherIds);
+    await link("area", foreign.newer, await createNamed(otherIds.areas, "Foreign", other), {}, other, otherIds);
     const foreignItem = await capture("Foreign note", other, otherIds);
     const before = await stored(other);
     const { older, newer } = await duplicatedDay();

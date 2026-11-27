@@ -54,7 +54,7 @@ afterAll(async () => {
   await admin?.end();
 });
 
-const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"];
+const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
 
 function search(
   q: string,

@@ -23,7 +23,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 let admin: Pool;
 let data: Pool;
 let tenant: string;
-const ruleKey = "fixtureValid.healthRecordNameToProjectName";
+const ruleKey = "fixtureValid.areaNameToProjectName";
 
 describe("link rule propagation", () => {
   beforeAll(async () => {
@@ -57,23 +57,19 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const databases = await cp.listDatabases();
-      const healthRecordsDb = databases.find((db) => db.ownerModuleId === "healthRecords");
+      const areaDb = databases.find((db) => db.ownerModuleId === "areas");
       const projectDb = databases.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecordsDb || !projectDb) throw new Error("Fixture databases missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecordsDb.id, properties: { name: "Source" } });
+      if (!areaDb || !projectDb) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areaDb.id, properties: { name: "Source" } });
       const project = await cp.createItem({ databaseId: projectDb.id, properties: { name: "Own" } });
-      const via = (await cp.listProperties(projectDb.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projectDb.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture via relation missing");
-      await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: healthRecord.id });
-      await cp.updateItem({
-        databaseId: healthRecordsDb.id,
-        itemId: healthRecord.id,
-        propertiesPatch: { name: "Changed" },
-      });
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: area.id });
+      await cp.updateItem({ databaseId: areaDb.id, itemId: area.id, propertiesPatch: { name: "Changed" } });
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
       } finally {
         setInvalidationHook(() => {});
       }
@@ -90,14 +86,14 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const databases = await cp.listDatabases();
-      const healthRecordsDb = databases.find((db) => db.ownerModuleId === "healthRecords");
+      const areaDb = databases.find((db) => db.ownerModuleId === "areas");
       const projectDb = databases.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecordsDb || !projectDb) throw new Error("Fixture databases missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecordsDb.id, properties: { name: "Source" } });
+      if (!areaDb || !projectDb) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areaDb.id, properties: { name: "Source" } });
       const project = await cp.createItem({ databaseId: projectDb.id, properties: {} });
-      const via = (await cp.listProperties(projectDb.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projectDb.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture via relation missing");
-      await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: healthRecord.id });
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: area.id });
       expect((await cp.getItem(projectDb.id, project.id))?.properties.name).toBe("Source");
       const links = await withTransaction(data, (client) =>
         client.query<{ id: string; state: string }>(
@@ -106,19 +102,15 @@ describe("link rule propagation", () => {
         ),
       );
       expect(links.rows).toEqual([{ id: expect.any(String), state: "on" }]);
-      await cp.updateItem({
-        databaseId: healthRecordsDb.id,
-        itemId: healthRecord.id,
-        propertiesPatch: { name: "Changed" },
-      });
+      await cp.updateItem({ databaseId: areaDb.id, itemId: area.id, propertiesPatch: { name: "Changed" } });
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
         expect((await cp.getItem(projectDb.id, project.id))?.properties.name).toBe("Changed");
         expect(events.filter((event) => event.scope === "item" && event.itemId === project.id)).toHaveLength(1);
         events.length = 0;
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
         expect(events.filter((event) => event.scope === "item" && event.itemId === project.id)).toEqual([]);
       } finally {
         setInvalidationHook(() => {});
@@ -130,7 +122,7 @@ describe("link rule propagation", () => {
         ),
       );
       expect(after.rows).toEqual(links.rows);
-      await cp.deleteRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: healthRecord.id });
+      await cp.deleteRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: area.id });
       expect((await cp.getItem(projectDb.id, project.id))?.properties.name).toBe("Changed");
       const remaining = await withTransaction(data, (client) =>
         client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'name'", [project.id]),
@@ -143,12 +135,12 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const databases = await cp.listDatabases();
-      const healthRecords = databases.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = databases.find((db) => db.ownerModuleId === "areas");
       const projects = databases.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       const before = await cp.getItem(projects.id, target.id);
       const jobsBefore = await admin.query<{ key: string | null }>(
@@ -164,7 +156,7 @@ describe("link rule propagation", () => {
             await createRelationWithClient(client, {
               relationPropertyId: via.id,
               callerItemId: target.id,
-              targetItemId: healthRecord.id,
+              targetItemId: area.id,
             });
             expect((await client.query("SELECT id FROM value_links WHERE item_id = $1", [target.id])).rowCount).toBe(1);
             throw failure;
@@ -195,16 +187,16 @@ describe("link rule propagation", () => {
     const fixture = await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const databases = await cp.listDatabases();
-      const healthRecords = databases.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = databases.find((db) => db.ownerModuleId === "areas");
       const projects = databases.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const source = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
-      await cp.updateItem({ databaseId: healthRecords.id, itemId: source.id, propertiesPatch: { name: "New source" } });
-      return { cp, healthRecords, projects, source, target };
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "New source" } });
+      return { cp, areas, projects, source, target };
     });
     let release!: () => void;
     let signal!: (pid: number) => void;
@@ -279,15 +271,15 @@ describe("link rule propagation", () => {
     const fixture = await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const source = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
-      await cp.updateItem({ databaseId: healthRecords.id, itemId: source.id, propertiesPatch: { name: "New source" } });
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "New source" } });
       return { cp, projects, source, target };
     });
     let release!: () => void;
@@ -373,15 +365,15 @@ describe("link rule propagation", () => {
     const fixture = await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const source = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: source.id });
-      await cp.updateItem({ databaseId: healthRecords.id, itemId: source.id, propertiesPatch: { name: "Changed" } });
+      await cp.updateItem({ databaseId: areas.id, itemId: source.id, propertiesPatch: { name: "Changed" } });
       return { cp, projects, source, target };
     });
     const key = `valueLinksPropagate:${tenant}:${ruleKey}:${fixture.source.id}:1`;
@@ -471,14 +463,14 @@ describe("link rule propagation", () => {
       runInTenant(tenantId, async () => {
         const cp = createChokePoint(data);
         const databases = await cp.listDatabases();
-        const healthRecords = databases.find((db) => db.ownerModuleId === "healthRecords");
+        const areas = databases.find((db) => db.ownerModuleId === "areas");
         const projects = databases.find((db) => db.ownerModuleId === "projects");
-        if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-        const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+        if (!areas || !projects) throw new Error("Fixture databases missing");
+        const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
         const project = await cp.createItem({ databaseId: projects.id, properties: {} });
-        const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+        const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
         if (!via) throw new Error("Fixture via relation missing");
-        return { cp, healthRecords, projects, healthRecord, project, via };
+        return { cp, areas, projects, area, project, via };
       });
     const own = await make(tenant);
     const other = await make(foreign);
@@ -487,7 +479,7 @@ describe("link rule propagation", () => {
         assertRelationCreatableWithClient(client, {
           relationPropertyId: own.via.id,
           callerItemId: own.project.id,
-          targetItemId: own.healthRecord.id,
+          targetItemId: own.area.id,
         }),
       );
       const links = await withTransaction(data, (client) =>
@@ -497,9 +489,9 @@ describe("link rule propagation", () => {
       await own.cp.createRelation({
         relationPropertyId: own.via.id,
         callerItemId: own.project.id,
-        targetItemId: own.healthRecord.id,
+        targetItemId: own.area.id,
       });
-      await handleLinkPropagation(data, { ruleKey, sourceItemId: other.healthRecord.id, hop: 1 });
+      await handleLinkPropagation(data, { ruleKey, sourceItemId: other.area.id, hop: 1 });
       await handleLinkPropagation(data, { ruleKey, sourceItemId: randomUUID(), hop: 1 });
       expect((await own.cp.getItem(own.projects.id, own.project.id))?.properties.name).toBe("Source");
       expect(await own.cp.getItem(other.projects.id, other.project.id)).toBeNull();
@@ -517,31 +509,27 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Initial" } });
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Initial" } });
       const live = await cp.createItem({ databaseId: projects.id, properties: {} });
       const broken = await cp.createItem({ databaseId: projects.id, properties: {} });
       for (const item of [live, broken])
-        await cp.createRelation({ relationPropertyId: via.id, callerItemId: item.id, targetItemId: healthRecord.id });
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: item.id, targetItemId: area.id });
       await cp.updateItem(
         { databaseId: projects.id, itemId: broken.id, propertiesPatch: { name: "Own choice" } },
         undefined,
         undefined,
         { writerKind: "user" },
       );
-      await cp.updateItem({
-        databaseId: healthRecords.id,
-        itemId: healthRecord.id,
-        propertiesPatch: { name: "New source" },
-      });
+      await cp.updateItem({ databaseId: areas.id, itemId: area.id, propertiesPatch: { name: "New source" } });
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
       } finally {
         setInvalidationHook(() => {});
       }
@@ -568,20 +556,20 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Original" } });
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Original" } });
       const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: healthRecord.id });
+      await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
       expect((await cp.getItem(projects.id, target.id))?.properties.name).toBe("Original");
       const trashEvents: InvalidationEvent[] = [];
       setInvalidationHook((event) => trashEvents.push(event));
       try {
         await withTransaction(data, (client) =>
-          itemDeleteWithClient(client, healthRecords.id, healthRecord.id, {
+          itemDeleteWithClient(client, areas.id, area.id, {
             queueAffinity: createActionQueueAffinity(),
           }),
         );
@@ -593,7 +581,7 @@ describe("link rule propagation", () => {
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       try {
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
       } finally {
         setInvalidationHook(() => {});
       }
@@ -612,23 +600,19 @@ describe("link rule propagation", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture via relation missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Initial" } });
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Initial" } });
       const targets: string[] = [];
       for (let index = 0; index < 101; index++) {
         const target = await cp.createItem({ databaseId: projects.id, properties: {} });
-        await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: healthRecord.id });
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: target.id, targetItemId: area.id });
         targets.push(target.id);
       }
-      await cp.updateItem({
-        databaseId: healthRecords.id,
-        itemId: healthRecord.id,
-        propertiesPatch: { name: "Changed" },
-      });
+      await cp.updateItem({ databaseId: areas.id, itemId: area.id, propertiesPatch: { name: "Changed" } });
       let commits = 0;
       const originals = new Map<PoolClient, PoolClient["query"]>();
       const onAcquire = (client: PoolClient) => {
@@ -647,7 +631,7 @@ describe("link rule propagation", () => {
       };
       data.on("acquire", onAcquire);
       try {
-        await handleLinkPropagation(data, { ruleKey, sourceItemId: healthRecord.id, hop: 1 });
+        await handleLinkPropagation(data, { ruleKey, sourceItemId: area.id, hop: 1 });
       } finally {
         data.off("acquire", onAcquire);
         for (const [client, original] of originals)

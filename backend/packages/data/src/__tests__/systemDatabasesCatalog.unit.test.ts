@@ -29,7 +29,8 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["property.tasks.status.option.missed"]).toBe("Missed");
     expect(catalogs?.cs["property.tasks.status.option.missed"]).toBe("Nesplněno");
 
-    expect(catalogs?.en["database.areas.name"]).toBeUndefined();
+    expect(catalogs?.en["database.areas.name"]).toBe("Areas");
+    expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");
 
     expect(catalogs?.en["property.projects.tags.name"]).toBe("Tags");
     expect(catalogs?.cs["property.projects.tags.name"]).toBe("Štítky");
@@ -47,6 +48,7 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(resolveCatalogLabel("Custom name", catalogs?.cs, catalogs?.en ?? {}, "database.tasks.name")).toBe(
       "Custom name",
     );
+    expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.areas.name")).toBe("Oblasti");
     expect(resolveCatalogLabel(null, catalogs?.cs, catalogs?.en ?? {}, "database.notARealDatabase.name")).toBe(
       "database.notARealDatabase.name",
     );
@@ -69,8 +71,10 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
   }
 
   it.each([
+    ["projects", "area", "relation", "Oblast", "Area"],
     ["projects", "date", "date", "Termín", "Deadline"],
-    ["projects", "company", "relation", "Firma", "Company"],
+    ["areas", "company", "relation", "Firmy", "Companies"],
+    ["areas", "healthRecord", "relation", "Zdravotní záznamy", "Health records"],
     ["healthRecords", "subject", "text", "Kdo", undefined],
     ["healthRecords", "files", "files", "Přílohy", undefined],
     ["journal", "type", "select", "Období", undefined],

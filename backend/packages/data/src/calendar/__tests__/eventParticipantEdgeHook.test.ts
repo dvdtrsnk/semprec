@@ -431,27 +431,19 @@ describe("Event participant edge write hook (issue #1757)", () => {
           { relationPropertyId: eventsCompany, callerItemId: f.event, targetItemId: company, metadata },
           USER,
         );
-        // A relation created without an inverse property, so its definition has one side only.
-        const notes = await f.cp.createDatabase({ name: "Notes" });
-        const { property: noteCompany } = await f.cp.createRelationProperty({
-          sourceDatabaseId: notes.id,
-          key: "company",
-          name: "Company",
-          targetDatabaseId: f.db("companies"),
-          cardinality: "many_to_many",
-        });
-        const note = (await f.cp.createItem({ databaseId: notes.id, properties: {} })).id;
+        // Files.area has no inverse property, so its definition has one side only.
+        const file = await f.item("files", "Notes");
+        const area = await f.item("areas", "Work");
+        const filesArea = await f.property("files", "area");
         await f.cp.createRelation(
-          { relationPropertyId: noteCompany.id, callerItemId: note, targetItemId: company, metadata },
+          { relationPropertyId: filesArea, callerItemId: file, targetItemId: area, metadata },
           USER,
         );
         expect((await f.cp.listItemRelations(task, tasksPeople))?.map((entry) => entry.metadata)).toEqual([metadata]);
         expect((await f.cp.listItemRelations(f.event, eventsCompany))?.map((entry) => entry.metadata)).toEqual([
           metadata,
         ]);
-        expect((await f.cp.listItemRelations(note, noteCompany.id))?.map((entry) => entry.metadata)).toEqual([
-          metadata,
-        ]);
+        expect((await f.cp.listItemRelations(file, filesArea))?.map((entry) => entry.metadata)).toEqual([metadata]);
       }));
 
     it("lets an insert-only public write without an invitation pass an edge that stores one", () =>

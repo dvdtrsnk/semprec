@@ -38,7 +38,7 @@ import { requestUrl } from "../customRoute.js";
 
 type MailThreadViewFilters = Pick<
   NonNullable<Parameters<typeof listMailThreads>[3]>,
-  "box" | "folderId" | "mailboxId" | "projectId" | "personId" | "unread"
+  "box" | "folderId" | "mailboxId" | "projectId" | "areaId" | "personId" | "unread"
 >;
 
 /** The filters naming one list view: the list's and the delta's query parameters. */
@@ -59,6 +59,7 @@ function parseMailThreadViewFilters(url: URL): MailThreadViewFilters {
     folderId: uuidParam("folderId"),
     mailboxId: uuidParam("mailboxId"),
     projectId: uuidParam("projectId"),
+    areaId: uuidParam("areaId"),
     personId: uuidParam("personId"),
     unread: rawUnread === "true",
   };
@@ -155,12 +156,23 @@ export function createMailThreadDetailRouteHandler(pool: Pool) {
   };
 }
 
-/** Thread counts of the mailbox filter bar in one statement. */
+/**
+ * Thread counts of the mailbox filter bar in one statement. The selected project narrows the area
+ * counts and the selected area narrows the project counts. An id of no project or area in the caller's
+ * tenant selects no thread and is no error.
+ */
 export function createMailThreadFacetsRouteHandler(pool: Pool) {
-  return async (): Promise<CustomRouteResult<MailThreadFacets>> => ({
-    status: 200,
-    body: await withTransaction(pool, (client) => readMailThreadFacets(client)),
-  });
+  return async (ctx: RouteUrl): Promise<CustomRouteResult<MailThreadFacets>> => {
+    const url = requestUrl(ctx.req);
+    const selected = (field: "areaId" | "projectId"): string | null => {
+      const value = url.searchParams.get(field);
+      if (value !== null && !z.uuid().safeParse(value).success)
+        throw new ValidationError(`Invalid ${field}`, { field });
+      return value;
+    };
+    const selection = { areaId: selected("areaId"), projectId: selected("projectId") };
+    return { status: 200, body: await withTransaction(pool, (client) => readMailThreadFacets(client, selection)) };
+  };
 }
 
 const readBodySchema = z.object({ read: z.boolean() }).strict();

@@ -1685,9 +1685,9 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("removes only its own blocks and leaves an edge the day already had", async () => {
-        const projectId = await createIn(await databaseIdFor("projects"), { name: "Health" });
-        const first = await createJournalCard({ projectId, markdown: "Morning." });
-        const second = await createJournalCard({ projectId, markdown: "Evening." });
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Health" });
+        const first = await createJournalCard({ areaId, markdown: "Morning." });
+        const second = await createJournalCard({ areaId, markdown: "Evening." });
         await confirmCard(first);
         await confirmCard(second);
         const day = (await dayItem())!;
@@ -1697,7 +1697,7 @@ describe("inbox custom route handlers", () => {
 
         expect(item.properties.status).toBe("proposed");
         expect(await dayPage()).toBe("Morning.");
-        expect(await edgeExists(day.id, projectId)).toBe(true);
+        expect(await edgeExists(day.id, areaId)).toBe(true);
       });
 
       tenantIt(
@@ -2033,11 +2033,11 @@ describe("inbox custom route handlers", () => {
 
     describe("multi-step proposals", () => {
       tenantIt("restores the values and the relation an update step changed", async () => {
-        const oldPerson = await createIn(await databaseIdFor("people"), { name: "Old" });
-        const newPerson = await createIn(await databaseIdFor("people"), { name: "New" });
+        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
+        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Before" });
-        await relate(projectsDb, "people", projectId, oldPerson);
+        await relate(projectsDb, "area", projectId, oldArea);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2046,15 +2046,15 @@ describe("inbox custom route handlers", () => {
               itemId: projectId,
               role: "primary",
               properties: { name: "After" },
-              relations: { people: [newPerson] },
-              before: { properties: { name: "Before" }, relations: { people: [oldPerson] } },
-              after: { properties: { name: "After" }, relations: { people: [newPerson] } },
+              relations: { area: [newArea] },
+              before: { properties: { name: "Before" }, relations: { area: [oldArea] } },
+              after: { properties: { name: "After" }, relations: { area: [newArea] } },
             },
           ]),
         );
         await confirmCard(cardId);
         expect((await anyItem(projectId)).properties.name).toBe("After");
-        expect(await edgeExists(projectId, newPerson)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(true);
 
         const { item } = await reopenCard(cardId);
 
@@ -2062,16 +2062,16 @@ describe("inbox custom route handlers", () => {
         const project = await anyItem(projectId);
         expect(project.properties.name).toBe("Before");
         expect(project.deletedAt).toBeNull();
-        expect(await edgeExists(projectId, oldPerson)).toBe(true);
-        expect(await edgeExists(projectId, newPerson)).toBe(false);
+        expect(await edgeExists(projectId, oldArea)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(false);
       });
 
       tenantIt("restores the relation of an update step that changed no property", async () => {
-        const oldPerson = await createIn(await databaseIdFor("people"), { name: "Old" });
-        const newPerson = await createIn(await databaseIdFor("people"), { name: "New" });
+        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
+        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
-        await relate(projectsDb, "people", projectId, oldPerson);
+        await relate(projectsDb, "area", projectId, oldArea);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2080,18 +2080,18 @@ describe("inbox custom route handlers", () => {
               itemId: projectId,
               role: "primary",
               properties: {},
-              before: { relations: { people: [oldPerson] } },
-              after: { relations: { people: [newPerson] } },
+              before: { relations: { area: [oldArea] } },
+              after: { relations: { area: [newArea] } },
             },
           ]),
         );
         await confirmCard(cardId);
-        expect(await edgeExists(projectId, newPerson)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(true);
 
         await reopenCard(cardId);
 
-        expect(await edgeExists(projectId, oldPerson)).toBe(true);
-        expect(await edgeExists(projectId, newPerson)).toBe(false);
+        expect(await edgeExists(projectId, oldArea)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(false);
         expect((await anyItem(projectId)).properties.name).toBe("Project");
       });
 
@@ -2134,36 +2134,36 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("deletes the edge a link step wrote between existing items, and keeps both items", async () => {
-        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
           ]),
         );
         await confirmCard(cardId);
-        expect(await edgeExists(projectId, personId)).toBe(true);
+        expect(await edgeExists(projectId, areaId)).toBe(true);
 
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, personId)).toBe(false);
+        expect(await edgeExists(projectId, areaId)).toBe(false);
         expect((await anyItem(projectId)).deletedAt).toBeNull();
-        expect((await anyItem(personId)).deletedAt).toBeNull();
+        expect((await anyItem(areaId)).deletedAt).toBeNull();
       });
 
       tenantIt("keeps an edge a link step proposed that existed before the confirmation", async () => {
-        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         // The user linked the pair by hand before the card was confirmed; the confirm writes the same pair again.
-        await relate(projectsDb, "people", projectId, personId);
+        await relate(projectsDb, "area", projectId, areaId);
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
           ]),
         );
         await confirmCard(cardId);
@@ -2171,7 +2171,7 @@ describe("inbox custom route handlers", () => {
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, personId)).toBe(true);
+        expect(await edgeExists(projectId, areaId)).toBe(true);
       });
 
       tenantIt("restores the metadata of an edge an update step removed", async () => {
@@ -2237,14 +2237,14 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("applies no step when a later reversal fails, and applies all of them once it can", async () => {
-        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         const otherId = await createIn(projectsDb, { name: "Old restore" });
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
             {
               ref: "other",
               op: "update",
@@ -2270,7 +2270,7 @@ describe("inbox custom route handlers", () => {
 
           expect(await writtenState()).toEqual(before);
           expect(await storedCard(cardId)).toEqual(card);
-          expect(await edgeExists(projectId, personId)).toBe(true);
+          expect(await edgeExists(projectId, areaId)).toBe(true);
           expect((await anyItem(otherId)).properties.name).toBe("New");
         } finally {
           await pool.query("DROP TRIGGER fail_restore ON items");
@@ -2280,7 +2280,7 @@ describe("inbox custom route handlers", () => {
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, personId)).toBe(false);
+        expect(await edgeExists(projectId, areaId)).toBe(false);
         expect((await anyItem(otherId)).properties.name).toBe("Old restore");
       });
     });
@@ -3885,6 +3885,8 @@ describe("inbox custom route handlers", () => {
         timeHiddenWhen: { field: "allDay", equals: true },
       });
       expect(fieldOf(listed, "project")).toMatchObject({ control: "select", optionsSource: "project" });
+      // A task's area is derived from its project, so the card offers no area of its own.
+      expect(fieldsOf(listed).map((field) => field.key)).not.toContain("area");
       expect(fieldOf(listed, "followDate")).toMatchObject({
         control: "date",
         required: true,
@@ -3981,17 +3983,19 @@ describe("inbox custom route handlers", () => {
         task: "tasks",
         event: "events",
         project: "projects",
+        area: "areas",
         company: "companies",
         person: "people",
         file: "files",
         health: "healthRecords",
       };
-      // Fields without a property of their own: the all-day and step switches, the follow-up date, and the page
-      // content of the two page cards.
+      // Fields without a property of their own: the all-day and step switches, the follow-up date, the Tasks
+      // `area` choice, and the page content of the two page cards.
       const pseudoKeys = new Set([
         "allDay",
         "followupTask",
         "followDate",
+        "area",
         "markdown",
         "day",
         "page",

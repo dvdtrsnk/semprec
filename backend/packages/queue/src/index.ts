@@ -115,7 +115,7 @@ export const CORE_TASK_NAMES = {
   // the last 24 hours.
   PEOPLE_LAST_CONTACT_RECOMPUTE: "peopleLastContactRecompute",
   PEOPLE_LAST_CONTACT_SWEEP: "peopleLastContactSweep",
-  // Announces a project's items after its company edge changed (they show it as a derived value).
+  // Announces a project's items after its area or company edge changed (they show it as a derived value).
   DERIVED_VALUES_INVALIDATE: "derivedValuesInvalidate",
   // Sends Pages items no document references any more to the Trash.
   PAGE_ORPHAN_SWEEP: "pageOrphanSweep",

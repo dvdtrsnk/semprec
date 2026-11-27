@@ -137,10 +137,10 @@ describe("database routes (issue #240)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns Czech labels for Projects properties", async () => {
-    const projects = (await chokePoint.listDatabases()).find((database) => database.key === "projects");
-    if (!projects) throw new Error("expected Projects database from seedSystem");
-    const response = await fetch(`${baseUrl}/api/databases/${projects.id}/properties`, {
+  it("returns Czech labels for Areas properties", async () => {
+    const areas = (await chokePoint.listDatabases()).find((database) => database.key === "areas");
+    if (!areas) throw new Error("expected Areas database from seedSystem");
+    const response = await fetch(`${baseUrl}/api/databases/${areas.id}/properties`, {
       headers: await authHeader("cs"),
     });
     expect(response.status).toBe(200);
@@ -148,8 +148,8 @@ describe("database routes (issue #240)", () => {
       .object({ properties: z.array(z.object({ key: z.string(), label: z.string() })) })
       .parse(await response.json());
     expect(
-      ["pinnedOrder", "color", "tags"].map((key) => body.properties.find((property) => property.key === key)?.label),
-    ).toEqual(["Pořadí připnutí", "Barva", "Štítky"]);
+      ["icon", "color", "position"].map((key) => body.properties.find((property) => property.key === key)?.label),
+    ).toEqual(["Ikona", "Barva", "Pořadí"]);
   });
 
   it("returns 400 validation_failed naming 'id' for a non-UUID database id", async () => {
@@ -248,7 +248,7 @@ describe("database routes (issue #240)", () => {
       "cs",
       "projects",
       [
-        { key: "company", label: "Firma" },
+        { key: "area", label: "Oblast" },
         { key: "date", label: "Termín" },
       ],
     ],
@@ -256,8 +256,24 @@ describe("database routes (issue #240)", () => {
       "en",
       "projects",
       [
-        { key: "company", label: "Company" },
+        { key: "area", label: "Area" },
         { key: "date", label: "Deadline" },
+      ],
+    ],
+    [
+      "cs",
+      "areas",
+      [
+        { key: "company", label: "Firmy" },
+        { key: "healthRecord", label: "Zdravotní záznamy" },
+      ],
+    ],
+    [
+      "en",
+      "areas",
+      [
+        { key: "company", label: "Companies" },
+        { key: "healthRecord", label: "Health records" },
       ],
     ],
     [
@@ -415,8 +431,9 @@ describe("database routes (issue #240)", () => {
     ] as const) {
       expect(byKey.get(key)).toMatchObject({ icon, color, overviewOrder });
     }
-    expect(byKey.get("transcripts")).toMatchObject({ overviewOrder: null, switcherOrder: null, clientVisible: true });
-    expect(byKey.has("areas")).toBe(false);
+    for (const key of ["areas", "transcripts"]) {
+      expect(byKey.get(key)).toMatchObject({ overviewOrder: null, switcherOrder: null, clientVisible: true });
+    }
     expect(byKey.get("books")).toMatchObject({
       icon: "book-open",
       color: "#A2845E",
@@ -441,7 +458,7 @@ describe("database routes (issue #240)", () => {
     for (const db of databases.filter(
       (d) =>
         d.system &&
-        !["transcripts", "books", "movies", "emails"].includes(d.key ?? "") &&
+        !["areas", "transcripts", "books", "movies", "emails"].includes(d.key ?? "") &&
         d.overviewOrder === null &&
         d.switcherOrder === null,
     )) {

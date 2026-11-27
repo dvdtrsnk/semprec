@@ -32,6 +32,7 @@ const BUDGET_DROP_ORDER: ReadonlyArray<ProposalWorkspaceGroup["moduleId"]> = [
   "events",
   "companies",
   "people",
+  "areas",
   "projects",
 ];
 

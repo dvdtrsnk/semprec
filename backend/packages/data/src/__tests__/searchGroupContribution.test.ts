@@ -34,7 +34,7 @@ let cp: ChokePoint;
 let tenant: string;
 let other: string;
 
-const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"];
+const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
 
 interface Recorder {
   prepared: Array<string | undefined>;

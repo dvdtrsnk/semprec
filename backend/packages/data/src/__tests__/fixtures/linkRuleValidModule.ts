@@ -1,6 +1,6 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 
-/** Rules over the seeded core databases: Projects.healthRecords is the inverse side of HealthRecords.projects. */
+/** Rules over the seeded ten databases: Projects.area is the inverse side of Areas.projects. */
 export const manifest: ModuleManifest = {
   id: "fixtureLinkRuleValid",
   version: "1.0.0",
@@ -12,10 +12,10 @@ export const manifest: ModuleManifest = {
   agentTools: [],
   linkRules: [
     {
-      key: "fixtureValid.healthRecordNameToProjectName",
-      source: { databaseKey: "healthRecords", propertyKey: "name" },
+      key: "fixtureValid.areaNameToProjectName",
+      source: { databaseKey: "areas", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "projects", relationKey: "healthRecords" },
+      via: { databaseKey: "projects", relationKey: "area" },
     },
   ],
 };

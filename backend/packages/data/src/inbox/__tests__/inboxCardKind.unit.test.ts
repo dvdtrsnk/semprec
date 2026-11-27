@@ -30,16 +30,13 @@ describe("deriveInboxCardKind", () => {
     ["tasks", "task"],
     ["events", "event"],
     ["projects", "project"],
+    ["areas", "area"],
     ["companies", "company"],
     ["people", "person"],
     ["healthRecords", "health"],
     ["files", "file"],
   ] as const)("maps database module %s to %s", (ownerModuleId, expected) => {
     expect(deriveInboxCardKind(input({ ownerModuleId }))).toEqual({ cardKind: expected, baseKind: expected });
-  });
-
-  it("has no area kind: a database envelope owned by an `areas` module asks for clarification", () => {
-    expect(deriveInboxCardKind(input({ ownerModuleId: "areas" }))).toEqual({ cardKind: "clarify", baseKind: "page" });
   });
 
   it("derives page content by page ownership even on a transcript card", () => {

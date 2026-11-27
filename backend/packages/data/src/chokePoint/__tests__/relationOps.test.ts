@@ -115,25 +115,24 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   });
 
   it("reports a one-to-one target that already holds its edge as a cardinality violation", async () => {
-    const companyProjects = await propertyId("companies", "projects");
-    const project = await createItem("projects", { name: "Website" });
+    const companyProperty = await propertyId("areas", "company");
     const company = await createItem("companies", { name: "Acme" });
-    // A Projects.company edge feeds the link rules, which need a tenant scope.
-    await runInTenant(getTenantZeroId(), () =>
-      withTransaction(pool, (client) =>
-        createRelationWithClient(client, {
-          relationPropertyId: companyProjects,
-          callerItemId: company,
-          targetItemId: project,
-        }),
-      ),
+    const area = await createItem("areas", { name: "Work" });
+    await withTransaction(pool, (client) =>
+      createRelationWithClient(client, {
+        relationPropertyId: companyProperty,
+        callerItemId: area,
+        targetItemId: company,
+      }),
     );
 
-    const error = await checkTarget(companyProjects, project).catch((e: unknown) => e);
+    const error = await checkTarget(companyProperty, company).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(CardinalityViolationError);
-    expect((error as CardinalityViolationError).details).toMatchObject({ field: "projects" });
-    await expect(checkTarget(companyProjects, await createItem("projects", { name: "Free" }))).resolves.toBeUndefined();
+    expect((error as CardinalityViolationError).details).toMatchObject({ field: "company" });
+    await expect(
+      checkTarget(companyProperty, await createItem("companies", { name: "Free" })),
+    ).resolves.toBeUndefined();
   });
 
   it("reports a one-to-many target on the single-valued side, but not on the many side", async () => {

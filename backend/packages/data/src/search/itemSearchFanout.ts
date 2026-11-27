@@ -1,5 +1,5 @@
-// Keeps search documents that quote another item's text current (linked project, person and company titles, a
-// Journal day's Inbox entries) by queuing reindex jobs. Dependents are looked up when
+// Keeps search documents that quote another item's text current (linked project, area, person and company
+// titles, a project's area, a Journal day's Inbox entries) by queuing reindex jobs. Dependents are looked up when
 // the job runs, in committed chunks, so a write never expands a referrer set inside its own transaction. Emails are
 // never reindexed here: mail owns their rows.
 import type { Pool, PoolClient } from "pg";
@@ -19,6 +19,7 @@ import { withTransaction } from "../db/pool.js";
 import { isLiveJournalDay, recomputeJournalInboxDayWithClient } from "../inbox/journalInboxCompute.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { AREAS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { enqueueItemSearchBackfill } from "./itemSearchBackfill.js";
 import { indexItem } from "./itemSearchIndexer.js";
 import { enqueueSearchLaneJob } from "./searchLaneEnqueue.js";
@@ -28,6 +29,7 @@ const CHUNK_SIZE = 100;
 const reindexPayloadSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("item"), itemId: z.uuid() }).strict(),
   z.object({ kind: z.literal("referrers"), itemId: z.uuid(), afterItemId: z.uuid().optional() }).strict(),
+  z.object({ kind: z.literal("projectItems"), projectItemId: z.uuid(), afterItemId: z.uuid().optional() }).strict(),
 ]);
 export type ItemSearchReindexPayload = z.infer<typeof reindexPayloadSchema>;
 
@@ -39,7 +41,10 @@ export type ItemSearchReindexPayload = z.infer<typeof reindexPayloadSchema>;
 export async function enqueueItemSearchReindex(client: PoolClient, payload: ItemSearchReindexPayload): Promise<void> {
   const parsed = reindexPayloadSchema.parse(payload);
   if (currentTenantScope()?.kind !== "tenant") return;
-  const scopeKey = parsed.kind === "item" ? parsed.itemId : `${parsed.itemId}:${parsed.afterItemId ?? "start"}`;
+  const scopeKey =
+    parsed.kind === "item"
+      ? parsed.itemId
+      : `${parsed.kind === "referrers" ? parsed.itemId : parsed.projectItemId}:${parsed.afterItemId ?? "start"}`;
   enqueueSearchLaneJob(client, CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS, parsed, {
     jobKey: `item-search-reindex:${parsed.kind}:${scopeKey}`,
     jobKeyMode: "replace",
@@ -54,6 +59,7 @@ export async function enqueueTenantSearchReindex(client: PoolClient): Promise<vo
 
 interface DependentRow {
   id: string;
+  owner_module_id: string | null;
 }
 
 /** Live non-Email items with an edge to `itemId` in either direction, in id order after `afterItemId`. */
@@ -61,24 +67,40 @@ async function dependentChunk(
   client: PoolClient,
   itemId: string,
   afterItemId: string | undefined,
+  moduleIds: readonly string[] | null,
 ): Promise<DependentRow[]> {
   const { rows } = await client.query<DependentRow>(
-    `SELECT DISTINCT other.id
+    `SELECT DISTINCT other.id, d.owner_module_id
      FROM item_relations r
      JOIN items other ON other.tenant_id = r.tenant_id
        AND other.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AND other.deleted_at IS NULL
      JOIN databases d ON d.tenant_id = other.tenant_id AND d.id = other.database_id
      WHERE r.tenant_id = app_tenant_default() AND (r.item_a = $1 OR r.item_b = $1) AND other.id <> $1
        AND d.owner_module_id IS DISTINCT FROM $2
-       AND ($3::uuid IS NULL OR other.id > $3)
-     ORDER BY other.id LIMIT $4`,
-    [itemId, EMAILS_MODULE_ID, afterItemId ?? null, CHUNK_SIZE],
+       AND ($3::text[] IS NULL OR (d.system AND d.owner_module_id = ANY($3::text[])))
+       AND ($4::uuid IS NULL OR other.id > $4)
+     ORDER BY other.id LIMIT $5`,
+    [itemId, EMAILS_MODULE_ID, moduleIds, afterItemId ?? null, CHUNK_SIZE],
   );
   return rows;
 }
 
+/** Read whether or not the item is in the Trash. */
+async function ownerModuleOf(client: PoolClient, itemId: string): Promise<string | null> {
+  const { rows } = await client.query<{ owner_module_id: string | null }>(
+    `SELECT d.owner_module_id FROM items i JOIN databases d ON d.tenant_id = i.tenant_id AND d.id = i.database_id
+     WHERE i.tenant_id = app_tenant_default() AND i.id = $1 AND d.system`,
+    [itemId],
+  );
+  return rows[0]?.owner_module_id ?? null;
+}
+
+/** The items related to a project, which show its title and its area's. */
+const PROJECT_ITEM_MODULE_IDS = ["tasks", "events", "files", "healthRecords"] as const;
+
 /**
- * `item` rebuilds one document; `referrers` every live item with an edge to `itemId`. Each invocation commits at most
+ * `item` rebuilds one document; `referrers` every live item with an edge to `itemId` (for an Area also queuing
+ * `projectItems` per live Project referrer); `projectItems` the project's items. Each invocation commits at most
  * one `CHUNK_SIZE` chunk together with the next chunk's job.
  */
 export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPayload: unknown): Promise<void> {
@@ -92,19 +114,43 @@ export async function handleItemSearchReindexDependentsTask(pool: Pool, rawPaylo
       else await indexItem(client, payload.itemId);
       return;
     }
-    const chunk = await dependentChunk(client, payload.itemId, payload.afterItemId);
+    const sourceId = payload.kind === "referrers" ? payload.itemId : payload.projectItemId;
+    const chunk = await dependentChunk(
+      client,
+      sourceId,
+      payload.afterItemId,
+      payload.kind === "projectItems" ? PROJECT_ITEM_MODULE_IDS : null,
+    );
     for (const row of chunk) await indexItem(client, row.id);
+    if (
+      payload.kind === "referrers" &&
+      chunk.length > 0 &&
+      (await ownerModuleOf(client, sourceId)) === AREAS_MODULE_ID
+    ) {
+      for (const row of chunk) {
+        if (row.owner_module_id === PROJECTS_MODULE_ID)
+          await enqueueItemSearchReindex(client, { kind: "projectItems", projectItemId: row.id });
+      }
+    }
     const last = chunk.at(-1);
     if (chunk.length === CHUNK_SIZE && last) {
-      await enqueueItemSearchReindex(client, { kind: "referrers", itemId: payload.itemId, afterItemId: last.id });
+      await enqueueItemSearchReindex(
+        client,
+        payload.kind === "referrers"
+          ? { kind: "referrers", itemId: sourceId, afterItemId: last.id }
+          : { kind: "projectItems", projectItemId: sourceId, afterItemId: last.id },
+      );
     }
   });
 }
 
-/** Both ends' documents, except an Email end, whose row mail writes (`indexItem` skips it). */
+/**
+ * Both ends' documents, except an Email end, whose row mail writes (`indexItem` skips it); for a project's `area` edge
+ * also the project's items.
+ */
 export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
-  const { rows } = await context.client.query<{ owner_module_id: string | null; is_a: boolean }>(
-    `SELECT d.owner_module_id, rd.property_id_a = p.id AS is_a
+  const { rows } = await context.client.query<{ owner_module_id: string | null; key: string; is_a: boolean }>(
+    `SELECT d.owner_module_id, p.key, rd.property_id_a = p.id AS is_a
      FROM relation_definitions rd
      JOIN properties p ON p.tenant_id = rd.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
      JOIN databases d ON d.tenant_id = p.tenant_id AND d.id = p.database_id
@@ -114,9 +160,15 @@ export const itemSearchEdgeChangedHook: RelationEdgeChangedHook = async (context
   const isEmailEnd = (isA: boolean) => rows.some((row) => row.is_a === isA && row.owner_module_id === EMAILS_MODULE_ID);
   if (!isEmailEnd(true)) await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemA });
   if (!isEmailEnd(false)) await enqueueItemSearchReindex(context.client, { kind: "item", itemId: context.itemB });
+  const areaSide = rows.find((row) => row.owner_module_id === PROJECTS_MODULE_ID && row.key === "area");
+  if (areaSide)
+    await enqueueItemSearchReindex(context.client, {
+      kind: "projectItems",
+      projectItemId: areaSide.is_a ? context.itemA : context.itemB,
+    });
 };
 
-/** A title write reindexes the items linking to it. */
+/** A title write reindexes the items linking to it (an Area's `referrers` job also reaches its projects' items). */
 export const itemSearchTitleUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
   const title = (await listPropertiesByDatabase(client, database.id)).find((property) => property.type === "title");
   if (!title || !Object.hasOwn(propertiesPatch, title.key)) return;

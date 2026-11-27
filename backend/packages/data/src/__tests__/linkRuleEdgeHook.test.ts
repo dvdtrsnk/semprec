@@ -31,8 +31,8 @@ export const manifest: ModuleManifest = {
   capabilities: [],
   agentTools: [],
   // The union cases use the real `fileCompaniesFromProjects` rule. The conflict case uses the real
-  // `taskProjectFromEvent` rule. The single-value case runs from the many-valued `Events.company` into the
-  // one-valued `Transcripts.company`, which no real rule feeds back into Events.
+  // `taskProjectFromEvent` rule. The single-value case runs from the many-valued `Files.area` into the
+  // one-valued `Events.area`, avoiding a cycle with the real `fileProjectsFromTasks` rule.
   linkRules: [
     {
       key: "fixtureProposal.eventName",
@@ -41,12 +41,12 @@ export const manifest: ModuleManifest = {
       via: { databaseKey: "transcripts", relationKey: "event" },
     },
     {
-      key: "fixtureSingle.eventCompanies",
-      source: { databaseKey: "events", propertyKey: "company" },
-      target: { databaseKey: "transcripts", propertyKey: "company" },
-      via: { databaseKey: "transcripts", relationKey: "event" },
+      key: "fixtureSingle.fileAreas",
+      source: { databaseKey: "files", propertyKey: "area" },
+      target: { databaseKey: "events", propertyKey: "area" },
+      via: { databaseKey: "events", relationKey: "files" },
     },
-    ...["healthRecords", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
+    ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
       key: `fixtureChain.hop${index + 1}`,
       source: { databaseKey: source, propertyKey: "name" },
       target: {
@@ -55,7 +55,7 @@ export const manifest: ModuleManifest = {
       },
       via: {
         databaseKey: ["projects", "tasks", "events", "events", "companies", "files"][index]!,
-        relationKey: ["healthRecords", "project", "actionItems", "people", "people", "companies"][index]!,
+        relationKey: ["area", "project", "actionItems", "people", "people", "companies"][index]!,
       },
     })),
   ],
@@ -195,12 +195,12 @@ describe("value link via-edge union", () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+      const areas = dbs.find((db) => db.ownerModuleId === "areas");
       const projects = dbs.find((db) => db.ownerModuleId === "projects");
-      if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-      const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      if (!areas || !projects) throw new Error("Fixture databases missing");
+      const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
       const project = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
       if (!via) throw new Error("Fixture relation missing");
       const before = await cp.getItem(projects.id, project.id);
       const key = `valueLinksPropagate:${tenant}:fixtureChain.hop2:${project.id}:2`;
@@ -220,7 +220,7 @@ describe("value link via-edge union", () => {
             await createRelationWithClient(client, {
               relationPropertyId: via.id,
               callerItemId: project.id,
-              targetItemId: healthRecord.id,
+              targetItemId: area.id,
             });
             expect(
               (
@@ -262,7 +262,7 @@ describe("value link via-edge union", () => {
     const fixture = await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
       const dbs = await cp.listDatabases();
-      const ids = ["healthRecords", "projects", "tasks", "events", "people", "companies", "files"].map((module) => {
+      const ids = ["areas", "projects", "tasks", "events", "people", "companies", "files"].map((module) => {
         const db = dbs.find((entry) => entry.ownerModuleId === module);
         if (!db) throw new Error(`Missing ${module}`);
         return db.id;
@@ -276,7 +276,7 @@ describe("value link via-edge union", () => {
             properties: index === 0 ? { name: "Chain source" } : index === 3 ? { date: "2026-10-16" } : {},
           }),
         );
-      const viaKeys = ["healthRecords", "project", "actionItems", "people", "people", "companies"];
+      const viaKeys = ["area", "project", "actionItems", "people", "people", "companies"];
       const sourceSide = new Set([4]);
       const edges = [];
       for (let index = 1; index < ids.length; index++) {
@@ -389,19 +389,15 @@ describe("value link via-edge union", () => {
       runInTenant(tenantId, async () => {
         const cp = createChokePoint(data);
         const dbs = await cp.listDatabases();
-        const healthRecords = dbs.find((db) => db.ownerModuleId === "healthRecords");
+        const areas = dbs.find((db) => db.ownerModuleId === "areas");
         const projects = dbs.find((db) => db.ownerModuleId === "projects");
-        if (!healthRecords || !projects) throw new Error("Fixture databases missing");
-        const healthRecord = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+        if (!areas || !projects) throw new Error("Fixture databases missing");
+        const area = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
         const project = await cp.createItem({ databaseId: projects.id, properties: {} });
-        const via = (await cp.listProperties(projects.id)).find((entry) => entry.key === "healthRecords");
+        const via = (await cp.listProperties(projects.id)).find((entry) => entry.key === "area");
         if (!via) throw new Error("Fixture relation missing");
-        await cp.createRelation({
-          relationPropertyId: via.id,
-          callerItemId: project.id,
-          targetItemId: healthRecord.id,
-        });
-        return { healthRecords, projects, healthRecord, project };
+        await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: area.id });
+        return { areas, projects, area, project };
       });
     const a = await make(tenant);
     const b = await make(foreign);
@@ -435,11 +431,7 @@ describe("value link via-edge union", () => {
             if (root)
               await updateItemWithClient(
                 client,
-                {
-                  databaseId: fixture.healthRecords.id,
-                  itemId: fixture.healthRecord.id,
-                  propertiesPatch: { name: "Root" },
-                },
+                { databaseId: fixture.areas.id, itemId: fixture.area.id, propertiesPatch: { name: "Root" } },
                 { writer: { writerKind: "user" } },
               );
           }),
@@ -467,7 +459,7 @@ describe("value link via-edge union", () => {
     const expected = [
       `valueLinksPropagate:${tenant}:fixtureChain.hop2:${a.project.id}:4`,
       `valueLinksPropagate:${foreign}:fixtureChain.hop2:${b.project.id}:5`,
-      `valueLinksPropagate:${tenant}:fixtureChain.hop1:${a.healthRecord.id}:1`,
+      `valueLinksPropagate:${tenant}:fixtureChain.hop1:${a.area.id}:1`,
     ];
     const jobs = await admin.query<{ key: string }>(
       "SELECT key FROM graphile_worker.jobs WHERE key = ANY($1::text[])",
@@ -594,42 +586,32 @@ describe("value link via-edge union", () => {
         if (!db) throw new Error(`Missing ${module}`);
         return db.id;
       };
-      const companies = id("companies"),
-        events = id("events"),
-        transcripts = id("transcripts");
-      const eventCompanies = (await cp.listProperties(events)).find((entry) => entry.key === "company");
-      const transcriptEvent = (await cp.listProperties(transcripts)).find((entry) => entry.key === "event");
-      const transcriptCompany = (await cp.listProperties(transcripts)).find((entry) => entry.key === "company");
-      if (!eventCompanies || !transcriptEvent || !transcriptCompany) throw new Error("Missing fixture relations");
-      const first = await cp.createItem({ databaseId: companies, properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: companies, properties: { name: "Second" } });
+      const areas = id("areas"),
+        files = id("files"),
+        events = id("events");
+      const fileAreas = (await cp.listProperties(files)).find((entry) => entry.key === "area");
+      const attachments = (await cp.listProperties(events)).find((entry) => entry.key === "files");
+      const eventArea = (await cp.listProperties(events)).find((entry) => entry.key === "area");
+      if (!fileAreas || !attachments || !eventArea) throw new Error("Missing fixture relations");
+      const first = await cp.createItem({ databaseId: areas, properties: { name: "First" } });
+      const second = await cp.createItem({ databaseId: areas, properties: { name: "Second" } });
+      const file = await cp.createItem({ databaseId: files, properties: { name: "File" } });
       const event = await cp.createItem({
         databaseId: events,
         properties: { name: "Event", date: "2024-03-01T12:00:00.000Z" },
       });
-      for (const company of [first, second])
+      for (const area of [first, second])
         await cp.createRelation({
-          relationPropertyId: eventCompanies.id,
-          callerItemId: event.id,
-          targetItemId: company.id,
+          relationPropertyId: fileAreas.id,
+          callerItemId: file.id,
+          targetItemId: area.id,
         });
-      const transcript = await withTransaction(data, (client) =>
-        createItemWithClient(
-          client,
-          { databaseId: transcripts, properties: { date: "2024-03-01T12:00:00.000Z" } },
-          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-        ),
-      );
-      await cp.createRelation({
-        relationPropertyId: transcriptEvent.id,
-        callerItemId: transcript.id,
-        targetItemId: event.id,
-      });
+      await cp.createRelation({ relationPropertyId: attachments.id, callerItemId: event.id, targetItemId: file.id });
       expect(
-        (await cp.listItemRelations(transcript.id))?.filter((edge) => edge.relationPropertyId === transcriptCompany.id),
+        (await cp.listItemRelations(event.id))?.filter((edge) => edge.relationPropertyId === eventArea.id),
       ).toEqual([]);
       const rows = await withTransaction(data, (client) =>
-        client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'company'", [transcript.id]),
+        client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'area'", [event.id]),
       );
       expect(rows.rowCount).toBe(0);
     });

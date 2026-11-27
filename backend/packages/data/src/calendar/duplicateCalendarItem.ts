@@ -38,7 +38,7 @@ export const EVENT_PROPERTY_KEYS = [
 ] as const;
 
 /** Besides the calendar edge, which the create gives the copy. A key the database lacks is skipped. */
-const EVENT_RELATION_KEYS = [EVENT_PROJECT_RELATION_KEY, EVENT_PEOPLE_PROPERTY_KEY, "files"] as const;
+const EVENT_RELATION_KEYS = [EVENT_PROJECT_RELATION_KEY, EVENT_PEOPLE_PROPERTY_KEY, "area", "files"] as const;
 
 const EVENT_COMPANY_RELATION_KEY = "company";
 

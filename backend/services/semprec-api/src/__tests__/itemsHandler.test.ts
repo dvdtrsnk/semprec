@@ -363,27 +363,63 @@ describe("item routes", () => {
           });
         const event = await make("events", { name: "Event", date: "2026-10-16" });
         const open = await make("events", { name: "Open", date: "2026-10-16" });
+        const file = await make("files", { name: "File" });
+        const openFile = await make("files", { name: "Open file" });
+        const health = await make("healthRecords", { name: "Health" });
+        const openHealth = await make("healthRecords", { name: "Open health" });
+        const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-01"));
+        const openDay = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-05-02"));
         const project = await make("projects", { name: "Project" });
         const company = await make("companies", { name: "Company" });
+        const first = await make("areas", { name: "First" });
+        const second = await make("areas", { name: "Second" });
+        await cp.setRelation({
+          relationPropertyId: (await propertyOf(await db("events"), "area", cp)).id,
+          callerItemId: event.id,
+          targetItemId: first.id,
+        });
         await link("events", "project", event.id, project.id);
-        return { event, open, company };
+        await link("files", "projects", file.id, project.id);
+        await link("healthRecords", "projects", health.id, project.id);
+        await link("journal", "project", day.itemId, project.id);
+        return { event, open, file, openFile, health, openHealth, day, openDay, company, first, second };
       });
       const put = (source: string, key: string, target: string, requestHeaders = headers) =>
         fetch(`${base}/api/items/${source}/relations/${key}/${target}`, { method: "PUT", headers: requestHeaders });
-      expect((await put(f.open.id, "company", f.company.id)).status).toBe(200);
       for (const [source, key, target] of [
-        [f.event.id, "company", f.company.id],
-        [f.company.id, "meetings", f.event.id],
+        [f.open.id, "area", f.second.id],
+        [f.openFile.id, "area", f.second.id],
+        [f.openHealth.id, "area", f.second.id],
+        [f.openDay.itemId, "area", f.second.id],
+        [f.open.id, "company", f.company.id],
       ] as const) {
-        await expectError(await put(source, key, target), 400, { details: { field: "company" } });
+        expect((await put(source, key, target)).status).toBe(200);
       }
-      await expectForeignLikeMissing((id) => put(id, "company", f.company.id, foreignHeaders), f.event.id);
+      for (const [source, key, target, field] of [
+        [f.file.id, "area", f.second.id, "area"],
+        [f.health.id, "area", f.second.id, "area"],
+        [f.day.itemId, "area", f.second.id, "area"],
+        [f.event.id, "company", f.company.id, "company"],
+        [f.company.id, "meetings", f.event.id, "company"],
+        [f.event.id, "area", f.second.id, "area"],
+      ] as const) {
+        await expectError(await put(source, key, target), 400, { details: { field } });
+      }
+      const set = await fetch(
+        `${base}/api/items/${f.event.id}/relations/area`,
+        req("PUT", headers, { targetItemId: f.second.id }),
+      );
+      await expectError(set, 400, { details: { field: "area" } });
+      await expectForeignLikeMissing((id) => put(id, "area", f.second.id, foreignHeaders), f.event.id);
       const targets = async (itemId: string) =>
         ((await inZero(() => createChokePoint(runtime).listItemRelations(itemId))) ?? []).map(
           (edge) => edge.targetItemId,
         );
-      expect(await targets(f.event.id)).not.toContain(f.company.id);
-      expect(await targets(f.open.id)).toContain(f.company.id);
+      // The event lost its own area when it got the project.
+      expect(await targets(f.event.id)).not.toContain(f.first.id);
+      for (const itemId of [f.event.id, f.file.id, f.health.id]) {
+        expect(await targets(itemId)).not.toContain(f.second.id);
+      }
     });
   });
 
@@ -513,6 +549,24 @@ describe("item routes", () => {
       }
       expect(await read(rollover.task.id)).toEqual(moved);
     });
+  });
+
+  it("validates Areas icon and color through authenticated PATCH", async () => {
+    await seed();
+    const headers = await jsonAuth();
+    const areas = await moduleDatabase("areas");
+    const item = await inZero(() => chokePoint.createItem({ databaseId: areas.id, properties: { name: "Area" } }));
+    const patch = (properties: Properties) => patchCurrent(areas.id, item.id, headers, properties);
+    expect((await patch({ icon: "briefcase", color: "#5856D6" })).status).toBe(200);
+    expect((await getItemInZero(areas.id, item.id))?.properties).toMatchObject({ icon: "briefcase", color: "#5856D6" });
+    for (const [field, value] of [
+      ["icon", "rocket123"],
+      ["color", "#123456"],
+    ] as const) {
+      await expectError(await patch({ [field]: value }), 400, { code: "validation_failed", details: { field } });
+    }
+    expect((await patch({ icon: null, color: null })).status).toBe(200);
+    expect((await getItemInZero(areas.id, item.id))?.properties).toMatchObject({ icon: null, color: null });
   });
 
   it("writes and reads People phones through item routes", async () => {
@@ -664,18 +718,18 @@ describe("item routes", () => {
     expect((await api(path)).status).toBe(401);
   });
 
-  it("refuses deletion of a system project through REST", async () => {
+  it("refuses deletion of the unplanned system area through REST", async () => {
     await seed();
     const headers = await authHeader();
-    const projects = await moduleDatabase("projects");
-    const item = (await inZero(() => chokePoint.listItems(projects.id))).items.find(
+    const areas = await moduleDatabase("areas");
+    const item = (await inZero(() => chokePoint.listItems(areas.id))).items.find(
       (row) => row.properties.systemActive === true,
     );
-    if (!item) throw new Error("System project missing");
+    if (!item) throw new Error("System area missing");
     await expectError(await api(`/api/items/${item.id}`, { method: "DELETE", headers }), 403, {
       details: { field: "systemActive" },
     });
-    expect(await getItemInZero(projects.id, item.id)).toEqual(item);
+    expect(await getItemInZero(areas.id, item.id)).toEqual(item);
   });
 
   it("returns project completion dates and refuses direct writes through REST", async () => {
@@ -2115,27 +2169,29 @@ describe("item routes", () => {
       });
     });
 
-    it("lists every status of Projects of a company in the user's language, and the counted companies for the company facet, through the real composition root", async () => {
+    it("lists every status of Projects inside an area in the user's language, and every area for the area facet, through the real composition root", async () => {
       await seed();
       const projects = await moduleDatabase("projects");
-      const companies = await moduleDatabase("companies");
-      const work = await chokePoint.createItem({ databaseId: companies.id, properties: { name: "Work" } });
-      const home = await chokePoint.createItem({ databaseId: companies.id, properties: { name: "Home" } });
-      const companyProperty = await propertyOf(projects.id, "company");
-      for (const [name, status, company] of [
+      const areas = await moduleDatabase("areas");
+      const [seededArea] = (await chokePoint.listItems(areas.id, { limit: 200 })).items;
+      if (!seededArea) throw new Error("The seeded area is missing");
+      const work = await chokePoint.createItem({
+        databaseId: areas.id,
+        properties: { name: "Work", color: "#007AFF" },
+      });
+      const home = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "Home" } });
+      const areaProperty = await propertyOf(projects.id, "area");
+      for (const [name, status, area] of [
         ["Launch", "inProgress", work],
         ["Audit", "done", work],
         ["Garden", "inProgress", home],
       ] as const) {
         const project = await chokePoint.createItem({ databaseId: projects.id, properties: { name, status } });
-        // Projects.company sources a link rule whose propagation is queued in the writer's tenant.
-        await inZero(() =>
-          chokePoint.createRelation({
-            relationPropertyId: companyProperty.id,
-            callerItemId: project.id,
-            targetItemId: company.id,
-          }),
-        );
+        await chokePoint.createRelation({
+          relationPropertyId: areaProperty.id,
+          callerItemId: project.id,
+          targetItemId: area.id,
+        });
       }
       const inProgress = { type: "equals", property: "status", value: "inProgress" };
       const res = await postFacets(await authHeader(), projects.id, {
@@ -2144,16 +2200,17 @@ describe("item routes", () => {
           nodes: [
             { type: "is_empty", property: "systemActive" },
             inProgress,
-            { type: "relation_contains", property: "company", value: work.id },
+            { type: "relation_contains", property: "area", value: work.id },
           ],
         },
-        facets: ["status", "company"],
+        facets: ["status", "area"],
         extra: { open: inProgress },
       });
       expect(res.status).toBe(200);
-      const companyChoice = (company: typeof work) => ({
-        value: company.id,
-        label: String(company.properties.name),
+      const areaChoice = (area: typeof work) => ({
+        value: area.id,
+        label: String(area.properties.name),
+        ...(area.id === work.id ? { color: "#007AFF" } : {}),
         count: 1,
       });
       expect(facetsBody.parse(await res.json())).toEqual({
@@ -2171,55 +2228,17 @@ describe("item routes", () => {
             ],
           },
           {
-            property: "company",
+            property: "area",
             all: 2,
             open: 2,
             values: [
-              ...(work.id < home.id ? [work, home] : [home, work]).map(companyChoice),
+              ...(work.id < home.id ? [work, home] : [home, work]).map(areaChoice),
+              { value: seededArea.id, label: String(seededArea.properties.name), count: 0 },
               { value: null, count: 0 },
             ],
           },
         ],
       });
-    });
-
-    it("gives a Projects facet value the project's own color through the real composition root", async () => {
-      await seed();
-      const tasks = await moduleDatabase("tasks");
-      const projects = await moduleDatabase("projects");
-      const colored = await chokePoint.createItem({
-        databaseId: projects.id,
-        properties: { name: "Colored", color: "#FF2D55" },
-      });
-      const plain = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "Plain" } });
-      const projectProperty = await propertyOf(tasks.id, "project");
-      for (const [name, project] of [
-        ["First", colored],
-        ["Second", colored],
-        ["Third", plain],
-      ] as const) {
-        const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name } });
-        await inZero(() =>
-          chokePoint.createRelation({
-            relationPropertyId: projectProperty.id,
-            callerItemId: task.id,
-            targetItemId: project.id,
-          }),
-        );
-      }
-      const res = await postFacets(await authHeader(), tasks.id, { facets: ["project"] });
-      expect(res.status).toBe(200);
-      expect(facetsBody.parse(await res.json()).facets).toEqual([
-        {
-          property: "project",
-          all: 3,
-          values: [
-            { value: colored.id, label: "Colored", color: "#FF2D55", count: 2 },
-            { value: plain.id, label: "Plain", count: 1 },
-            { value: null, count: 0 },
-          ],
-        },
-      ]);
     });
 
     it("labels the options in English for a user whose locale is en", async () => {
@@ -2311,7 +2330,7 @@ describe("item routes", () => {
       expect(missing).toEqual({ error: { code: "not_found", details: { resource: "database", databaseId: unknown } } });
       for (const body of [
         { facets: ["stage"] },
-        { facets: [{ path: ["project", "company"] }], extra: { open: { type: "is_empty", property: "title" } } },
+        { facets: [{ path: ["project", "area"] }], extra: { open: { type: "is_empty", property: "title" } } },
       ]) {
         const answer = await postFacets(headers, unknown, body);
         expect(answer.status).toBe(404);

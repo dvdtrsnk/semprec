@@ -41,7 +41,8 @@ export interface ConfirmedJournalEntry {
  *
  * The markdown is authored `user` (the confirming person; Semp's proposal stays on the card). Block `i` has id
  * `proposalBlockId(proposalId, i)`, so a second insert for the same proposal collides instead of duplicating. With a
- * `projectId` the day gets a `project` edge. The edge is always recorded, so the undo deletes an edge this confirm inserted and keeps one the day already had.
+ * `projectId` the day gets a `project` edge and no `area` edge, because the area derives from the project. The edge is
+ * always recorded, so the undo deletes an edge this confirm inserted and keeps one the day already had.
  */
 export async function confirmJournalEntry(
   client: PoolClient,
@@ -62,14 +63,20 @@ export async function confirmJournalEntry(
     origin: "user",
   });
   const recordedEdges = createEdgeRecorder();
-  if (properties.projectId !== undefined) {
+  const relation =
+    properties.projectId !== undefined
+      ? { key: "project", targetItemId: properties.projectId }
+      : properties.areaId !== undefined
+        ? { key: "area", targetItemId: properties.areaId }
+        : null;
+  if (relation !== null) {
     await writeRecordedEdge(
       client,
       recordedEdges,
       {
-        relationPropertyId: await requireRelationPropertyId(client, journal.id, "project"),
+        relationPropertyId: await requireRelationPropertyId(client, journal.id, relation.key),
         callerItemId: day.itemId,
-        targetItemId: properties.projectId,
+        targetItemId: relation.targetItemId,
       },
       writer,
       actingUserId,

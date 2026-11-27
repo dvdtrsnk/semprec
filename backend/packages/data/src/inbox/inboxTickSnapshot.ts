@@ -135,19 +135,24 @@ export function tickComputationInput(snapshot: TickSnapshot, projectItemId: stri
   };
 }
 
-/** `date` defaults to the source item's date. A result with its own `target` is a `ValidationError`. */
+/**
+ * `date` defaults to the source item's date. An area is dropped when the answer names a project, because the entry's
+ * area derives from its project. A result with its own `target` is a `ValidationError`.
+ */
 function buildJournalEntryEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
   if (result.target !== undefined)
     throw new ValidationError("The target of a journal entry proposal is set by the server", { field: "target" });
   if (!snapshot.journalDatabaseId)
     throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'journalEntry') has no journalDatabaseId`);
-  const date = result.properties.date === undefined ? sourceItemDate(snapshot.item) : result.properties.date;
+  const { areaId, ...rest } = result.properties;
+  const date = rest.date === undefined ? sourceItemDate(snapshot.item) : rest.date;
   return {
     entityKind: "journalEntry",
     target: snapshot.journalDatabaseId,
     properties: {
-      ...result.properties,
+      ...rest,
       ...(date === undefined ? {} : { date }),
+      ...(areaId !== undefined && rest.projectId === undefined ? { areaId } : {}),
     },
   };
 }

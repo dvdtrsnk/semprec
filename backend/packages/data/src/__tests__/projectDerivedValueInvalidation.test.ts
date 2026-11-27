@@ -18,6 +18,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { createActionRegistry } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
+  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -31,8 +32,8 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import { createCoreTaskList } from "../worker.js";
 
 /**
- * A change of a project's company edge queues `derivedValuesInvalidate`, which announces the
- * project's Events. Fixtures run on a `semprec_data` pool so RLS applies; announcements are recorded through
+ * A change of a project's area or company edge queues `derivedValuesInvalidate`, which announces the
+ * project's items. Fixtures run on a `semprec_data` pool so RLS applies; announcements are recorded through
  * `setInvalidationHook` with the tenant scope it was called in (not WebSocket delivery).
  */
 
@@ -50,6 +51,7 @@ function fanOutTaskListOver(handlerPool: Pool): TaskList {
 }
 
 interface Catalog {
+  areasId: string;
   projectsId: string;
   companiesId: string;
   tasksId: string;
@@ -58,12 +60,14 @@ interface Catalog {
   healthRecordsId: string;
   journalId: string;
   peopleId: string;
+  projectArea: string;
   projectCompany: string;
-  companyProjects: string;
+  areaProjects: string;
   taskProject: string;
   eventProject: string;
   eventCompany: string;
   fileProjects: string;
+  fileArea: string;
   healthRecordProjects: string;
   journalProject: string;
   peopleProjects: string;
@@ -84,6 +88,7 @@ async function requirePropertyId(client: PoolClient, databaseId: string, key: st
 async function catalog(tenant: string): Promise<Catalog> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {
+      const areasId = await requireDatabaseId(client, AREAS_MODULE_ID);
       const projectsId = await requireDatabaseId(client, PROJECTS_MODULE_ID);
       const companiesId = await requireDatabaseId(client, COMPANIES_MODULE_ID);
       const tasksId = await requireDatabaseId(client, TASKS_MODULE_ID);
@@ -93,6 +98,7 @@ async function catalog(tenant: string): Promise<Catalog> {
       const journalId = await requireDatabaseId(client, JOURNAL_MODULE_ID);
       const peopleId = await requireDatabaseId(client, PEOPLE_MODULE_ID);
       return {
+        areasId,
         projectsId,
         companiesId,
         tasksId,
@@ -101,12 +107,14 @@ async function catalog(tenant: string): Promise<Catalog> {
         healthRecordsId,
         journalId,
         peopleId,
+        projectArea: await requirePropertyId(client, projectsId, "area"),
         projectCompany: await requirePropertyId(client, projectsId, "company"),
-        companyProjects: await requirePropertyId(client, companiesId, "projects"),
+        areaProjects: await requirePropertyId(client, areasId, "projects"),
         taskProject: await requirePropertyId(client, tasksId, "project"),
         eventProject: await requirePropertyId(client, eventsId, "project"),
         eventCompany: await requirePropertyId(client, eventsId, "company"),
         fileProjects: await requirePropertyId(client, filesId, "projects"),
+        fileArea: await requirePropertyId(client, filesId, "area"),
         healthRecordProjects: await requirePropertyId(client, healthRecordsId, "projects"),
         journalProject: await requirePropertyId(client, journalId, "project"),
         peopleProjects: await requirePropertyId(client, peopleId, "projects"),
@@ -232,10 +240,7 @@ async function createLinkedItems(
     withTransaction(pool, async (client) => {
       const ids: string[] = [];
       for (let index = 0; index < count; index += 1) {
-        const item = await createItemWithClient(client, {
-          databaseId,
-          properties: { name: `Item ${index}`, date: "2026-10-16" },
-        });
+        const item = await createItemWithClient(client, { databaseId, properties: { name: `Item ${index}` } });
         await createRelationWithClient(client, { relationPropertyId, callerItemId: item.id, targetItemId: projectId });
         ids.push(item.id);
       }
@@ -267,20 +272,17 @@ afterAll(async () => {
 });
 
 describe("derived value invalidation of a project's items (issue #1710)", () => {
-  it("changing a project's company queues one job; its run announces the project's live events, and nothing else", async () => {
+  it("changing a project's area queues one job; its run announces the project's live tasks, events, files, health records and journal entries, and nothing else", async () => {
     const c = await catalog(tenantA);
-    const firstCompany = await createItem(tenantA, c.companiesId);
-    const secondCompany = await createItem(tenantA, c.companiesId);
+    const firstArea = await createItem(tenantA, c.areasId);
+    const secondArea = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
     const otherProject = await createItem(tenantA, c.projectsId);
-    await link(tenantA, c.projectCompany, project, firstCompany);
-    await link(tenantA, c.projectCompany, otherProject, firstCompany);
+    await link(tenantA, c.projectArea, project, firstArea);
+    await link(tenantA, c.projectArea, otherProject, firstArea);
 
-    const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
-    await link(tenantA, c.eventProject, event, project);
-
-    // Not owed an announcement: these items derive no value from their project.
     const task = await createItem(tenantA, c.tasksId);
+    const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
     const file = await createItem(tenantA, c.filesId);
     const healthRecord = await createItem(tenantA, c.healthRecordsId);
     const journalDay = (
@@ -289,61 +291,73 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
       )
     ).itemId;
     await link(tenantA, c.taskProject, task, project);
+    await link(tenantA, c.eventProject, event, project);
     await link(tenantA, c.fileProjects, file, project);
     await link(tenantA, c.healthRecordProjects, healthRecord, project);
     await link(tenantA, c.journalProject, journalDay, project);
+
+    // Not owed an announcement: People does not derive a value from its project.
+    const trashedTask = await createItem(tenantA, c.tasksId);
+    await link(tenantA, c.taskProject, trashedTask, project);
+    await runInTenant(tenantA, () => chokePoint.softDeleteItem(c.tasksId, trashedTask));
+    await link(tenantA, c.taskProject, await createItem(tenantA, c.tasksId), otherProject);
+    await createItem(tenantA, c.tasksId);
     await link(tenantA, c.peopleProjects, await createItem(tenantA, c.peopleId), project);
-    const trashedEvent = await createItem(tenantA, c.eventsId, { name: "Trashed", date: "2026-10-16" });
-    await link(tenantA, c.eventProject, trashedEvent, project);
-    await runInTenant(tenantA, () => chokePoint.softDeleteItem(c.eventsId, trashedEvent));
-    const otherEvent = await createItem(tenantA, c.eventsId, { name: "Other", date: "2026-10-16" });
-    await link(tenantA, c.eventProject, otherEvent, otherProject);
-    await createItem(tenantA, c.eventsId, { name: "Without project", date: "2026-10-16" });
     await discardQueuedJobs();
 
-    await setTarget(tenantA, c.projectCompany, project, secondCompany);
+    await setTarget(tenantA, c.projectArea, project, secondArea);
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
 
     const announced = await runFanOuts();
-    expect(announced).toEqual([await announcementOf(tenantA, c.eventsId, event)]);
+    const owed = [
+      await announcementOf(tenantA, c.tasksId, task),
+      await announcementOf(tenantA, c.eventsId, event),
+      await announcementOf(tenantA, c.filesId, file),
+      await announcementOf(tenantA, c.healthRecordsId, healthRecord),
+      await announcementOf(tenantA, c.journalId, journalDay),
+    ];
+    expect(announced.sort(byItemId)).toEqual(owed.sort(byItemId));
     expect(await queuedFanOuts()).toEqual([]);
   });
 
-  it("a first company, its removal and a link written from the Companies side each queue the project's job; a metadata update and other relations queue none", async () => {
+  it("a first area, its removal and a link written from the Areas side each queue the project's job; a metadata update and other relations queue none", async () => {
     const c = await catalog(tenantA);
-    const company = await createItem(tenantA, c.companiesId);
+    const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
     await discardQueuedJobs();
 
-    await link(tenantA, c.projectCompany, project, company);
+    await link(tenantA, c.projectArea, project, area);
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
     await discardQueuedJobs();
 
     await runInTenant(tenantA, () =>
       chokePoint.updateRelation({
-        relationPropertyId: c.projectCompany,
+        relationPropertyId: c.projectArea,
         callerItemId: project,
-        targetItemId: company,
+        targetItemId: area,
         metadata: { note: "unchanged ends" },
       }),
     );
     expect(await queuedFanOuts()).toEqual([]);
 
     const removed = await runInTenant(tenantA, () =>
-      chokePoint.deleteRelation({ relationPropertyId: c.projectCompany, callerItemId: project, targetItemId: company }),
+      chokePoint.deleteRelation({ relationPropertyId: c.projectArea, callerItemId: project, targetItemId: area }),
     );
     expect(removed).not.toBeNull();
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
     await discardQueuedJobs();
 
-    // The same definition written through its other property: the caller is the company, the job is the project's.
-    await link(tenantA, c.companyProjects, company, project);
+    // The same definition written through its other property: the caller is the area, the job is the project's.
+    await link(tenantA, c.areaProjects, area, project);
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
     await discardQueuedJobs();
 
-    // Relations of other databases, one of them also keyed `company`.
+    // Relations of other databases, two of them also keyed `area` and `company`.
+    const company = await createItem(tenantA, c.companiesId);
     const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
+    const file = await createItem(tenantA, c.filesId);
     await link(tenantA, c.eventCompany, event, company);
+    await link(tenantA, c.fileArea, file, area);
     await link(tenantA, c.taskProject, await createItem(tenantA, c.tasksId), project);
     expect(await queuedFanOuts()).toEqual([]);
   });
@@ -384,7 +398,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
 
   it("queues nothing when the edge write rolls back", async () => {
     const c = await catalog(tenantA);
-    const company = await createItem(tenantA, c.companiesId);
+    const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
     await discardQueuedJobs();
 
@@ -392,9 +406,9 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
       runInTenant(tenantA, () =>
         withTransaction(pool, async (client) => {
           await createRelationWithClient(client, {
-            relationPropertyId: c.projectCompany,
+            relationPropertyId: c.projectArea,
             callerItemId: project,
-            targetItemId: company,
+            targetItemId: area,
           });
           throw new Error("rolled back by the test");
         }),
@@ -403,13 +417,30 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     expect(await queuedFanOuts()).toEqual([]);
   });
 
+  it("changing a project's company queues the job; its run announces the project's events and its other items", async () => {
+    const c = await catalog(tenantA);
+    const firstCompany = await createItem(tenantA, c.companiesId);
+    const secondCompany = await createItem(tenantA, c.companiesId);
+    const project = await createItem(tenantA, c.projectsId);
+    await link(tenantA, c.projectCompany, project, firstCompany);
+    const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
+    const task = await createItem(tenantA, c.tasksId);
+    await link(tenantA, c.eventProject, event, project);
+    await link(tenantA, c.taskProject, task, project);
+    await discardQueuedJobs();
+
+    await setTarget(tenantA, c.projectCompany, project, secondCompany);
+    expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
+
+    const announced = await runFanOuts();
+    const owed = [await announcementOf(tenantA, c.eventsId, event), await announcementOf(tenantA, c.tasksId, task)];
+    expect(announced.sort(byItemId)).toEqual(owed.sort(byItemId));
+  });
+
   it("several changes before the job runs collapse into one job and one fan-out", async () => {
     const c = await catalog(tenantA);
-    const companies = [
-      await createItem(tenantA, c.companiesId),
-      await createItem(tenantA, c.companiesId),
-      await createItem(tenantA, c.companiesId),
-    ];
+    const areas = [await createItem(tenantA, c.areasId), await createItem(tenantA, c.areasId)];
+    const company = await createItem(tenantA, c.companiesId);
     const project = await createItem(tenantA, c.projectsId);
     const task = await createItem(tenantA, c.tasksId);
     const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
@@ -417,22 +448,27 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await link(tenantA, c.eventProject, event, project);
     await discardQueuedJobs();
 
-    for (const company of companies) await setTarget(tenantA, c.projectCompany, project, company);
+    for (const area of areas) await setTarget(tenantA, c.projectArea, project, area);
+    await setTarget(tenantA, c.projectCompany, project, company);
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
 
-    // The task derives nothing from its project, so only the event is announced.
-    expect(await runFanOuts()).toEqual([await announcementOf(tenantA, c.eventsId, event)]);
+    const announced = await runFanOuts();
+    const owed = [await announcementOf(tenantA, c.tasksId, task), await announcementOf(tenantA, c.eventsId, event)];
+    expect(announced.sort(byItemId)).toEqual(owed.sort(byItemId));
     expect(await queuedFanOuts()).toEqual([]);
   });
 
   it("a project with more items than one batch holds is announced completely, each item once, each batch after its own commit", async () => {
     const c = await catalog(tenantA);
-    const company = await createItem(tenantA, c.companiesId);
+    const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
-    // 230 events against a batch of 100.
-    const ids = await createLinkedItems(tenantA, c.eventsId, c.eventProject, project, 230);
+    // 230 items against a batch of 100; random ids interleave Tasks (side B) and Files (side A).
+    const ids = [
+      ...(await createLinkedItems(tenantA, c.tasksId, c.taskProject, project, 130)),
+      ...(await createLinkedItems(tenantA, c.filesId, c.fileProjects, project, 100)),
+    ];
     await discardQueuedJobs();
-    await link(tenantA, c.projectCompany, project, company);
+    await link(tenantA, c.projectArea, project, area);
 
     // A dedicated, traced pool; vitest numbers all mock calls on one counter, ordering statements and announcements.
     const tracedPool = await createRuntimeRolePool(admin, "semprec_data");
@@ -480,12 +516,12 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
 
   it("a batch that fails keeps the earlier batch announced and fails the job; the retry announces every item again", async () => {
     const c = await catalog(tenantA);
-    const company = await createItem(tenantA, c.companiesId);
+    const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
-    // 150 events against a batch of 100: the first batch holds the 100 lowest ids, the second the other 50.
-    const ids = (await createLinkedItems(tenantA, c.eventsId, c.eventProject, project, 150)).sort();
+    // 150 items against a batch of 100: the first batch holds the 100 lowest ids, the second the other 50.
+    const ids = (await createLinkedItems(tenantA, c.tasksId, c.taskProject, project, 150)).sort();
     await discardQueuedJobs();
-    await link(tenantA, c.projectCompany, project, company);
+    await link(tenantA, c.projectArea, project, area);
 
     // Ended by the first announcement, made only after the first batch committed, so the second batch cannot open.
     const failingPool = await createRuntimeRolePool(admin, "semprec_data");
@@ -527,20 +563,20 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
 
   it("a project in the Trash announces nothing, though its items are live and still linked to it", async () => {
     const c = await catalog(tenantA);
-    const company = await createItem(tenantA, c.companiesId);
+    const area = await createItem(tenantA, c.areasId);
     const project = await createItem(tenantA, c.projectsId);
-    const event = await createItem(tenantA, c.eventsId, { name: "Event", date: "2026-10-16" });
-    await link(tenantA, c.eventProject, event, project);
+    const task = await createItem(tenantA, c.tasksId);
+    await link(tenantA, c.taskProject, task, project);
     await discardQueuedJobs();
-    await link(tenantA, c.projectCompany, project, company);
+    await link(tenantA, c.projectArea, project, area);
     await runInTenant(tenantA, () => chokePoint.softDeleteItem(c.projectsId, project));
 
     // Read from the stored edges: the choke point's relation reads leave a trashed target out.
     const edges = await runInTenant(tenantA, () =>
-      withTransaction(pool, (client) => listAllRelationsForItem(client, event)),
+      withTransaction(pool, (client) => listAllRelationsForItem(client, task)),
     );
-    expect(edges.map((edge) => [edge.itemA, edge.itemB])).toContainEqual([project, event]);
-    expect((await runInTenant(tenantA, () => chokePoint.getItem(c.eventsId, event)))?.deletedAt).toBeNull();
+    expect(edges.map((edge) => [edge.itemA, edge.itemB])).toEqual([[project, task]]);
+    expect((await runInTenant(tenantA, () => chokePoint.getItem(c.tasksId, task)))?.deletedAt).toBeNull();
     expect(await queuedFanOuts()).toEqual([fanOutJob(tenantA, project)]);
 
     expect(await runFanOuts()).toEqual([]);
@@ -566,22 +602,22 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     const a = await catalog(tenantA);
     const b = await catalog(tenantB);
     const projectA = await createItem(tenantA, a.projectsId);
-    const eventA = await createItem(tenantA, a.eventsId, { name: "Event", date: "2026-10-16" });
-    await link(tenantA, a.eventProject, eventA, projectA);
+    const taskA = await createItem(tenantA, a.tasksId);
+    await link(tenantA, a.taskProject, taskA, projectA);
     const projectB = await createItem(tenantB, b.projectsId);
-    const eventB = await createItem(tenantB, b.eventsId, { name: "Event", date: "2026-10-16" });
-    await link(tenantB, b.eventProject, eventB, projectB);
+    const taskB = await createItem(tenantB, b.tasksId);
+    await link(tenantB, b.taskProject, taskB, projectB);
     await discardQueuedJobs();
 
-    await link(tenantA, a.projectCompany, projectA, await createItem(tenantA, a.companiesId));
-    await link(tenantB, b.projectCompany, projectB, await createItem(tenantB, b.companiesId));
+    await link(tenantA, a.projectArea, projectA, await createItem(tenantA, a.areasId));
+    await link(tenantB, b.projectArea, projectB, await createItem(tenantB, b.areasId));
     const byKey = (left: QueuedJob, right: QueuedJob) => (left.key ?? "").localeCompare(right.key ?? "");
     expect((await queuedFanOuts()).sort(byKey)).toEqual(
       [fanOutJob(tenantA, projectA), fanOutJob(tenantB, projectB)].sort(byKey),
     );
 
     const announced = await runFanOuts();
-    const owed = [await announcementOf(tenantA, a.eventsId, eventA), await announcementOf(tenantB, b.eventsId, eventB)];
+    const owed = [await announcementOf(tenantA, a.tasksId, taskA), await announcementOf(tenantB, b.tasksId, taskB)];
     expect(announced.sort(byItemId)).toEqual(owed.sort(byItemId));
     expect(await queuedFanOuts()).toEqual([]);
 

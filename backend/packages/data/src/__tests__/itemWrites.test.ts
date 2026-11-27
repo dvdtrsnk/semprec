@@ -510,10 +510,13 @@ describe("property defaults on real item writes", () => {
   it.each([
     ["books", "status", "toRead"],
     ["movies", "status", "planned"],
+    ["areas", "active", true],
   ] as const)("applies the seeded %s default", async (moduleId, key, value) => {
     await runInTenant(getTenantZeroId(), async () => {
       const item = await chokePoint.createItem({ databaseId: await database(moduleId) });
-      expect(item.properties).toEqual({ [key]: value });
+      // An Area also gets its `position` from the Areas create hook.
+      const { position: _position, ...defaulted } = item.properties;
+      expect(defaulted).toEqual({ [key]: value });
     });
   });
 

@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { SearchSubtitlePart } from "@semprec/shared";
 import {
+  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -25,7 +26,7 @@ interface LinkSpec {
   sourceModule: string;
   key: string;
   targetModule: string;
-  kind: "project" | "people";
+  kind: "project" | "area" | "people";
   limit: number;
 }
 
@@ -41,6 +42,7 @@ const LINK_SPECS: readonly LinkSpec[] = [
     kind: "people",
     limit: MAX_EVENT_PEOPLE,
   },
+  { sourceModule: PROJECTS_MODULE_ID, key: "area", targetModule: AREAS_MODULE_ID, kind: "area", limit: 1 },
   { sourceModule: PEOPLE_MODULE_ID, key: "projects", targetModule: PROJECTS_MODULE_ID, kind: "project", limit: 1 },
   { sourceModule: FILES_MODULE_ID, key: "projects", targetModule: PROJECTS_MODULE_ID, kind: "project", limit: 1 },
 ];
@@ -72,6 +74,13 @@ interface LinkedItemDbRow {
   target_id: string;
   title: string | null;
 }
+
+interface ProjectCountDbRow {
+  source_id: string;
+  total: number;
+}
+
+const COUNTED_LINK = { sourceModule: AREAS_MODULE_ID, key: "projects", targetModule: PROJECTS_MODULE_ID } as const;
 
 const recurrenceSchema = z.object({
   preset: z.string().min(1).nullable().optional(),
@@ -173,6 +182,34 @@ async function loadLinkedItems(
   return linked;
 }
 
+/** A system project is never searched and is not counted. */
+async function countAreaProjects(
+  client: PoolClient,
+  areas: readonly SubtitleSource[],
+  visibleDatabaseIds: readonly string[],
+  unreadableDatabaseIds: ReadonlySet<string>,
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (areas.length === 0) return counts;
+  const { rows } = await client.query<ProjectCountDbRow>(
+    `SELECT source.id AS source_id, count(DISTINCT target.id)::int AS total
+     ${LINKED_ITEMS_FROM_SQL}
+       AND target.properties ->> 'systemActive' IS DISTINCT FROM 'true'
+     GROUP BY source.id`,
+    [
+      areas.map((area) => area.id),
+      visibleDatabaseIds,
+      [...unreadableDatabaseIds],
+      [COUNTED_LINK.sourceModule],
+      [COUNTED_LINK.key],
+      [COUNTED_LINK.targetModule],
+      [...new Set(areas.map((area) => area.databaseId))],
+    ],
+  );
+  for (const row of rows) counts.set(row.source_id, row.total);
+  return counts;
+}
+
 /**
  * The `subtitleParts` of every source by item id, with a constant number of statements however many results. A
  * company gets the `relationship` marker `company`, since the closed kind set has no company kind. When a module
@@ -186,6 +223,12 @@ export async function buildSubtitleParts(
   unreadableDatabaseIds: ReadonlySet<string>,
 ): Promise<Map<string, SearchSubtitlePart[]>> {
   const linked = await loadLinkedItems(client, sources, visibleDatabaseIds, unreadableDatabaseIds);
+  const projectCounts = await countAreaProjects(
+    client,
+    sources.filter((source) => source.moduleId === AREAS_MODULE_ID),
+    visibleDatabaseIds,
+    unreadableDatabaseIds,
+  );
   const linkedOf = (source: SubtitleSource, kind: LinkSpec["kind"]): SearchSubtitlePart[] => {
     const spec = LINK_SPECS.find((candidate) => candidate.sourceModule === source.moduleId && candidate.kind === kind);
     if (spec === undefined) return [];
@@ -220,9 +263,15 @@ export async function buildSubtitleParts(
       }
       case PROJECTS_MODULE_ID: {
         const status = text(properties, "status");
-        if (status !== null) parts.push({ kind: "status", value: status });
+        parts.push(
+          ...linkedOf(source, "area"),
+          ...(status === null ? [] : [{ kind: "status" as const, value: status }]),
+        );
         break;
       }
+      case AREAS_MODULE_ID:
+        parts.push({ kind: "count", value: String(projectCounts.get(source.id) ?? 0) });
+        break;
       case PEOPLE_MODULE_ID: {
         const relationship = text(properties, "relationship");
         const phone = firstPhone(properties);

@@ -137,6 +137,11 @@ export interface Item {
     nextAttemptAt: string | null;
   };
   derived?: {
+    area?: {
+      values: Array<{ id: string; title: string; color?: string | null; icon?: string | null }>;
+      via: "project";
+      projectIds: string[];
+    };
     company?: { values: Array<{ id: string; title: string }>; via: "project"; projectIds: string[] };
   };
   id: string;

@@ -71,10 +71,10 @@ describe("item search document", () => {
             properties: { name: "Item", missing: "Not a property", excluded: "Hidden", link: ["not edge titles"] },
             computed: {},
           },
-          relatedTitles: ["Project", "Person", "Company"],
+          relatedTitles: ["Project", "Area", "Person", "Company"],
         }),
       ),
-    ).toBe("Item Project Person Company");
+    ).toBe("Item Project Area Person Company");
   });
 
   it("distinguishes an explicit empty declaration from the default rule", () => {

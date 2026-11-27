@@ -9,14 +9,14 @@ const { excludeFacetConditions, loadFacetMetadata } = await import("../views/fac
 type FacetTarget = Parameters<typeof excludeFacetConditions>[1];
 
 const status: FacetTarget = { kind: "property", key: "status" };
-const projectCompany: FacetTarget = { kind: "path", path: ["project", "company"] };
-const companyId = "11111111-1111-4111-8111-111111111111";
+const projectArea: FacetTarget = { kind: "path", path: ["project", "area"] };
+const areaId = "11111111-1111-4111-8111-111111111111";
 
 const done: FilterNode = { type: "equals", property: "status", value: "done" };
 const open: FilterNode = { type: "in", property: "status", value: ["notDone"] };
 const flagged: FilterNode = { type: "equals", property: "flagged", value: true };
 const dated: FilterNode = { type: "is_not_empty", property: "date" };
-const inCompany: FilterNode = { type: "relation_path_contains", path: ["project", "company"], value: companyId };
+const inArea: FilterNode = { type: "relation_path_contains", path: ["project", "area"], value: areaId };
 
 function expectRefusedOnFilter(filter: FilterNode, facet: FacetTarget): void {
   let thrown: unknown;
@@ -81,24 +81,24 @@ describe("excludeFacetConditions (issue #1759)", () => {
   });
 
   it("removes for a path facet the conditions on the same path, and no condition on another path or on a property", () => {
-    const reversed: FilterNode = { type: "relation_path_contains", path: ["company", "project"], value: companyId };
-    const otherSecond: FilterNode = { type: "relation_path_contains", path: ["project", "people"], value: companyId };
-    const otherFirst: FilterNode = { type: "relation_path_contains", path: ["event", "company"], value: companyId };
+    const reversed: FilterNode = { type: "relation_path_contains", path: ["area", "project"], value: areaId };
+    const otherSecond: FilterNode = { type: "relation_path_contains", path: ["project", "company"], value: areaId };
+    const otherFirst: FilterNode = { type: "relation_path_contains", path: ["event", "area"], value: areaId };
     const onProject: FilterNode = { type: "relation_is_empty", property: "project" };
-    const filter: FilterNode = { type: "and", nodes: [inCompany, reversed, otherSecond, otherFirst, onProject, done] };
-    expect(excludeFacetConditions(filter, projectCompany)).toEqual({
+    const filter: FilterNode = { type: "and", nodes: [inArea, reversed, otherSecond, otherFirst, onProject, done] };
+    expect(excludeFacetConditions(filter, projectArea)).toEqual({
       type: "and",
       nodes: [reversed, otherSecond, otherFirst, onProject, done],
     });
-    expect(excludeFacetConditions(inCompany, projectCompany)).toBeUndefined();
-    expectRefusedOnFilter({ type: "or", nodes: [inCompany, done] }, projectCompany);
-    expectRefusedOnFilter({ type: "not", node: inCompany }, projectCompany);
+    expect(excludeFacetConditions(inArea, projectArea)).toBeUndefined();
+    expectRefusedOnFilter({ type: "or", nodes: [inArea, done] }, projectArea);
+    expectRefusedOnFilter({ type: "not", node: inArea }, projectArea);
   });
 
   it("keeps a path condition for the property facet of its first relation, also inside or", () => {
     const project: FacetTarget = { kind: "property", key: "project" };
-    const either: FilterNode = { type: "or", nodes: [inCompany, done] };
-    expect(excludeFacetConditions(inCompany, project)).toBe(inCompany);
+    const either: FilterNode = { type: "or", nodes: [inArea, done] };
+    expect(excludeFacetConditions(inArea, project)).toBe(inArea);
     expect(excludeFacetConditions(either, project)).toBe(either);
   });
 
@@ -126,7 +126,17 @@ describe("loadFacetMetadata (issue #1759)", () => {
     const metadata = await loadFacetMetadata();
     expect(loadFullModuleRegistry).toHaveBeenCalledTimes(2);
 
-    expect(Object.keys(metadata)).toEqual(["catalogResolver"]);
+    expect(metadata.areaFilters.get("tasks")).toEqual({
+      type: "relation_path_contains",
+      path: ["project", "area"],
+      value: { areaValue: true },
+    });
+    expect(metadata.areaFilters.get("projects")).toEqual({
+      type: "relation_contains",
+      property: "area",
+      value: { areaValue: true },
+    });
+    expect(metadata.areaFilters.has("people")).toBe(false);
     const catalogs = await metadata.catalogResolver.getCatalogsForDbKey("projects");
     expect(catalogs?.en["property.projects.status.option.inProgress"]).toBe("In progress");
 

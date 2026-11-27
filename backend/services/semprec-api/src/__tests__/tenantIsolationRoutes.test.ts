@@ -1696,12 +1696,18 @@ const mailThreadChangesBody = z.object({
 });
 
 const mailThreadFacetsBody = z.object({
-  total: z.number(),
-  projects: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
+  areas: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
+  projects: z.object({
+    total: z.number(),
+    items: z.array(z.object({ id: z.string(), areaId: z.string().nullable(), count: z.number() })),
+  }),
 });
 
-/** The thread through the real reconcile path; the project and its relation through the choke point. */
-async function mailThreadInProject(tenant: TenantFixture): Promise<{ projectId: string }> {
+/**
+ * The thread through the real reconcile path; the area, the project and both relations through the
+ * choke point.
+ */
+async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaId: string; projectId: string }> {
   const threadId = await seedMailThread(
     tenant,
     `<${randomUUID()}@example.test>`,
@@ -1718,6 +1724,7 @@ async function mailThreadInProject(tenant: TenantFixture): Promise<{ projectId: 
   });
   const projectsDatabaseId = await databaseIdFor(tenant.tenantId, "projects");
   const threadsDatabaseId = await databaseIdFor(tenant.tenantId, "threads");
+  const areasDatabaseId = await databaseIdFor(tenant.tenantId, "areas");
   return runInTenant(tenant.tenantId, async () => {
     const chokePoint = createChokePoint(pool);
     const relationPropertyId = async (databaseId: string, key: string): Promise<string> => {
@@ -1725,16 +1732,22 @@ async function mailThreadInProject(tenant: TenantFixture): Promise<{ projectId: 
       if (!property) throw new Error(`no '${key}' property in database ${databaseId}`);
       return property.id;
     };
+    const area = await chokePoint.createItem({ databaseId: areasDatabaseId, properties: { name: "Facets area" } });
     const project = await chokePoint.createItem({
       databaseId: projectsDatabaseId,
       properties: { name: "Facets project" },
+    });
+    await chokePoint.createRelation({
+      relationPropertyId: await relationPropertyId(projectsDatabaseId, "area"),
+      callerItemId: project.id,
+      targetItemId: area.id,
     });
     await chokePoint.createRelation({
       relationPropertyId: await relationPropertyId(threadsDatabaseId, "project"),
       callerItemId: threadItemId,
       targetItemId: project.id,
     });
-    return { projectId: project.id };
+    return { areaId: area.id, projectId: project.id };
   });
 }
 
@@ -3147,15 +3160,27 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const ofAStates = (await mailOauthStates(a)).filter((row) => !statesOfA.some((known) => known.id === row.id));
     expect(ofAStates.map((row) => [row.user_id, row.used_at])).toEqual([[a.member.userId, null]]);
   },
-  // The thread detail's pattern matches this path too, so the facets body shows which route answered.
+  // A's ids select for B what random ids select: no thread. The thread detail's pattern matches
+  // this path too, so the facets body shows which route answered.
   "mail thread facets": async () => {
-    const ofA = await mailThreadInProject(a);
-    const ofB = await mailThreadInProject(b);
+    const ofA = await mailThreadInProjectOfArea(a);
+    const ofB = await mailThreadInProjectOfArea(b);
     const facets: Request = GET("/api/mail/threads/facets");
-    const own = await expectExcludesA(b.member, facets, [ofB.projectId]);
-    expectNoneOf(own.text, [ofA.projectId], "B's facets");
+    const own = await expectExcludesA(b.member, facets, [ofB.areaId, ofB.projectId]);
+    expectNoneOf(own.text, [ofA.areaId, ofA.projectId], "B's facets");
     const body = mailThreadFacetsBody.parse(JSON.parse(own.text));
-    expect(body.projects.items).toContainEqual({ id: ofB.projectId, count: 1 });
+    expect(body.areas.items).toContainEqual({ id: ofB.areaId, count: 1 });
+    expect(body.projects.items).toContainEqual({ id: ofB.projectId, areaId: ofB.areaId, count: 1 });
+
+    const narrowed = await expectForeignLikeRandom(b.member, [ofA.areaId, ofA.projectId], ([areaId, projectId]) =>
+      GET(`/api/mail/threads/facets?areaId=${areaId}&projectId=${projectId}`),
+    );
+    expect(narrowed.status).toBe(200);
+    const none = mailThreadFacetsBody.parse(JSON.parse(narrowed.text));
+    expect({ areas: none.areas.total, projects: none.projects }).toEqual({
+      areas: 0,
+      projects: { total: 0, items: [] },
+    });
     expect(await sendOk(a.member, facets)).toContain(ofA.projectId);
   },
   // Each tenant counts its own changes: B's delta lists only B's thread, and a cursor of A's counter is a reset for B
@@ -3885,6 +3910,31 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     await expectForeign404(b.member, [foreign.eventId], ([id]) => tasksOf(id));
     const invalid = await send(b.member, tasksOf("not-a-uuid"));
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  // An overdue task is in the overview's list whatever day the test runs on.
+  "area overview": async () => {
+    const seed = async (tenant: TenantFixture): Promise<{ areaId: string; projectId: string; taskId: string }> => {
+      const create = (moduleId: string, properties: Record<string, unknown>) =>
+        createItemAs(tenant, moduleId, properties);
+      const relate = (itemId: string, key: string, targetId: string): Promise<string> =>
+        sendOk(tenant.member, PUT(`/api/items/${itemId}/relations/${key}/${targetId}`, {}));
+      const areaId = await create("areas", { name: "Overview probe" });
+      const projectId = await create("projects", { name: "Overview probe project" });
+      const taskId = await create("tasks", { name: "Overview probe task", date: "2026-01-05" });
+      await relate(projectId, "area", areaId);
+      await relate(taskId, "project", projectId);
+      return { areaId, projectId, taskId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const overviewOf = (areaId: string | undefined): Request => GET(`/api/areas/${areaId}/overview`);
+    const asOwner = await sendOk(a.member, overviewOf(foreign.areaId));
+    expect([foreign.projectId, foreign.taskId].filter((id) => !asOwner.includes(id))).toEqual([]);
+    const listed = await expectExcludesA(b.member, overviewOf(own.areaId), [own.projectId, own.taskId]);
+    expectNoneOf(listed.text, Object.values(foreign), "B's area overview");
+    await expectForeign404(b.member, [foreign.areaId], ([id]) => overviewOf(id));
+    const invalid = await send(b.member, overviewOf("not-a-uuid"));
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
@@ -7694,14 +7744,6 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     expect((await patch(b.member, { databaseId: tasksId, access: "none" })).status).toBe(400);
     expect((await patch(b.member, { databaseId: healthId, access: "admin" })).status).toBe(400);
     expect(await grants()).toEqual([]);
-  });
-
-  it("routes no area overview: it answers like an unknown route", async () => {
-    const id = randomUUID();
-    const unknown = await send(b.member, GET(`/api/not-a-route/${id}/overview`));
-    const overview = await send(b.member, GET(`/api/areas/${id}/overview`));
-    expect(overview.status).toBe(404);
-    expect(overview).toEqual(unknown);
   });
 
   it("omits a historical foreign blob from an authenticated item envelope", async () => {

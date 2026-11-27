@@ -421,14 +421,14 @@ function isRefFixtureMessage(value: unknown): value is RefFixtureMessage {
   );
 }
 
-async function createCompanyItem(tenantId: string, name: string, ico?: string) {
+async function createAreaItem(tenantId: string, name: string, note?: string) {
   return runInTenant(tenantId, () =>
     withTransaction(pool, async (client) => {
-      const database = await getDatabaseByModuleId(client, "companies");
-      if (!database) throw new Error("Missing companies database");
+      const database = await getDatabaseByModuleId(client, "areas");
+      if (!database) throw new Error("Missing areas database");
       const item = await createItemWithClient(client, {
         databaseId: database.id,
-        properties: { name, ...(ico ? { ico } : {}) },
+        properties: { name, ...(note ? { note } : {}) },
       });
       return { databaseId: database.id, itemId: item.id };
     }),
@@ -663,7 +663,7 @@ describe("queued Semp messages", () => {
           await setTenantAiBudget(admin, tenant, { dailyCapUsd: 100, monthlyCapUsd: 100 });
           const foreign = await createTestTenant(admin);
           await runInTenant(foreign, () => seedSystem(pool));
-          const ids = await createCompanyItem(tenant, "Reference", "REF_OWNER_SENTINEL_32");
+          const ids = await createAreaItem(tenant, "Reference", "REF_OWNER_SENTINEL_32");
           const mailStorage = new LocalFsBlobStorageWriter(join(mailRoot, "mail"));
           const fileStorage = new LocalFsBlobStorageWriter(join(mailRoot, "files"));
           const mail = await createMailThread(mailStorage);
@@ -703,7 +703,7 @@ describe("queued Semp messages", () => {
             unavailable = await uploadImage(fileStorage, fileDatabase.id, "Unavailable image", "#a34257");
             expect(availableKeys.has(unavailable.key)).toBe(false);
           }
-          const foreignIds = await createCompanyItem(foreign, "REF_FOREIGN_SENTINEL_32");
+          const foreignIds = await createAreaItem(foreign, "REF_FOREIGN_SENTINEL_32");
           const refs = [
             { kind: "item" as const, ...ids },
             { kind: "item" as const, ...mail },

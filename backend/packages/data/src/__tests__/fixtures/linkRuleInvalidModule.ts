@@ -12,27 +12,27 @@ export const manifest: ModuleManifest = {
   linkRules: [
     {
       key: "fixtureInvalid.misspelledSource",
-      source: { databaseKey: "healthRecords", propertyKey: "nme" },
+      source: { databaseKey: "areas", propertyKey: "nme" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "projects", relationKey: "healthRecords" },
+      via: { databaseKey: "projects", relationKey: "area" },
     },
     {
       key: "fixtureInvalid.misspelledVia",
-      source: { databaseKey: "healthRecords", propertyKey: "name" },
+      source: { databaseKey: "areas", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "projects", relationKey: "healthRecordss" },
+      via: { databaseKey: "projects", relationKey: "areaa" },
     },
     {
       key: "fixtureInvalid.viaNotRelation",
-      source: { databaseKey: "healthRecords", propertyKey: "name" },
+      source: { databaseKey: "areas", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
       via: { databaseKey: "projects", relationKey: "name" },
     },
     {
       key: "fixtureInvalid.wrongDirection",
-      source: { databaseKey: "healthRecords", propertyKey: "name" },
+      source: { databaseKey: "areas", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "healthRecords", relationKey: "files" },
+      via: { databaseKey: "areas", relationKey: "company" },
     },
   ],
 };

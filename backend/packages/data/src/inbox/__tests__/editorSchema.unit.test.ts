@@ -177,13 +177,13 @@ describe("the editor schemas the modules declare (issue #1825)", () => {
     await registry.loadModule(INBOX_MANIFEST_PATH);
   }, 60_000);
 
-  it("declares the nine card kinds of the system databases and the MCP server card, each once", async () => {
+  it("declares the ten card kinds of the system databases and the MCP server card, each once", async () => {
     const declared = (await registry.getEditorSchemas()).map((schema) => `${schema.moduleId}:${schema.baseKind}`);
 
     expect([...declared].sort()).toEqual(
       [
         "inboxPipeline:mcp",
-        ...["task", "event", "project", "company", "person", "file", "health", "journal", "page"].map(
+        ...["task", "event", "project", "area", "company", "person", "file", "health", "journal", "page"].map(
           (baseKind) => `systemDatabases:${baseKind}`,
         ),
       ].sort(),
@@ -321,7 +321,7 @@ describe("editor schema rules (issue #1928)", () => {
             { key: "followDate", required: true, when: { field: "followupTask", equals: true } },
           ],
         },
-        { fields: [{ key: "place", required: true }] },
+        { fields: [{ key: "area", required: true }] },
       ],
     };
 
@@ -329,16 +329,16 @@ describe("editor schema rules (issue #1928)", () => {
       expect(findMissingRequired(SCHEMA_RULES, single({ followupTask: true }))).toEqual([
         { field: "name" },
         { field: "followDate" },
-        { field: "place" },
+        { field: "area" },
       ]);
     });
 
     it("does not list a field that has a value, nor an optional one", () => {
-      expect(findMissingRequired(SCHEMA_RULES, single({ name: "Milk", place: "a1" }))).toEqual([]);
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: "Milk", area: "a1" }))).toEqual([]);
     });
 
     it("does not list a required field that a condition hides", () => {
-      expect(findMissingRequired(SCHEMA_RULES, single({ name: "x", place: "a", followupTask: false }))).toEqual([]);
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: "x", area: "a", followupTask: false }))).toEqual([]);
     });
 
     it.each([
@@ -348,7 +348,7 @@ describe("editor schema rules (issue #1928)", () => {
       ["a whitespace-only string", " \t\n "],
       ["an empty array", []],
     ])("counts %s as no value", (_label, value) => {
-      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, place: "a" }))).toEqual([{ field: "name" }]);
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, area: "a" }))).toEqual([{ field: "name" }]);
     });
 
     it.each([
@@ -357,7 +357,7 @@ describe("editor schema rules (issue #1928)", () => {
       ["a non-empty array", ["a"]],
       ["a string with text", " x "],
     ])("counts %s as a value", (_label, value) => {
-      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, place: "a" }))).toEqual([]);
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, area: "a" }))).toEqual([]);
     });
 
     it("reports a missing field of a card with several steps on its first step, and none for a single step", () => {
@@ -365,23 +365,23 @@ describe("editor schema rules (issue #1928)", () => {
         { ref: "company", values: {} },
         { ref: "person", values: { name: "Jane" } },
       ];
-      expect(findMissingRequired(SCHEMA_RULES, steps)).toEqual([{ ref: "company", field: "place" }]);
+      expect(findMissingRequired(SCHEMA_RULES, steps)).toEqual([{ ref: "company", field: "area" }]);
       expect(findMissingRequired(SCHEMA_RULES, single({}))[0]).toEqual({ field: "name" });
     });
 
     it("reports the real ref of a card whose envelope has operations even when only one step is active", () => {
-      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "file", values: { place: "a" } }])).toEqual([
+      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "file", values: { area: "a" } }])).toEqual([
         { ref: "file", field: "name" },
       ]);
       // A real step may be named `primary`: it is still addressed by that ref, unlike the synthetic step.
-      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "primary", values: { place: "a" } }])).toEqual([
+      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "primary", values: { area: "a" } }])).toEqual([
         { ref: "primary", field: "name" },
       ]);
     });
 
     it("finds a required field's value in a later step", () => {
       const steps: EditorStepValues[] = [
-        { ref: "company", values: { place: "a" } },
+        { ref: "company", values: { area: "a" } },
         { ref: "person", values: { name: "Jane" } },
       ];
       expect(findMissingRequired(SCHEMA_RULES, steps)).toEqual([]);
@@ -477,8 +477,8 @@ describe("editor schema rules (issue #1928)", () => {
       };
       const values = buildEditorValues(envelope, {});
       expect(values).toEqual([{ ref: "file", values: { name: "file" } }]);
-      expect(findMissingRequired({ groups: [{ fields: [{ key: "place", required: true }] }] }, values)).toEqual([
-        { ref: "file", field: "place" },
+      expect(findMissingRequired({ groups: [{ fields: [{ key: "area", required: true }] }] }, values)).toEqual([
+        { ref: "file", field: "area" },
       ]);
     });
 

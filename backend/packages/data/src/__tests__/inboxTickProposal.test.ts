@@ -3246,6 +3246,14 @@ describe("assertValidProposalEnvelope resolves the target database and validates
         { project: "projects", company: "companies" },
         "company",
       ],
+      ["an Event that sets an area and a project", "events", { project: "projects", area: "areas" }, "area"],
+      ["a File that sets an area and a project", "files", { projects: "projects", area: "areas" }, "area"],
+      [
+        "a health record that sets an area and a project",
+        "healthRecords",
+        { projects: "projects", area: "areas" },
+        "area",
+      ],
     ] as const)("refuses %s, on %s", async (_, moduleId, relationModules, field) => {
       const relations = Object.fromEntries(
         await Promise.all(Object.entries(relationModules).map(async ([key, module]) => [key, [await itemIn(module)]])),
@@ -3258,13 +3266,14 @@ describe("assertValidProposalEnvelope resolves the target database and validates
     it("accepts one side alone, an empty project, and databases or relations that derive nothing", async () => {
       const project = await itemIn("projects");
       const company = await itemIn("companies");
+      const area = await itemIn("areas");
       const person = await itemIn("people");
       for (const [moduleId, relations] of [
         ["events", { company: [company] }],
+        ["events", { area: [area] }],
         ["events", { project: [], company: [company] }],
         ["events", { project: [project], company: [] }],
-        ["files", { companies: [company] }],
-        ["files", { projects: [project], companies: [company] }],
+        ["files", { area: [area] }],
         ["files", { projects: [project] }],
         ["tasks", { project: [project] }],
         ["events", { project: [project], people: [person] }],
@@ -3594,8 +3603,8 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "a missing step referenced only by an update's after relations",
         "projects",
         { name: "Home" },
-        { after: { relations: { company: [{ ref: "missing" }] } } },
-        { field: "company" },
+        { after: { relations: { area: [{ ref: "missing" }] } } },
+        { field: "area" },
         true,
       ],
       ["a blank title", "projects", { name: "Home" }, change({ name: "" }, { name: "Home" }), { field: "name" }, true],
@@ -3619,8 +3628,8 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "an after-only relation with no before coverage",
         "projects",
         { name: "Home" },
-        { after: { relations: { company: [] } } },
-        { field: "company" },
+        { after: { relations: { area: [] } } },
+        { field: "area" },
         true,
       ],
       [
@@ -3643,16 +3652,16 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "an invalid after-only relation target",
         "projects",
         { name: "Home" },
-        { before: { relations: { company: [] } }, after: { relations: { company: [MISSING] } } },
-        { field: "company" },
+        { before: { relations: { area: [] } }, after: { relations: { area: [MISSING] } } },
+        { field: "area" },
         false,
       ],
       [
         "a forged update before target as an existing edge",
         "projects",
         { name: "Home" },
-        { before: { relations: { company: [MISSING] } }, after: { relations: { company: [MISSING] } } },
-        { field: "company" },
+        { before: { relations: { area: [MISSING] } }, after: { relations: { area: [MISSING] } } },
+        { field: "area" },
         false,
       ],
       [
@@ -3689,43 +3698,43 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
 
     it("rejects a cycle through an update's after relations", async () => {
       const project = await createItem("projects", { name: "Home" });
-      const envelope = await updateEnvelope({ after: { relations: { company: [{ ref: "company" }] } } }, project);
+      const envelope = await updateEnvelope({ after: { relations: { area: [{ ref: "area" }] } } }, project);
       envelope.operations.push({
-        ref: "company",
+        ref: "area",
         op: "create",
-        databaseKey: "companies",
+        databaseKey: "areas",
         role: "secondary",
         properties: { name: "Work" },
         relations: { projects: [{ ref: "move" }] },
       });
-      expect((await failure(envelope)).details).toMatchObject({ ref: "company", field: "projects" });
+      expect((await failure(envelope)).details).toMatchObject({ ref: "area", field: "projects" });
     });
 
-    it("accepts an update step changing a project's status or moving it to another company", async () => {
+    it("accepts an update step changing a project's status or moving it to another area", async () => {
       const project = await createItem("projects", { name: "Home", status: "inProgress" });
       await expect(
         validate(await updateEnvelope(change({ status: "done" }, { status: "inProgress" }), project)),
       ).resolves.not.toBeNull();
-      const oldCompany = await createItem("companies", { name: "Old" });
-      const newCompany = await createItem("companies", { name: "New" });
+      const oldArea = await createItem("areas", { name: "Old" });
+      const newArea = await createItem("areas", { name: "New" });
       const step = {
-        relations: { company: [newCompany] },
-        before: { relations: { company: [oldCompany] } },
-        after: { relations: { company: [newCompany] } },
+        relations: { area: [newArea] },
+        before: { relations: { area: [oldArea] } },
+        after: { relations: { area: [newArea] } },
       };
       await expect(validate(await updateEnvelope(step, project))).resolves.not.toBeNull();
     });
 
     it("rejects conflicting relation representations", async () => {
       const project = await createItem("projects", { name: "Home" });
-      const first = await createItem("companies", { name: "First" });
-      const second = await createItem("companies", { name: "Second" });
+      const first = await createItem("areas", { name: "First" });
+      const second = await createItem("areas", { name: "Second" });
       const step = {
-        relations: { company: [first] },
-        before: { relations: { company: [] } },
-        after: { relations: { company: [second] } },
+        relations: { area: [first] },
+        before: { relations: { area: [] } },
+        after: { relations: { area: [second] } },
       };
-      expect((await failure(await updateEnvelope(step, project))).details).toEqual({ ref: "move", field: "company" });
+      expect((await failure(await updateEnvelope(step, project))).details).toEqual({ ref: "move", field: "area" });
     });
 
     /** Links `callerItemId` to `targetItemId` through `moduleId.key` in a tenant scope, as a request does. */
@@ -4397,7 +4406,7 @@ describe("Markdown page proposal validation", () => {
       await runInTenant(foreign, () => seedSystem(runtime));
       const setup = (tenant: string) =>
         runInTenant(tenant, async () => {
-          const dbs = await systemDatabases(runtime, ["projects", "tasks", "journal"] as const);
+          const dbs = await systemDatabases(runtime, ["projects", "areas", "tasks", "journal"] as const);
           const cp = createChokePoint(runtime);
           const journalItem = (period: "day" | "week") =>
             withTransaction(runtime, (client) =>
@@ -4405,7 +4414,7 @@ describe("Markdown page proposal validation", () => {
             );
           return {
             project: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } }),
-            otherProject: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Other project" } }),
+            area: await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } }),
             task: await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } }),
             day: await journalItem("day"),
             week: await journalItem("week"),
@@ -4428,7 +4437,7 @@ describe("Markdown page proposal validation", () => {
       });
 
       const before = await docCount();
-      for (const target of [own.project.id, own.otherProject.id, own.day.id])
+      for (const target of [own.project.id, own.area.id, own.day.id])
         await expect(validate(target, hello("end"))).resolves.toBeNull();
       expect((await docCount()).rows).toEqual(before.rows);
       for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
@@ -4459,9 +4468,9 @@ describe("Markdown page proposal validation", () => {
       expect(
         (await resolvePlacement(own.project.id, hello({ afterHeadingText: "missing" }))).properties.placement,
       ).toBe("end");
-      expect(
-        (await resolvePlacement(own.otherProject.id, hello({ afterHeadingText: "heading" }))).properties.placement,
-      ).toBe("end");
+      expect((await resolvePlacement(own.area.id, hello({ afterHeadingText: "heading" }))).properties.placement).toBe(
+        "end",
+      );
       expect((await resolvePlacement(own.project.id, { flavour: "paragraph" })).properties).toEqual({
         flavour: "paragraph",
       });
@@ -4545,11 +4554,13 @@ describe("Markdown page proposal validation", () => {
 describe("semprec.tick proposes a journal entry for the journal method", () => {
   const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
   let journalId: string;
+  let areasId: string;
   let projectsId: string;
 
   beforeEach(async () => {
     await resetTickDatabases();
     journalId = await databaseIdFor("journal");
+    areasId = await databaseIdFor("areas");
     projectsId = await databaseIdFor("projects");
   });
 
@@ -4608,11 +4619,21 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     expect(card?.properties.proposal).toEqual(journalEnvelope({ date: "2026-10-12" }));
   });
 
-  it("keeps a project as the computation returned it", async () => {
-    const projectId = await liveItem(projectsId, "Related");
-    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", projectId });
+  it("keeps only the project when the computation returns an area and a project", async () => {
+    const areaId = await liveItem(areasId, "Health");
+    const projectId = await liveItem(projectsId, "Website");
+    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", areaId, projectId });
     expect(card?.properties.status).toBe("proposed");
     expect(card?.properties.proposal).toEqual(journalEnvelope({ projectId }));
+  });
+
+  it.each([
+    ["an area alone", "areaId"],
+    ["a project alone", "projectId"],
+  ] as const)("keeps %s as the computation returned it", async (_label, key) => {
+    const id = await liveItem(key === "areaId" ? areasId : projectsId, "Related");
+    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", [key]: id });
+    expect(card?.properties.proposal).toEqual(journalEnvelope({ [key]: id }));
   });
 
   // One Inbox item per target: a second tick of the same item stops at the stored card's current fingerprint and never
@@ -4640,7 +4661,7 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     ["no markdown", () => ({ date: "2026-10-16" }), "markdown"],
     ["a blank markdown", () => ({ markdown: "  " }), "markdown"],
     ["a page block in the markdown", () => ({ markdown: `A line\n\n${PAGE_LINK}` }), "markdown"],
-    ["an areaId, a field a journal entry does not have", () => ({ markdown: "Run.", areaId: randomUUID() }), "areaId"],
+    ["an area that names no item", () => ({ markdown: "Run.", areaId: randomUUID() }), "areaId"],
     ["a project that names no item", () => ({ markdown: "Run.", projectId: randomUUID() }), "projectId"],
     ["a date that is no calendar day", () => ({ markdown: "Run.", date: "2026-02-30" }), "date"],
   ] as const)("records %s as needsClarification and stores no envelope", async (_label, build, field) => {
@@ -4735,7 +4756,7 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     });
   });
 
-  it("does not accept a project of another tenant: the card is needsClarification, as for an id that names no item", async () => {
+  it("does not accept an area of another tenant: the card is needsClarification, as for an id that names no item", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     try {
       // The own item is created while the tenant is the only one: the superuser pool resolves its tenant by that.
@@ -4743,15 +4764,15 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
       const foreign = await createTestTenant(pool);
       await createUser(pool, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
       await runInTenant(foreign, () => seedSystem(runtime));
-      const foreignProjectId = await runInTenant(foreign, () =>
+      const foreignAreaId = await runInTenant(foreign, () =>
         withTransaction(runtime, async (client) => {
-          const projects = await databasesStore.getDatabaseByModuleId(client, "projects");
-          if (!projects) throw new Error("Foreign tenant has no Projects database");
-          return (await createItemWithClient(client, { databaseId: projects.id, properties: { name: "Foreign" } })).id;
+          const areas = await databasesStore.getDatabaseByModuleId(client, "areas");
+          if (!areas) throw new Error("Foreign tenant has no Areas database");
+          return (await createItemWithClient(client, { databaseId: areas.id, properties: { name: "Foreign" } })).id;
         }),
       );
       const cards = await runInTenant(getTenantZeroId(), async () => {
-        await directTick(runtime, itemId, propose({ markdown: "Went for a run.", projectId: foreignProjectId }));
+        await directTick(runtime, itemId, propose({ markdown: "Went for a run.", areaId: foreignAreaId }));
         return withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ properties: Record<string, unknown> }>(
             "SELECT properties FROM items WHERE database_id = $1",
@@ -4763,7 +4784,7 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
       expect(cards).toHaveLength(1);
       expect(cards[0]?.properties).toMatchObject({ status: "needsClarification", proposal: null });
       // The answer is the one an id that names no item gets, and nothing of the foreign item is on the card.
-      expect(JSON.stringify(cards[0]?.properties.history)).toContain("is not a live item of projects");
+      expect(JSON.stringify(cards[0]?.properties.history)).toContain("is not a live item of areas");
       expect(JSON.stringify(cards[0]?.properties)).not.toContain("Foreign");
     } finally {
       await runtime.end();

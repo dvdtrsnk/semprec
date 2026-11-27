@@ -5,7 +5,7 @@ import { GENERIC_OPERATION_BINDINGS, GENERIC_OPERATION_NAMES, operationInputJson
 import { boundGatewayImagePayload } from "../modelComposition.js";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
-const relation = { type: "relation_path_contains", path: ["project", "company"], value: uuid };
+const relation = { type: "relation_path_contains", path: ["project", "area"], value: uuid };
 const nested = (depth: number): JsonValue => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
 
 describe.each(["database.query", "view.query"] as const)("%s compact agent schema", (operation) => {
@@ -36,10 +36,10 @@ describe.each(["database.query", "view.query"] as const)("%s compact agent schem
     ["too deep", { filter: nested(9) }],
     ["empty path", { filter: { ...relation, path: [] } }],
     ["short path", { filter: { ...relation, path: ["project"] } }],
-    ["long path", { filter: { ...relation, path: ["project", "company", "extra"] } }],
-    ["empty key", { filter: { ...relation, path: ["", "company"] } }],
+    ["long path", { filter: { ...relation, path: ["project", "area", "extra"] } }],
+    ["empty key", { filter: { ...relation, path: ["", "area"] } }],
     ["invalid UUID", { filter: { ...relation, value: "bad" } }],
-    ["wrong type", { filter: { ...relation, path: "project.company" } }],
+    ["wrong type", { filter: { ...relation, path: "project.area" } }],
     ["extra leaf", { filter: { ...relation, extra: true } }],
     ["extra root", { extra: true }],
     ["empty group", { filter: { type: "and", nodes: [] } }],
@@ -126,7 +126,7 @@ describe("database.facets agent schema", () => {
     const full = {
       databaseId,
       filter: nested(8),
-      facets: ["status", { path: ["project", "company"] }],
+      facets: ["status", { path: ["project", "area"] }],
       extra: { open: nested(8) },
     };
     expect(GENERIC_OPERATION_BINDINGS["database.facets"].input.safeParse(full).success).toBe(true);
@@ -143,7 +143,7 @@ describe("database.facets agent schema", () => {
     ["a missing database", { facets: ["status"] }],
     ["an empty facet key", { databaseId, facets: [""] }],
     ["a path of one key", { databaseId, facets: [{ path: ["project"] }] }],
-    ["a path of three keys", { databaseId, facets: [{ path: ["project", "company", "name"] }] }],
+    ["a path of three keys", { databaseId, facets: [{ path: ["project", "area", "name"] }] }],
     ["a too deep filter", { databaseId, facets: ["status"], filter: nested(9) }],
     ["a too deep open filter", { databaseId, facets: ["status"], extra: { open: nested(9) } }],
     ["a group overflow", { databaseId, facets: ["status"], filter: { type: "or", nodes: Array(21).fill(relation) } }],

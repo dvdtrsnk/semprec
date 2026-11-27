@@ -78,7 +78,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getMigrations()).toEqual([]);
   });
 
-  it("loads the system-databases manifest with every core database key and Journal's view type", async () => {
+  it("loads the ten-system-databases manifest with all ten existing database keys and Journal's view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(SYSTEM_DATABASES_PATH);
 
@@ -104,7 +104,13 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(pick("companies")).toEqual({ icon: "building", color: "#5AC8FA", overviewOrder: 4, switcherOrder: 6 });
     expect(pick("files")).toEqual({ icon: "document", color: "#8E8E93", overviewOrder: 5, switcherOrder: 7 });
     expect(pick("healthRecords")).toEqual({ icon: "heart", color: "#FF2D55", overviewOrder: 6, switcherOrder: 8 });
-    expect(meta.has("areas")).toBe(false);
+    expect(pick("areas")).toEqual({
+      icon: "compass",
+      color: "#30B0C7",
+      overviewOrder: null,
+      switcherOrder: null,
+      clientVisible: true,
+    });
     expect(pick("transcripts")).toEqual({
       icon: "waveform",
       color: "#8E8E93",

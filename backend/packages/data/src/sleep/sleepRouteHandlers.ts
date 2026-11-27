@@ -6,7 +6,12 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
-import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
+import {
+  SLEEP_NIGHTS_MODULE_ID,
+  SLEEP_PLANS_MODULE_ID,
+  SLEEP_SETTINGS_AREA_KEY,
+  SLEEP_SETTINGS_MODULE_ID,
+} from "../seed/sleepModuleKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { normalizeWallClockTime } from "../timezone.js";
 import {
@@ -33,6 +38,8 @@ export interface SleepNightsResponse {
   /** The number of non-deleted plans, whether or not any of them has a night in the range. */
   planCount: number;
   goalMinutes: number;
+  /** Target of the settings item's `area` edge, or null when it has none. */
+  areaId: string | null;
   nights: ResolvedSleepNight[];
 }
 
@@ -75,6 +82,27 @@ async function sleepDatabaseId(client: PoolClient, moduleId: string): Promise<st
   const database = await getDatabaseByModuleId(client, moduleId);
   if (!database) throw new NotFoundError("The tenant has no sleep module");
   return database.id;
+}
+
+/**
+ * The relation has no inverse property, so the settings item is always side A. A trashed target is still
+ * returned: trashing an item keeps its edges.
+ */
+async function settingsAreaId(
+  client: PoolClient,
+  settingsDatabaseId: string,
+  settingsItemId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ area_id: string }>(
+    `SELECT edge.item_b AS area_id
+       FROM properties property
+       JOIN relation_definitions definition ON definition.property_id_a = property.id
+       JOIN item_relations edge ON edge.relation_definition_id = definition.id
+      WHERE property.database_id = $1 AND property.key = $2 AND edge.item_a = $3
+      LIMIT 1`,
+    [settingsDatabaseId, SLEEP_SETTINGS_AREA_KEY, settingsItemId],
+  );
+  return rows[0]?.area_id ?? null;
 }
 
 async function liveItems(
@@ -132,6 +160,7 @@ export async function loadSleepNights(
   }
   const { prepReminder, prepReminderMinutes, ...settings } = settingsProperties.parse(settingsItem.properties);
 
+  const areaId = await settingsAreaId(client, settingsDatabaseId, settingsItem.id);
   const timezone = await getSystemTimezone(client);
   const plans = (await liveItems(client, await sleepDatabaseId(client, SLEEP_PLANS_MODULE_ID), null)).map(toPlan);
   const exceptions = (await liveItems(client, await sleepDatabaseId(client, SLEEP_NIGHTS_MODULE_ID), range)).map(
@@ -145,7 +174,7 @@ export async function loadSleepNights(
     to,
     timezone,
   });
-  return { ...settings, timezone, planCount: plans.length, nights };
+  return { ...settings, timezone, planCount: plans.length, areaId, nights };
 }
 
 function requiredParameter(parameters: URLSearchParams, name: "from" | "to"): string {

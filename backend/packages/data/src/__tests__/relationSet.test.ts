@@ -42,13 +42,13 @@ describe("relation.set", () => {
   async function fixture() {
     const databases = await cp.listDatabases();
     const projects = databases.find((db) => db.ownerModuleId === "projects");
-    const companies = databases.find((db) => db.ownerModuleId === "companies");
-    if (!projects || !companies) throw new Error("Missing seeded databases");
-    const property = (await cp.listProperties(projects.id)).find((entry) => entry.key === "company");
-    if (!property) throw new Error("Missing project company property");
+    const areas = databases.find((db) => db.ownerModuleId === "areas");
+    if (!projects || !areas) throw new Error("Missing seeded databases");
+    const property = (await cp.listProperties(projects.id)).find((entry) => entry.key === "area");
+    if (!property) throw new Error("Missing project area property");
     const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Project" } });
-    const first = await cp.createItem({ databaseId: companies.id, properties: { name: "First" } });
-    const second = await cp.createItem({ databaseId: companies.id, properties: { name: "Second" } });
+    const first = await cp.createItem({ databaseId: areas.id, properties: { name: "First" } });
+    const second = await cp.createItem({ databaseId: areas.id, properties: { name: "Second" } });
     return { property, project, first, second };
   }
 

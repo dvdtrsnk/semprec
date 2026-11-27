@@ -515,7 +515,7 @@ describe("Semp thread live prompt", () => {
         expect(prompt).toContain("semprec://items/<id>");
         expect(prompt).toContain("Data schema:");
         expect(prompt).toContain(`"databaseId":"${fixture.inboxId}","key":null,"name":"Inbox"`);
-        expect(prompt).toContain('"key":"companies","name":"Companies"');
+        expect(prompt).toContain('"key":"areas","name":"Areas"');
         // The project holds no grant on the sensitive databases, so the schema lists none of them.
         expect(prompt).toContain('"sensitive":false');
         expect(prompt).not.toContain('"sensitive":true');

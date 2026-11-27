@@ -511,9 +511,9 @@ describe("createSchemaRequestListener (issue #147)", () => {
   });
 
   it.each([
-    ["cs", "Firma", "Termín"],
-    ["en", "Company", "Deadline"],
-  ])("returns the updated project labels through schema for %s", async (locale, company, date) => {
+    ["cs", "Oblast", "Termín"],
+    ["en", "Area", "Deadline"],
+  ])("returns the updated project labels through schema for %s", async (locale, area, date) => {
     const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader(locale) });
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
@@ -522,7 +522,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
         expect.objectContaining({
           key: "projects",
           properties: expect.arrayContaining([
-            expect.objectContaining({ key: "company", name: company }),
+            expect.objectContaining({ key: "area", name: area }),
             expect.objectContaining({ key: "date", name: date }),
           ]),
         }),
@@ -542,6 +542,13 @@ describe("createSchemaRequestListener (issue #147)", () => {
       });
     expect(body).toMatchObject({
       databases: expect.arrayContaining([
+        expect.objectContaining({
+          key: "areas",
+          properties: expect.arrayContaining([
+            property("company", "Firmy"),
+            property("healthRecord", "Zdravotní záznamy"),
+          ]),
+        }),
         expect.objectContaining({
           key: "people",
           properties: expect.arrayContaining([option("relationship", "girlfriend", "Partnerka")]),
@@ -799,15 +806,61 @@ describe("createSchemaRequestListener (issue #147)", () => {
     ]);
   });
 
-  it("publishes no areaFilter and no Areas database", async () => {
+  it("publishes areaFilter for the seven area-filterable databases and omits it for the others (issue #1597)", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
     expect(res.status).toBe(200);
     const body = z
       .object({ databases: z.array(z.object({ key: z.string().nullable() }).passthrough()) })
       .parse(await res.json());
-    expect(body.databases.length).toBeGreaterThan(1);
-    expect(body.databases.filter((db) => Object.hasOwn(db, "areaFilter")).map((db) => db.key)).toEqual([]);
-    expect(body.databases.map((db) => db.key)).not.toContain("areas");
+    const filtered = body.databases.filter((db) => Object.hasOwn(db, "areaFilter"));
+    expect(filtered.map((db) => db.key).sort()).toEqual([
+      "companies",
+      "events",
+      "files",
+      "healthRecords",
+      "journal",
+      "projects",
+      "tasks",
+    ]);
+    const declared = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db.areaFilter]));
+    for (const db of filtered) expect(db.areaFilter, db.key ?? "").toEqual(declared.get(db.key ?? ""));
+    expect(filtered.find((db) => db.key === "tasks")?.areaFilter).toEqual({
+      type: "relation_path_contains",
+      path: ["project", "area"],
+      value: { areaValue: true },
+    });
+    expect(filtered.find((db) => db.key === "events")?.areaFilter).toEqual({
+      type: "or",
+      nodes: [
+        { type: "relation_path_contains", path: ["project", "area"], value: { areaValue: true } },
+        {
+          type: "and",
+          nodes: [
+            { type: "relation_is_empty", property: "project" },
+            { type: "relation_contains", property: "area", value: { areaValue: true } },
+          ],
+        },
+      ],
+    });
+    expect(body.databases.length).toBeGreaterThan(filtered.length);
+    for (const db of body.databases.filter((candidate) => !filtered.includes(candidate))) {
+      expect(Object.hasOwn(db, "areaFilter"), db.key ?? "").toBe(false);
+    }
+  });
+
+  it("fails with a bare 500 and publishes no template when a declared property is missing from the tenant's schema (issue #1597)", async () => {
+    const headers = await authHeader("en");
+    // Raw SQL: no API renames a locked system property. This is the drifted tenant schema the pre-publish compile
+    // check exists for.
+    const renamed = await pool.query(
+      `UPDATE properties SET key = 'formerArea'
+        WHERE key = 'area' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'companies' AND system)`,
+    );
+    expect(renamed.rowCount).toBe(1);
+
+    const res = await fetch(`${baseUrl}/api/schema`, { headers });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal server error" });
   });
 
   const facetBarBody = z.object({
@@ -897,8 +950,8 @@ describe("createSchemaRequestListener (issue #147)", () => {
       clientVisible: true,
     });
     expect(body.databases.find((db) => db.key === "tasks")).toMatchObject({ overviewOrder: null, switcherOrder: 2 });
-    expect(body.databases.find((db) => db.key === "transcripts")).toMatchObject({
-      icon: "waveform",
+    expect(body.databases.find((db) => db.key === "areas")).toMatchObject({
+      icon: "compass",
       overviewOrder: null,
       switcherOrder: null,
       clientVisible: true,

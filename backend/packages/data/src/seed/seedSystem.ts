@@ -330,7 +330,7 @@ async function seedSystemInTransaction(
 
   await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
 
-  // Three databases, one settings item, two default plans.
-  await seedSleepModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
+  // Three databases, one settings item, two default plans; `sleepSettings.area` needs Areas.
+  await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
   return "created";
 }

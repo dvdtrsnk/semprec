@@ -24,7 +24,7 @@ import { PAGES_MODULE_ID } from "../docs/pagesDatabase.js";
 import { collectSubpageTree, hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook } from "../docs/pageTrash.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { AREAS_MODULE_ID, EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -574,10 +574,10 @@ describe("host trash and restore hooks (issue #1763)", () => {
 
   it.each<{ name: string; create: () => Promise<{ host: string; page: Subpage }> }>([
     {
-      name: "a project",
+      name: "an area",
       create: async () => {
-        const host = await moduleItem(PROJECTS_MODULE_ID, { name: "Health" });
-        return { host, page: await createSubpage(host, "Project notes") };
+        const host = await moduleItem(AREAS_MODULE_ID, { name: "Health" });
+        return { host, page: await createSubpage(host, "Area notes") };
       },
     },
     {

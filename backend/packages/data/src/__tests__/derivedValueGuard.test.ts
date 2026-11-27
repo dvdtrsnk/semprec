@@ -10,6 +10,7 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { enqueueItemSearchReindex } from "../search/itemSearchFanout.js";
@@ -94,34 +95,116 @@ describe("derived value creation guard", () => {
   }
   /** An Event's create requires a date; the other owners need none. */
   const dated = (owner: string): Record<string, string> => (owner === "events" ? { date: "2026-10-16" } : {});
-  it("rejects an Event's own company with a live project and allows it without one", async () => {
+  it("rejects each configured side with a live project and allows it without one", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
       const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const withProject = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "With project", ...dated("events") },
+      for (const [owner, field, projectKey] of [
+        ["files", "area", "projects"],
+        ["healthRecords", "area", "projects"],
+        ["events", "area", "project"],
+        ["events", "company", "project"],
+        ["journal", "area", "project"],
+      ] as const) {
+        const ids =
+          owner === "journal"
+            ? [
+                (await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-01-01"))).itemId,
+                (await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-01-02"))).itemId,
+              ]
+            : [
+                (await cp.createItem({ databaseId: db(owner), properties: { name: "With project", ...dated(owner) } }))
+                  .id,
+                (
+                  await cp.createItem({
+                    databaseId: db(owner),
+                    properties: { name: "Without project", ...dated(owner) },
+                  })
+                ).id,
+              ];
+        await cp.createRelation({
+          relationPropertyId: await property(owner, projectKey),
+          callerItemId: ids[0]!,
+          targetItemId: project.id,
+        });
+        const relationPropertyId = await property(owner, field);
+        const targetItemId = field === "company" ? company.id : area.id;
+        await expect(
+          cp.createRelation({ relationPropertyId, callerItemId: ids[0]!, targetItemId }),
+        ).rejects.toMatchObject({ status: 400, details: { field } });
+        expect((await cp.listItemRelations(ids[0]!))?.some((edge) => edge.targetItemId === targetItemId)).toBe(false);
+        await expect(
+          cp.createRelation({ relationPropertyId, callerItemId: ids[1]!, targetItemId }),
+        ).resolves.toMatchObject({ relationDefinitionId: expect.any(String) });
+      }
+    });
+  });
+  it.each([
+    { owner: "files", projectKey: "projects", via: "its project property" },
+    { owner: "files", projectKey: null, via: "the project's inverse property" },
+    { owner: "healthRecords", projectKey: "projects", via: "its project property" },
+    { owner: "events", projectKey: "project", via: "its project property" },
+  ] as const)(
+    "removes a $owner item's own area edge when it gets a project through $via",
+    async ({ owner, projectKey }) => {
+      await runInTenant(tenant, async () => {
+        const { cp, db, property } = await fixture();
+        const item = await cp.createItem({ databaseId: db(owner), properties: { name: "Item", ...dated(owner) } });
+        const other = await cp.createItem({ databaseId: db(owner), properties: { name: "Other", ...dated(owner) } });
+        const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+        const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+        const areaProperty = await property(owner, "area");
+        for (const id of [item.id, other.id])
+          await cp.createRelation({ relationPropertyId: areaProperty, callerItemId: id, targetItemId: area.id });
+
+        await (projectKey === null
+          ? cp.createRelation({
+              relationPropertyId: await property("projects", owner),
+              callerItemId: project.id,
+              targetItemId: item.id,
+            })
+          : cp.createRelation({
+              relationPropertyId: await property(owner, projectKey),
+              callerItemId: item.id,
+              targetItemId: project.id,
+            }));
+
+        const edges = await cp.listItemRelations(item.id);
+        expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
+        expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(false);
+        expect((await cp.listItemRelations(other.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       });
-      const withoutProject = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "Without project", ...dated("events") },
-      });
+    },
+  );
+  it("keeps the own area edge when the project link rolls back", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
       await cp.createRelation({
-        relationPropertyId: await property("events", "project"),
-        callerItemId: withProject.id,
-        targetItemId: project.id,
+        relationPropertyId: await property("files", "area"),
+        callerItemId: file.id,
+        targetItemId: area.id,
       });
-      const relationPropertyId = await property("events", "company");
+      const projects = await property("files", "projects");
+
       await expect(
-        cp.createRelation({ relationPropertyId, callerItemId: withProject.id, targetItemId: company.id }),
-      ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
-      expect((await cp.listItemRelations(withProject.id))?.some((edge) => edge.targetItemId === company.id)).toBe(
-        false,
-      );
-      await expect(
-        cp.createRelation({ relationPropertyId, callerItemId: withoutProject.id, targetItemId: company.id }),
-      ).resolves.toMatchObject({ relationDefinitionId: expect.any(String) });
+        withTransaction(data, async (client) => {
+          await createRelationWithClient(client, {
+            relationPropertyId: projects,
+            callerItemId: file.id,
+            targetItemId: project.id,
+          });
+          throw new Error("rolled back");
+        }),
+      ).rejects.toThrow("rolled back");
+
+      const edges = await cp.listItemRelations(file.id);
+      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(true);
+      expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(false);
     });
   });
   it("refuses an inverse company edge and does not consult foreign items", async () => {
@@ -219,31 +302,49 @@ describe("derived value creation guard", () => {
       expect(await cp.listItemRelations(event.id)).toEqual(before);
     });
   });
-  it("marks a caught unsupported-isolation refusal rollback-only", async () => {
+  it("refuses a set of the area of an item with a project, and allows clearing it", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
       const event = await cp.createItem({
         databaseId: db("events"),
         properties: { name: "Event", date: "2026-10-16" },
       });
-      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const relationPropertyId = await property("events", "company");
+      const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const relationPropertyId = await property("events", "area");
+      await cp.createRelation({
+        relationPropertyId: await property("events", "project"),
+        callerItemId: event.id,
+        targetItemId: project.id,
+      });
+      await expect(
+        cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: area.id }),
+      ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
+      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
+      await expect(
+        cp.setRelation({ relationPropertyId, callerItemId: event.id, targetItemId: null }),
+      ).resolves.toBeNull();
+    });
+  });
+  it("marks a caught unsupported-isolation refusal rollback-only", async () => {
+    await runInTenant(tenant, async () => {
+      const { cp, db, property } = await fixture();
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const relationPropertyId = await property("files", "area");
       let priorId = "";
       await expect(
         withTransaction(
           data,
           async (client) => {
             priorId = (
-              await createItemWithClient(client, {
-                databaseId: db("events"),
-                properties: { name: "Rolled back", date: "2026-10-16" },
-              })
+              await createItemWithClient(client, { databaseId: db("files"), properties: { name: "Rolled back" } })
             ).id;
             try {
               await createRelationWithClient(client, {
                 relationPropertyId,
-                callerItemId: event.id,
-                targetItemId: company.id,
+                callerItemId: file.id,
+                targetItemId: area.id,
               });
             } catch (error) {
               expect(error).toMatchObject({ status: 409, details: { reason: "unsupported_isolation" } });
@@ -254,7 +355,7 @@ describe("derived value creation guard", () => {
       ).rejects.toMatchObject({ details: { reason: "unsupported_isolation" } });
       expect(priorId).not.toBe("");
       expect(await cp.findItem(priorId)).toBeNull();
-      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === company.id)).toBe(false);
+      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(false);
     });
   });
   /*
@@ -267,21 +368,19 @@ describe("derived value creation guard", () => {
     async (start) => {
       await runInTenant(tenant, async () => {
         const { cp, db, property } = await fixture();
-        const event = await cp.createItem({
-          databaseId: db("events"),
-          properties: { name: "Event", date: "2026-10-16" },
-        });
+        const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
         const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-        const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-        const unrelatedFile = await cp.createItem({ databaseId: db("files"), properties: { name: "Unrelated" } });
-        const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Other" } });
-        const projectProperty = await property("events", "project");
-        const companyProperty = await property("events", "company");
-        const unrelatedProperty = await property("files", "companies");
+        const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+        const unrelatedEvent = await cp.createItem({
+          databaseId: db("events"),
+          properties: { name: "Unrelated", date: "2026-10-16" },
+        });
+        const unrelatedCompany = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
+        const projectProperty = await property("files", "projects");
+        const areaProperty = await property("files", "area");
+        const unrelatedProperty = await property("events", "company");
         if (start === "warm")
-          await withTransaction(data, (client) =>
-            enqueueItemSearchReindex(client, { kind: "item", itemId: company.id }),
-          );
+          await withTransaction(data, (client) => enqueueItemSearchReindex(client, { kind: "item", itemId: area.id }));
         let rolledBack = "";
         let release!: () => void;
         let ready!: (pid: number) => void;
@@ -295,7 +394,7 @@ describe("derived value creation guard", () => {
           const pid = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           await createRelationWithClient(client, {
             relationPropertyId: projectProperty,
-            callerItemId: event.id,
+            callerItemId: file.id,
             targetItemId: project.id,
           });
           ready(pid.rows[0]!.pid);
@@ -305,16 +404,12 @@ describe("derived value creation guard", () => {
           async () => {
             expect(await waitForBarrier(entered, holder)).toBeGreaterThan(0);
             await expect(
-              cp.createRelation({
-                relationPropertyId: companyProperty,
-                callerItemId: event.id,
-                targetItemId: company.id,
-              }),
+              cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
             ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
             await expect(
               cp.createRelation({
                 relationPropertyId: unrelatedProperty,
-                callerItemId: unrelatedFile.id,
+                callerItemId: unrelatedEvent.id,
                 targetItemId: unrelatedCompany.id,
               }),
             ).resolves.toBeDefined();
@@ -323,15 +418,15 @@ describe("derived value creation guard", () => {
               withTransaction(data, async (client) => {
                 priorId = (
                   await createItemWithClient(client, {
-                    databaseId: db("events"),
-                    properties: { name: "Rollback on busy", date: "2026-10-16" },
+                    databaseId: db("files"),
+                    properties: { name: "Rollback on busy" },
                   })
                 ).id;
                 try {
                   await createRelationWithClient(client, {
-                    relationPropertyId: companyProperty,
-                    callerItemId: event.id,
-                    targetItemId: company.id,
+                    relationPropertyId: areaProperty,
+                    callerItemId: file.id,
+                    targetItemId: area.id,
                   });
                 } catch (error) {
                   expect(error).toMatchObject({ details: { reason: "resource_busy" } });
@@ -346,12 +441,12 @@ describe("derived value creation guard", () => {
           () => [holder],
         );
         await expect(
-          cp.createRelation({ relationPropertyId: companyProperty, callerItemId: event.id, targetItemId: company.id }),
-        ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
-        // Exactly the committed edges' documents are queued: the holder's event and project, the unrelated
-        // event and company, the warm-up's company; nothing for the rolled-back item or the refused edges.
+          cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+        ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
+        // Exactly the committed edges' documents are queued: the holder's file and project, the unrelated
+        // event and company, the warm-up's area; nothing for the rolled-back item or the refused edges.
         expect(rolledBack).not.toBe("");
-        const scenario = [event.id, project.id, company.id, unrelatedFile.id, unrelatedCompany.id, rolledBack];
+        const scenario = [file.id, project.id, area.id, unrelatedEvent.id, unrelatedCompany.id, rolledBack];
         const { rows } = await admin.query<{ key: string | null }>(
           "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
           [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS],
@@ -360,11 +455,11 @@ describe("derived value creation guard", () => {
           row.key !== null && scenario.some((id) => row.key?.endsWith(id)) ? [row.key] : [],
         );
         const expected = [
-          event.id,
+          file.id,
           project.id,
-          unrelatedFile.id,
+          unrelatedEvent.id,
           unrelatedCompany.id,
-          ...(start === "warm" ? [company.id] : []),
+          ...(start === "warm" ? [area.id] : []),
         ];
         expect(queued).toEqual(expected.map((id) => `item-search-reindex:item:${id}`).sort());
       });
@@ -373,14 +468,11 @@ describe("derived value creation guard", () => {
   it("orders an inverse project insertion after a reserved manual edge", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "Event", date: "2026-10-16" },
-      });
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const manual = await property("events", "company");
-      const inverse = await property("projects", "events");
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const manual = await property("files", "area");
+      const inverse = await property("projects", "files");
       let release!: () => void;
       let ready!: (pid: number) => void;
       let waiterReady!: (pid: number) => void;
@@ -397,8 +489,8 @@ describe("derived value creation guard", () => {
         const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
         await createRelationWithClient(client, {
           relationPropertyId: manual,
-          callerItemId: event.id,
-          targetItemId: company.id,
+          callerItemId: file.id,
+          targetItemId: area.id,
         });
         ready(pid);
         await barrier;
@@ -413,7 +505,7 @@ describe("derived value creation guard", () => {
             await createRelationWithClient(client, {
               relationPropertyId: inverse,
               callerItemId: project.id,
-              targetItemId: event.id,
+              targetItemId: file.id,
             });
           });
           const waiterPid = await waitForBarrier(waiterEntered, waiter);
@@ -431,23 +523,19 @@ describe("derived value creation guard", () => {
         release,
         () => [holder, ...(waiter ? [waiter] : [])],
       );
-      const edges = await cp.listItemRelations(event.id);
-      // The project link is admitted once the reserved company edge committed; nothing removes the own company.
-      expect(edges?.some((edge) => edge.targetItemId === company.id)).toBe(true);
+      const edges = await cp.listItemRelations(file.id);
+      expect(edges?.some((edge) => edge.targetItemId === area.id)).toBe(false);
       expect(edges?.some((edge) => edge.targetItemId === project.id)).toBe(true);
     });
   });
   it("releases the project definition after rollback", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "Event", date: "2026-10-16" },
-      });
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const projectProperty = await property("events", "project");
-      const companyProperty = await property("events", "company");
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const projectProperty = await property("files", "projects");
+      const areaProperty = await property("files", "area");
       let release!: () => void;
       let ready!: (pid: number) => void;
       const barrier = new Promise<void>((resolve) => {
@@ -461,7 +549,7 @@ describe("derived value creation guard", () => {
         const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
         await createRelationWithClient(client, {
           relationPropertyId: projectProperty,
-          callerItemId: event.id,
+          callerItemId: file.id,
           targetItemId: project.id,
         });
         ready(pid);
@@ -478,11 +566,7 @@ describe("derived value creation guard", () => {
         async () => {
           expect(await waitForBarrier(entered, settled)).toBeGreaterThan(0);
           await expect(
-            cp.createRelation({
-              relationPropertyId: companyProperty,
-              callerItemId: event.id,
-              targetItemId: company.id,
-            }),
+            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
           ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
         },
         release,
@@ -493,27 +577,20 @@ describe("derived value creation guard", () => {
         ],
       );
       await expect(
-        cp.createRelation({ relationPropertyId: companyProperty, callerItemId: event.id, targetItemId: company.id }),
+        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
       ).resolves.toBeDefined();
-      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === project.id)).toBe(false);
+      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === project.id)).toBe(false);
     });
   });
   it("orders actual project trash and restore against guarded creation", async () => {
     await runInTenant(tenant, async () => {
       const { cp, db, property } = await fixture();
-      const event = await cp.createItem({
-        databaseId: db("events"),
-        properties: { name: "Event", date: "2026-10-16" },
-      });
+      const file = await cp.createItem({ databaseId: db("files"), properties: { name: "File" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
-      const company = await cp.createItem({ databaseId: db("companies"), properties: { name: "Company" } });
-      const projectProperty = await property("events", "project");
-      const companyProperty = await property("events", "company");
-      await cp.createRelation({
-        relationPropertyId: projectProperty,
-        callerItemId: event.id,
-        targetItemId: project.id,
-      });
+      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
+      const projectProperty = await property("files", "projects");
+      const areaProperty = await property("files", "area");
+      await cp.createRelation({ relationPropertyId: projectProperty, callerItemId: file.id, targetItemId: project.id });
       let releaseTrash!: () => void;
       let trashReady!: (pid: number) => void;
       const trashGate = new Promise<void>((resolve) => {
@@ -536,11 +613,7 @@ describe("derived value creation guard", () => {
         async () => {
           expect(await waitForBarrier(trashEntered, trash)).toBeGreaterThan(0);
           await expect(
-            cp.createRelation({
-              relationPropertyId: companyProperty,
-              callerItemId: event.id,
-              targetItemId: company.id,
-            }),
+            cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
           ).rejects.toMatchObject({ status: 409, details: { reason: "resource_busy" } });
           let priorId = "";
           let refusal: unknown;
@@ -549,8 +622,8 @@ describe("derived value creation guard", () => {
             await withTransaction(data, async (client) => {
               priorId = (
                 await createItemWithClient(client, {
-                  databaseId: db("events"),
-                  properties: { name: "Rollback after savepoint", date: "2026-10-16" },
+                  databaseId: db("files"),
+                  properties: { name: "Rollback after savepoint" },
                 })
               ).id;
               await client.query("SAVEPOINT lock_probe");
@@ -569,9 +642,9 @@ describe("derived value creation guard", () => {
               await client.query("SAVEPOINT admission");
               try {
                 await createRelationWithClient(client, {
-                  relationPropertyId: companyProperty,
-                  callerItemId: event.id,
-                  targetItemId: company.id,
+                  relationPropertyId: areaProperty,
+                  callerItemId: file.id,
+                  targetItemId: area.id,
                 });
               } catch (error) {
                 refusal = error;
@@ -601,9 +674,9 @@ describe("derived value creation guard", () => {
       const manual = withTransaction(data, async (client) => {
         const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
         await createRelationWithClient(client, {
-          relationPropertyId: companyProperty,
-          callerItemId: event.id,
-          targetItemId: company.id,
+          relationPropertyId: areaProperty,
+          callerItemId: file.id,
+          targetItemId: area.id,
         });
         manualReady(pid);
         await manualGate;
@@ -644,10 +717,10 @@ describe("derived value creation guard", () => {
         },
         () => [manual, ...(restore ? [restore] : [])],
       );
-      expect((await cp.listItemRelations(event.id))?.some((edge) => edge.targetItemId === company.id)).toBe(true);
+      expect((await cp.listItemRelations(file.id))?.some((edge) => edge.targetItemId === area.id)).toBe(true);
       await expect(
-        cp.createRelation({ relationPropertyId: companyProperty, callerItemId: event.id, targetItemId: company.id }),
-      ).rejects.toMatchObject({ status: 400, details: { field: "company" } });
+        cp.createRelation({ relationPropertyId: areaProperty, callerItemId: file.id, targetItemId: area.id }),
+      ).rejects.toMatchObject({ status: 400, details: { field: "area" } });
     });
   });
 });

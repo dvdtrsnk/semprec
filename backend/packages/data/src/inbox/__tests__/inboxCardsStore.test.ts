@@ -1030,19 +1030,19 @@ describe("listInboxCards (issue #1807)", () => {
         op: "update",
         itemId: accountingId,
         role: "primary",
-        before: { relations: { company: [workId] } },
-        after: { relations: { company: [financeId] } },
+        before: { relations: { area: [workId] } },
+        after: { relations: { area: [financeId] } },
         ...extra,
       };
     }
 
     beforeEach(async () => {
-      workId = await createItemIn("companies", { name: "Work" });
-      financeId = await createItemIn("companies", { name: "Finance" });
+      workId = await createItemIn("areas", { name: "Work" });
+      financeId = await createItemIn("areas", { name: "Finance" });
       accountingId = await createItemIn("projects", { name: "Accounting", status: "inProgress" });
     });
 
-    it("carries the move of a project from company Work to company Finance on the card GET /api/inbox/cards returns", async () => {
+    it("carries the move of a project from area Work to area Finance on the card GET /api/inbox/cards returns", async () => {
       const cardId = await stepsCard([moveToFinance()]);
 
       const answer = await inTenantZero(() =>
@@ -1057,8 +1057,8 @@ describe("listInboxCards (issue #1807)", () => {
           ref: "move",
           itemId: accountingId,
           itemLabel: "Accounting",
-          field: "company",
-          fieldLabel: "Company",
+          field: "area",
+          fieldLabel: "Area",
           from: { value: [workId], labels: ["Work"] },
           to: { value: [financeId], labels: ["Finance"] },
         },
@@ -1092,38 +1092,30 @@ describe("listInboxCards (issue #1807)", () => {
 
     it("labels a target that is another step of the same proposal with the title that step would create", async () => {
       const cardId = await stepsCard([
-        moveToFinance({ after: { relations: { company: [{ ref: "newCompany" }] } } }),
-        {
-          ref: "newCompany",
-          op: "create",
-          databaseKey: "companies",
-          role: "secondary",
-          properties: { name: "Travel" },
-        },
+        moveToFinance({ after: { relations: { area: [{ ref: "newArea" }] } } }),
+        { ref: "newArea", op: "create", databaseKey: "areas", role: "secondary", properties: { name: "Travel" } },
       ]);
 
       const changes = cardOf(await listCards(adminPool, ownerId), cardId).changes;
 
       expect(changes).toMatchObject([
-        { field: "company", from: { labels: ["Work"] }, to: { value: [{ ref: "newCompany" }], labels: ["Travel"] } },
+        { field: "area", from: { labels: ["Work"] }, to: { value: [{ ref: "newArea" }], labels: ["Travel"] } },
       ]);
     });
 
     it("still lists every card when a stored update step names a relation target that is not an id", async () => {
-      const bad = await stepsCard([moveToFinance({ before: { relations: { company: ["Work"] } } })]);
+      const bad = await stepsCard([moveToFinance({ before: { relations: { area: ["Work"] } } })]);
       const good = await stepsCard([moveToFinance()]);
 
       const list = await listCards(adminPool, ownerId);
 
-      expect(cardOf(list, bad).changes).toMatchObject([
-        { field: "company", from: { value: ["Work"], labels: ["Work"] } },
-      ]);
+      expect(cardOf(list, bad).changes).toMatchObject([{ field: "area", from: { value: ["Work"], labels: ["Work"] } }]);
       expect(cardOf(list, good).changes).toMatchObject([{ from: { labels: ["Work"] }, to: { labels: ["Finance"] } }]);
     });
 
     it("leaves a disabled update step out, and a card whose only update step is disabled carries no changes", async () => {
       const disabledOnly = await stepsCard([
-        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Travel" } },
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
         moveToFinance({ role: "secondary", enabled: false }),
       ]);
       const mixed = await stepsCard([
@@ -1145,7 +1137,7 @@ describe("listInboxCards (issue #1807)", () => {
 
     it("leaves out an optional update step that no active step refers to", async () => {
       const cardId = await stepsCard([
-        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Travel" } },
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
         moveToFinance({ role: "secondary", optional: true }),
       ]);
 
@@ -1155,7 +1147,7 @@ describe("listInboxCards (issue #1807)", () => {
     it("carries no changes on a card without update steps, nor on an approval or a card with no envelope", async () => {
       const single = await proposedCard("Buy milk");
       const creating = await stepsCard([
-        { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Travel" } },
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
       ]);
       const updating = await stepsCard([moveToFinance()]);
       const approval = await approvalFrom("heartbeat");
@@ -1177,7 +1169,7 @@ describe("listInboxCards (issue #1807)", () => {
         const cardId = await stepsCard([moveToFinance()]);
         const otherTenantId = await createTestTenant(adminPool);
         await provisionTenant(dataPool, otherTenantId);
-        // The second tenant's card names the first tenant's project and companies, the ids a stolen envelope would hold.
+        // The second tenant's card names the first tenant's project and areas, the ids a stolen envelope would hold.
         const foreignCard = await runInTenant(otherTenantId, async () => {
           const { rows } = await withTransaction(dataPool, (client) =>
             client.query<{ id: string; owner_module_id: string }>(
@@ -1211,8 +1203,8 @@ describe("listInboxCards (issue #1807)", () => {
             ref: "move",
             itemId: accountingId,
             itemLabel: accountingId,
-            field: "company",
-            fieldLabel: "company",
+            field: "area",
+            fieldLabel: "area",
             from: { value: [workId], labels: [workId] },
             to: { value: [financeId], labels: [financeId] },
           },

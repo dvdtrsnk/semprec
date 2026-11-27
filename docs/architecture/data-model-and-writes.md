@@ -268,13 +268,14 @@ empties the write registries.
 
 ### Values derived from a project
 
-- An Event's company is read through its project (`data/derived/`); an Event without a live project
-  shows its own `company` edges only.
-- While an Event has a live project, the choke point refuses a new own `company` edge
-  (`assertNotDerivedValueWrite`, `GUARDED_DERIVED_VALUE_SOURCES`). An Event's own `company` edge is
-  not removed when it gets a project.
-- A change of a project's `company` edge queues `derivedValuesInvalidate`, which announces the
-  project's live Events after commit (`derived/projectDerivedValueInvalidation.ts`).
+- An item's area (and an Event's company) is read through its project (`data/derived/`). Tasks and
+  mail threads have no area of their own; Files, Health records, Events and Journal days keep an own
+  `area` edge only for an item without a live project.
+- While an item has a live project, the choke point refuses a new own `area`/`company` edge
+  (`assertNotDerivedValueWrite`, `GUARDED_DERIVED_VALUE_SOURCES`).
+- When such an item gets a project edge (from either side), its own `area` edges are deleted in the
+  same transaction by the same writer (`projectAttachmentAreaEdgeChangedHook`), so the project's
+  area is the only one left. An Event's own `company` edge is not removed.
 - An Inbox card offers no field for a value derived from the project.
 
 ### Value links

@@ -7,7 +7,7 @@ import { requireAffectedRows } from "../db/pool.js";
 import { createCatalogResolver, toManifestLocale } from "../manifest/catalogResolution.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { buildItemSearchBody, buildItemSearchDocument } from "./itemSearchDocument.js";
 
 const SEARCH_VECTOR_SQL = "to_tsvector('czech', $3) || to_tsvector('czech_simple', $3)";
@@ -99,9 +99,17 @@ export async function indexItem(
   const catalogs = await (await createCatalogResolver(registry)).getCatalogsForDbKey(item.owner_module_id);
   const linked = await relatedTitles(client, [itemId], databaseIds, descriptor?.searchFields ?? [], [
     PROJECTS_MODULE_ID,
+    AREAS_MODULE_ID,
     PEOPLE_MODULE_ID,
     COMPANIES_MODULE_ID,
   ]);
+  const projectAreas = await relatedTitles(
+    client,
+    [...new Set(linked.filter((row) => row.owner_module_id === PROJECTS_MODULE_ID).map((row) => row.id))],
+    databaseIds,
+    ["area"],
+    [],
+  );
   const stored =
     options.pageText === undefined || options.preserveBody
       ? await storedProjection(client, item.id)
@@ -113,7 +121,7 @@ export async function indexItem(
     databaseKey: item.owner_module_id,
     descriptor,
     properties,
-    relatedTitles: linked.flatMap((row) => (typeof row.title === "string" ? [row.title] : [])),
+    relatedTitles: [...linked, ...projectAreas].flatMap((row) => (typeof row.title === "string" ? [row.title] : [])),
     pageText,
     locale,
     catalogs,

@@ -492,7 +492,7 @@ describe("relation expansion include contract", () => {
         { links: true },
         { links: false },
         { relations: {} },
-        { links: true, relations: { projects: ["company"] } },
+        { links: true, relations: { projects: ["area"] } },
       ]) {
         expect(schema.safeParse({ ...base, include }).success).toBe(true);
       }
@@ -729,7 +729,7 @@ describe("ItemCountInputSchema (issue #1709)", () => {
   it("refuses the filter trees database.query refuses", () => {
     const relation = {
       type: "relation_path_contains",
-      path: ["project", "company"],
+      path: ["project", "area"],
       value: "11111111-1111-4111-8111-111111111111",
     };
     const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
@@ -751,7 +751,7 @@ describe("DatabaseFacetsInputSchema (issue #1759)", () => {
   const databaseId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
   const relation = {
     type: "relation_path_contains",
-    path: ["project", "company"],
+    path: ["project", "area"],
     value: "11111111-1111-4111-8111-111111111111",
   };
   const nested = (depth: number): unknown => (depth === 0 ? relation : { type: "not", node: nested(depth - 1) });
@@ -774,7 +774,7 @@ describe("DatabaseFacetsInputSchema (issue #1759)", () => {
     const input = {
       databaseId: databaseId.toUpperCase(),
       filter: { type: "and", nodes: [{ type: "equals", property: "status", value: "inProgress" }, relation] },
-      facets: ["status", { path: ["project", "company"] }],
+      facets: ["status", { path: ["project", "area"] }],
       extra: { open: { type: "equals", property: "status", value: "notDone" } },
     };
     expect(DatabaseFacetsInputSchema.parse(input)).toEqual(input);
@@ -791,8 +791,8 @@ describe("DatabaseFacetsInputSchema (issue #1759)", () => {
     // A facet that matches neither form fails the union as a whole, which the field mapper reports without a field.
     ["a facet that is a number", { databaseId, facets: [1] }, undefined],
     ["a path of one key", { databaseId, facets: [{ path: ["project"] }] }, undefined],
-    ["a path of three keys", { databaseId, facets: [{ path: ["project", "company", "name"] }] }, undefined],
-    ["a path object with another key", { databaseId, facets: [{ path: ["project", "company"], top: 5 }] }, undefined],
+    ["a path of three keys", { databaseId, facets: [{ path: ["project", "area", "name"] }] }, undefined],
+    ["a path object with another key", { databaseId, facets: [{ path: ["project", "area"], top: 5 }] }, undefined],
     // A missing open filter fails the filter union the same way.
     ["an extra without an open filter", { databaseId, facets: ["status"], extra: {} }, undefined],
     [
@@ -838,7 +838,7 @@ describe("SearchInputSchema (issue #1842)", () => {
   it("defaults the scope to every group in the fixed order and the limit per group to 4", () => {
     expect(SearchInputSchema.parse({ q: "faktura" })).toEqual({
       q: "faktura",
-      scope: ["task", "event", "project", "contact", "journal", "file", "mail", "chat"],
+      scope: ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"],
       perGroupLimit: 4,
     });
     expect([...SEARCH_GROUP_TYPES]).toEqual(SearchInputSchema.parse({ q: "x" }).scope);
@@ -873,7 +873,7 @@ describe("SearchInputSchema (issue #1842)", () => {
   });
 
   it("refuses an empty, repeating or unknown scope", () => {
-    for (const scope of [[], ["task", "task"], ["unknown"], ["contacts"], ["area"], "task"]) {
+    for (const scope of [[], ["task", "task"], ["unknown"], ["contacts"], "task"]) {
       const parsed = SearchInputSchema.safeParse({ q: "a", scope });
       expect(parsed.success, JSON.stringify(scope)).toBe(false);
       if (parsed.success) throw new Error("Expected the scope to be refused");
@@ -1004,7 +1004,7 @@ describe("SearchOutputSchema (issue #1842)", () => {
     });
 
     it("refuses journal on a result of any other item group, so only the journal group carries it", () => {
-      for (const type of ["task", "event", "project", "contact", "file"]) {
+      for (const type of ["task", "event", "project", "area", "contact", "file"]) {
         expect(accepts({ type, total: 1, items: [journalResult], nextCursor: null }), type).toBe(false);
         expect(accepts({ type, total: 1, items: [itemResult], nextCursor: null }), type).toBe(true);
       }
@@ -1026,8 +1026,6 @@ describe("SearchOutputSchema (issue #1842)", () => {
   it("refuses an unknown subtitle kind, an unknown key and a missing snippet", () => {
     for (const result of [
       { ...itemResult, subtitleParts: [{ kind: "company", value: "x" }] },
-      { ...itemResult, subtitleParts: [{ kind: "area", value: "x" }] },
-      { ...itemResult, subtitleParts: [{ kind: "count", value: "1" }] },
       { ...itemResult, extra: true },
       { itemId: id, databaseId: id, databaseKey: "tasks", title: "t", subtitleParts: [] },
     ]) {
