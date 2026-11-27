@@ -5,31 +5,69 @@ import SwiftUI
 
 extension View {
 
-    /// Floats the Semp bubble over this view, which is the content of a scene, and presents the chat over it, zooming
-    /// out of the bubble and back into it.
+    /// Shows the Semp bubble over this view, which is the content of a scene, and presents the chat over it, zooming
+    /// out of the bubble and back into it. On iOS the bubble and the chat are in a window of their own over every
+    /// presentation of the scene, docked in Semp's button of the tab bar while that button is shown and on top
+    /// (`SempDock`); on macOS, which has no tab bar, the bubble floats over the scene's content.
     func sempOverlay(_ composition: AppComposition) -> some View {
+        #if os(iOS)
+        modifier(SempLayerModifier(composition: composition))
+        #else
         modifier(SempOverlayModifier(composition: composition, presenter: composition.sempChat))
+        #endif
     }
 
-    /// Floats a bubble of its own over this view, the content of a sheet, because a sheet covers the bubble of the
-    /// scene. What the bubble is given is the same: they share the Kotlin session of the scene.
+    /// On macOS, floats a bubble of its own over this view, the content of a sheet, because a sheet covers the bubble
+    /// of the scene. What the bubble is given is the same: they share the Kotlin session of the scene. On iOS the
+    /// bubble of the scene floats over its sheets already.
     func sempSheetBubble(_ composition: AppComposition, enabled: Bool) -> some View {
+        #if os(iOS)
+        self
+        #else
         modifier(SempSheetBubbleModifier(composition: composition, presenter: composition.sempChat, enabled: enabled))
+        #endif
     }
 }
 
-/// The bubble and the chat of a scene.
+#if os(iOS)
+/// The scene's side of its Semp layer: the objects of every presentation register in the scene's registry, a panel's
+/// wish for the floating controls to step aside reaches the layer, the probe reads the tab bar and the layer's window
+/// opens. While the wake guard covers the window, the layer hides and the chat closes: they are above the guard.
+private struct SempLayerModifier: ViewModifier {
+
+    // MARK: - Dependencies
+    let composition: AppComposition
+    @Environment(\.isWindowGuarded)
+    private var isWindowGuarded
+
+    // MARK: - Body
+    func body(content: Content) -> some View {
+        content
+            .environment(\.dropTargets, composition.dropTargets)
+            .onPreferenceChange(FloatingControlsHiddenKey.self) { [dock = composition.sempDock] hidden in
+                MainActor.assumeIsolated { dock.stepsAside = hidden }
+            }
+            .onChange(of: isWindowGuarded, initial: true) { _, guarded in
+                composition.sempDock.isGuarded = guarded
+                if guarded { composition.sempChat.dismiss() }
+            }
+            .background {
+                SempDockProbe(dock: composition.sempDock, dropTargets: composition.dropTargets)
+                SempLayerWindowHost(composition: composition)
+            }
+    }
+}
+#else
+/// The bubble and the chat of a scene on macOS.
 private struct SempOverlayModifier: ViewModifier {
 
     // MARK: - Dependencies
     let composition: AppComposition
     @ObservedObject var presenter: SempChatPresenter
-    @Namespace private var zoom
     /// Set while a panel at the bottom of the scene asks the bubble to step aside.
     @State private var bubbleHidden = false
 
     // MARK: - Body
-    /// The bubble stays under the chat while it is open, so that the chat can zoom back into it.
     func body(content: Content) -> some View {
         content
             .environment(\.dropTargets, composition.dropTargets)
@@ -41,13 +79,12 @@ private struct SempOverlayModifier: ViewModifier {
                     makeModel: { composition.models.makeSempBubble() },
                     router: composition.sempRouter,
                     registry: composition.dropTargets,
-                    zoom: zoom,
                     open: { presenter.present(.latest) }
                 )
                 .stepsAside(bubbleHidden)
             }
             .fullScreenCoverOrSheet(isPresented: $presenter.isPresented) {
-                SempChatHost(presenter: presenter, composition: composition).zoomingOutOfBubble(in: zoom)
+                SempChatHost(presenter: presenter, composition: composition)
             }
     }
 }
@@ -62,7 +99,6 @@ private struct SempSheetBubbleModifier: ViewModifier {
     @ObservedObject var presenter: SempChatPresenter
     let enabled: Bool
     @State private var registry = DropTargetRegistry()
-    @Namespace private var zoom
     @State private var bubbleHidden = false
 
     // MARK: - Body
@@ -78,14 +114,13 @@ private struct SempSheetBubbleModifier: ViewModifier {
                         makeModel: { composition.models.makeSempBubble() },
                         router: composition.sempRouter,
                         registry: registry,
-                        zoom: zoom,
                         open: { presenter.present(.latest) }
                     )
                     .stepsAside(bubbleHidden)
                 }
             }
             .fullScreenCoverOrSheet(isPresented: sheetChat) {
-                SempChatHost(presenter: presenter, composition: composition).zoomingOutOfBubble(in: zoom)
+                SempChatHost(presenter: presenter, composition: composition)
             }
     }
 
@@ -98,47 +133,11 @@ private struct SempSheetBubbleModifier: ViewModifier {
 // MARK: - Stepping aside
 private extension View {
 
-    /// The bubble faded out and not touchable while a panel takes the bottom of the scene or the keyboard is up: there
-    /// it would cover the field being written in.
+    /// The bubble faded out and not touchable while a panel takes the bottom of the scene, where it would cover it.
     func stepsAside(_ hidden: Bool) -> some View {
-        modifier(SempBubbleStepsAside(hidden: hidden))
+        opacity(hidden ? 0 : 1)
+            .allowsHitTesting(!hidden)
+            .animation(.snappy(duration: 0.2), value: hidden)
     }
 }
-
-/// Fades the bubble out while `hidden` or while the keyboard is shown.
-private struct SempBubbleStepsAside: ViewModifier {
-
-    let hidden: Bool
-    @State private var isKeyboardShown = false
-
-    func body(content: Content) -> some View {
-        let away = hidden || isKeyboardShown
-        content
-            .opacity(away ? 0 : 1)
-            .allowsHitTesting(!away)
-            .animation(.snappy(duration: 0.2), value: away)
-        #if os(iOS)
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-                isKeyboardShown = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-                isKeyboardShown = false
-            }
-        #endif
-    }
-}
-
-// MARK: - Zoom transition
-private extension View {
-
-    /// Presents the chat with the zoom transition out of the bubble on iOS: the bubble grows into the chat, and the
-    /// chat can be pulled down to shrink back into it. macOS presents the chat as a sheet without it.
-    @ViewBuilder
-    func zoomingOutOfBubble(in namespace: Namespace.ID) -> some View {
-        #if os(iOS)
-        navigationTransition(.zoom(sourceID: SempScreenFactory.bubbleTransitionID, in: namespace))
-        #else
-        self
-        #endif
-    }
-}
+#endif
