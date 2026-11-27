@@ -56,7 +56,6 @@ export const INBOX_CARD_TARGET_LABEL_KINDS: readonly InboxCardKind[] = [
   "page",
   "journal",
   "project",
-  "area",
   "company",
   "person",
   "health",

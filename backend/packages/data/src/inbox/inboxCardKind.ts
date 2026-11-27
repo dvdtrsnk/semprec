@@ -1,5 +1,4 @@
 import {
-  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -23,7 +22,6 @@ export type InboxCardKind =
   | "page"
   | "journal"
   | "project"
-  | "area"
   | "company"
   | "person"
   | "health"
@@ -57,7 +55,6 @@ const KIND_BY_OWNER_MODULE: Readonly<Record<string, InboxCardKind>> = {
   [TASKS_MODULE_ID]: "task",
   [EVENTS_MODULE_ID]: "event",
   [PROJECTS_MODULE_ID]: "project",
-  [AREAS_MODULE_ID]: "area",
   [COMPANIES_MODULE_ID]: "company",
   [PEOPLE_MODULE_ID]: "person",
   [HEALTH_RECORDS_MODULE_ID]: "health",

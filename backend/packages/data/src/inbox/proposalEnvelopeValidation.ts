@@ -46,7 +46,7 @@ export async function assertValidV2PageContent(
     throw error;
   }
   const database = await databasesStore.getDatabase(client, targetPage.databaseId);
-  let host = database?.ownerModuleId === "projects" || database?.ownerModuleId === "areas";
+  let host = database?.ownerModuleId === "projects";
   if (
     database?.ownerModuleId === "journal" &&
     targetPage.properties.type === "day" &&

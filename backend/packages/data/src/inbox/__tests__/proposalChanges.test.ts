@@ -71,8 +71,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
   beforeEach(async () => {
     await resetDatabase(adminPool);
     await seedSystem(adminPool, createViewTypeRegistry());
-    workId = await createItem("areas", { name: "Work" });
-    financeId = await createItem("areas", { name: "Finance" });
+    workId = await createItem("companies", { name: "Work" });
+    financeId = await createItem("companies", { name: "Finance" });
     accountingId = await createItem("projects", { name: "Accounting", status: "inProgress" });
   });
 
@@ -81,62 +81,62 @@ describe("describeUpdateSteps (issue #2028)", () => {
   });
 
   describe("a relation", () => {
-    it("moves a project from area Work to the area another step creates, labelled by the title that step would create", async () => {
+    it("moves a project from company Work to the company another step creates, labelled by the title that step would create", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [{ ref: "newArea" }] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [{ ref: "newCompany" }] } },
       });
-      const newArea: ProposalStep = {
-        ref: "newArea",
+      const newCompany: ProposalStep = {
+        ref: "newCompany",
         op: "create",
-        databaseKey: "areas",
+        databaseKey: "companies",
         role: "secondary",
         properties: { name: "Side projects" },
       };
 
-      const changes = changesOf(await describeCards({ card: [move, newArea] }));
+      const changes = changesOf(await describeCards({ card: [move, newCompany] }));
 
       expect(changes).toEqual([
         {
           ref: "update",
           itemId: accountingId,
           itemLabel: "Accounting",
-          field: "area",
-          fieldLabel: "Area",
+          field: "company",
+          fieldLabel: "Company",
           from: { value: [workId], labels: ["Work"] },
-          to: { value: [{ ref: "newArea" }], labels: ["Side projects"] },
+          to: { value: [{ ref: "newCompany" }], labels: ["Side projects"] },
         },
       ]);
     });
 
-    it("moves a project from area Work to the existing area Finance, naming both by their current names", async () => {
+    it("moves a project from company Work to the existing company Finance, naming both by their current names", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [financeId] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [financeId] } },
       });
 
       const changes = changesOf(await describeCards({ card: [move] }));
 
       expect(changes).toMatchObject([
-        { field: "area", from: { labels: ["Work"] }, to: { value: [financeId], labels: ["Finance"] } },
+        { field: "company", from: { labels: ["Work"] }, to: { value: [financeId], labels: ["Finance"] } },
       ]);
     });
 
     it("labels the field in Czech for a Czech reader", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [financeId] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [financeId] } },
       });
 
       expect(changesOf(await describeCards({ card: [move] }, "cs"))).toMatchObject([
-        { field: "area", fieldLabel: "Oblast" },
+        { field: "company", fieldLabel: "Firma" },
       ]);
     });
 
     it("labels a target that is an update step by the current name of the item it changes", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [{ ref: "rename" }] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [{ ref: "rename" }] } },
       });
       const rename: ProposalStep = {
         ref: "rename",
@@ -149,13 +149,13 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
       const changes = changesOf(await describeCards({ card: [move, rename] }));
 
-      expect(changes[0]).toMatchObject({ field: "area", to: { labels: ["Finance"] } });
+      expect(changes[0]).toMatchObject({ field: "company", to: { labels: ["Finance"] } });
     });
 
     it("labels a target that is a link step by the current name of the item it points at", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [{ ref: "link" }] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [{ ref: "link" }] } },
       });
       const link: ProposalStep = { ref: "link", op: "link", itemId: financeId, role: "secondary" };
 
@@ -164,13 +164,13 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
     it("falls back to the ref of a target step that creates nothing with a title, and of a step that is not there", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [{ ref: "untitled" }, { ref: "gone" }] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [{ ref: "untitled" }, { ref: "gone" }] } },
       });
       const untitled: ProposalStep = {
         ref: "untitled",
         op: "create",
-        databaseKey: "areas",
+        databaseKey: "companies",
         role: "secondary",
         properties: {},
       };
@@ -183,8 +183,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
     it("falls back to the id of a target that cannot be read, and keeps the stored value", async () => {
       const missing = randomUUID();
       const move = updateStep(accountingId, {
-        before: { relations: { area: [missing] } },
-        after: { relations: { area: [financeId] } },
+        before: { relations: { company: [missing] } },
+        after: { relations: { company: [financeId] } },
       });
 
       const changes = changesOf(await describeCards({ card: [move] }));
@@ -194,8 +194,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
     it("labels a target that is a fileFromAttachment step by the name of the Files item it would create", async () => {
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [{ ref: "scan" }] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [{ ref: "scan" }] } },
       });
       const scan: ProposalStep = {
         ref: "scan",
@@ -211,13 +211,13 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
     it("labels an id that is not a UUID by itself instead of failing the read, for the item, the before and the after", async () => {
       const move = updateStep("not-a-uuid", {
-        before: { relations: { area: ["Work"] } },
-        after: { relations: { area: ["Finance", financeId] } },
+        before: { relations: { company: ["Work"] } },
+        after: { relations: { company: ["Finance", financeId] } },
       });
       // A second card with well-formed ids on the same page is still described next to the malformed one.
       const sound = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [financeId] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [financeId] } },
       });
 
       const described = await describeCards({ bad: [move], good: [sound] });
@@ -227,8 +227,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
           ref: "update",
           itemId: "not-a-uuid",
           itemLabel: "not-a-uuid",
-          field: "area",
-          fieldLabel: "area",
+          field: "company",
+          fieldLabel: "company",
           from: { value: ["Work"], labels: ["Work"] },
           to: { value: ["Finance", financeId], labels: ["Finance", "Finance"] },
         },
@@ -242,15 +242,15 @@ describe("describeUpdateSteps (issue #2028)", () => {
     it("still names a target that is in the Trash", async () => {
       await adminPool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [workId]);
       const move = updateStep(accountingId, {
-        before: { relations: { area: [workId] } },
-        after: { relations: { area: [financeId] } },
+        before: { relations: { company: [workId] } },
+        after: { relations: { company: [financeId] } },
       });
 
       expect(changesOf(await describeCards({ card: [move] }))[0]?.from.labels).toEqual(["Work"]);
     });
 
     it("gives an empty value and no labels to the side of a relation the step does not name", async () => {
-      const move = updateStep(accountingId, { before: {}, after: { relations: { area: [financeId] } } });
+      const move = updateStep(accountingId, { before: {}, after: { relations: { company: [financeId] } } });
 
       const changes = changesOf(await describeCards({ card: [move] }));
 
@@ -353,13 +353,13 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
     it("describes the properties first and then the relations, one entry per changed key", async () => {
       const both = updateStep(accountingId, {
-        before: { properties: { status: "inProgress", name: "Accounting" }, relations: { area: [workId] } },
-        after: { properties: { status: "done", name: "Accounting" }, relations: { area: [financeId] } },
+        before: { properties: { status: "inProgress", name: "Accounting" }, relations: { company: [workId] } },
+        after: { properties: { status: "done", name: "Accounting" }, relations: { company: [financeId] } },
       });
 
       const changes = changesOf(await describeCards({ card: [both] }));
 
-      expect(changes.map((change) => change.field)).toEqual(["status", "name", "area"]);
+      expect(changes.map((change) => change.field)).toEqual(["status", "name", "company"]);
     });
 
     it("labels the field and the option of a database without a module catalog from what the property stores", async () => {
@@ -395,9 +395,9 @@ describe("describeUpdateSteps (issue #2028)", () => {
   describe("what contributes no entry", () => {
     it("leaves out a card whose steps have no update step, without reading anything", async () => {
       const create: ProposalStep = {
-        ref: "area",
+        ref: "company",
         op: "create",
-        databaseKey: "areas",
+        databaseKey: "companies",
         role: "primary",
         properties: { name: "Travel" },
       };
@@ -440,7 +440,13 @@ describe("describeUpdateSteps (issue #2028)", () => {
         before: { properties: { status: "inProgress" } },
         after: { properties: { status: "done" } },
       });
-      const create: ProposalStep = { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: {} };
+      const create: ProposalStep = {
+        ref: "company",
+        op: "create",
+        databaseKey: "companies",
+        role: "primary",
+        properties: {},
+      };
 
       const described = await describeCards({ updating: [done], creating: [create] });
 
@@ -453,13 +459,19 @@ describe("describeUpdateSteps (issue #2028)", () => {
       const cards: Record<string, ProposalStep[]> = {};
       for (let n = 0; n < count; n += 1) {
         const projectId = await createItem("projects", { name: `Project ${n}`, status: "inProgress" });
-        const areaId = await createItem("areas", { name: `Area ${n}` });
+        const companyId = await createItem("companies", { name: `Company ${n}` });
         cards[`card${n}`] = [
           updateStep(projectId, {
-            before: { properties: { status: "inProgress" }, relations: { area: [workId] } },
-            after: { properties: { status: "done" }, relations: { area: [areaId, { ref: "extra" }] } },
+            before: { properties: { status: "inProgress" }, relations: { company: [workId] } },
+            after: { properties: { status: "done" }, relations: { company: [companyId, { ref: "extra" }] } },
           }),
-          { ref: "extra", op: "create", databaseKey: "areas", role: "secondary", properties: { name: `Extra ${n}` } },
+          {
+            ref: "extra",
+            op: "create",
+            databaseKey: "companies",
+            role: "secondary",
+            properties: { name: `Extra ${n}` },
+          },
         ];
       }
       return cards;
@@ -494,7 +506,12 @@ describe("describeUpdateSteps (issue #2028)", () => {
       const described = await describeCards(all);
       expect(changesOf(described, "card49")).toMatchObject([
         { itemLabel: "Project 49", field: "status", to: { labels: ["Done"] } },
-        { itemLabel: "Project 49", field: "area", from: { labels: ["Work"] }, to: { labels: ["Area 49", "Extra 49"] } },
+        {
+          itemLabel: "Project 49",
+          field: "company",
+          from: { labels: ["Work"] },
+          to: { labels: ["Company 49", "Extra 49"] },
+        },
       ]);
     }, 120_000);
   });
@@ -512,8 +529,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
     it("names nothing of another tenant: the ids it cannot read stand for themselves, on the runtime role", async () => {
       const move = updateStep(accountingId, {
-        before: { properties: { status: "inProgress" }, relations: { area: [workId] } },
-        after: { properties: { status: "done" }, relations: { area: [financeId] } },
+        before: { properties: { status: "inProgress" }, relations: { company: [workId] } },
+        after: { properties: { status: "done" }, relations: { company: [financeId] } },
       });
       const otherTenantId = await createTestTenant(adminPool);
       await provisionTenant(dataPool, otherTenantId);
@@ -527,7 +544,7 @@ describe("describeUpdateSteps (issue #2028)", () => {
 
       expect(changesOf(asOwner)).toMatchObject([
         { itemLabel: "Accounting", fieldLabel: "Status", to: { labels: ["Done"] } },
-        { fieldLabel: "Area", from: { labels: ["Work"] }, to: { labels: ["Finance"] } },
+        { fieldLabel: "Company", from: { labels: ["Work"] }, to: { labels: ["Finance"] } },
       ]);
       expect(changesOf(asOtherTenant)).toEqual([
         {
@@ -543,8 +560,8 @@ describe("describeUpdateSteps (issue #2028)", () => {
           ref: "update",
           itemId: accountingId,
           itemLabel: accountingId,
-          field: "area",
-          fieldLabel: "area",
+          field: "company",
+          fieldLabel: "company",
           from: { value: [workId], labels: [workId] },
           to: { value: [financeId], labels: [financeId] },
         },

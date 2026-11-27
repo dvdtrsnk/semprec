@@ -538,36 +538,21 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(task, "alfaprojekt")).toBe(false);
   });
 
-  it("puts a project's new area title into its tasks' documents after the project moves", async () => {
-    const oldArea = await item("areas", "Starooblast");
-    const newArea = await item("areas", "Novooblast");
-    const project = await item("projects", "Web");
-    const task = await item("tasks", "Nasazení");
-    await link("projects", "area", project, oldArea);
-    await link("tasks", "project", task, project);
-    await runQueued();
-    expect(await contains(task, "starooblast")).toBe(true);
-    await unlink("projects", "area", project, oldArea);
-    await link("projects", "area", project, newArea);
-    expect(await queued(REINDEX)).toContainEqual({ kind: "projectItems", projectItemId: project });
-    await runQueued();
-    expect(await contains(task, "novooblast")).toBe(true);
-    expect(await contains(task, "starooblast")).toBe(false);
-  });
-
-  it("reaches the items of an area's projects when the area is renamed, through its projects found at run time", async () => {
-    const area = await item("areas", "Zahrada");
+  it("reindexes only the two ends of a project's company edge, not the project's items", async () => {
+    const company = await item("companies", "Pekarna");
     const project = await item("projects", "Skleník");
     const task = await item("tasks", "Zalít");
-    await link("projects", "area", project, area);
     await link("tasks", "project", task, project);
     await runQueued();
-    await rename("areas", area, "Sad");
-    expect((await queued(REINDEX)).filter((payload) => payload.kind === "projectItems")).toEqual([]);
-    expect(await queued(REINDEX)).toContainEqual({ kind: "referrers", itemId: area });
+    await link("projects", "company", project, company);
+    const jobs = await queued(REINDEX);
+    expect(jobs).toContainEqual({ kind: "item", itemId: project });
+    expect(jobs).toContainEqual({ kind: "item", itemId: company });
+    expect(jobs).not.toContainEqual({ kind: "item", itemId: task });
+    expect(jobs.filter((payload) => payload.kind !== "item")).toEqual([]);
     await runQueued();
-    expect(await contains(task, "sad")).toBe(true);
-    expect(await contains(task, "zahrada")).toBe(false);
+    expect(await contains(project, "pekarna")).toBe(true);
+    expect(await contains(task, "pekarna")).toBe(false);
   });
 
   it("drops a removed person's name from the event's document", async () => {

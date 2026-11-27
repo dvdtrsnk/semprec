@@ -266,25 +266,26 @@ describe("item search create/update hooks", () => {
     });
   });
 
-  it("includes a Task's project and the project's area from real inverse edges", async () => {
+  it("includes a Task's project from a real inverse edge, and not the project's company", async () => {
     await runInTenant(tenant, async () => {
-      const area = await cp.createItem({ databaseId: await db("areas"), properties: { name: "Finance" } });
+      const company = await cp.createItem({ databaseId: await db("companies"), properties: { name: "Finance" } });
       const project = await cp.createItem({ databaseId: await db("projects"), properties: { name: "Billing" } });
-      await link(project.databaseId, "area", project.id, area.id);
+      await link(project.databaseId, "company", project.id, company.id);
       const item = await task();
       await link(item.databaseId, "project", item.id, project.id);
       expect(await has(item.id, "Billing")).toBe(false);
       // The next item update runs the indexing hook.
       await cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { name: "Invoice" } });
-      expect(await has(item.id, "Invoice Billing Finance")).toBe(true);
+      expect(await has(item.id, "Invoice Billing")).toBe(true);
+      expect(await has(item.id, "Finance")).toBe(false);
     });
   });
 
-  it("always includes live project, area, people and company titles in custom collections, excluding deleted titles", async () => {
+  it("always includes live project, people and company titles in custom collections, excluding deleted titles", async () => {
     await runInTenant(tenant, async () => {
       const collection = await cp.createDatabase({ name: "Custom collection" });
       const item = await cp.createItem({ databaseId: collection.id, properties: {} });
-      for (const key of ["projects", "areas", "people", "companies"] as const) {
+      for (const key of ["projects", "people", "companies"] as const) {
         const target = await cp.createItem({ databaseId: await db(key), properties: { name: `${key}Visible` } });
         const property = await cp.createRelationProperty({
           sourceDatabaseId: collection.id,
@@ -303,7 +304,7 @@ describe("item search create/update hooks", () => {
       // Retains the historical edge so this tests the indexer's deleted-target guard itself.
       await withTransaction(pool, (client) => softDeleteItem(client, deleted.databaseId, deleted.id));
       await withTransaction(pool, (client) => indexItem(client, item.id));
-      expect(await has(item.id, "projectsVisible areasVisible peopleVisible companiesVisible")).toBe(true);
+      expect(await has(item.id, "projectsVisible peopleVisible companiesVisible")).toBe(true);
       expect(await has(item.id, "DeletedPerson")).toBe(false);
     });
   });

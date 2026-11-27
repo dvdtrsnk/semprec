@@ -199,7 +199,7 @@ describe("bounded Inbox proposal workspace context", () => {
         await seedSystem(runtime);
         const dbs = await runtime.query<{ id: string; owner_module_id: string }>(
           "SELECT id, owner_module_id FROM databases WHERE owner_module_id = ANY($1::text[])",
-          [["projects", "areas", "people", "companies", "events", "healthRecords"]],
+          [["projects", "people", "companies", "events", "healthRecords"]],
         );
         const databaseIds = Object.fromEntries(dbs.rows.map((row) => [row.owner_module_id, row.id]));
         return {
@@ -231,39 +231,17 @@ describe("bounded Inbox proposal workspace context", () => {
       );
     }
 
-    it("carries status and area of a project, relationship of a person, registration number of a company, type and date of an event", async () => {
+    it("carries status of a project, relationship of a person, registration number of a company, type and date of an event", async () => {
       const f = await setup();
       const created = await runInTenant(f.tenant, async () => {
-        const area = await f.writer.createItem({ databaseId: f.databaseIds.areas!, properties: { name: "Home" } });
-        const trashedArea = await f.writer.createItem({
-          databaseId: f.databaseIds.areas!,
-          properties: { name: "Gone" },
-        });
-        const withArea = await f.writer.createItem({
+        const longTerm = await f.writer.createItem({
           databaseId: f.databaseIds.projects!,
           properties: { name: "Flat", status: "longTerm" },
         });
-        const withoutArea = await f.writer.createItem({
+        const inProgress = await f.writer.createItem({
           databaseId: f.databaseIds.projects!,
           properties: { name: "Loose", status: "inProgress" },
         });
-        const withTrashedArea = await f.writer.createItem({
-          databaseId: f.databaseIds.projects!,
-          properties: { name: "Orphan", status: "inProgress" },
-        });
-        const areaProperty = await runtime.query<{ id: string }>(
-          "SELECT id FROM properties WHERE database_id = $1 AND key = 'area'",
-          [f.databaseIds.projects],
-        );
-        const relationPropertyId = areaProperty.rows[0]?.id;
-        if (!relationPropertyId) throw new Error("Missing Projects.area");
-        await f.writer.createRelation({ relationPropertyId, callerItemId: withArea.id, targetItemId: area.id });
-        await f.writer.createRelation({
-          relationPropertyId,
-          callerItemId: withTrashedArea.id,
-          targetItemId: trashedArea.id,
-        });
-        await f.writer.softDeleteItem(f.databaseIds.areas!, trashedArea.id);
         const person = await f.writer.createItem({
           databaseId: f.databaseIds.people!,
           properties: { name: "Anna", relationship: "client" },
@@ -281,31 +259,25 @@ describe("bounded Inbox proposal workspace context", () => {
           properties: { name: "Review", type: "meeting", date: "2026-08-30" },
         });
         const longName = await f.writer.createItem({
-          databaseId: f.databaseIds.areas!,
+          databaseId: f.databaseIds.people!,
           properties: { name: "n".repeat(130) },
         });
-        return { area, withArea, withoutArea, withTrashedArea, person, plainPerson, company, event, longName };
+        return { longTerm, inProgress, person, plainPerson, company, event, longName };
       });
       const context = await readContext(f);
       const byModule = (moduleId: string) => context.find((group) => group.moduleId === moduleId)?.items ?? [];
+      expect(context.map((group) => group.moduleId)).not.toContain("areas");
       const projects = byModule("projects");
-      expect(projects).toHaveLength(3);
-      expect(projects).toContainEqual({
-        id: created.withArea.id,
-        name: "Flat",
-        status: "longTerm",
-        areaId: created.area.id,
-      });
-      expect(projects).toContainEqual({ id: created.withoutArea.id, name: "Loose", status: "inProgress" });
-      expect(projects).toContainEqual({ id: created.withTrashedArea.id, name: "Orphan", status: "inProgress" });
+      expect(projects).toHaveLength(2);
+      expect(projects).toContainEqual({ id: created.longTerm.id, name: "Flat", status: "longTerm" });
+      expect(projects).toContainEqual({ id: created.inProgress.id, name: "Loose", status: "inProgress" });
       expect(byModule("people")).toContainEqual({ id: created.person.id, name: "Anna", relationship: "client" });
       expect(byModule("people")).toContainEqual({ id: created.plainPerson.id, name: "Bob" });
+      expect(byModule("people")).toContainEqual({ id: created.longName.id, name: "n".repeat(100) });
       expect(byModule("companies")).toEqual([{ id: created.company.id, name: "Acme", registrationNumber: "27419363" }]);
       expect(byModule("events")).toEqual([
         { id: created.event.id, name: "Review", type: "meeting", date: "2026-08-30" },
       ]);
-      expect(byModule("areas")).toContainEqual({ id: created.longName.id, name: "n".repeat(100) });
-      expect(byModule("areas").map((area) => area.id)).not.toContain(created.longName.id + "x");
     });
 
     it("lists at most limitPerKind entries per kind, newest update first, and refuses a limit that is no positive integer", async () => {
@@ -366,37 +338,6 @@ describe("bounded Inbox proposal workspace context", () => {
       const context = await readContext(f);
       expect(JSON.stringify(context)).not.toContain(health.id);
       expect(context.map((group) => group.moduleId)).not.toContain("healthRecords");
-    });
-
-    it("gives a project no area id when the Areas database is closed to it, and gives it back with a grant", async () => {
-      const f = await setup();
-      const { project, area } = await runInTenant(f.tenant, async () => {
-        const area = await f.writer.createItem({ databaseId: f.databaseIds.areas!, properties: { name: "Health" } });
-        const project = await f.writer.createItem({
-          databaseId: f.databaseIds.projects!,
-          properties: { name: "Fitness", status: "inProgress" },
-        });
-        const areaProperty = await runtime.query<{ id: string }>(
-          "SELECT id FROM properties WHERE database_id = $1 AND key = 'area'",
-          [f.databaseIds.projects],
-        );
-        const relationPropertyId = areaProperty.rows[0]?.id;
-        if (!relationPropertyId) throw new Error("Missing Projects.area");
-        await f.writer.createRelation({ relationPropertyId, callerItemId: project.id, targetItemId: area.id });
-        return { project, area };
-      });
-      await markSensitive(f.databaseIds.areas!);
-      const closed = await readContext(f);
-      expect(closed.map((group) => group.moduleId)).not.toContain("areas");
-      expect(closed.find((group) => group.moduleId === "projects")?.items).toEqual([
-        { id: project.id, name: "Fitness", status: "inProgress" },
-      ]);
-      expect(JSON.stringify(closed)).not.toContain(area.id);
-
-      await grant(f, f.projectItemId, f.databaseIds.areas!, "read");
-      expect((await readContext(f)).find((group) => group.moduleId === "projects")?.items).toEqual([
-        { id: project.id, name: "Fitness", status: "inProgress", areaId: area.id },
-      ]);
     });
   });
 });
