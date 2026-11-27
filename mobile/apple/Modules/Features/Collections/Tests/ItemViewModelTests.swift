@@ -63,6 +63,13 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testTheTypedTagIsClearedOnlyOnceTheProjectGainedATag() {
+        XCTAssertTrue(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home", "client"]))
+        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home"]))
+        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: nil, now: ["home", "client"]))
+    }
+
+    @MainActor
     func testOpenItemEffectsGoToTheScreenOfTheirKind() async throws {
         let model = ScriptedItemScreenModel(
             state: state(databaseKey: "projects"),

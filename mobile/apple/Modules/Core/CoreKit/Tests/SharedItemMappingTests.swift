@@ -53,6 +53,7 @@ final class SharedItemMappingTests: XCTestCase {
         XCTAssertTrue(mapped.saving)
         XCTAssertTrue(mapped.deleted)
         XCTAssertEqual(mapped.writeFailure, ItemWriteFailure(propertyKey: "status", kind: .rejected))
+        XCTAssertEqual(mapped.choiceFailure, ItemWriteFailure(propertyKey: "tags", kind: .unavailable))
     }
 
     @MainActor
@@ -98,12 +99,14 @@ final class SharedItemMappingTests: XCTestCase {
             deletion: nil,
             saving: false,
             writeFailure: SharedSDK.ItemWriteFailure(propertyKey: nil, kind: nil),
+            choiceFailure: nil,
             deleted: false
         )
         let mapped = SharedItemScreenModel.state(state)
         XCTAssertEqual(mapped.phase, .error)
         XCTAssertEqual(mapped.failure, .notFound)
         XCTAssertEqual(mapped.writeFailure, ItemWriteFailure(propertyKey: nil, kind: nil))
+        XCTAssertNil(mapped.choiceFailure)
         XCTAssertEqual(mapped.page.status, .loading)
     }
 
@@ -174,6 +177,7 @@ private extension SharedItemMappingTests {
             deletion: SharedSDK.DeletionView(loading: false, failure: nil, impact: impact(), deleting: true),
             saving: true,
             writeFailure: SharedSDK.ItemWriteFailure(propertyKey: "status", kind: .rejected),
+            choiceFailure: SharedSDK.ItemWriteFailure(propertyKey: "tags", kind: .unavailable),
             deleted: true
         )
     }

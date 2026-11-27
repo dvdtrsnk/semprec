@@ -209,7 +209,10 @@ public struct ItemState: Equatable, Sendable {
     public var picker: PickerView?
     public var deletion: DeletionView?
     public var saving: Bool
+    /// The last write that failed; the item screen shows it as an alert.
     public var writeFailure: ItemWriteFailure?
+    /// The last new choice (`.edit(.addChoice)`) that could not be added and set, shown only where choices are added.
+    public var choiceFailure: ItemWriteFailure?
     public var deleted: Bool
 
     public init(
@@ -224,6 +227,7 @@ public struct ItemState: Equatable, Sendable {
         deletion: DeletionView? = nil,
         saving: Bool = false,
         writeFailure: ItemWriteFailure? = nil,
+        choiceFailure: ItemWriteFailure? = nil,
         deleted: Bool = false
     ) {
         self.phase = phase
@@ -237,6 +241,7 @@ public struct ItemState: Equatable, Sendable {
         self.deletion = deletion
         self.saving = saving
         self.writeFailure = writeFailure
+        self.choiceFailure = choiceFailure
         self.deleted = deleted
     }
 }

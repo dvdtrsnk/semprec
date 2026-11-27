@@ -40,6 +40,7 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
             fake.updates,
         )
         assertNull(vm.state.value.writeFailure)
+        assertNull(vm.state.value.choiceFailure)
         assertFalse(vm.state.value.saving)
         assertTrue(fake.calls.last().startsWith("item:p1"))
         vm.close()
@@ -50,10 +51,34 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         val vm = open()
         vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))
         runCurrent()
-        assertEquals(ItemWriteFailure("tags", FailureKind.REJECTED), vm.state.value.writeFailure)
+        assertChoiceFailure(ItemWriteFailure("tags", FailureKind.REJECTED), vm)
         assertTrue(fake.updates.isEmpty())
         assertTrue("refreshSchema" !in fake.calls)
         assertFalse(vm.state.value.saving)
+        vm.close()
+    }
+
+    @Test fun `a tag that was added but could not be set is a choice failure too`() = runTest(dispatcher) {
+        fake.updateAnswer = { failure(FailureKind.UNAVAILABLE) }
+        val vm = open()
+        vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))
+        runCurrent()
+        assertChoiceFailure(ItemWriteFailure("tags", FailureKind.UNAVAILABLE), vm)
+        vm.close()
+    }
+
+    @Test fun `a choice failure is cleared by the next write and by dismissing`() = runTest(dispatcher) {
+        fake.addOptionAnswer = { failure(FailureKind.REJECTED) }
+        val vm = open()
+        vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))
+        runCurrent()
+        vm.onAction(ItemAction.Edit.SetFlag("pinned", false))
+        assertNull(vm.state.value.choiceFailure)
+        runCurrent()
+        vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))
+        runCurrent()
+        vm.onAction(ItemAction.DismissWriteFailure)
+        assertNull(vm.state.value.choiceFailure)
         vm.close()
     }
 
@@ -74,6 +99,7 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         runCurrent()
         assertTrue(fake.calls.isEmpty())
         assertNull(vm.state.value.writeFailure)
+        assertNull(vm.state.value.choiceFailure)
         vm.close()
     }
 
@@ -81,9 +107,9 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         runTest(dispatcher) {
             val vm = open()
             vm.onAction(ItemAction.Edit.AddChoice("note", "x"))
-            assertEquals(ItemWriteFailure("note", FailureKind.REJECTED), vm.state.value.writeFailure)
+            assertChoiceFailure(ItemWriteFailure("note", FailureKind.REJECTED), vm)
             vm.onAction(ItemAction.Edit.AddChoice("missing", "x"))
-            assertEquals(ItemWriteFailure("missing", FailureKind.REJECTED), vm.state.value.writeFailure)
+            assertChoiceFailure(ItemWriteFailure("missing", FailureKind.REJECTED), vm)
             runCurrent()
             assertTrue(fake.calls.isEmpty())
             vm.close()
@@ -97,7 +123,7 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         fake.schemaAnswer = { RepositoryResult.Content(schema) }
         val vm = open()
         vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))
-        assertEquals(ItemWriteFailure("tags", FailureKind.REJECTED), vm.state.value.writeFailure)
+        assertChoiceFailure(ItemWriteFailure("tags", FailureKind.REJECTED), vm)
         runCurrent()
         assertTrue(fake.calls.isEmpty())
         vm.close()
@@ -110,4 +136,10 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         runCurrent()
         assertTrue(fake.calls.isEmpty())
     }
+}
+
+/** A failed new choice is shown once: as the item's choice failure, never as its write failure. */
+private fun assertChoiceFailure(expected: ItemWriteFailure, vm: ItemViewModel) {
+    assertEquals(expected, vm.state.value.choiceFailure)
+    assertNull(vm.state.value.writeFailure)
 }

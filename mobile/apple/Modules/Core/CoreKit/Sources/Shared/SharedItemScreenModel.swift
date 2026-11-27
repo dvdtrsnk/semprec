@@ -57,11 +57,14 @@ extension SharedItemScreenModel {
             picker: state.picker.map(picker),
             deletion: state.deletion.map(deletion),
             saving: state.saving,
-            writeFailure: state.writeFailure.map {
-                ItemWriteFailure(propertyKey: $0.propertyKey, kind: $0.kind.map(FailureKind.init))
-            },
+            writeFailure: state.writeFailure.map(writeFailure),
+            choiceFailure: state.choiceFailure.map(writeFailure),
             deleted: state.deleted
         )
+    }
+
+    static func writeFailure(_ failure: SharedSDK.ItemWriteFailure) -> ItemWriteFailure {
+        ItemWriteFailure(propertyKey: failure.propertyKey, kind: failure.kind.map(FailureKind.init))
     }
 
     static func action(_ action: ItemAction) -> any SharedSDK.ItemAction {

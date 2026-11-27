@@ -15,6 +15,8 @@ struct ProjectSettingsSheet: View {
 
     // MARK: - State
     @State private var newTag = ""
+    /// The tags the project held when the typed name was sent; nil while no new tag is on its way.
+    @State private var tagsBeforeAdd: Set<String>?
 
     // MARK: - Body
     var body: some View {
@@ -27,6 +29,8 @@ struct ProjectSettingsSheet: View {
                 pinnedSection
                 mailSignalsSection
             }
+            .onChange(of: tagKeys) { _, keys in clearNewTagOnceAdded(keys) }
+            .onChange(of: state.choiceFailure) { _, failure in if failure != nil { tagsBeforeAdd = nil } }
             .navigationTitle(Text("project.settings", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
@@ -43,6 +47,13 @@ struct ProjectSettingsSheet: View {
     /// The intent that creates a tag named `label` and sets it on the project.
     static func newChoice(_ label: String, of field: FieldView) -> ItemAction {
         .edit(.addChoice(propertyKey: field.propertyKey, label: label))
+    }
+
+    /// Whether the project's tags gained one since `before`, which is how the sheet learns that the typed name was
+    /// added: a refused add changes no tag and keeps the name in the field.
+    static func gainedTag(before: Set<String>?, now: Set<String>) -> Bool {
+        guard let before else { return false }
+        return !now.isSubset(of: before)
     }
 }
 
@@ -126,7 +137,7 @@ private extension ProjectSettingsSheet {
             } header: {
                 Text(tags.name).accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
             } footer: {
-                if let failure = state.writeFailure, failure.propertyKey == tags.propertyKey {
+                if let failure = state.choiceFailure, failure.propertyKey == tags.propertyKey {
                     Text(FailureKind.message(for: failure.kind)).foregroundStyle(Theme.Colors.destructive)
                 }
             }
@@ -163,10 +174,20 @@ private extension ProjectSettingsSheet {
         }
     }
 
-    /// Sends the typed name as a new tag of the project and empties the field for the next one.
+    /// Sends the typed name as a new tag of the project; the field keeps it until the tag is on the project.
     func addTag(to tags: FieldView) {
+        tagsBeforeAdd = tagKeys
         send(Self.newChoice(newTag, of: tags))
+    }
+
+    func clearNewTagOnceAdded(_ keys: Set<String>) {
+        guard Self.gainedTag(before: tagsBeforeAdd, now: keys) else { return }
         newTag = ""
+        tagsBeforeAdd = nil
+    }
+
+    var tagKeys: Set<String> {
+        if case .choices(let options) = field("tags")?.content { Set(options.map(\.key)) } else { [] }
     }
 
     var selectedStatus: String? {

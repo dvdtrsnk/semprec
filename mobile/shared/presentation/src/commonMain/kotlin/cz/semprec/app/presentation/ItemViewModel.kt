@@ -55,7 +55,7 @@ class ItemViewModel internal constructor(
         when (action) {
             ItemAction.Retry -> load(quiet = false)
             ItemAction.Refresh -> load(quiet = true)
-            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null) }
+            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null, choiceFailure = null) }
             is ItemAction.Edit -> edit(action)
             is ItemAction.Picker -> picker.handle(action)
             is ItemAction.Page -> page.handle(action)
@@ -127,8 +127,9 @@ class ItemViewModel internal constructor(
     }
 
     /**
-     * Adds the choice, then writes it into the item's value. A refused add writes nothing and is reported like a
-     * refused write; a property that is not a select or multi-select is refused without a request.
+     * Adds the choice, then writes it into the item's value; a refused add writes nothing. A refused add, a failed
+     * write of the value and a property that is not a select or multi-select (refused without a request) are each an
+     * [ItemState.choiceFailure], never an [ItemState.writeFailure].
      */
     private fun addChoice(propertyKey: String, label: String) {
         val current = detail
@@ -136,9 +137,9 @@ class ItemViewModel internal constructor(
         if (current == null || name.isEmpty()) return
         val property = current.database.property(propertyKey)
         if (property == null || property.kind !in CHOICE_KINDS || isBlocked(current, propertyKey)) {
-            update { it.copy(writeFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
+            update { it.copy(choiceFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
         } else {
-            mutate(propertyKey) {
+            mutate(propertyKey, choice = true, call = {
                 when (val added = addOption(property, name)) {
                     is RepositoryResult.Failure -> added
                     is RepositoryResult.Content -> {
@@ -146,7 +147,7 @@ class ItemViewModel internal constructor(
                         writes.update(current.database, itemId, current.item.version, mapOf(propertyKey to change))
                     }
                 }
-            }
+            })
         }
     }
 
@@ -167,14 +168,22 @@ class ItemViewModel internal constructor(
      * reads it again too: the usual refusal is a version another writer (Semp filling in a new book) moved on, and the
      * person's next attempt must carry the version the server has now.
      */
-    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) {
+    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) =
+        mutate(propertyKey, choice = false, call = call)
+
+    /** [mutate], where the failure of a [choice] write is its [ItemState.choiceFailure]. */
+    private fun mutate(propertyKey: String?, choice: Boolean, call: suspend () -> RepositoryResult<Any?>) {
         if (writeJob?.isActive == true) return
-        update { it.copy(saving = true, writeFailure = null) }
+        update { it.copy(saving = true, writeFailure = null, choiceFailure = null) }
         writeJob = viewModelScope.launch {
             val result = answer(call)
             ensureActive()
             if (result is Answer.Rejected) {
-                update { it.copy(saving = false, writeFailure = ItemWriteFailure(propertyKey, result.kind)) }
+                val failure = ItemWriteFailure(propertyKey, result.kind)
+                update {
+                    if (choice) it.copy(saving = false, choiceFailure = failure)
+                    else it.copy(saving = false, writeFailure = failure)
+                }
             }
             load(quiet = true)
         }
