@@ -77,7 +77,10 @@ extension ProfileSheet {
         case .debug:
             DebugMenuScreen(openAlarms: { router.showDebugAlarms() })
         case .debugAlarms:
-            DebugAlarmScreen(makeModel: { models.makeDebugAlarms() })
+            DebugAlarmScreen(
+                makeModel: { models.makeDebugAlarms() },
+                makeWakeSettings: { models.makeWakeSettings() }
+            )
         }
     }
 

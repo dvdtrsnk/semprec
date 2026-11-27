@@ -1,9 +1,9 @@
 @preconcurrency import AVFoundation
 import Combine
 import CoreGraphics
+import CoreImage
 import Foundation
 import Synchronization
-import VideoToolbox
 
 /// Whether the camera can read codes.
 public enum CameraState: Equatable, Sendable {
@@ -96,6 +96,7 @@ private extension DeviceCodeScanner {
         else { return false }
         let output = CameraOutput(codes: codeContinuation, frames: frameContinuation)
         session.beginConfiguration()
+        if session.canSetSessionPreset(.hd1280x720) { session.sessionPreset = .hd1280x720 }
         session.addInput(input)
         let metadata = AVCaptureMetadataOutput()
         // A preview that reads no code is no scanner, so a camera that cannot be given the reader is unavailable.
@@ -108,6 +109,7 @@ private extension DeviceCodeScanner {
         metadata.setMetadataObjectsDelegate(output, queue: queue)
         metadata.metadataObjectTypes = Self.codeTypes.filter(metadata.availableMetadataObjectTypes.contains)
         let video = AVCaptureVideoDataOutput()
+        video.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         video.alwaysDiscardsLateVideoFrames = true
         if session.canAddOutput(video) {
             session.addOutput(video)
@@ -134,6 +136,8 @@ final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelegate,
     private let codes: AsyncStream<String>.Continuation
     private let frames: AsyncStream<CGImage>.Continuation
     private let filter = Mutex(CodeRepeatFilter())
+    /// Renders each frame into an image of its own, so no image keeps one of the camera's few buffers.
+    private let context = CIContext()
 
     // MARK: - Init
     init(codes: AsyncStream<String>.Continuation, frames: AsyncStream<CGImage>.Continuation) {
@@ -164,8 +168,7 @@ final class CameraOutput: NSObject, AVCaptureMetadataOutputObjectsDelegate,
         from connection: AVCaptureConnection
     ) {
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        var image: CGImage?
-        VTCreateCGImageFromCVPixelBuffer(buffer, options: nil, imageOut: &image)
-        if let image { frames.yield(image) }
+        let frame = CIImage(cvPixelBuffer: buffer)
+        if let image = context.createCGImage(frame, from: frame.extent) { frames.yield(image) }
     }
 }

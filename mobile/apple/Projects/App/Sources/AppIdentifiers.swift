@@ -36,6 +36,7 @@ enum AppIdentifiers {
     static let debugAlarmPermission = "debug.alarm.permission"
     static let debugAlarmRequestPermission = "debug.alarm.permission.request"
     static let debugAlarmMission = "debug.alarm.mission"
+    static let debugAlarmEditCodes = "debug.alarm.codes.edit"
     static let debugAlarmRepeat = "debug.alarm.repeat"
     static let debugAlarmTime = "debug.alarm.time"
     static let debugAlarmSchedule = "debug.alarm.schedule"
