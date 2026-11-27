@@ -151,10 +151,10 @@ final class InboxMappingTests: XCTestCase {
     // MARK: - Enums
     @MainActor
     func testEveryCardTypeAndPhaseAndApprovableIsMapped() {
-        XCTAssertEqual(SharedSDK.InboxCardType.allCases.count, 18)
+        XCTAssertEqual(SharedSDK.InboxCardType.allCases.count, 17)
         let types: [(SharedSDK.InboxCardType, CoreKit.InboxCardType)] = [
             (.task, .task), (.event, .event), (.page, .page), (.journal, .journal), (.project, .project),
-            (.area, .area), (.company, .company), (.person, .person), (.health, .health), (.file, .file),
+            (.company, .company), (.person, .person), (.health, .health), (.file, .file),
             (.recording, .recording), (.mcp, .mcp), (.invalid, .invalid), (.clarify, .clarify),
             (.transcriptEvent, .transcriptEvent), (.speaker, .speaker), (.approval, .approval),
             (.unsupported, .unsupported)

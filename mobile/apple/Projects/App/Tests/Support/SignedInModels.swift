@@ -108,9 +108,6 @@ final class SignedInModels: ScreenModelFactory {
         real.makeInternetAccount(accountId: accountId)
     }
 
-    // MARK: - Areas
-    func makeArea(areaId: String) -> any AreaScreenModel { real.makeArea(areaId: areaId) }
-
     func makeInbox() -> any InboxScreenModel { real.makeInbox() }
     // MARK: - Mail
     func makeMailThreads(start: MailListStart) -> any MailThreadsScreenModel { real.makeMailThreads(start: start) }

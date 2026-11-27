@@ -33,12 +33,10 @@ class CollectionViewModelTest : MainDispatcherTest() {
 
     private fun TestScope.open(
         key: String? = "projects",
-        areaId: String? = null,
         relationKey: String? = null,
         relatedItemId: String? = null,
     ): CollectionViewModel {
         val target = when {
-            areaId != null -> CollectionTarget.OfArea(key.orEmpty(), areaId)
             relationKey != null && relatedItemId != null -> CollectionTarget.OfItem(
                 key.orEmpty(), relationKey,
                 relatedItemId
@@ -50,7 +48,7 @@ class CollectionViewModelTest : MainDispatcherTest() {
         return vm
     }
 
-    private val alpha = projectItem("p1", "Alpha", "inProgress", "2027-01-31", area = "Work")
+    private val alpha = projectItem("p1", "Alpha", "inProgress", "2027-01-31", person = "Work")
     private val beta = projectItem("p2", "Beta", "done", "2026-10-01")
     private val gamma = projectItem("p3", "Gamma", "inProgress")
 
@@ -72,7 +70,7 @@ class CollectionViewModelTest : MainDispatcherTest() {
         assertEquals(listOf(CollectionLayout.LIST, CollectionLayout.BOARD), state.layouts)
         assertEquals(1, fake.queries.size)
         assertEquals("""{"type":"in"}""", fake.queries.single().quickFilter?.json)
-        assertEquals(listOf("area", "company"), fake.queries.single().expand)
+        assertEquals(listOf("company", "people"), fake.queries.single().expand)
         assertEquals(SortSpec(null, "createdAt", true), fake.queries.single().sort.single())
         vm.close()
     }
@@ -89,7 +87,7 @@ class CollectionViewModelTest : MainDispatcherTest() {
                 FieldContent.Targets(
                     listOf(
                         TargetView(
-                            "area-1", "areas", "Work",
+                            "person-1", "people", "Work",
                             "#5856D6"
                         )
                     )
@@ -134,19 +132,6 @@ class CollectionViewModelTest : MainDispatcherTest() {
         val vm = open(key = "nope")
         assertEquals(FailureKind.NOT_FOUND, vm.state.value.failure)
         assertNull(vm.state.value.header)
-        vm.close()
-    }
-
-    @Test fun `an area scope on a database without an area filter is invalid`() = runTest(dispatcher) {
-        val vm = open(key = "files", areaId = "area-1")
-        assertEquals(FailureKind.INVALID_DATA, vm.state.value.failure)
-        assertTrue(fake.queries.isEmpty())
-        vm.close()
-    }
-
-    @Test fun `an area scope reaches the query`() = runTest(dispatcher) {
-        val vm = open(areaId = "area-1")
-        assertEquals(CollectionScope.Area("area-1"), fake.queries.single().scope)
         vm.close()
     }
 
@@ -305,7 +290,7 @@ class CollectionViewModelTest : MainDispatcherTest() {
         assertEquals(listOf("inProgress"), groups.first().options.map { it.value })
         assertEquals(2, groups.first().options.single().count)
         assertEquals(DATE_PRESETS, groups[1].options.map { it.value })
-        assertEquals(listOf("status", "area", "company", "tags"), fake.facetQueries.single().second)
+        assertEquals(listOf("status", "people", "company", "tags"), fake.facetQueries.single().second)
         vm.onAction(CollectionAction.Filter.Close)
         assertNull(vm.state.value.filterSheet)
         vm.close()
@@ -348,11 +333,11 @@ class CollectionViewModelTest : MainDispatcherTest() {
     @Test fun `clearing one filter or all of them`() = runTest(dispatcher) {
         val vm = open()
         vm.onAction(CollectionAction.Filter.Toggle("status", "done"))
-        vm.onAction(CollectionAction.Filter.Toggle("area", "a1"))
+        vm.onAction(CollectionAction.Filter.Toggle("people", "u1"))
         runCurrent()
         vm.onAction(CollectionAction.Filter.Clear("status"))
         runCurrent()
-        assertEquals(listOf(FacetSelection.OneOf("area", listOf("a1"))), fake.queries.last().selections)
+        assertEquals(listOf(FacetSelection.OneOf("people", listOf("u1"))), fake.queries.last().selections)
         vm.onAction(CollectionAction.Filter.ClearAll)
         runCurrent()
         assertEquals(0, vm.state.value.activeFilterCount)
@@ -439,14 +424,14 @@ class CollectionViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `creating an item in an area attaches it to the area and opens it`() = runTest(dispatcher) {
-        val vm = open(areaId = "area-1")
+    @Test fun `creating an item of a related collection attaches it to the item and opens it`() = runTest(dispatcher) {
+        val vm = open(relationKey = "people", relatedItemId = "person-1")
         vm.onAction(CollectionAction.Write.Create("  New  "))
         assertTrue(vm.state.value.creating)
         vm.onAction(CollectionAction.Write.Create("Second"))
         runCurrent()
         assertEquals(
-            listOf(Triple<String, String, Pair<String, String>?>(PROJECTS, "New", "area" to "area-1")),
+            listOf(Triple<String, String, Pair<String, String>?>(PROJECTS, "New", "people" to "person-1")),
             fake.creates
         )
         assertFalse(vm.state.value.creating)

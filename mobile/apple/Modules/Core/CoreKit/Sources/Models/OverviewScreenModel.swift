@@ -1,35 +1,17 @@
 import Foundation
 
-/// An area row of the overview. `icon` and `color` are the stored values (free text and a hex color).
-public struct OverviewArea: Equatable, Sendable, Identifiable {
-
-    public let id: String
-    public let name: String
-    public let color: String?
-    public let icon: String?
-
-    public init(id: String, name: String, color: String?, icon: String?) {
-        self.id = id
-        self.name = name
-        self.color = color
-        self.icon = icon
-    }
-}
-
 /// A pinned project row. `status` is the stored key (`inProgress`, `longTerm`, `done`, `archived`).
 public struct OverviewProject: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let name: String
     public let color: String?
-    public let areaName: String?
     public let status: String?
 
-    public init(id: String, name: String, color: String?, areaName: String?, status: String?) {
+    public init(id: String, name: String, color: String?, status: String?) {
         self.id = id
         self.name = name
         self.color = color
-        self.areaName = areaName
         self.status = status
     }
 }
@@ -64,7 +46,6 @@ public struct OverviewContent: Equatable, Sendable {
     public var inboxPending: Int
     public var mailUnread: Int
     public var problemCount: Int
-    public var areas: [OverviewArea]
     public var projects: [OverviewProject]
     public var collections: [OverviewCollection]
 
@@ -75,7 +56,6 @@ public struct OverviewContent: Equatable, Sendable {
         inboxPending: Int = 0,
         mailUnread: Int = 0,
         problemCount: Int = 0,
-        areas: [OverviewArea] = [],
         projects: [OverviewProject] = [],
         collections: [OverviewCollection] = []
     ) {
@@ -85,7 +65,6 @@ public struct OverviewContent: Equatable, Sendable {
         self.inboxPending = inboxPending
         self.mailUnread = mailUnread
         self.problemCount = problemCount
-        self.areas = areas
         self.projects = projects
         self.collections = collections
     }
@@ -107,7 +86,6 @@ public enum OverviewTarget: Equatable, Sendable {
     case tasks
     case finance
     case profile
-    case area(id: String)
     case project(id: String)
     case collection(ownerModuleId: String, databaseId: String)
 }

@@ -58,7 +58,6 @@ private val SUBTITLE_KINDS: Map<String, SearchSubtitleKind> = mapOf(
     "place" to SearchSubtitleKind.PLACE,
     "recurrence" to SearchSubtitleKind.RECURRENCE,
     "project" to SearchSubtitleKind.PROJECT,
-    "area" to SearchSubtitleKind.AREA,
     "people" to SearchSubtitleKind.PEOPLE,
     "phone" to SearchSubtitleKind.PHONE,
     "relationship" to SearchSubtitleKind.RELATIONSHIP,

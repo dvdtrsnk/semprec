@@ -71,7 +71,7 @@ final class SharedItemMappingTests: XCTestCase {
             )
         )
         XCTAssertEqual(mapped.picker?.failure, Failed(kind: nil))
-        let work = FieldTarget(id: "a1", databaseKey: "areas", title: "Work", color: nil)
+        let work = FieldTarget(id: "a1", databaseKey: "companies", title: "Work", color: nil)
         XCTAssertEqual(mapped.picker?.candidates, [work])
         let impact = ImpactView(
             related: [ImpactEntry(databaseKey: "files", count: 3)],
@@ -168,11 +168,11 @@ private extension SharedItemMappingTests {
                 failure: nil
             ),
             picker: SharedSDK.PickerView(
-                propertyKey: "area",
-                name: "Area",
+                propertyKey: "company",
+                name: "Company",
                 loading: false,
                 failure: SharedSDK.Failed(kind: nil),
-                candidates: [SharedSDK.TargetView(id: "a1", databaseKey: "areas", title: "Work", color: nil)]
+                candidates: [SharedSDK.TargetView(id: "a1", databaseKey: "companies", title: "Work", color: nil)]
             ),
             deletion: SharedSDK.DeletionView(loading: false, failure: nil, impact: impact(), deleting: true),
             saving: true,

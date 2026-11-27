@@ -75,7 +75,6 @@ final class ItemViewModelTests: XCTestCase {
             state: state(databaseKey: "projects"),
             effects: [
                 .openItem(itemId: "e1", databaseKey: "events"),
-                .openItem(itemId: "a1", databaseKey: "areas"),
                 .openItem(itemId: "c1", databaseKey: "companies"),
                 .openItem(itemId: "u1", databaseKey: nil)
             ]
@@ -84,7 +83,6 @@ final class ItemViewModelTests: XCTestCase {
         let observer = Task { await ItemViewModel(itemId: "i1", model: model, router: router).observe() }
         try await eventually { router.items.count == 2 }
         XCTAssertEqual(router.events, ["e1"])
-        XCTAssertEqual(router.areas, ["a1"])
         XCTAssertEqual(router.items, ["c1:companies", "u1:-"])
         observer.cancel()
     }

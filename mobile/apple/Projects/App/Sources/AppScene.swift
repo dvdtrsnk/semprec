@@ -10,7 +10,7 @@ import SleepFeature
 import SwiftUI
 import TasksFeature
 
-/// The content of one window: a tab per area of the app, each with its own navigation stack. Each window creates its
+/// The content of one window: a tab per section of the app, each with its own navigation stack. Each window creates its
 /// own composition, so windows share neither screen models nor navigation.
 struct AppScene: View {
 
@@ -142,8 +142,6 @@ private extension AppScene {
                 makeModel: { composition.models.makeCollection(target: $0) },
                 router: composition.collectionsRouter
             )
-        case .area(let areaId, let tab):
-            AreaDestination(areaId: areaId, tab: tab, composition: composition)
         case .notes(let itemId, let tab, let trail, let focusTitle):
             NotesDestination(itemId: itemId, tab: tab, trail: trail, focusTitle: focusTitle, composition: composition)
         case .inbox(let tab):

@@ -7,22 +7,11 @@ data class OverviewSummary(
     val problemCount: Int,
 )
 
-/** An area; [position] orders areas, [active] hides an archived one. */
-data class OverviewArea(
-    val id: String,
-    val name: String,
-    val color: String?,
-    val icon: String?,
-    val position: Double?,
-    val active: Boolean,
-)
-
 /** A project of the overview; [status] is the stored key (`inProgress`, `longTerm`, `done`, `archived`). */
 data class OverviewProject(
     val id: String,
     val name: String,
     val color: String?,
-    val areaName: String?,
     val status: String?,
     val pinned: Boolean,
     val pinnedOrder: Double?,
@@ -43,7 +32,6 @@ data class OverviewCollection(
 /** Everything the overview shows. */
 data class Overview(
     val summary: OverviewSummary,
-    val areas: List<OverviewArea>,
     val projects: List<OverviewProject>,
     val collections: List<OverviewCollection>,
 )

@@ -62,9 +62,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeInternetAccounts() -> any InternetAccountsScreenModel
     func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel
 
-    // MARK: - Areas
-    func makeArea(areaId: String) -> any AreaScreenModel
-
     // MARK: - Inbox
     func makeInbox() -> any InboxScreenModel
     // MARK: - Mail

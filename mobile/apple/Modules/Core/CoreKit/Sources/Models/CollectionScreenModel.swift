@@ -7,8 +7,6 @@ public enum CollectionTarget: Equatable, Sendable, Hashable {
 
     /// Every item of the database.
     case whole(databaseKey: String?, databaseId: String?)
-    /// The items of one area.
-    case ofArea(databaseKey: String, areaId: String)
     /// The items whose relation `relationKey` holds the item `itemId` (the files of a project).
     case ofItem(databaseKey: String, relationKey: String, itemId: String)
     /// The items a filter selects, such as the filter of an item's related collection.

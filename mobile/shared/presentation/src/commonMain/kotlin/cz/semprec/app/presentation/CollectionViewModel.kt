@@ -78,7 +78,7 @@ class CollectionViewModel internal constructor(
         bar = null
         update { CollectionState() }
         loadJob = viewModelScope.launch {
-            val opening = answer { openCollection(config.databaseKey, config.databaseId, config.scope) }
+            val opening = answer { openCollection(config.databaseKey, config.databaseId) }
             ensureActive()
             when (opening) {
                 is Answer.Rejected -> update { collectionFailure(opening.kind) }

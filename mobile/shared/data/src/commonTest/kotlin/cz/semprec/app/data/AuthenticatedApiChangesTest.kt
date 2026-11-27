@@ -44,7 +44,7 @@ class AuthenticatedApiChangesTest {
         val api = api()
         assertEquals(1, announcements { api.send(HttpMethod.Post, "/api/databases/d1/items", body = "{}") })
         assertEquals(1, announcements { api.send(HttpMethod.Patch, "/api/items/i1", body = "{}") })
-        assertEquals(1, announcements { api.send(HttpMethod.Put, "/api/items/i1/relations/area", body = "{}") })
+        assertEquals(1, announcements { api.send(HttpMethod.Put, "/api/items/i1/relations/company", body = "{}") })
         assertEquals(1, announcements { api.send(HttpMethod.Delete, "/api/items/i1") })
     }
 

@@ -44,7 +44,6 @@ private fun booksDatabase(key: String, vararg extra: CollectionProperty) = Colle
     defaultSort = SortSpec("name", null, descending = false),
     dateLabels = null,
     collectionFilter = null,
-    areaFilter = null,
     pickerFilter = null,
 )
 

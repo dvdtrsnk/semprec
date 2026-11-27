@@ -17,12 +17,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
 const val PROJECTS_ID = "11111111-1111-4111-8111-111111111111"
-const val AREAS_ID = "22222222-2222-4222-8222-222222222222"
+const val COMPANIES_ID = "22222222-2222-4222-8222-222222222222"
 const val FILES_ID = "33333333-3333-4333-8333-333333333333"
 const val PROJECT_ITEM = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-const val AREA_ITEM = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+const val COMPANY_ITEM = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-/** A schema with Projects (status, date, area, company, tags in a facet bar), Areas and Files (type, file, projects). */
+/** A schema with Projects (status, date, company, tags in a facet bar), Companies and Files (type, file, projects). */
 const val SCHEMA_JSON = """{
   "tenant": {"timezone": "Europe/Prague", "today": "2026-10-16"},
   "viewTypes": [], "agentTools": [],
@@ -33,7 +33,6 @@ const val SCHEMA_JSON = """{
      "defaultSort": {"system": "createdAt", "direction": "desc"},
      "dateLabels": {"past": "Po termínu", "noDate": "Bez termínu"},
      "collectionFilter": {"type": "is_empty", "property": "systemActive"},
-     "areaFilter": {"type": "relation_contains", "property": "area", "value": {"areaValue": true}},
      "pickerFilter": {"type": "is_empty", "property": "systemActive"},
      "facetBarProperty": "tags",
      "quickFilters": [
@@ -47,8 +46,8 @@ const val SCHEMA_JSON = """{
        {"id": "p2", "type": "select", "filterable": true, "key": "status", "name": "Stav", "owner": "user", "locked": false,
         "options": [{"key": "inProgress", "label": "Probíhá", "color": "#007AFF"}, {"key": "done", "label": "Hotovo"}], "config": {}},
        {"id": "p3", "type": "date", "filterable": true, "key": "date", "name": "Termín", "owner": "user", "locked": false, "config": {"includeTime": false}},
-       {"id": "p4", "type": "relation", "filterable": true, "key": "area", "name": "Oblast", "owner": "user", "locked": false,
-        "config": {"targetDatabaseId": "$AREAS_ID", "cardinality": "one_to_many"}},
+       {"id": "p4", "type": "relation", "filterable": true, "key": "company", "name": "Firma", "owner": "user", "locked": false,
+        "config": {"targetDatabaseId": "$COMPANIES_ID", "cardinality": "one_to_many"}},
        {"id": "p5", "type": "relation", "filterable": true, "key": "tasks", "name": "Úkoly", "owner": "user", "locked": false,
         "config": {"targetDatabaseId": "tasks", "cardinality": "one_to_many"}},
        {"id": "p6", "type": "checkbox", "filterable": true, "key": "pinned", "name": "Připnuto", "owner": "user", "locked": false, "config": {}},
@@ -58,11 +57,11 @@ const val SCHEMA_JSON = """{
        {"id": "p9", "type": "number", "filterable": false, "key": "budget", "name": "Rozpočet", "owner": "user", "locked": false, "config": {}},
        {"id": "p10", "type": "date", "filterable": false, "key": "completedAt", "name": "Dokončeno", "owner": "system", "locked": true, "config": {}}
      ]},
-    {"databaseId": "$AREAS_ID", "key": "areas", "name": "Oblasti", "searchPlaceholder": null,
-     "defaultSort": {"property": "position", "direction": "asc"},
+    {"databaseId": "$COMPANIES_ID", "key": "companies", "name": "Firmy", "searchPlaceholder": null,
+     "defaultSort": {"property": "name", "direction": "asc"},
      "quickFilters": [],
      "properties": [
-       {"id": "a1", "type": "title", "filterable": false, "key": "name", "name": "Název", "owner": "user", "locked": false, "config": {}}
+       {"id": "c1", "type": "title", "filterable": false, "key": "name", "name": "Název", "owner": "user", "locked": false, "config": {}}
      ]},
     {"databaseId": "$FILES_ID", "key": "files", "name": "Soubory",
      "defaultSort": {"system": "createdAt", "direction": "desc"},
@@ -78,20 +77,20 @@ const val SCHEMA_JSON = """{
   ]
 }"""
 
-/** A project with a status, an area from its relations, a derived area, an inherited and a broken link. */
+/** A project with a status, a company from its relations, a derived company, an inherited and a broken link. */
 const val PROJECT_JSON = """{
   "id": "$PROJECT_ITEM", "databaseId": "$PROJECTS_ID",
   "properties": {"name": "Semprec iOS", "status": "inProgress", "date": "2027-01-31", "pinned": true,
                  "tags": ["a", "b"], "budget": 180000, "recurrence": {"x": 1}},
   "computed": {}, "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-16T10:00:00Z", "deletedAt": null,
   "version": "3",
-  "relations": {"area": [{"id": "$AREA_ITEM", "databaseKey": "areas", "databaseId": "$AREAS_ID", "title": "Práce",
-                          "color": "#5856D6", "metadata": {}}, {"id": "hidden-1", "hidden": true}]},
+  "relations": {"company": [{"id": "$COMPANY_ITEM", "databaseKey": "companies", "databaseId": "$COMPANIES_ID",
+                             "title": "Novák Web", "color": "#5856D6", "metadata": {}}, {"id": "hidden-1", "hidden": true}]},
   "links": {
     "status": {"valueKind": "inherited", "sources": [{"kind": "item", "itemId": "t1", "databaseKey": "tasks", "title": "Odeslat fakturu", "propertyKey": "status"}], "brokenBy": null, "brokenAt": null},
     "date": {"valueKind": "inheritedBroken", "sources": [{"kind": "senderDomain", "domain": "novak-web.cz", "propertyKey": "date"}], "brokenBy": "agent", "brokenAt": "2026-10-10T00:00:00Z"}
   },
-  "derived": {"area": {"values": [{"id": "$AREA_ITEM", "title": "Práce", "color": "#5856D6"}], "via": "project", "projectIds": ["$PROJECT_ITEM"]}}
+  "derived": {"company": {"values": [{"id": "$COMPANY_ITEM", "title": "Novák Web s.r.o.", "color": "#5856D6"}], "via": "project", "projectIds": ["$PROJECT_ITEM"]}}
 }"""
 
 /** A scripted server: answers a request of the mock engine. */

@@ -57,17 +57,13 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAreaRowPushesTheAreaScreenAndACollectionRowPushesItsCollection() {
+    func testACollectionRowPushesItsCollection() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
         context.register(overview, for: .overview)
         let router = AppOverviewRouter(context: context)
-        router.show(.area(id: "a1"))
         router.show(.collection(ownerModuleId: "books", databaseId: "d1"))
-        XCTAssertEqual(
-            overview.pushed,
-            [.area(areaId: "a1", tab: .overview), .collection(.whole(databaseKey: nil, databaseId: "d1"))]
-        )
+        XCTAssertEqual(overview.pushed, [.collection(.whole(databaseKey: nil, databaseId: "d1"))])
     }
 
     @MainActor
@@ -104,13 +100,12 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testProjectAreaContactFileAndMailResultsOpenTheirScreens() {
+    func testProjectContactFileAndMailResultsOpenTheirScreens() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
         context.register(overview, for: .overview)
         let router = AppOverviewRouter(context: context)
         router.showSearchResult(link(.project, "p1"))
-        router.showSearchResult(link(.area, "a1"))
         router.showSearchResult(link(.contact, "c1"))
         router.showSearchResult(link(.file, "f1"))
         router.showSearchResult(
@@ -122,7 +117,6 @@ final class OverviewRoutingTests: XCTestCase {
             overview.pushed,
             [
                 .collectionItem(itemId: "p1", databaseKey: "projects"),
-                .area(areaId: "a1", tab: .overview),
                 .collectionItem(itemId: "c1", databaseKey: nil),
                 .collectionItem(itemId: "f1", databaseKey: nil),
                 .mailThread(threadId: "t1", tab: .overview)

@@ -1473,22 +1473,6 @@
         }
       }
     },
-    "origin.source.areas" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "oblast „%@“"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "area “%@”"
-          }
-        }
-      }
-    },
     "origin.source.companies" : {
       "localizations" : {
         "cs" : {

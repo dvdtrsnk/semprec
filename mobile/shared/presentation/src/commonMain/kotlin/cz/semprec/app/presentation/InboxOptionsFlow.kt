@@ -8,7 +8,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
- * The items a select or a multi-value field offers (the projects, the areas, the pages), which the server lists per
+ * The items a select or a multi-value field offers (the projects, the pages), which the server lists per
  * card. The top cards ask for theirs as soon as they are shown, so that a value reads as a name and not as an id; a
  * picker that opens before they are there waits for them, and asks again after a failure.
  */

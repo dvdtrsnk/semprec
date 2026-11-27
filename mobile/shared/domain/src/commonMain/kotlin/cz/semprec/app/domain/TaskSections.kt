@@ -4,17 +4,12 @@ import cz.semprec.app.core.TaskSectionKind
 import cz.semprec.app.core.TaskStatus
 import cz.semprec.app.core.TasksTab
 
-/** The narrowing of a task list the person chose: by area, by project, to flagged tasks only. */
-data class TaskFilter(
-    val areaId: String? = null,
-    val projectId: String? = null,
-    val flaggedOnly: Boolean = false,
-) {
-    val isActive: Boolean get() = areaId != null || projectId != null || flaggedOnly
+/** The narrowing of a task list the person chose: by project, to flagged tasks only. */
+data class TaskFilter(val projectId: String? = null, val flaggedOnly: Boolean = false) {
+    val isActive: Boolean get() = projectId != null || flaggedOnly
 
     fun matches(item: WorkItem): Boolean =
-        (areaId == null || item.project?.areaId == areaId) &&
-            (projectId == null || item.project?.id == projectId) &&
+        (projectId == null || item.project?.id == projectId) &&
             (!flaggedOnly || item.flagged)
 }
 

@@ -5,8 +5,6 @@ import cz.semprec.app.domain.CollectionQuery
 import cz.semprec.app.domain.CollectionScope
 import cz.semprec.app.domain.SortSpec
 
-private const val AREA_KEY = "area"
-
 /** Which collection a screen shows: a database by key or id, narrowed by a scope. */
 internal data class CollectionConfig(
     val databaseKey: String?,
@@ -57,9 +55,8 @@ internal data class Inputs(
     }
 }
 
-/** What a new item or an uploaded file is attached to: the area of an area collection, or the item it hangs on. */
-internal fun CollectionConfig.relationFor(database: CollectionDatabase): Pair<String, String>? = when (scope) {
-    is CollectionScope.Area -> database.property(AREA_KEY)?.let { AREA_KEY to scope.areaId }
+/** What a new item or an uploaded file is attached to: the item it hangs on, when the collection is related to one. */
+internal fun CollectionConfig.relationFor(): Pair<String, String>? = when (scope) {
     is CollectionScope.Related -> scope.propertyKey to scope.itemId
     CollectionScope.Everything, is CollectionScope.Matching -> null
 }

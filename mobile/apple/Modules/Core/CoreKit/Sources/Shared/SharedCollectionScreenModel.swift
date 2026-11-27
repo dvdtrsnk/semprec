@@ -118,7 +118,6 @@ extension SharedCollectionScreenModel {
     static func target(_ target: CollectionTarget) -> any SharedSDK.CollectionTarget {
         switch target {
         case .whole(let key, let id): SharedSDK.CollectionTargetWhole(databaseKey: key, databaseId: id)
-        case .ofArea(let key, let areaId): SharedSDK.CollectionTargetOfArea(databaseKey: key, areaId: areaId)
         case .ofItem(let key, let relationKey, let itemId):
             SharedSDK.CollectionTargetOfItem(databaseKey: key, relationKey: relationKey, itemId: itemId)
         case .matching(let key, let id, let filterJson):

@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The settings of a project: its status, its area, its deadline (which a long-term project does not have), its tags
+/// The settings of a project: its status, its deadline (which a long-term project does not have), its tags
 /// with a field that creates a new one, whether it is pinned to the overview, and the entry to its mail signals, which
 /// the project opens on its stack once the sheet is closed.
 struct ProjectSettingsSheet: View {
@@ -23,7 +23,6 @@ struct ProjectSettingsSheet: View {
         NavigationStack {
             Form {
                 statusSection
-                areaSection
                 deadlineSection
                 tagsSection
                 pinnedSection
@@ -80,30 +79,6 @@ private extension ProjectSettingsSheet {
                     .foregroundStyle(.primary)
                     .disabled(!status.editable)
                 }
-            }
-        }
-    }
-
-    @ViewBuilder var areaSection: some View {
-        if let area = field("area") {
-            Section(area.name) {
-                Button {
-                    close()
-                    send(.picker(.open(propertyKey: area.propertyKey)))
-                } label: {
-                    HStack {
-                        if case .targets(let targets) = area.content, let current = targets.first {
-                            Text(current.title)
-                        } else {
-                            Text("field.empty", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .foregroundStyle(.primary)
-                .disabled(!area.editable)
             }
         }
     }

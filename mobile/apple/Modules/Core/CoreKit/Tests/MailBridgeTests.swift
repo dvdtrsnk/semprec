@@ -33,12 +33,11 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testTheStartOfTheListReachesTheKotlinViewModel() async throws {
-        let start = MailListStart(areaId: "a1", projectId: "p1", box: .flagged, mailboxId: "m1", folderId: "f1")
+        let start = MailListStart(projectId: "p1", box: .flagged, mailboxId: "m1", folderId: "f1")
         let model = try XCTUnwrap(
             isolatedFactory().makeMailThreads(start: start) as? SharedMailThreadsScreenModel
         )
         let state = model.state
-        XCTAssertEqual(state.areaId, "a1")
         XCTAssertEqual(state.projectId, "p1")
         XCTAssertEqual(state.box, .flagged)
         XCTAssertEqual(state.mailboxId, "m1")

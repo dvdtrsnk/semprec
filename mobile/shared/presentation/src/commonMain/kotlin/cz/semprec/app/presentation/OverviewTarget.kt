@@ -12,7 +12,6 @@ sealed interface OverviewTarget {
     data object Finance : OverviewTarget
     data object Profile : OverviewTarget
 
-    data class Area(val id: String) : OverviewTarget
     data class Project(val id: String) : OverviewTarget
     data class Collection(val ownerModuleId: String, val databaseId: String) : OverviewTarget
 }

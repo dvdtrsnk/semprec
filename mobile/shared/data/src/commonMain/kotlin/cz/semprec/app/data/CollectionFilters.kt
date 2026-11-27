@@ -11,7 +11,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -21,7 +20,6 @@ private const val TYPE = "type"
 private const val PROPERTY = "property"
 private const val VALUE = "value"
 private const val NODES = "nodes"
-private const val AREA_VALUE = "areaValue"
 
 /** Builds the request bodies of the query and facets routes from a [CollectionQuery]. */
 internal object CollectionFilters {
@@ -52,7 +50,7 @@ internal object CollectionFilters {
     private fun filterOf(database: CollectionDatabase, query: CollectionQuery): JsonElement? {
         val nodes = buildList {
             database.collectionFilter?.let { add(parse(it)) }
-            scopeFilter(database, query.scope)?.let { add(it) }
+            scopeFilter(query.scope)?.let { add(it) }
             query.quickFilter?.let { add(parse(it)) }
             query.selections.forEach { selectionFilter(database, it)?.let(::add) }
         }
@@ -66,9 +64,8 @@ internal object CollectionFilters {
         }
     }
 
-    private fun scopeFilter(database: CollectionDatabase, scope: CollectionScope): JsonElement? = when (scope) {
+    private fun scopeFilter(scope: CollectionScope): JsonElement? = when (scope) {
         CollectionScope.Everything -> null
-        is CollectionScope.Area -> database.areaFilter?.let { expandArea(parse(it), scope.areaId) }
         is CollectionScope.Related -> relationContains(scope.propertyKey, scope.itemId)
         is CollectionScope.Matching -> parse(scope.filter)
     }
@@ -119,13 +116,4 @@ internal object CollectionFilters {
     }
 
     private fun parse(tree: FilterTree): JsonElement = ApiJson.parseToJsonElement(tree.json)
-
-    /** Replaces every `{ "areaValue": true }` of a declared area filter template with the area's id. */
-    fun expandArea(template: JsonElement, areaId: String): JsonElement = when (template) {
-        is JsonObject ->
-            if (template.keys == setOf(AREA_VALUE)) JsonPrimitive(areaId)
-            else JsonObject(template.mapValues { (_, child) -> expandArea(child, areaId) })
-        is JsonArray -> buildJsonArray { template.forEach { add(expandArea(it, areaId)) } }
-        else -> template
-    }
 }

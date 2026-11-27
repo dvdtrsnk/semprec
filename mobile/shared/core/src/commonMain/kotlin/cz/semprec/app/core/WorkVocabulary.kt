@@ -18,14 +18,8 @@ enum class LinkedValue { PROJECT, PEOPLE }
 /** A thing an item points at: a person, a file, an event, a company. [color] is a `#RRGGBB` string when it has one. */
 data class EntityRef(val id: String, val title: String, val color: String? = null)
 
-/** A project with the area it belongs to. */
-data class ProjectRef(
-    val id: String,
-    val title: String,
-    val color: String? = null,
-    val areaId: String? = null,
-    val areaTitle: String? = null,
-)
+/** A project a task or an event can be tied to. [color] is a `#RRGGBB` string when it has one. */
+data class ProjectRef(val id: String, val title: String, val color: String? = null)
 
 /** Where a followed value comes from ([sourceTitle]) and, once broken, whether Semp broke it ([brokenBySemp]). */
 data class ValueLink(val state: LinkState, val sourceTitle: String? = null, val brokenBySemp: Boolean = false)

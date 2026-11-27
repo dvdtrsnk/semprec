@@ -32,13 +32,9 @@ class OverviewViewModelTest : MainDispatcherTest() {
         inboxPending = 9,
         mailUnread = 5,
         problemCount = 2,
-        areas = listOf(
-            OverviewAreaItem("work", "Work", "#5856D6", "briefcase"),
-            OverviewAreaItem("health", "Health", "#FF2D55", "heart"),
-        ),
         projects = listOf(
-            OverviewProjectItem("p1", "Semprec iOS", "#007AFF", "Work", "inProgress"),
-            OverviewProjectItem("p2", "Půlmaraton", "#FF3B30", "Health", "inProgress"),
+            OverviewProjectItem("p1", "Semprec iOS", "#007AFF", "inProgress"),
+            OverviewProjectItem("p2", "Půlmaraton", "#FF3B30", "inProgress"),
         ),
         collections = listOf(
             OverviewCollectionItem("d1", "events", "Events", "calendar", "#FF3B30"),
@@ -134,7 +130,6 @@ class OverviewViewModelTest : MainDispatcherTest() {
             OverviewTarget.Tasks,
             OverviewTarget.Finance,
             OverviewTarget.Profile,
-            OverviewTarget.Area("work"),
             OverviewTarget.Project("p1"),
             OverviewTarget.Collection("events", "d1"),
         )

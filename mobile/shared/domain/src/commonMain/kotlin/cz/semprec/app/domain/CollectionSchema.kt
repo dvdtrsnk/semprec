@@ -60,7 +60,6 @@ data class DateLabels(val past: String, val noDate: String)
 
 /**
  * One database as `/api/schema` describes it. [collectionFilter] selects the items that belong in the collection,
- * [areaFilter] is the template that selects the items of one area (`null` when the database is not area-filterable),
  * [pickerFilter] the items a picker of this database offers by default. [facetBarProperty] is the key of the select or
  * multi-select property whose values the collection shows as a bar of chips above its list (`null` for no bar).
  */
@@ -76,7 +75,6 @@ data class CollectionDatabase(
     val defaultSort: SortSpec,
     val dateLabels: DateLabels?,
     val collectionFilter: FilterTree?,
-    val areaFilter: FilterTree?,
     val pickerFilter: FilterTree?,
     val facetBarProperty: String? = null,
 ) {
@@ -86,7 +84,7 @@ data class CollectionDatabase(
 
     /**
      * The relation properties that say where an item belongs and who it involves, in the order they are expanded
-     * (at most five can be expanded in one read). Other relations (a project's tasks, an area's files) are the item's
+     * (at most five can be expanded in one read). Other relations (a project's tasks, a company's files) are the item's
      * related collections.
      */
     fun contextRelations(): List<CollectionProperty> =
@@ -95,7 +93,7 @@ data class CollectionDatabase(
 }
 
 /** The keys of the context relations, in the order they are expanded and shown in. */
-val CONTEXT_RELATIONS: List<String> = listOf("area", "project", "projects", "company", "companies", "people")
+val CONTEXT_RELATIONS: List<String> = listOf("project", "projects", "company", "companies", "people")
 
 private const val MAX_EXPANDED_RELATIONS = 5
 

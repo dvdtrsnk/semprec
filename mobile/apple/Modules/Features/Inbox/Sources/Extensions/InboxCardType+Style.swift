@@ -12,7 +12,6 @@ extension InboxCardType {
         case .page: "doc.text"
         case .journal: "book.closed"
         case .project: "folder"
-        case .area: "house"
         case .company: "building.2"
         case .person: "person"
         case .health: "heart"
@@ -34,7 +33,7 @@ extension InboxCardType {
         case .task: .blue
         case .event, .project, .transcriptEvent: .purple
         case .page, .journal, .mcp: .orange
-        case .area, .approval: .indigo
+        case .approval: .indigo
         case .company, .file, .recording, .unsupported: .gray
         case .person, .speaker: .teal
         case .health: .pink
@@ -51,7 +50,6 @@ extension InboxCardType {
         case .page: "inbox.type.page"
         case .journal: "inbox.type.journal"
         case .project: "inbox.type.project"
-        case .area: "inbox.type.area"
         case .company: "inbox.type.company"
         case .person: "inbox.type.person"
         case .health: "inbox.type.health"

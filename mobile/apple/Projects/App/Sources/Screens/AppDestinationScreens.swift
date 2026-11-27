@@ -1,4 +1,3 @@
-import AreasFeature
 import CalendarFeature
 import InboxFeature
 import JournalFeature
@@ -47,22 +46,6 @@ struct NewItemSheet: View {
         NavigationStack {
             CalendarScreenFactory.newItem(day: day, makeModel: { composition.models.makeNewItem(day: $0) })
         }
-    }
-}
-
-/// One area, on the stack of `tab`.
-struct AreaDestination: View {
-
-    let areaId: String
-    let tab: AppTab
-    let composition: AppComposition
-
-    var body: some View {
-        AreasScreenFactory.area(
-            areaId: areaId,
-            makeModel: { composition.models.makeArea(areaId: areaId) },
-            router: composition.areasRouter(in: tab)
-        )
     }
 }
 

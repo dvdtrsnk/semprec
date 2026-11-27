@@ -57,19 +57,17 @@ class HttpCollectionReadsTest {
         assertEquals(listOf(SortSpec("date", null, false)), projects.quickFilters.last().sort)
         assertEquals(SortSpec(null, "createdAt", true), projects.defaultSort)
         assertEquals("Po termínu", projects.dateLabels?.past)
-        assertNotNull(projects.areaFilter)
         assertNotNull(projects.collectionFilter)
         assertEquals("name", projects.title?.key)
         val kinds = projects.properties.associate { it.key to it.kind }
         assertEquals(PropertyKind.SELECT, kinds["status"])
-        assertEquals(PropertyKind.RELATION, kinds["area"])
+        assertEquals(PropertyKind.RELATION, kinds["company"])
         assertEquals(PropertyKind.OTHER, kinds["recurrence"])
-        assertEquals(AREAS_ID, projects.property("area")?.targetDatabaseId)
+        assertEquals(COMPANIES_ID, projects.property("company")?.targetDatabaseId)
         assertEquals("#007AFF", projects.property("status")?.options?.first()?.color)
         assertTrue(projects.property("completedAt")!!.system)
-        assertNull(schema.database("areas")?.areaFilter)
         assertEquals("tags", projects.facetBarProperty)
-        assertNull(schema.database("areas")?.facetBarProperty)
+        assertNull(schema.database("companies")?.facetBarProperty)
         assertEquals("/api/schema", recorder.requests.single().url.encodedPath)
         assertEquals("Bearer tok", recorder.requests.single().headers[HttpHeaders.Authorization])
     }
@@ -96,16 +94,16 @@ class HttpCollectionReadsTest {
     }
 
     @Test
-    fun aQueryAndsTheCollectionFilterTheAreaTheChipAndTheSelectionsAndAsksForLinksAndRelations() = runTest {
+    fun aQueryAndsTheCollectionFilterTheScopeTheChipAndTheSelectionsAndAsksForLinksAndRelations() = runTest {
         val (reads, recorder) = reads(schemaAnd("""{"items": [], "nextCursor": null}"""))
         val projects = reads.schema().content().database("projects")!!
         val chip = projects.quickFilters.first()
         val query = CollectionQuery(
-            scope = CollectionScope.Area(AREA_ITEM),
+            scope = CollectionScope.Related("company", COMPANY_ITEM),
             quickFilter = chip.filter,
             selections = listOf(
                 FacetSelection.OneOf("status", listOf("done", "inProgress")),
-                FacetSelection.OneOf("area", listOf(AREA_ITEM, "x")),
+                FacetSelection.OneOf("company", listOf(COMPANY_ITEM, "x")),
                 FacetSelection.DatePreset("date", "thisWeek"),
                 FacetSelection.Checked("pinned", true),
                 FacetSelection.OneOf("tags", emptyList()),
@@ -114,7 +112,7 @@ class HttpCollectionReadsTest {
             sort = listOf(SortSpec("name", null, false), SortSpec(null, "createdAt", true)),
             cursor = "c1",
             limit = 20,
-            expand = listOf("area"),
+            expand = listOf("company"),
         )
         reads.query(projects, query).content()
 
@@ -129,7 +127,8 @@ class HttpCollectionReadsTest {
             listOf("is_empty", "relation_contains", "in", "in", "or", "date_relative", "equals"),
             nodes.map { it.getValue("type").jsonPrimitive.content },
         )
-        assertEquals(AREA_ITEM, nodes[1].getValue("value").jsonPrimitive.content)
+        assertEquals("company", nodes[1].getValue("property").jsonPrimitive.content)
+        assertEquals(COMPANY_ITEM, nodes[1].getValue("value").jsonPrimitive.content)
         assertEquals(
             listOf("done", "inProgress"),
             nodes[3].getValue("value").jsonArray.map { it.jsonPrimitive.content }
@@ -148,14 +147,14 @@ class HttpCollectionReadsTest {
         val include = body.getValue("include").obj()
         assertTrue(include.getValue("links").jsonPrimitive.boolean)
         assertTrue(include.getValue("derived").jsonPrimitive.boolean)
-        assertEquals(JsonArray(emptyList()), include.getValue("relations").obj().getValue("area"))
+        assertEquals(JsonArray(emptyList()), include.getValue("relations").obj().getValue("company"))
     }
 
     @Test
     fun aQueryWithNothingToNarrowByAsksForNoFilterAndASingleConditionIsNotWrapped() = runTest {
         val (reads, recorder) = reads(schemaAnd("""{"items": []}"""))
         val schema = reads.schema().content()
-        reads.query(schema.database("areas")!!, CollectionQuery()).content()
+        reads.query(schema.database("companies")!!, CollectionQuery()).content()
         assertNull(recorder.bodyJson(1)["filter"])
         assertNull(recorder.bodyJson(1)["q"])
         assertNull(recorder.bodyJson(1)["sort"])
@@ -201,13 +200,13 @@ class HttpCollectionReadsTest {
     }
 
     @Test
-    fun relationTargetsComeFromTheExpandedRelationsAndTheDerivedAreaOverridesThem() = runTest {
+    fun relationTargetsComeFromTheExpandedRelationsAndTheDerivedCompanyOverridesThem() = runTest {
         val (reads, _) = reads(schemaAnd(PROJECT_JSON))
         reads.schema()
-        val item = reads.item(PROJECT_ITEM, listOf("area")).content()
-        val targets = assertIs<FieldValue.Targets>(item.values["area"]).targets
-        assertEquals(listOf("Práce"), targets.map { it.title })
-        assertEquals("areas", targets.single().databaseKey)
+        val item = reads.item(PROJECT_ITEM, listOf("company")).content()
+        val targets = assertIs<FieldValue.Targets>(item.values["company"]).targets
+        assertEquals(listOf("Novák Web s.r.o."), targets.map { it.title })
+        assertEquals("companies", targets.single().databaseKey)
     }
 
     @Test
@@ -223,22 +222,22 @@ class HttpCollectionReadsTest {
         assertEquals(ValueKind.INHERITED_BROKEN, date.kind)
         assertEquals(Author.AGENT, date.brokenBy)
         assertEquals("novak-web.cz", date.sources.single().title)
-        val area = assertNotNull(item.origins["area"])
-        assertEquals(ValueKind.DERIVED, area.kind)
-        assertEquals(PROJECT_ITEM, area.sources.single().itemId)
+        val company = assertNotNull(item.origins["company"])
+        assertEquals(ValueKind.DERIVED, company.kind)
+        assertEquals(PROJECT_ITEM, company.sources.single().itemId)
         assertNull(item.origins["name"])
     }
 
     @Test
     fun anItemIsReadWithLinksDerivedValuesAndTheNamedRelations() = runTest {
         val (reads, recorder) = reads(schemaAnd(PROJECT_JSON))
-        reads.item(PROJECT_ITEM, listOf("area", "company")).content()
+        reads.item(PROJECT_ITEM, listOf("company", "people")).content()
         val request = recorder.requests.last()
         assertEquals(HttpMethod.Get, request.method)
         assertEquals("/api/items/$PROJECT_ITEM", request.url.encodedPath)
         assertEquals("links,derived,relations", request.url.parameters["include"])
-        assertEquals("", request.url.parameters["relations.area"])
         assertEquals("", request.url.parameters["relations.company"])
+        assertEquals("", request.url.parameters["relations.people"])
     }
 
     @Test

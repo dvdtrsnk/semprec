@@ -34,7 +34,6 @@ internal data class SchemaDatabaseDto(
     val defaultSort: SortDto? = null,
     val dateLabels: DateLabelsDto? = null,
     val collectionFilter: JsonElement? = null,
-    val areaFilter: JsonElement? = null,
     val pickerFilter: JsonElement? = null,
     val facetBarProperty: String? = null,
 ) {
@@ -50,7 +49,6 @@ internal data class SchemaDatabaseDto(
         defaultSort = defaultSort?.toDomain() ?: SortSpec(null, CREATED_AT, descending = true),
         dateLabels = dateLabels?.let { DateLabels(it.past, it.noDate) },
         collectionFilter = collectionFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
-        areaFilter = areaFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
         pickerFilter = pickerFilter?.let { FilterTree(ApiJson.encodeToString(JsonElement.serializer(), it)) },
         facetBarProperty = facetBarProperty,
     )

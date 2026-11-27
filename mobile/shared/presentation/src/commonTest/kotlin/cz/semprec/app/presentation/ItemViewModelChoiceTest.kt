@@ -119,7 +119,7 @@ class ItemViewModelChoiceTest : MainDispatcherTest() {
         val systemTags = projectsDb.copy(
             properties = projectsDb.properties.map { if (it.key == "tags") it.copy(system = true) else it },
         )
-        val schema = testSchema.copy(databases = listOf(systemTags, areasDb, filesDb))
+        val schema = testSchema.copy(databases = listOf(systemTags, peopleDb, filesDb))
         fake.schemaAnswer = { RepositoryResult.Content(schema) }
         val vm = open()
         vm.onAction(ItemAction.Edit.AddChoice("tags", "Client"))

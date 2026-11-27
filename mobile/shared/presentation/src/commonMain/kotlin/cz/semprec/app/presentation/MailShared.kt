@@ -7,9 +7,8 @@ import cz.semprec.app.domain.MailLinkKind
 /** The boxes of the thread list; a folder or an account narrows one of them. */
 enum class MailListBox { INBOX, FLAGGED, SEMP_DRAFTS }
 
-/** The thread list a screen starts with: everything of the person, or the threads of an area, a project, a folder. */
+/** The thread list a screen starts with: everything of the person, or the threads of a project, a folder. */
 data class MailListStart(
-    val areaId: String? = null,
     val projectId: String? = null,
     val box: MailListBox = MailListBox.INBOX,
     val mailboxId: String? = null,

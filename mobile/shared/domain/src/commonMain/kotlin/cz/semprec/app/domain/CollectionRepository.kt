@@ -41,7 +41,7 @@ interface CollectionReads {
  * method answers an expected failure as a value.
  */
 interface CollectionWrites : PropertyWrites {
-    /** Creates an item with its title and, optionally, one relation (a project of an area, a file of a project). */
+    /** Creates an item with its title and, optionally, one relation (a file of a project). */
     suspend fun create(
         database: CollectionDatabase,
         title: String,

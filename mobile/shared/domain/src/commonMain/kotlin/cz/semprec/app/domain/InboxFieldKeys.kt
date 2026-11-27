@@ -2,7 +2,7 @@ package cz.semprec.app.domain
 
 /**
  * What the editor of a card reads. The effective proposal holds the values of the destination; the fields that are no
- * property of it (an all-day switch, the follow-up task, the area of a task, the page a text goes to) have their own
+ * property of it (an all-day switch, the follow-up task, the page a text goes to) have their own
  * place, which this file knows, so that no screen has to.
  */
 object InboxFieldKeys {

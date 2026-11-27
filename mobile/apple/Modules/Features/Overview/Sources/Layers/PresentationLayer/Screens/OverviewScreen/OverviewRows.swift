@@ -63,20 +63,6 @@ enum OverviewRows {
         ]
     }
 
-    // MARK: - Areas
-    static func areas(_ content: OverviewContent) -> [OverviewRow] {
-        content.areas.map { area in
-            OverviewRow(
-                id: area.id,
-                symbol: OverviewSymbols.area(icon: area.icon),
-                tile: .tile(area.color, fallback: .indigo),
-                title: Text(verbatim: area.name),
-                target: .area(id: area.id),
-                identifier: OverviewIdentifiers.areaPrefix + area.id
-            )
-        }
-    }
-
     // MARK: - Projects
     static func projects(_ content: OverviewContent) -> [OverviewRow] {
         content.projects.map { project in
@@ -85,7 +71,7 @@ enum OverviewRows {
                 symbol: OverviewSymbols.projectFallback,
                 tile: .tile(project.color, fallback: .purple),
                 title: Text(verbatim: project.name),
-                subtitle: subtitle(of: project).map { Text(verbatim: $0) },
+                subtitle: status(project.status).map { Text(verbatim: $0) },
                 target: .project(id: project.id),
                 identifier: OverviewIdentifiers.projectPrefix + project.id
             )
@@ -107,12 +93,7 @@ enum OverviewRows {
     }
 
     // MARK: - Words
-    /// "Work · In progress": the area of a project and its status, whichever the server tells.
-    static func subtitle(of project: OverviewProject) -> String? {
-        let parts = [project.areaName, status(project.status)].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
-    }
-
+    /// The words of a project's status, or nil for a status the app does not know.
     static func status(_ key: String?) -> String? {
         switch key {
         case "inProgress": String(localized: "overview.project.status.inProgress", bundle: .module)

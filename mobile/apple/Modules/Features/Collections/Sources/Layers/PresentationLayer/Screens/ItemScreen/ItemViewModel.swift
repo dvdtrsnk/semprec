@@ -66,7 +66,6 @@ private extension ItemViewModel {
         case .openItem(let id, let databaseKey):
             switch databaseKey {
             case DatabaseKey.events: router.showEvent(itemId: id)
-            case DatabaseKey.areas: router.showArea(areaId: id)
             default: router.showItem(itemId: id, databaseKey: databaseKey)
             }
         case .openCollection(let databaseId, let databaseKey, let filterJson):

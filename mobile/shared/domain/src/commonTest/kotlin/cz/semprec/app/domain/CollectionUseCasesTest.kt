@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 private fun property(key: String, kind: PropertyKind, target: String? = null) =
     CollectionProperty("id-$key", key, key, kind, emptyList(), target, system = false, filterable = true)
 
-private fun database(id: String, key: String, areaFilter: Boolean = false, vararg properties: CollectionProperty) =
+private fun database(id: String, key: String, vararg properties: CollectionProperty) =
     CollectionDatabase(
         id = id,
         key = key,
@@ -24,20 +24,18 @@ private fun database(id: String, key: String, areaFilter: Boolean = false, varar
         defaultSort = SortSpec(null, "createdAt", true),
         dateLabels = null,
         collectionFilter = null,
-        areaFilter = if (areaFilter) FilterTree("{}") else null,
         pickerFilter = FilterTree("""{"picker":true}"""),
     )
 
-private val areas = database("db-areas", "areas")
+private val companies = database("db-companies", "companies")
 private val projects = database(
     "db-projects",
     "projects",
-    true,
-    property("area", PropertyKind.RELATION, "db-areas"),
     property("company", PropertyKind.RELATION, "db-companies"),
+    property("people", PropertyKind.RELATION, "db-people"),
     property("tasks", PropertyKind.RELATION, "db-tasks"),
 )
-private val schema = CollectionSchema("2026-10-16", listOf(areas, projects))
+private val schema = CollectionSchema("2026-10-16", listOf(companies, projects))
 
 /** A [CollectionReads] that answers from fixed values and records how it was asked. */
 private class StubReads(
@@ -77,66 +75,59 @@ private fun item(id: String, databaseId: String, title: String = "T") =
 
 class OpenCollectionTest {
     @Test fun `finds a database by key`() = runTest {
-        val opened = OpenCollection(StubReads())("projects", null, CollectionScope.Everything)
+        val opened = OpenCollection(StubReads())("projects", null)
         assertEquals(projects, assertIs<RepositoryResult.Content<OpenedCollection>>(opened).value.database)
         assertEquals("2026-10-16", opened.value.today)
     }
 
     @Test fun `finds a database by id when there is no key`() = runTest {
-        val opened = OpenCollection(StubReads())(null, "db-areas", CollectionScope.Everything)
-        assertEquals(areas, assertIs<RepositoryResult.Content<OpenedCollection>>(opened).value.database)
+        val opened = OpenCollection(StubReads())(null, "db-companies")
+        assertEquals(companies, assertIs<RepositoryResult.Content<OpenedCollection>>(opened).value.database)
     }
 
     @Test fun `an unknown key falls back to the id and no database at all is not found`() = runTest {
-        val opened = OpenCollection(StubReads())("nope", "db-areas", CollectionScope.Everything)
-        assertEquals(areas, assertIs<RepositoryResult.Content<OpenedCollection>>(opened).value.database)
-        val none = OpenCollection(StubReads())("nope", null, CollectionScope.Everything)
+        val opened = OpenCollection(StubReads())("nope", "db-companies")
+        assertEquals(companies, assertIs<RepositoryResult.Content<OpenedCollection>>(opened).value.database)
+        val none = OpenCollection(StubReads())("nope", null)
         assertEquals(FailureKind.NOT_FOUND, assertIs<RepositoryResult.Failure>(none).kind)
-        val neither = OpenCollection(StubReads())(null, null, CollectionScope.Everything)
+        val neither = OpenCollection(StubReads())(null, null)
         assertEquals(FailureKind.NOT_FOUND, assertIs<RepositoryResult.Failure>(neither).kind)
-    }
-
-    @Test fun `an area scope needs a database that declares an area filter`() = runTest {
-        val refused = OpenCollection(StubReads())("areas", null, CollectionScope.Area("a"))
-        assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(refused).kind)
-        val allowed = OpenCollection(StubReads())("projects", null, CollectionScope.Area("a"))
-        assertIs<RepositoryResult.Content<OpenedCollection>>(allowed)
     }
 
     @Test fun `a schema failure is passed on`() = runTest {
         val reads = StubReads(schemaAnswer = RepositoryResult.Failure(FailureKind.UNAUTHORIZED))
-        val opened = OpenCollection(reads)("projects", null, CollectionScope.Everything)
+        val opened = OpenCollection(reads)("projects", null)
         assertEquals(FailureKind.UNAUTHORIZED, assertIs<RepositoryResult.Failure>(opened).kind)
     }
 }
 
 class LoadItemDetailTest {
     private val related = listOf(
-        RelatedCollection("areas", "db-areas", 2, FilterTree("{}")),
+        RelatedCollection("companies", "db-companies", 2, FilterTree("{}")),
         RelatedCollection("gone", "db-gone", 5, null),
     )
 
     @Test fun `reads the item with the relations of the hinted database and the related collections`() = runTest {
         val reads = StubReads(relatedAnswer = RepositoryResult.Content(related))
         val detail = assertIs<RepositoryResult.Content<ItemDetail>>(LoadItemDetail(reads)("p1", "projects")).value
-        assertEquals(listOf(listOf("area", "company")), reads.expansions)
+        assertEquals(listOf(listOf("company", "people")), reads.expansions)
         assertEquals(projects, detail.database)
-        assertEquals(listOf("areas"), detail.related.map { it.database.key })
+        assertEquals(listOf("companies"), detail.related.map { it.database.key })
         assertEquals(2, detail.related.single().count)
         assertEquals("2026-10-16", detail.today)
     }
 
     @Test fun `an item of another database than the hint is read again with its own relations`() = runTest {
-        val reads = StubReads(itemAnswer = RepositoryResult.Content(item("a1", "db-areas")))
-        val detail = assertIs<RepositoryResult.Content<ItemDetail>>(LoadItemDetail(reads)("a1", "projects")).value
-        assertEquals(areas, detail.database)
-        assertEquals(listOf(listOf("area", "company"), emptyList()), reads.expansions)
+        val reads = StubReads(itemAnswer = RepositoryResult.Content(item("c1", "db-companies")))
+        val detail = assertIs<RepositoryResult.Content<ItemDetail>>(LoadItemDetail(reads)("c1", "projects")).value
+        assertEquals(companies, detail.database)
+        assertEquals(listOf(listOf("company", "people"), emptyList()), reads.expansions)
     }
 
     @Test fun `without a hint the item is read twice and with the right hint once`() = runTest {
         val reads = StubReads()
         LoadItemDetail(reads)("p1", null)
-        assertEquals(listOf(emptyList(), listOf("area", "company")), reads.expansions)
+        assertEquals(listOf(emptyList(), listOf("company", "people")), reads.expansions)
         val hinted = StubReads()
         LoadItemDetail(hinted)("p1", "projects")
         assertEquals(1, hinted.expansions.size)
@@ -193,32 +184,32 @@ class LoadItemDetailTest {
 }
 
 class FindRelationTargetsTest {
-    private val area = projects.property("area")!!
+    private val company = projects.property("company")!!
 
     @Test fun `searches the target database with its picker filter and names the items by title`() = runTest {
         val reads =
             StubReads(
                 queryAnswer = RepositoryResult.Content(
                     CollectionPage(
-                        listOf(item("a1", "db-areas", "Work")),
+                        listOf(item("c1", "db-companies", "Work")),
                         null
                     )
                 )
             )
-        val found = FindRelationTargets(reads)(area, "wo")
+        val found = FindRelationTargets(reads)(company, "wo")
         assertEquals(
-            listOf(RelationTarget("a1", "areas", "Work", null)),
+            listOf(RelationTarget("c1", "companies", "Work", null)),
             assertIs<RepositoryResult.Content<List<RelationTarget>>>(found).value
         )
         val (searched, query) = reads.queries.single()
-        assertEquals(areas, searched)
+        assertEquals(companies, searched)
         assertEquals("wo", query.search)
         assertEquals("""{"picker":true}""", query.quickFilter?.json)
     }
 
     @Test fun `a blank search asks for no text`() = runTest {
         val reads = StubReads()
-        FindRelationTargets(reads)(area, "   ")
+        FindRelationTargets(reads)(company, "   ")
         assertNull(reads.queries.single().second.search)
     }
 
@@ -236,7 +227,7 @@ class FindRelationTargetsTest {
             FailureKind.UNAUTHORIZED,
             assertIs<RepositoryResult.Failure>(
                 FindRelationTargets(noSchema)(
-                    area,
+                    company,
                     ""
                 )
             ).kind
@@ -246,7 +237,7 @@ class FindRelationTargetsTest {
             FailureKind.UNAVAILABLE,
             assertIs<RepositoryResult.Failure>(
                 FindRelationTargets(noQuery)(
-                    area,
+                    company,
                     ""
                 )
             ).kind
@@ -256,26 +247,25 @@ class FindRelationTargetsTest {
 
 class CollectionDatabaseTest {
     @Test fun `context relations are the belonging relations in their order and at most five`() {
-        assertEquals(listOf("area", "company"), projects.contextRelations().map { it.key })
+        assertEquals(listOf("company", "people"), projects.contextRelations().map { it.key })
         val many = database(
             "d",
             "d",
-            false,
             *CONTEXT_RELATIONS.map {
                 property(it, PropertyKind.RELATION, "x")
             }.plus(property("extra", PropertyKind.RELATION, "x")).toTypedArray(),
         )
         assertEquals(CONTEXT_RELATIONS.take(5), many.contextRelations().map { it.key })
-        val notRelation = database("n", "n", false, property("area", PropertyKind.TEXT))
+        val notRelation = database("n", "n", property("company", PropertyKind.TEXT))
         assertEquals(emptyList(), notRelation.contextRelations())
     }
 
     @Test fun `the schema finds databases by key and by id`() {
         assertEquals(projects, schema.database("projects"))
-        assertEquals(areas, schema.databaseById("db-areas"))
+        assertEquals(companies, schema.databaseById("db-companies"))
         assertNull(schema.database("nope"))
         assertNull(schema.databaseById("nope"))
-        assertNull(areas.property("missing"))
-        assertEquals("name", areas.title?.key)
+        assertNull(companies.property("missing"))
+        assertEquals("name", companies.title?.key)
     }
 }

@@ -33,9 +33,7 @@ enum AppDestination: Hashable {
     case invitations
     /// The new item sheet, opened for the day `YYYY-MM-DD`.
     case newItem(day: String)
-    /// One area, on the stack of `tab`: what is coming up in it and what is connected to it.
-    case area(areaId: String, tab: AppTab)
-    /// The page of notes of an item (a project, an area or a subpage), on the stack of `tab`. A subpage has the
+    /// The page of notes of an item (a project or a subpage), on the stack of `tab`. A subpage has the
     /// titles of the pages above it in `trail`, outermost first; `focusTitle` when it was just made from an empty
     /// block.
     case notes(itemId: String, tab: AppTab, trail: [String] = [], focusTitle: Bool = false)
@@ -43,7 +41,7 @@ enum AppDestination: Hashable {
     case inbox(tab: AppTab)
 
     // MARK: - Mail
-    /// A thread list on the stack of `tab`: all mail, an area, a project, a folder or a mailbox.
+    /// A thread list on the stack of `tab`: all mail, a project, a folder or a mailbox.
     case mailList(MailListStart, title: String?, tab: AppTab)
     case mailThread(threadId: String, tab: AppTab)
     case mailFolders(tab: AppTab)
@@ -75,7 +73,7 @@ extension AppDestination {
         switch self {
         case .profile, .details, .sleepPlan, .sleepNight, .sleepWakeSettings, .calendars, .invitations, .newItem,
              .mailCompose, .itemSheet: true
-        case .pending, .tasks, .collection, .collectionItem, .area, .notes, .inbox, .mailList,
+        case .pending, .tasks, .collection, .collectionItem, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .projectMailSignals, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false
         }

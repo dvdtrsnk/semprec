@@ -54,7 +54,7 @@ internal data class MailThreadChangesDto(
 )
 
 @Serializable
-internal data class MailFacetItemDto(val id: String, val count: Int = 0, val areaId: String? = null)
+internal data class MailFacetItemDto(val id: String, val count: Int = 0)
 
 @Serializable
 internal data class MailFacetGroupDto(val total: Int = 0, val items: List<MailFacetItemDto> = emptyList())
@@ -62,7 +62,6 @@ internal data class MailFacetGroupDto(val total: Int = 0, val items: List<MailFa
 @Serializable
 internal data class MailFacetsDto(
     val total: Int = 0,
-    val areas: MailFacetGroupDto = MailFacetGroupDto(),
     val projects: MailFacetGroupDto = MailFacetGroupDto(),
 )
 

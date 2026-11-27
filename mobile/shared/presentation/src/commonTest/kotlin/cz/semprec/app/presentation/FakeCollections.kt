@@ -25,7 +25,7 @@ import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SortSpec
 
 const val PROJECTS = "db-projects"
-const val AREAS = "db-areas"
+const val PEOPLE_DB = "db-people"
 const val FILES = "db-files"
 
 private fun property(
@@ -60,7 +60,7 @@ val projectsDb = CollectionDatabase(
         property("name", PropertyKind.TITLE, filterable = false),
         property("status", PropertyKind.SELECT, STATUS),
         property("date", PropertyKind.DATE),
-        property("area", PropertyKind.RELATION, target = AREAS),
+        property("people", PropertyKind.RELATION, target = PEOPLE_DB),
         property("company", PropertyKind.RELATION, target = "db-companies"),
         property("tasks", PropertyKind.RELATION, target = "db-tasks"),
         property("pinned", PropertyKind.CHECKBOX),
@@ -85,14 +85,13 @@ val projectsDb = CollectionDatabase(
     defaultSort = SortSpec(null, "createdAt", descending = true),
     dateLabels = cz.semprec.app.domain.DateLabels("Overdue", "No deadline"),
     collectionFilter = FilterTree("""{"type":"is_empty","property":"systemActive"}"""),
-    areaFilter = FilterTree("""{"type":"relation_contains","property":"area","value":{"areaValue":true}}"""),
     pickerFilter = FilterTree("""{"type":"is_empty","property":"x"}"""),
 )
 
-val areasDb = CollectionDatabase(
-    id = AREAS,
-    key = "areas",
-    name = "Areas",
+val peopleDb = CollectionDatabase(
+    id = PEOPLE_DB,
+    key = "people",
+    name = "People",
     icon = null,
     color = null,
     searchPlaceholder = null,
@@ -101,7 +100,6 @@ val areasDb = CollectionDatabase(
     defaultSort = SortSpec("name", null, descending = false),
     dateLabels = null,
     collectionFilter = null,
-    areaFilter = null,
     pickerFilter = null,
 )
 
@@ -132,18 +130,17 @@ val filesDb = CollectionDatabase(
     defaultSort = SortSpec(null, "createdAt", descending = true),
     dateLabels = null,
     collectionFilter = null,
-    areaFilter = null,
     pickerFilter = null,
 )
 
-val testSchema = CollectionSchema("2026-10-16", listOf(projectsDb, areasDb, filesDb))
+val testSchema = CollectionSchema("2026-10-16", listOf(projectsDb, peopleDb, filesDb))
 
 fun projectItem(
     id: String,
     title: String,
     status: String? = "inProgress",
     date: String? = null,
-    area: String? = null,
+    person: String? = null,
     extra: Map<String, FieldValue> = emptyMap(),
     origins: Map<String, cz.semprec.app.domain.ValueOrigin> = emptyMap(),
 ): CollectionItem {
@@ -151,7 +148,7 @@ fun projectItem(
         put("name", FieldValue.Text(title))
         status?.let { put("status", FieldValue.Choices(listOf(it))) }
         date?.let { put("date", FieldValue.Text(it)) }
-        area?.let { put("area", FieldValue.Targets(listOf(RelationTarget("area-1", "areas", it, "#5856D6")))) }
+        person?.let { put("people", FieldValue.Targets(listOf(RelationTarget("person-1", "people", it, "#5856D6")))) }
         putAll(extra)
     }
     return CollectionItem(id, PROJECTS, values, origins, "2026-10-01", "v-$id")

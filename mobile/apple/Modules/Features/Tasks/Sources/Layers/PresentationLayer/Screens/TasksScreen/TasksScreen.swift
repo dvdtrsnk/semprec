@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The Tasks screen: three lists (today, planned, all), a filter by area, project and flag, grouped rows that tick
+/// The Tasks screen: three lists (today, planned, all), a filter by project and flag, grouped rows that tick
 /// off, rename in place and open Podrobnosti, and a row to add a task. It is the one screen for every start: the
 /// model it is made over carries the tab and the filter.
 struct TasksScreen: View {
@@ -237,14 +237,6 @@ private extension TasksScreen {
     var chips: [Chip] {
         let state = viewModel.state
         var chips: [Chip] = []
-        if let areaId = state.areaId {
-            let option = state.areaOptions.first { $0.id == areaId }
-            chips.append(
-                Chip(id: "area", title: chipTitle("tasks.chip.area", option?.title ?? areaId), color: option?.color) {
-                    viewModel.send(.setArea(nil))
-                }
-            )
-        }
         if let projectId = state.projectId {
             let option = state.projectOptions.first { $0.id == projectId }
             chips.append(

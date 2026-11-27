@@ -55,9 +55,14 @@ class TasksViewModelTest : MainDispatcherTest() {
         assertEquals("Semprec iOS", late.projectTitle)
         assertFalse(late.overdue)
         assertEquals(3, state.openCount)
-        assertEquals(listOf("Práce", "Domácnost"), state.areaOptions.map { it.title })
-        assertEquals(listOf(2, 0), state.areaOptions.map { it.count })
-        assertEquals(3, state.areaAllCount)
+        assertEquals(
+            listOf(
+                TaskFilterOption("p-work", "Semprec iOS", "#007AFF", 2),
+                TaskFilterOption("p-home", "Koupelna", "#AF52DE", 0),
+            ),
+            state.projectOptions,
+        )
+        assertEquals(3, state.projectAllCount)
         vm.close()
     }
 
@@ -100,17 +105,11 @@ class TasksViewModelTest : MainDispatcherTest() {
     }
 
     @Test fun `a failed catalog or an unexpected exception is an error`() = runTest(dispatcher) {
-        fake.areaAnswer = RepositoryResult.Failure(FailureKind.UNAUTHORIZED)
-        val failed = tasks()
-        runCurrent()
-        assertEquals(FailureKind.UNAUTHORIZED, failed.state.value.failure)
-        assertTrue(fake.scopes.isEmpty())
-
-        fake.areaAnswer = RepositoryResult.Content(AREA_LIST)
         fake.projectAnswer = RepositoryResult.Failure(FailureKind.INVALID_DATA)
         val projects = tasks()
         runCurrent()
         assertEquals(FailureKind.INVALID_DATA, projects.state.value.failure)
+        assertTrue(fake.scopes.isEmpty())
 
         fake.projectAnswer = RepositoryResult.Content(listOf(WORK_PROJECT))
         fake.onTasks = { error("boom") }
@@ -118,7 +117,6 @@ class TasksViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(TasksPhase.ERROR, crashed.state.value.phase)
         assertEquals(FailureKind.UNAVAILABLE, crashed.state.value.failure)
-        failed.close()
         projects.close()
         crashed.close()
     }
@@ -148,7 +146,7 @@ class TasksViewModelTest : MainDispatcherTest() {
             aTask("b", project = WORK_PROJECT, status = TaskStatus.DONE),
             aTask("c", project = HOME_PROJECT),
         )
-        val vm = tasks(TasksStart(TasksTab.ALL, hideDone = true, areaId = "a-work"))
+        val vm = tasks(TasksStart(TasksTab.ALL, hideDone = true, projectId = "p-work"))
         runCurrent()
 
         val state = vm.state.value
@@ -156,6 +154,7 @@ class TasksViewModelTest : MainDispatcherTest() {
         assertEquals(listOf(TaskScope.ALL), fake.scopes)
         assertEquals(listOf("a"), vm.rows(TaskSectionKind.TODAY).map { it.id })
         assertEquals(1, state.openCount)
+        assertEquals("p-work", state.projectId)
         assertTrue(state.filterActive)
         vm.close()
     }
@@ -180,10 +179,10 @@ class TasksViewModelTest : MainDispatcherTest() {
         val vm = tasks()
         runCurrent()
 
-        vm.onAction(TasksAction.SetArea("a-home"))
-        assertEquals(listOf("b"), vm.rows(TaskSectionKind.TODAY).map { it.id })
-        assertEquals(listOf("Koupelna"), vm.state.value.projectOptions.map { it.title })
         vm.onAction(TasksAction.SetProject("p-home"))
+        assertEquals(listOf("b"), vm.rows(TaskSectionKind.TODAY).map { it.id })
+        assertEquals(listOf(1, 1), vm.state.value.projectOptions.map { it.count })
+        assertEquals(3, vm.state.value.projectAllCount)
         vm.onAction(TasksAction.SetFlaggedOnly(true))
         assertTrue(vm.state.value.matchesNothing)
         assertEquals(0, vm.state.value.openCount)
@@ -195,19 +194,18 @@ class TasksViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `another area drops the project of the first area but the same area keeps it`() = runTest(dispatcher) {
-        content(aTask("a", project = WORK_PROJECT))
+    @Test fun `every project stays offered and choosing none shows every task again`() = runTest(dispatcher) {
+        content(aTask("a", project = WORK_PROJECT), aTask("b", project = HOME_PROJECT))
         val vm = tasks()
         runCurrent()
 
         vm.onAction(TasksAction.SetProject("p-work"))
-        vm.onAction(TasksAction.SetArea("a-work"))
-        assertEquals("p-work", vm.state.value.projectId)
-        vm.onAction(TasksAction.SetArea("a-home"))
+        assertEquals(listOf("p-work", "p-home"), vm.state.value.projectOptions.map { it.id })
+        assertEquals(listOf("a"), vm.rows(TaskSectionKind.TODAY).map { it.id })
+        vm.onAction(TasksAction.SetProject(null))
         assertNull(vm.state.value.projectId)
-        assertEquals("a-home", vm.state.value.areaId)
-        vm.onAction(TasksAction.SetArea(null))
-        assertNull(vm.state.value.areaId)
+        assertFalse(vm.state.value.filterActive)
+        assertEquals(2, vm.rows(TaskSectionKind.TODAY).size)
         vm.close()
     }
 

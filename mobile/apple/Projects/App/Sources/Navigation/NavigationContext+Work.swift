@@ -10,8 +10,7 @@ extension NavigationContext {
         presentSheet(.details(ItemDetailsTarget(kind: kind, id: id, tab: tab)), from: tab)
     }
 
-    /// Pushes the Tasks screen, started as `start` says (today, the tasks of an area or of a project, the open tasks
-    /// of an area), onto the stack of `tab`.
+    /// Pushes the Tasks screen, started as `start` says (today or the tasks of a project), onto the stack of `tab`.
     func showTasks(_ start: TasksStart, in tab: AppTab) {
         push(.tasks(start, tab: tab), in: tab)
     }

@@ -18,7 +18,7 @@ interface InboxRepository {
     /** The Inbox item types a card that needs clarification can become. */
     suspend fun types(): RepositoryResult<List<InboxType>>
 
-    /** The choices of the item picker [source] (`project`, `area`, `page`, ...) of [card]. */
+    /** The choices of the item picker [source] (`project`, `page`, ...) of [card]. */
     suspend fun options(card: InboxCard, source: String): RepositoryResult<List<InboxChoice>>
 
     /** Saves [edit] on the card; answers the card as the server holds it afterwards. */

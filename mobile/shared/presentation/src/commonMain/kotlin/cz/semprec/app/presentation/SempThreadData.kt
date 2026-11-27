@@ -212,7 +212,6 @@ internal fun targetKindOf(databaseKey: String?): SempTargetKind = when (database
     "tasks" -> SempTargetKind.TASK
     "events" -> SempTargetKind.EVENT
     "projects" -> SempTargetKind.PROJECT
-    "areas" -> SempTargetKind.AREA
     "people" -> SempTargetKind.PERSON
     "companies" -> SempTargetKind.COMPANY
     "files" -> SempTargetKind.FILE

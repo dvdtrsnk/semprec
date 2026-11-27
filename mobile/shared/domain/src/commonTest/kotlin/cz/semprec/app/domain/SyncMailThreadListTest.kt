@@ -47,7 +47,7 @@ private class ScriptedThreadLists(
         return changes.removeFirst()
     }
 
-    override suspend fun facets(areaId: String?, projectId: String?) = error("not asked")
+    override suspend fun facets(projectId: String?) = error("not asked")
     override suspend fun summary() = error("not asked")
     override suspend fun thread(threadId: String) = error("not asked")
     override suspend fun setRead(threadId: String, read: Boolean) = error("not asked")
@@ -75,7 +75,7 @@ private class MemoryThreadLists : MailThreadListCache {
 }
 
 class SyncMailThreadListTest {
-    private val view = MailThreadQuery(box = MailBox.FLAGGED, areaId = "ar1")
+    private val view = MailThreadQuery(box = MailBox.FLAGGED, projectId = "p1")
 
     private fun complete(vararg threads: MailThreadSummary, cursor: String = "k1") =
         MailThreadList(threads.toList(), nextCursor = null, changesCursor = cursor, windowEnd = null)

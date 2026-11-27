@@ -45,7 +45,6 @@ struct CollectionAppearance {
     private var sempKind: SempTargetKind {
         switch databaseKey {
         case DatabaseKey.projects: .project
-        case DatabaseKey.areas: .area
         case DatabaseKey.people: .person
         case DatabaseKey.companies: .company
         case DatabaseKey.events: .event

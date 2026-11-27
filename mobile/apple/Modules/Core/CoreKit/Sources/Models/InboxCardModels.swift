@@ -3,7 +3,7 @@ import Foundation
 /// The kind of a card, which decides how it is presented.
 public enum InboxCardType: Equatable, Sendable {
 
-    case task, event, page, journal, project, area, company, person, health, file, recording, mcp
+    case task, event, page, journal, project, company, person, health, file, recording, mcp
     case invalid, clarify, transcriptEvent, speaker, approval, unsupported
 }
 

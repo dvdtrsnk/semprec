@@ -37,15 +37,10 @@ enum PreviewMail {
         reauthorization: [MailAccountNotice(id: "m1", name: "Gmail", since: "2026-10-20T09:12:00.000000Z")],
         facets: MailFacetsState(
             phase: .ready,
-            areaTotal: 9,
             projectTotal: 7,
-            areas: [
-                MailFilterOption(id: "a1", name: "Práce", color: "#5856D6", count: 5),
-                MailFilterOption(id: "a2", name: "Domácnost", color: "#FF9500", count: 4)
-            ],
             projects: [
-                MailFilterOption(id: "p1", name: "Web pro klienta", color: "#FF9500", count: 3, areaId: "a1"),
-                MailFilterOption(id: "p2", name: "Rekonstrukce koupelny", color: "#AF52DE", count: 2, areaId: "a2")
+                MailFilterOption(id: "p1", name: "Web pro klienta", color: "#FF9500", count: 3),
+                MailFilterOption(id: "p2", name: "Rekonstrukce koupelny", color: "#AF52DE", count: 2)
             ]
         )
     )

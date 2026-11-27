@@ -114,7 +114,7 @@ extension EntityRef {
 extension ProjectRef {
 
     init(_ ref: SharedSDK.ProjectRef) {
-        self.init(id: ref.id, title: ref.title, color: ref.color, areaId: ref.areaId, areaTitle: ref.areaTitle)
+        self.init(id: ref.id, title: ref.title, color: ref.color)
     }
 }
 

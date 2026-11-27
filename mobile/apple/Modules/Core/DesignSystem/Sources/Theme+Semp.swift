@@ -12,7 +12,6 @@ extension Theme.Colors {
         public static let inbox = Color(red: 1.0, green: 0.584, blue: 0.0)
         public static let journal = Color(red: 0.686, green: 0.322, blue: 0.871)
         public static let project = Color(red: 0.557, green: 0.267, blue: 0.678)
-        public static let area = Color(red: 0.345, green: 0.337, blue: 0.839)
         public static let person = Color(red: 0.188, green: 0.69, blue: 0.78)
         public static let company = Color(red: 0.369, green: 0.361, blue: 0.902)
         public static let file = Color(red: 0.388, green: 0.388, blue: 0.4)
@@ -31,4 +30,6 @@ extension Theme.Colors {
     public static let sempSuccess = Color.green
     /// A run, request or step that waits for the person.
     public static let sempWaiting = Color.orange
+    /// A run that the schedule of an agent started.
+    public static let sempTick = Color(red: 0.345, green: 0.337, blue: 0.839)
 }

@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The sheet that narrows the thread list to an area and a project. The counts are the number of threads each choice
+/// The sheet that narrows the thread list to a project. The counts are the number of threads each choice
 /// leaves; they come from the server together with the names.
 struct MailFilterSheet: View {
 
@@ -23,7 +23,7 @@ struct MailFilterSheet: View {
                 .toolbar {
                     PlainToolbarItem(placement: .cancellationAction) {
                         Button { send(.clearContext) } label: { Text("mail.filter.clear", bundle: .module) }
-                            .disabled(state.areaId == nil && state.projectId == nil)
+                            .disabled(state.projectId == nil)
                             .accessibilityIdentifier(MailIdentifiers.filterClear)
                     }
                     ToolbarItem(placement: .confirmationAction) {
@@ -51,7 +51,7 @@ private extension MailFilterSheet {
     }
 
     var hasOptions: Bool {
-        !state.facets.areas.isEmpty || !state.facets.projects.isEmpty
+        !state.facets.projects.isEmpty
     }
 
     var groups: some View {
@@ -60,25 +60,10 @@ private extension MailFilterSheet {
                 row(
                     key: "mail.filter.everything",
                     color: nil,
-                    count: state.facets.areaTotal,
-                    selected: state.areaId == nil
-                ) { send(.setArea(nil)) }
-                ForEach(state.facets.areas) { area in
-                    row(verbatim: area.name, color: area.color, count: area.count, selected: state.areaId == area.id) {
-                        send(.setArea(area.id))
-                    }
-                }
-            } header: {
-                Text("mail.filter.area", bundle: .module)
-            }
-            Section {
-                row(
-                    key: "mail.filter.everything",
-                    color: nil,
                     count: state.facets.projectTotal,
                     selected: state.projectId == nil
                 ) { send(.setProject(nil)) }
-                ForEach(visibleProjects) { project in
+                ForEach(state.facets.projects) { project in
                     row(
                         verbatim: project.name,
                         color: project.color,
@@ -93,13 +78,6 @@ private extension MailFilterSheet {
             }
         }
         .groupedListStyle()
-    }
-
-    /// The projects of the chosen area; the server counts them already narrowed, this keeps the list in step while a
-    /// new count is on its way.
-    var visibleProjects: [MailFilterOption] {
-        guard let areaId = state.areaId else { return state.facets.projects }
-        return state.facets.projects.filter { $0.areaId == areaId }
     }
 
     func row(

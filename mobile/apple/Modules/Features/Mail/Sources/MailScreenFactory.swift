@@ -7,8 +7,8 @@ import SwiftUI
 public enum MailScreenFactory {
 
     // MARK: - Screens
-    /// The thread list. Every start of it (all mail, an area, a project, a folder, a mailbox) is the same screen over a
-    /// model that was made for that start; `title` names the folder when the list is one.
+    /// The thread list. Every start of it (all mail, a project, a folder, a mailbox) is the same screen over a model
+    /// that was made for that start; `title` names the folder when the list is one.
     public static func threads(
         title: String?,
         makeModel: @escaping @MainActor () -> any MailThreadsScreenModel,

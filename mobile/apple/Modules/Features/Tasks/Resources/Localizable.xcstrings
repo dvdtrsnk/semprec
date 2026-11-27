@@ -598,13 +598,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Projekt určuje i oblast položky."
+            "value" : "Událost z projektu přebírá i firmu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The project also decides the area of the item."
+            "value" : "An event also takes its company from the project."
           }
         }
       }
@@ -1265,22 +1265,6 @@
         }
       }
     },
-    "tasks.chip.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblast: %@"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Area: %@"
-          }
-        }
-      }
-    },
     "tasks.chip.flagged" : {
       "localizations" : {
         "cs" : {
@@ -1377,22 +1361,6 @@
         }
       }
     },
-    "tasks.filter.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Area"
-          }
-        }
-      }
-    },
     "tasks.filter.clear" : {
       "localizations" : {
         "cs" : {
@@ -1462,13 +1430,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Filtry se kombinují. Úkol patří do oblasti přes svůj projekt."
+            "value" : "Filtry se kombinují."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Filters combine. A task belongs to an area through its project."
+            "value" : "Filters combine."
           }
         }
       }

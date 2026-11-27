@@ -40,7 +40,7 @@ internal fun MailThreadSummary.toItem() = MailThreadItem(
     hasSempDraft = hasSempDraft,
 )
 
-internal fun MailFacetOption.toOption() = MailFilterOption(id, name, color, count, areaId)
+internal fun MailFacetOption.toOption() = MailFilterOption(id, name, color, count)
 
 internal fun MailListBox.toDomain(): MailBox = when (this) {
     MailListBox.INBOX -> MailBox.INBOX
@@ -53,7 +53,6 @@ internal fun MailThreadsState.toQuery(cursor: String?) = MailThreadQuery(
     box = if (filter == MailListFilter.FLAGGED) MailBox.FLAGGED else box.toDomain(),
     mailboxId = mailboxId,
     folderId = folderId,
-    areaId = areaId,
     projectId = projectId,
     unreadOnly = filter == MailListFilter.UNREAD,
     search = search,
