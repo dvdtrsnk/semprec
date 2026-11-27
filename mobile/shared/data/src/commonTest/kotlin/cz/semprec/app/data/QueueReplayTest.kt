@@ -48,10 +48,14 @@ private class FakeSender(private var account: String?) : QueueSender {
 
     override fun account(): String? = account
 
+    override fun session(): StoredSession? = account?.let { QUEUE_SESSION }
+
     override suspend fun send(request: ApiRequest): ApiResponse {
         sent += request
         return answer(request).also { if (it is ApiResponse.Failure && it.status == 401) account = null }
     }
+
+    override suspend fun upload(path: String, body: RawBody): ApiResponse = error("No queued write uploads")
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -206,7 +210,7 @@ class QueueReplayTest {
         val made = Json.parseToJsonElement(created.body).jsonObject.getValue("id").jsonPrimitive.content
         layer.write(ApiRequest(HttpMethod.Patch, "/api/items/$made", body = """{"properties":{"name":"B"}}"""))
         layer.write(ApiRequest(HttpMethod.Put, "/api/items/p1/relations/tasks/$made"))
-        layer.write(ApiRequest(HttpMethod.Post, "/api/inbox/items", body = """{"text":"$made"}"""))
+        layer.write(ApiRequest(HttpMethod.Patch, "/api/items/p1", body = """{"properties":{"ref":"$made"}}"""))
         val sender = FakeSender(account).apply {
             answer = { request ->
                 if (request.path == "/api/databases/d1/items") success("""{"id":"s1"}""", 201) else success()
@@ -215,10 +219,10 @@ class QueueReplayTest {
         layer.writes.attach(sender)
         runCurrent()
         assertEquals(
-            listOf("/api/databases/d1/items", "/api/items/s1", "/api/items/p1/relations/tasks/s1", "/api/inbox/items"),
+            listOf("/api/databases/d1/items", "/api/items/s1", "/api/items/p1/relations/tasks/s1", "/api/items/p1"),
             sender.sent.map { it.path },
         )
-        assertEquals("""{"text":"s1"}""", sender.sent.last().body)
+        assertEquals("""{"properties":{"ref":"s1"}}""", sender.sent.last().body)
         assertEquals(mapOf(made to "s1"), layer.queued().ids)
     }
 

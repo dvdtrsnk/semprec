@@ -19,9 +19,9 @@ import io.ktor.http.HttpMethod
  * With [offline], a read of the offline set ([OfflineRoutes]) is answered by that layer, from what the device keeps
  * or from the server (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md), and a write of a queued
  * route ([QueuedRoute]) is sent or queued by it (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-
- * connection.md); the window's [AuthenticatedApi] sends what the layer replays. Every other request still goes to the
- * server, and the layer learns from its outcome whether the server was reached and whether a write may have changed
- * what it keeps.
+ * connection.md); the window's [AuthenticatedApi] sends what the layer replays, and the Inbox captures its outbox keeps
+ * ([CaptureOutbox]). Every other request still goes to the server, and the layer learns from its outcome whether the
+ * server was reached and whether a write may have changed what it keeps.
  */
 class AuthenticatedApi(
     private val client: ApiClient,
@@ -31,15 +31,24 @@ class AuthenticatedApi(
     private val onSessionRejected: suspend () -> Unit,
 ) {
     /**
-     * Sends the writes the offline layer queued, with the session signed in when each goes out; a `401` signs the
-     * window out, as for [send].
+     * Sends what the offline layer keeps (the queued writes, the note pages and the Inbox captures), with the session
+     * signed in when each request goes out; a `401` signs the window out, as for [send].
      */
     private val queueSender = object : QueueSender {
         override fun account(): String? = storage.load()?.let(::accountKey)
 
+        override fun session(): StoredSession? = storage.load()
+
         override suspend fun send(request: ApiRequest): ApiResponse {
             val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
             val response = transmit(session, request)
+            if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+            return response
+        }
+
+        override suspend fun upload(path: String, body: RawBody): ApiResponse {
+            val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
+            val response = client.upload(session.serverUrl, path, session.token, body, emptyList())
             if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
             return response
         }

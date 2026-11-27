@@ -104,7 +104,6 @@ internal object QueuedWriteProjection {
             QueuedRoute.SET_TASK_RECURRENCE,
             QueuedRoute.CLEAR_TASK_RECURRENCE,
             QueuedRoute.HOST_EVENT,
-            QueuedRoute.INBOX_CAPTURE,
             QueuedRoute.PERIOD_PAGE,
             -> element
         }

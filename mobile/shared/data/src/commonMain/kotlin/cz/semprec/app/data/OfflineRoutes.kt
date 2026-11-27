@@ -59,7 +59,9 @@ internal object OfflineRoutes {
  * (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-connection.md). [template] names the route
  * without its ids, as a recorded failure shows it; [createsId] tells that the write creates something whose id the
  * device makes up until the server answers. Every other write goes to the server as before, and so does
- * `POST /api/calendar/items/:id/duplicate`, which the server cannot recognize when it is sent twice.
+ * `POST /api/calendar/items/:id/duplicate`, which the server cannot recognize when it is sent twice. An Inbox capture
+ * (`POST /api/inbox/items`) is not queued here: it waits in the [CaptureOutbox]
+ * (docs/adr/2026-11-27-inbox-captures-wait-in-a-device-outbox-that-outlives-the-session.md).
  */
 internal enum class QueuedRoute(
     val method: HttpMethod,
@@ -96,7 +98,6 @@ internal enum class QueuedRoute(
         "/api/calendar/invitations/[^/]+/respond",
         "POST /api/calendar/invitations/:id/respond",
     ),
-    INBOX_CAPTURE(HttpMethod.Post, "/api/inbox/items", "POST /api/inbox/items"),
     PERIOD_PAGE(
         HttpMethod.Put,
         "/api/journal/periods/[^/]+/[^/]+/doc",

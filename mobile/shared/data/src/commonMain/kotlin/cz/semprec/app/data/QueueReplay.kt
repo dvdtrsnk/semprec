@@ -35,11 +35,18 @@ private const val CONFLICT_STATUS = 409
 private const val NO_CONTENT_STATUS = 204
 private const val IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-/** Sends a queued write with the session signed in now; [account] names that session, `null` when there is none. */
+/**
+ * Sends what the device keeps with the session signed in now: [session] is that session and [account] names it, both
+ * `null` when there is none; [send] sends a request and [upload] sends [RawBody] as the raw body of a `POST`.
+ */
 internal interface QueueSender {
     fun account(): String?
 
+    fun session(): StoredSession?
+
     suspend fun send(request: ApiRequest): ApiResponse
+
+    suspend fun upload(path: String, body: RawBody): ApiResponse
 }
 
 /** How many writes wait for the server and which the server refused, for the account signed in. */

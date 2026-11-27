@@ -323,7 +323,6 @@ class QueuedWriteProjectionTest {
             pending(QueuedRoute.SET_TASK_RECURRENCE, HttpMethod.Put, "/api/tasks/i1/recurrence", """{"preset":"a"}"""),
             pending(QueuedRoute.CLEAR_TASK_RECURRENCE, HttpMethod.Delete, "/api/tasks/i1/recurrence"),
             pending(QueuedRoute.HOST_EVENT, HttpMethod.Put, "/api/tasks/i1/host-events/e1"),
-            pending(QueuedRoute.INBOX_CAPTURE, HttpMethod.Post, "/api/inbox/items", """{"text":"x"}"""),
             pending(QueuedRoute.PERIOD_PAGE, HttpMethod.Put, "/api/journal/periods/day/2026-11-23/doc", newId = "n2"),
         ).forEach { write -> assertSame(keptItem, project(itemRead, keptItem, write)) }
     }

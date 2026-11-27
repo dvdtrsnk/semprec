@@ -10,7 +10,6 @@ import cz.semprec.app.domain.CalendarEntryKind
 import cz.semprec.app.domain.CalendarRepeat
 import cz.semprec.app.domain.CalendarSchedule
 import cz.semprec.app.domain.ClockTime
-import cz.semprec.app.domain.InboxCapture
 import cz.semprec.app.domain.InvitationAnswer
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodType
@@ -180,12 +179,5 @@ class QueuedWritesRepositoryTest {
         val journal = HttpJournalRepository(api)
         val period = JournalPeriod(JournalPeriodType.DAY, "2026-11-23")
         assertEquals(RepositoryResult.Content("made-1"), journal.ensurePage(period))
-    }
-
-    @Test fun `a typed capture into the Inbox answers as done`() = runTest {
-        val api = api()
-        reachable = false
-        val capture = InboxCapture(text = "Buy milk", day = OFFLINE_DAY, time = "10:00", typeId = null, file = null)
-        assertEquals(RepositoryResult.Content(Unit), HttpInboxCaptureRepository(api).capture(capture))
     }
 }

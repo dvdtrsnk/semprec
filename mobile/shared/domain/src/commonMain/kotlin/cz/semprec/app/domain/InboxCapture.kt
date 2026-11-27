@@ -28,6 +28,9 @@ interface InboxCaptureRepository {
     /** The active Inbox item types, in the order the server lists them. */
     suspend fun types(): RepositoryResult<List<InboxType>>
 
-    /** Uploads the file of [capture], if any, and creates the Inbox item with it in one request. */
+    /**
+     * Captures [capture] into the Inbox: its file, if any, is uploaded and the item is created with it in one request.
+     * A device that keeps data succeeds once the capture is kept on it and sends it in the background.
+     */
     suspend fun capture(capture: InboxCapture): RepositoryResult<Unit>
 }
