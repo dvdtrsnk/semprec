@@ -4,6 +4,8 @@ enum AppIdentifiers {
     static let overviewTab = "tab.overview"
     static let calendarTab = "tab.calendar"
     static let journalTab = "tab.journal"
+    /// Semp's button in the tab bar, which the docked Semp bubble covers; Apple-only until Android has it.
+    static let sempTab = "tab.semp"
     /// The gate that shows the wait, the sign-in form, the retry or the app; Apple-only until Android has one.
     static let sessionGate = "app.sessionGate"
     /// The notice that stands in for a screen a later wave builds.

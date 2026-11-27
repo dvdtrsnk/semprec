@@ -18,6 +18,8 @@ struct AppScene: View {
     @StateObject private var composition: AppComposition
     @State private var rootNavigator = Navigator(configuration: .init())
     @State private var selectedTab: AppTab
+    @Environment(\.horizontalSizeClass)
+    private var horizontalSizeClass
 
     // MARK: - Init
     /// `composition` runs once per scene, when SwiftUI creates the state object. The window opens on `selectedTab`.
@@ -39,7 +41,12 @@ struct AppScene: View {
         let rootNavigator = rootNavigator
         let selectedTab = $selectedTab
         SessionGate(viewModel: SessionViewModel(model: composition.models.makeSession())) {
-            Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
+            Self.tabs(
+                composition,
+                rootNavigator: rootNavigator,
+                selectedTab: selectedTab,
+                showsSempTab: showsSempTab
+            )
                 .modifier(LiveUpdates(models: composition.models))
                 .modifier(SleepAlarmUpkeep(notifications: composition.notifications))
         } signedOut: {
@@ -53,28 +60,46 @@ struct AppScene: View {
 // MARK: - Subviews
 private extension AppScene {
 
+    /// Whether the tab bar shows Semp's button: on an iPhone-sized window only, where the tab bar is at the bottom.
+    var showsSempTab: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     static func tabs(
         _ composition: AppComposition,
         rootNavigator: Navigator,
-        selectedTab: Binding<AppTab>
+        selectedTab: Binding<AppTab>,
+        showsSempTab: Bool
     ) -> some View {
         // The banner sits above the tab view rather than in a top safe-area inset of it: iOS lays the tabs' navigation
         // bars out under such an inset, so the banner covered their buttons.
         VStack(spacing: 0) {
             SyncStatusBanner(viewModel: SyncStatusViewModel(model: composition.models.makeSyncStatus()))
-            TabView(selection: selectedTab) {
-                Tab("tab.overview", systemImage: "list.bullet.rectangle", value: AppTab.overview) {
+            TabView(selection: SceneTab.selection(selectedTab, chat: composition.sempChat)) {
+                Tab("tab.overview", systemImage: "list.bullet.rectangle", value: SceneTab.area(.overview)) {
                     Self.stack(.overview, composition) { OverviewTab.root(composition) }
                 }
                 .accessibilityIdentifier(AppIdentifiers.overviewTab)
-                Tab("tab.calendar", systemImage: "calendar", value: AppTab.calendar) {
+                Tab("tab.calendar", systemImage: "calendar", value: SceneTab.area(.calendar)) {
                     Self.stack(.calendar, composition) { CalendarTab.root(composition) }
                 }
                 .accessibilityIdentifier(AppIdentifiers.calendarTab)
-                Tab("tab.journal", systemImage: "book", value: AppTab.journal) {
+                Tab("tab.journal", systemImage: "book", value: SceneTab.area(.journal)) {
                     Self.stack(.journal, composition) { JournalTab.root(composition) }
                 }
                 .accessibilityIdentifier(AppIdentifiers.journalTab)
+                // Semp's button, which the system draws apart from the tabs at the trailing end of an iPhone's tab
+                // bar. It opens no page: the Semp bubble docks over it (`SempDock`) and takes its touches. Where the
+                // tab bar is a sidebar or a top bar (iPad, macOS) the bubble floats and the button is not shown.
+                Tab("tab.semp", systemImage: "sparkles", value: SceneTab.semp, role: SceneTab.sempRole) {
+                    Color.clear
+                }
+                .hidden(!showsSempTab)
+                .accessibilityIdentifier(AppIdentifiers.sempTab)
             }
             .adaptiveTabNavigation()
             // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view

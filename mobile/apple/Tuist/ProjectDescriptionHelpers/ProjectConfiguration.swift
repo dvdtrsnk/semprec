@@ -8,7 +8,7 @@ public enum ProjectConfiguration {
     public static let frameworkName = "SharedSDK"
     public static let versionName = "0.1.0"
     public static let versionCode = "1"
-    public static let iosMinimum = "26.0"
+    public static let iosMinimum = "27.0"
     public static let macosMinimum = "26.0"
     /// The server the sign-in form offers until the person types another one: the deployment this build is made for.
     /// It reaches the app as `SemprecDefaultServer` in Info.plist.

@@ -43,9 +43,11 @@ finding of this task.
    SwiftUI` (never `import UIKit`), and with its doc comment naming what SwiftUI
    lacks; `mobile/docs/architecture.md` lists every such file. Today they are
    the calendar's `CalendarDragSource.swift` (a drag whose preview changes while
-   it is under way, which `draggable` cannot) and `CalendarPinchSource.swift`
+   it is under way, which `draggable` cannot), `CalendarPinchSource.swift`
    (a gesture that begins only with two touches, which no SwiftUI gesture
-   waits for). Any other UIKit use, or one of these files grown beyond what its
+   waits for), and DesignSystem's `PresentationLayer.swift` (which presentation
+   a drop target is on and which one is on top at a point, which SwiftUI does
+   not say). Any other UIKit use, or one of these files grown beyond what its
    comment names, is this finding.
 7. A `Button` that is a whole `List` row without `.listRowButton()` — low: on
    macOS it stays a small bordered push button that reacts only on its

@@ -66,4 +66,39 @@ final class SmokeFlowTests: XCTestCase {
         XCTAssertTrue(screen.waitForExistence(timeout: 10), "The alarm tool must open")
         XCTAssertTrue(app.descendants(matching: .any)[AppIdentifiers.debugAlarmPermission].firstMatch.exists)
     }
+
+    /// Semp's button sits apart from the tabs at the trailing end of the tab bar, with the bubble docked over it: a
+    /// tap opens the chat, and the bubble dragged out and let go where nothing can be given to Semp springs back into
+    /// the button. It needs a signed-in session, so it is skipped on a fresh simulator.
+    @MainActor
+    func testSempsButtonInTheTabBarOpensTheChatAndTheBubbleReturnsToIt() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let sempTab = app.descendants(matching: .any)[AppIdentifiers.sempTab].firstMatch
+        try XCTSkipUnless(sempTab.waitForExistence(timeout: 15), "The app is signed out, so it has no tab bar")
+        let overviewTab = app.descendants(matching: .any)[AppIdentifiers.overviewTab].firstMatch
+        XCTAssertGreaterThan(sempTab.frame.minX, overviewTab.frame.maxX, "Semp's button must follow the tabs")
+
+        let bubble = app.descendants(matching: .any)[SempIdentifiers.bubble].firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "The bubble must be docked over Semp's button")
+        XCTAssertLessThan(Self.distance(bubble.frame, sempTab.frame), 4, "The bubble must sit on Semp's button")
+
+        let middle = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: middle, withVelocity: .slow, thenHoldForDuration: 0.1)
+        let returned = expectation(for: NSPredicate { _, _ in
+            Self.distance(bubble.frame, sempTab.frame) < 4
+        }, evaluatedWith: nil)
+        wait(for: [returned], timeout: 5)
+
+        sempTab.tap()
+        let grabber = app.descendants(matching: .any)[AppIdentifiers.sempGrabber].firstMatch
+        XCTAssertTrue(grabber.waitForExistence(timeout: 10), "A tap on Semp's button must open the chat")
+    }
+
+    // MARK: - Helpers
+    /// How far apart the middles of two frames are, in points.
+    private static func distance(_ first: CGRect, _ second: CGRect) -> CGFloat {
+        hypot(first.midX - second.midX, first.midY - second.midY)
+    }
 }
