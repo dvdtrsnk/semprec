@@ -74,7 +74,7 @@ If a step seems to require breaking one of these, stop and ask the user.
    `git rev-parse --absolute-git-dir` is your worktree's git directory. The
    payloads of §4 go into `<git-dir>/finish-mirror/`.
 3. `bb status --json`: note whether `.thread.environment` is rooted in your
-   worktree, which is what a bb-managed environment looks like (§7).
+   worktree, which is what a bb-managed environment looks like (§8).
 4. Stop and tell the user if a rebase or merge is already in progress
    (`rebase-merge` or `MERGE_HEAD` in your git directory).
 5. `access_hub_context`: the `dvdtrsnk` GitHub authorization must be listed
