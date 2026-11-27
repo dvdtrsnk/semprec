@@ -69,29 +69,35 @@ final class SmokeFlowTests: XCTestCase {
 
     /// Semp's button sits apart from the tabs at the trailing end of the tab bar, with the bubble docked over it: a
     /// tap opens the chat, and the bubble dragged out and let go where nothing can be given to Semp springs back into
-    /// the button. It needs a signed-in session, so it is skipped on a fresh simulator.
+    /// the button. The system's tab buttons expose no identifier to XCUITest, so the bubble is found by its own and
+    /// placed against the tab bar's frame. It needs a signed-in session, so it is skipped on a fresh simulator.
     @MainActor
     func testSempsButtonInTheTabBarOpensTheChatAndTheBubbleReturnsToIt() throws {
         let app = XCUIApplication()
         app.launch()
-        let sempTab = app.descendants(matching: .any)[AppIdentifiers.sempTab].firstMatch
-        try XCTSkipUnless(sempTab.waitForExistence(timeout: 15), "The app is signed out, so it has no tab bar")
-        let overviewTab = app.descendants(matching: .any)[AppIdentifiers.overviewTab].firstMatch
-        XCTAssertGreaterThan(sempTab.frame.minX, overviewTab.frame.maxX, "Semp's button must follow the tabs")
+        let profile = app.descendants(matching: .any)[OverviewIdentifiers.profile].firstMatch
+        try XCTSkipUnless(profile.waitForExistence(timeout: 15), "The app is signed out, so it has no tab bar")
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 10), "The signed-in app must show its tab bar")
 
         let bubble = app.descendants(matching: .any)[SempIdentifiers.bubble].firstMatch
         XCTAssertTrue(bubble.waitForExistence(timeout: 10), "The bubble must be docked over Semp's button")
-        XCTAssertLessThan(Self.distance(bubble.frame, sempTab.frame), 4, "The bubble must sit on Semp's button")
+        let docked = bubble.frame
+        XCTAssertTrue(
+            tabBar.frame.contains(CGPoint(x: docked.midX, y: docked.midY)),
+            "The docked bubble must sit in the tab bar, not float above the content"
+        )
+        XCTAssertGreaterThan(docked.midX, tabBar.frame.midX, "Semp's button must be at the trailing end of the tab bar")
 
         let middle = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
         bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.05, thenDragTo: middle, withVelocity: .slow, thenHoldForDuration: 0.1)
         let returned = expectation(for: NSPredicate { _, _ in
-            Self.distance(bubble.frame, sempTab.frame) < 4
+            Self.distance(bubble.frame, docked) < 4
         }, evaluatedWith: nil)
         wait(for: [returned], timeout: 5)
 
-        sempTab.tap()
+        bubble.tap()
         let grabber = app.descendants(matching: .any)[AppIdentifiers.sempGrabber].firstMatch
         XCTAssertTrue(grabber.waitForExistence(timeout: 10), "A tap on Semp's button must open the chat")
     }
