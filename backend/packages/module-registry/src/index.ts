@@ -1,7 +1,5 @@
 export { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalog, type ModuleCatalogs } from "./catalog.js";
 export type {
-  AreaFilterAreaValue,
-  AreaFilterTemplate,
   ModuleManifest,
   ModuleDatabaseDescriptor,
   ModuleRelatedOrderDescriptor,

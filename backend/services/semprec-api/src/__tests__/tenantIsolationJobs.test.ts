@@ -1087,9 +1087,9 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     expectedError: /Value link rule is unavailable/,
     async seed(tenant) {
-      const areasId = await moduleDatabaseId(tenant, "areas");
+      const companiesId = await moduleDatabaseId(tenant, "companies");
       const source = await inTenant(tenant, () =>
-        chokePoint.createItem({ databaseId: areasId, properties: { name: "Link source" } }),
+        chokePoint.createItem({ databaseId: companiesId, properties: { name: "Link source" } }),
       );
       return { ruleKey: "unconfigured.fixture", sourceItemId: source.id, hop: 1 };
     },
@@ -1934,11 +1934,14 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const projectsId = await moduleDatabaseId(tenant, "projects");
-      const tasksId = await moduleDatabaseId(tenant, "tasks");
+      const eventsId = await moduleDatabaseId(tenant, "events");
       const projectItemId = await inTenant(tenant, async () => {
         const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Project" } });
-        const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Project task" } });
-        await relate(tasksId, "project", task.id, project.id);
+        const event = await chokePoint.createItem({
+          databaseId: eventsId,
+          properties: { name: "Project event", date: "2026-10-16" },
+        });
+        await relate(eventsId, "project", event.id, project.id);
         return project.id;
       });
       // Started after the fixture's own writes, so only the job under test is recorded.
@@ -1947,22 +1950,25 @@ const cases: Record<string, TaskCase> = {
     },
     async expectDone(tenant, payload) {
       const announced = stopRecordingInvalidations();
-      // `Tasks.project` is the inverse side: the project is `item_a`, its task `item_b`.
-      const tasks = await rows<{ id: string; database_id: string; updated_at: Date }>(
+      // Only an Event reads a value through its project.
+      const events = await rows<{ id: string; database_id: string; updated_at: Date }>(
         tenant,
-        "SELECT i.id, i.database_id, i.updated_at FROM item_relations r JOIN items i ON i.id = r.item_b WHERE r.item_a = $1",
+        `SELECT i.id, i.database_id, i.updated_at FROM item_relations r
+         JOIN items i ON i.id IN (r.item_a, r.item_b) AND i.id <> $1
+         JOIN databases d ON d.id = i.database_id AND d.owner_module_id = 'events'
+         WHERE $1 IN (r.item_a, r.item_b)`,
         [str(payload, "projectItemId")],
       );
-      expect(tasks).toHaveLength(1);
+      expect(events).toHaveLength(1);
       expect(announced).toEqual(
-        tasks.map((task) => ({
+        events.map((event) => ({
           tenantId: tenant.tenantId,
           event: {
             scope: "item",
-            databaseId: task.database_id,
-            itemId: task.id,
+            databaseId: event.database_id,
+            itemId: event.id,
             op: "update",
-            updatedAt: task.updated_at.toISOString(),
+            updatedAt: event.updated_at.toISOString(),
           },
         })),
       );

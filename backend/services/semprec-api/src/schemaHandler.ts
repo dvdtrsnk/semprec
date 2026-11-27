@@ -3,7 +3,6 @@ import {
   withTransaction,
   ChokePointError,
   generateSchemaProjection,
-  resolveDatabaseAreaFilters,
   toManifestLocale,
   type SchemaDatabaseProjection,
 } from "@semprec/data";
@@ -78,30 +77,17 @@ export function createSchemaRequestListener(
 
         const locale = toManifestLocale(identity.user.locale);
 
-        // Each system database's declared area filter template, so a client substitutes an area id
-        // instead of assembling the rule. A template is published only once the filter compiler
-        // accepted it against this tenant's schema in the projection's transaction; a refused one
-        // fails the request (500) rather than being published or dropped.
-        const { projection, declarations, areaFilters } = await withTransaction(pool, async (client) => {
-          const declared = await moduleRegistry.getDatabases();
-          return {
-            projection: await generateSchemaProjection(client, moduleRegistry, { locale }),
-            declarations: declared,
-            areaFilters: await resolveDatabaseAreaFilters(client, declared),
-          };
-        });
+        const declarations = await moduleRegistry.getDatabases();
+        const projection = await withTransaction(pool, (client) =>
+          generateSchemaProjection(client, moduleRegistry, { locale }),
+        );
         // Checked against the properties this response publishes; a refused declaration fails the request (500).
         const facetBarProperties = resolveFacetBarProperties(projection.databases, declarations);
         sendJson(res, 200, {
           ...projection,
           databases: projection.databases.map((db) => {
-            const areaFilter = db.key === null ? undefined : areaFilters.get(db.key);
             const facetBarProperty = db.key === null ? undefined : facetBarProperties.get(db.key);
-            return {
-              ...db,
-              ...(areaFilter === undefined ? {} : { areaFilter }),
-              ...(facetBarProperty === undefined ? {} : { facetBarProperty }),
-            };
+            return { ...db, ...(facetBarProperty === undefined ? {} : { facetBarProperty }) };
           }),
         });
       });

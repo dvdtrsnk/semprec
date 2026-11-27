@@ -1,4 +1,4 @@
-// A project's `area`/`company` edge change alters what its items show (derived through the project) without writing
+// A project's `company` edge change alters what its Events show (derived through the project) without writing
 // them. This hook only queues `derivedValuesInvalidate` inside the edge write's transaction, so the job commits or
 // rolls back with the edge.
 import { z } from "zod";
@@ -10,11 +10,11 @@ import { tenantLane } from "../tenancy/tenantLane.js";
 
 const DERIVED_VALUES_INVALIDATE_LANE = "derived-values-invalidate";
 
-const PROJECT_VALUE_PROPERTY_KEYS = ["area", "company"];
+const PROJECT_VALUE_PROPERTY_KEYS = ["company"];
 
 const PROJECT_SIDE_ROW = z.object({ project_is_a: z.boolean() });
 
-/** `null` for any relation other than the system Projects `area`/`company`. */
+/** `null` for any relation other than the system Projects `company`. */
 async function projectSideOf(client: Queryable, relationDefinitionId: string): Promise<"a" | "b" | null> {
   const { rows } = await client.query<Record<string, unknown>>(
     `SELECT rd.property_id_a = p.id AS project_is_a
@@ -31,8 +31,8 @@ async function projectSideOf(client: Queryable, relationDefinitionId: string): P
 }
 
 /**
- * Keyed by project so changes before the job starts collapse into one job. Metadata-only updates leave the area and
- * company unchanged and queue nothing.
+ * Keyed by project so changes before the job starts collapse into one job. Metadata-only updates leave the company
+ * unchanged and queue nothing.
  */
 export const projectDerivedValueEdgeChangedHook: RelationEdgeChangedHook = async ({
   client,

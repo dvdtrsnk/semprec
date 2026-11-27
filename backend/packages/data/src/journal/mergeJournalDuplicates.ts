@@ -49,7 +49,7 @@ function withoutRepeatedHeading(duplicateMarkdown: string, survivorMarkdown: str
  * unchanged.
  *
  * System-owned `events` is not moved but re-derived from the merged page by `syncJournalEventLinks`. Edges the
- * choke point refuses for the survivor (trashed other item, derived `area`) stay on the duplicate and are reported
+ * choke point refuses for the survivor (a trashed other item) stay on the duplicate and are reported
  * in `refusedEdges` and logged after commit with ids, code and `field` only, never names or content.
  */
 export async function mergeJournalDuplicates(

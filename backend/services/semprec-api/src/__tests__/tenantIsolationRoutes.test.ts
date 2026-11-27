@@ -1696,18 +1696,12 @@ const mailThreadChangesBody = z.object({
 });
 
 const mailThreadFacetsBody = z.object({
-  areas: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
-  projects: z.object({
-    total: z.number(),
-    items: z.array(z.object({ id: z.string(), areaId: z.string().nullable(), count: z.number() })),
-  }),
+  total: z.number(),
+  projects: z.object({ total: z.number(), items: z.array(z.object({ id: z.string(), count: z.number() })) }),
 });
 
-/**
- * The thread through the real reconcile path; the area, the project and both relations through the
- * choke point.
- */
-async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaId: string; projectId: string }> {
+/** The thread through the real reconcile path; the project and its relation through the choke point. */
+async function mailThreadInProject(tenant: TenantFixture): Promise<{ projectId: string }> {
   const threadId = await seedMailThread(
     tenant,
     `<${randomUUID()}@example.test>`,
@@ -1724,7 +1718,6 @@ async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaI
   });
   const projectsDatabaseId = await databaseIdFor(tenant.tenantId, "projects");
   const threadsDatabaseId = await databaseIdFor(tenant.tenantId, "threads");
-  const areasDatabaseId = await databaseIdFor(tenant.tenantId, "areas");
   return runInTenant(tenant.tenantId, async () => {
     const chokePoint = createChokePoint(pool);
     const relationPropertyId = async (databaseId: string, key: string): Promise<string> => {
@@ -1732,22 +1725,16 @@ async function mailThreadInProjectOfArea(tenant: TenantFixture): Promise<{ areaI
       if (!property) throw new Error(`no '${key}' property in database ${databaseId}`);
       return property.id;
     };
-    const area = await chokePoint.createItem({ databaseId: areasDatabaseId, properties: { name: "Facets area" } });
     const project = await chokePoint.createItem({
       databaseId: projectsDatabaseId,
       properties: { name: "Facets project" },
-    });
-    await chokePoint.createRelation({
-      relationPropertyId: await relationPropertyId(projectsDatabaseId, "area"),
-      callerItemId: project.id,
-      targetItemId: area.id,
     });
     await chokePoint.createRelation({
       relationPropertyId: await relationPropertyId(threadsDatabaseId, "project"),
       callerItemId: threadItemId,
       targetItemId: project.id,
     });
-    return { areaId: area.id, projectId: project.id };
+    return { projectId: project.id };
   });
 }
 
@@ -3160,27 +3147,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const ofAStates = (await mailOauthStates(a)).filter((row) => !statesOfA.some((known) => known.id === row.id));
     expect(ofAStates.map((row) => [row.user_id, row.used_at])).toEqual([[a.member.userId, null]]);
   },
-  // A's ids select for B what random ids select: no thread. The thread detail's pattern matches
-  // this path too, so the facets body shows which route answered.
+  // The thread detail's pattern matches this path too, so the facets body shows which route answered.
   "mail thread facets": async () => {
-    const ofA = await mailThreadInProjectOfArea(a);
-    const ofB = await mailThreadInProjectOfArea(b);
+    const ofA = await mailThreadInProject(a);
+    const ofB = await mailThreadInProject(b);
     const facets: Request = GET("/api/mail/threads/facets");
-    const own = await expectExcludesA(b.member, facets, [ofB.areaId, ofB.projectId]);
-    expectNoneOf(own.text, [ofA.areaId, ofA.projectId], "B's facets");
+    const own = await expectExcludesA(b.member, facets, [ofB.projectId]);
+    expectNoneOf(own.text, [ofA.projectId], "B's facets");
     const body = mailThreadFacetsBody.parse(JSON.parse(own.text));
-    expect(body.areas.items).toContainEqual({ id: ofB.areaId, count: 1 });
-    expect(body.projects.items).toContainEqual({ id: ofB.projectId, areaId: ofB.areaId, count: 1 });
-
-    const narrowed = await expectForeignLikeRandom(b.member, [ofA.areaId, ofA.projectId], ([areaId, projectId]) =>
-      GET(`/api/mail/threads/facets?areaId=${areaId}&projectId=${projectId}`),
-    );
-    expect(narrowed.status).toBe(200);
-    const none = mailThreadFacetsBody.parse(JSON.parse(narrowed.text));
-    expect({ areas: none.areas.total, projects: none.projects }).toEqual({
-      areas: 0,
-      projects: { total: 0, items: [] },
-    });
+    expect(body.projects.items).toContainEqual({ id: ofB.projectId, count: 1 });
     expect(await sendOk(a.member, facets)).toContain(ofA.projectId);
   },
   // Each tenant counts its own changes: B's delta lists only B's thread, and a cursor of A's counter is a reset for B

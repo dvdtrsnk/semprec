@@ -204,121 +204,6 @@ describe("relation.related (issue #1839)", () => {
     });
   });
 
-  describe("an area", () => {
-    it("returns Projects including finished ones, and Tasks and Events through projects, and not Journal or People", async () => {
-      const area = await make("areas");
-      const otherArea = await make("areas");
-      const active = await make("projects", { status: "inProgress" });
-      const finished = await make("projects", { status: "done" });
-      const elsewhere = await make("projects", { status: "inProgress" });
-      await link(active, "area", area);
-      await link(finished, "area", area);
-      await link(elsewhere, "area", otherArea);
-      const task = await make("tasks");
-      const elsewhereTask = await make("tasks");
-      await link(task, "project", finished);
-      await link(elsewhereTask, "project", elsewhere);
-      const projectEvent = await makeEvent();
-      const ownEvent = await makeEvent();
-      const otherEvent = await makeEvent();
-      await link(projectEvent, "project", active);
-      await link(ownEvent, "area", area);
-      await link(otherEvent, "project", elsewhere);
-      await link(await journalEntry(), "area", area);
-      const person = await make("people");
-      await link(person, "projects", active);
-
-      const rows = await relatedRows(area.id);
-
-      // Areas order: projects, tasks, events, files, threads, healthRecords, companies, people, books, movies.
-      expect(keysOf(rows)).toEqual(["projects", "tasks", "events"]);
-      expect(rows.map((row) => [row.count, row.via])).toEqual([
-        [2, "direct"],
-        [1, "project"],
-        [2, "project"],
-      ]);
-      expect(await selectedIds(rowOf(rows, database("projects").id))).toEqual([active.id, finished.id].sort());
-      expect(await selectedIds(rowOf(rows, database("tasks").id))).toEqual([task.id]);
-      expect(await selectedIds(rowOf(rows, database("events").id))).toEqual([projectEvent.id, ownEvent.id].sort());
-      expect(rows.some((row) => row.databaseKey === "journal" || row.databaseKey === "people")).toBe(false);
-      await expectCountsMatchFilters(rows);
-    });
-
-    it("counts a file that has its own area and a project of that area once, and none whose project is in another area", async () => {
-      const area = await make("areas");
-      const otherArea = await make("areas");
-      const project = await make("projects");
-      const otherProject = await make("projects");
-      await link(project, "area", area);
-      await link(otherProject, "area", otherArea);
-      const both = await make("files");
-      const ownAreaOnly = await make("files");
-      const projectOnly = await make("files");
-      const otherProjectOwnArea = await make("files");
-      await link(both, "area", area);
-      await link(both, "projects", project);
-      await link(ownAreaOnly, "area", area);
-      await link(projectOnly, "projects", project);
-      await link(otherProjectOwnArea, "area", area);
-      await link(otherProjectOwnArea, "projects", otherProject);
-
-      const files = rowOf(await relatedRows(area.id), database("files").id);
-
-      expect(files).toMatchObject({ databaseKey: "files", count: 3, via: "project" });
-      expect(await selectedIds(files)).toEqual([both.id, ownAreaOnly.id, projectOnly.id].sort());
-    });
-
-    it("drops a collection whose own-area records all belong to a project of another area", async () => {
-      const area = await make("areas");
-      const otherArea = await make("areas");
-      const otherProject = await make("projects");
-      await link(otherProject, "area", otherArea);
-      const file = await make("files");
-      await link(file, "area", area);
-      await link(file, "projects", otherProject);
-
-      const rows = await relatedRows(area.id);
-
-      expect(keysOf(rows)).not.toContain("files");
-    });
-
-    it("stops counting a soft-deleted file and counts it again after the restore", async () => {
-      const area = await make("areas");
-      const project = await make("projects");
-      await link(project, "area", area);
-      const file = await make("files");
-      await link(file, "area", area);
-      await link(file, "projects", project);
-      const filesId = database("files").id;
-      expect(rowOf(await relatedRows(area.id), filesId).count).toBe(1);
-
-      await inTenant(() => cp.softDeleteItem(filesId, file.id));
-      expect(keysOf(await relatedRows(area.id))).not.toContain("files");
-
-      await inTenant(() => cp.restoreItem(filesId, file.id));
-      expect(rowOf(await relatedRows(area.id), filesId).count).toBe(1);
-    });
-
-    it("counts the companies of an area by their own area", async () => {
-      const area = await make("areas");
-      const company = await make("companies");
-      await link(company, "area", area);
-      await make("companies");
-
-      const rows = await relatedRows(area.id);
-
-      expect(rows).toEqual([
-        {
-          databaseKey: "companies",
-          databaseId: database("companies").id,
-          count: 1,
-          via: "direct",
-          filter: { type: "relation_contains", property: "area", value: area.id },
-        },
-      ]);
-    });
-  });
-
   describe("a company", () => {
     it("counts events of its projects through the project, and a company set on an event only without a project", async () => {
       const company = await make("companies");
@@ -564,29 +449,29 @@ describe("relation.related (issue #1839)", () => {
       ]);
     });
 
-    it("lists by display order alone when the resolver declares no related order or area filter", async () => {
-      const area = await make("areas");
+    it("lists by display order alone when the resolver declares no related order", async () => {
       const project = await make("projects");
-      await link(project, "area", area);
       const file = await make("files");
-      await link(file, "area", area);
+      await link(file, "projects", project);
+      const task = await make("tasks");
+      await link(task, "project", project);
       const bare: CollectionMetadataResolver = {
         resolve: (db) => resolver.resolve(db),
         overviewHideable: (db) => resolver.overviewHideable(db),
         collectionFilter: (db) => resolver.collectionFilter(db),
       };
 
-      const rows = await relatedRows(area.id, bare);
+      const rows = await relatedRows(project.id, bare);
 
-      // Files has no route without a declared area filter, so it counts the file connected through Files.area.
+      // Without the declaration nothing omits Tasks, which comes before Files by display order.
       expect(rows.map((row) => [row.databaseKey, row.via])).toEqual([
-        ["projects", "direct"],
+        ["tasks", "direct"],
         ["files", "direct"],
       ]);
       expect(rowOf(rows, database("files").id).filter).toEqual({
         type: "relation_contains",
-        property: "area",
-        value: area.id,
+        property: "projects",
+        value: project.id,
       });
     });
   });
@@ -811,10 +696,6 @@ describe("relation.related (issue #1839)", () => {
       );
     }
 
-    function threadsRowsOf(rows: readonly RelatedCollectionRow[]): RelatedCollectionRow[] {
-      return rows.filter((row) => row.databaseKey === "threads");
-    }
-
     function threadsRow(count: number, via: "direct" | "project"): RelatedCollectionRow {
       return { databaseKey: "threads", databaseId: database("threads").id, count, via, filter: null };
     }
@@ -832,52 +713,13 @@ describe("relation.related (issue #1839)", () => {
         expect(await relatedRows(viewed.id)).toEqual([threadsRow(1, "direct")]);
       }
     });
-
-    it("counts the threads of an area through the projects of the area", async () => {
-      const area = await make("areas");
-      const project = await make("projects");
-      const otherProject = await make("projects");
-      await link(project, "area", area);
-      const inArea = await thread();
-      const elsewhere = await thread();
-      await thread();
-      await link(inArea, "project", project);
-      await link(elsewhere, "project", otherProject);
-
-      expect(threadsRowsOf(await relatedRows(area.id))).toEqual([threadsRow(1, "project")]);
-    });
-
-    it("has no row for an area when no thread belongs to its projects", async () => {
-      const area = await make("areas");
-      const project = await make("projects");
-      const unrelated = await thread();
-      await link(unrelated, "project", project);
-
-      expect(threadsRowsOf(await relatedRows(area.id))).toEqual([]);
-    });
-
-    it("has no row for an area when the Threads database is archived", async () => {
-      const area = await make("areas");
-      const project = await make("projects");
-      await link(project, "area", area);
-      await link(await thread(), "project", project);
-      expect(threadsRowsOf(await relatedRows(area.id))).toEqual([threadsRow(1, "project")]);
-
-      // The API refuses to archive a system database.
-      await admin.query("UPDATE databases SET archived_at = now() WHERE id = $1", [database("threads").id]);
-
-      expect(threadsRowsOf(await relatedRows(area.id))).toEqual([]);
-    });
   });
 
-  it("lists a journal entry on a project, and not on an area, which omits Journal", async () => {
-    const area = await make("areas");
+  it("lists a journal entry on a project", async () => {
     const project = await make("projects");
     const entry = await journalEntry();
-    await link(entry, "area", area);
     await link(entry, "project", project);
 
     expect(keysOf(await relatedRows(project.id))).toEqual(["journal"]);
-    expect(await relatedRows(area.id)).toEqual([]);
   });
 });

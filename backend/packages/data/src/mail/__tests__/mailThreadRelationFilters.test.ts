@@ -13,7 +13,9 @@ import { withTransaction } from "../../db/pool.js";
 import { LocalFsBlobStorageWriter } from "../blobStorage.js";
 import { ingestEmailMessage } from "../ingest.js";
 import { writeMailboxAddresses } from "../mailboxAddresses.js";
+import { listMailThreads } from "../mailThreadListQuery.js";
 import { createMailThreadListRouteHandler } from "../mailThreadRoutes.js";
+import { parseMailSearchQuery } from "../search.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 
@@ -142,19 +144,22 @@ describe("mail thread list", () => {
     return { cp, db, property, boxA, boxB, folders, ingest };
   }
   const list = (url = "/api/mail/threads") => createMailThreadListRouteHandler(runtime)({ req: { url } });
-  it("intersects project, area, person and unread filters and validates ids", async () => {
+  it("intersects project, person, unread and search filters and validates ids", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const email = await f.ingest({ id: "<related@example.test>" });
       const reply = await f.ingest({ id: "<related-reply@example.test>", refs: ["<related@example.test>"] });
-      const read = await f.ingest({ id: "<read-in-area@example.test>", flags: ["\\Seen"] });
+      const read = await f.ingest({
+        id: "<read-in-project@example.test>",
+        flags: ["\\Seen"],
+        from: "reader@example.test",
+      });
       const recipientOnly = await f.ingest({ id: "<recipient-only@example.test>" });
       const recipientReply = await f.ingest({
         id: "<recipient-reply@example.test>",
         refs: ["<recipient-only@example.test>"],
       });
-      const unrelated = await f.ingest({ id: "<unrelated@example.test>" });
-      const area = await f.cp.createItem({ databaseId: f.db("areas"), properties: { name: "Area" } });
+      const unrelated = await f.ingest({ id: "<unrelated@example.test>", from: "other@example.test" });
       const project = await f.cp.createItem({ databaseId: f.db("projects"), properties: { name: "Project" } });
       const person = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Person" } });
       const recipientPerson = await f.cp.createItem({ databaseId: f.db("people"), properties: { name: "Recipient" } });
@@ -164,7 +169,6 @@ describe("mail thread list", () => {
         if (!value) throw new Error(`Missing ${db}.${key}`);
         return value.id;
       };
-      const projectArea = await property("projects", "area");
       const threadProject = await property("threads", "project");
       const sender = await property("emails", "senderPeople");
       const recipients = await property("emails", "recipientsPeople");
@@ -186,15 +190,14 @@ describe("mail thread list", () => {
         new Set(raw.rows.map((row) => row.thread_id)).size !== 4
       )
         throw new Error("Missing distinct Threads items");
-      expect(new Set((await list()).body.threads.map((thread) => thread.threadId))).toEqual(
-        new Set([matching.thread_id, readThread.thread_id, recipientThread.thread_id, nonmatching.thread_id]),
-      );
+      const everyThread = new Set([
+        matching.thread_id,
+        readThread.thread_id,
+        recipientThread.thread_id,
+        nonmatching.thread_id,
+      ]);
+      expect(new Set((await list()).body.threads.map((thread) => thread.threadId))).toEqual(everyThread);
       await withTransaction(runtime, async (client) => {
-        await createRelationWithClient(client, {
-          relationPropertyId: projectArea,
-          callerItemId: project.id,
-          targetItemId: area.id,
-        });
         await createRelationWithClient(client, {
           relationPropertyId: threadProject,
           callerItemId: threadItem,
@@ -238,28 +241,72 @@ describe("mail thread list", () => {
         ),
       );
       expect(recipientEdges.rows).toEqual([{ property_id: recipients, count: 2 }]);
-      for (const query of [`projectId=${project.id}`, `areaId=${area.id}`])
-        expect(
-          new Set((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId)),
-        ).toEqual(new Set([matching.thread_id, readThread.thread_id]));
+      const ids = async (query: string) =>
+        new Set((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId));
+      expect(await ids(`projectId=${project.id}`)).toEqual(new Set([matching.thread_id, readThread.thread_id]));
       for (const query of [
         `personId=${person.id}`,
-        `areaId=${area.id}&unread=true`,
-        `areaId=${area.id}&personId=${person.id}`,
+        `projectId=${project.id}&unread=true`,
+        `projectId=${project.id}&personId=${person.id}`,
+        `projectId=${project.id}&q=${encodeURIComponent("from:sender@example.test")}`,
+        `personId=${person.id}&q=${encodeURIComponent("from:sender@example.test")}`,
       ])
-        expect((await list(`/api/mail/threads?${query}`)).body.threads.map((thread) => thread.threadId)).toEqual([
-          matching.thread_id,
-        ]);
-      expect(
-        (await list(`/api/mail/threads?personId=${recipientPerson.id}`)).body.threads.map((thread) => thread.threadId),
-      ).toEqual([recipientThread.thread_id]);
-      expect(
-        (await list(`/api/mail/threads?personId=${senderPerson.id}`)).body.threads.map((thread) => thread.threadId),
-      ).toEqual([nonmatching.thread_id]);
+        expect(await ids(query)).toEqual(new Set([matching.thread_id]));
+      expect(await ids(`q=${encodeURIComponent("from:other@example.test")}`)).toEqual(new Set([nonmatching.thread_id]));
+      expect(await ids(`personId=${person.id}&q=${encodeURIComponent("from:other@example.test")}`)).toEqual(new Set());
+      // The list has no area filter: an `areaId` parameter narrows nothing.
+      expect(await ids(`areaId=${project.id}`)).toEqual(everyThread);
+      expect(await ids(`personId=${recipientPerson.id}`)).toEqual(new Set([recipientThread.thread_id]));
+      expect(await ids(`personId=${senderPerson.id}`)).toEqual(new Set([nonmatching.thread_id]));
       await expect(list("/api/mail/threads?personId=bad")).rejects.toMatchObject({
         status: 400,
         details: { field: "personId" },
       });
+
+      // The thread, thread-set and changed-set filters, alone and combined with the project, person and search ones.
+      const direct = (
+        filters: Omit<NonNullable<Parameters<typeof listMailThreads>[3]>, "box" | "folderId" | "unread" | "mailboxId">,
+      ) =>
+        withTransaction(
+          runtime,
+          async (client) =>
+            new Set(
+              (
+                await listMailThreads(client, 50, null, {
+                  box: "inbox",
+                  folderId: null,
+                  unread: false,
+                  mailboxId: null,
+                  ...filters,
+                })
+              ).map((thread) => thread.threadId),
+            ),
+        );
+      const from = (address: string) => parseMailSearchQuery(`from:${address}`, true);
+      expect(await direct({ threadId: readThread.thread_id })).toEqual(new Set([readThread.thread_id]));
+      expect(await direct({ threadId: readThread.thread_id, personId: person.id })).toEqual(new Set());
+      expect(await direct({ threadIds: [matching.thread_id, nonmatching.thread_id] })).toEqual(
+        new Set([matching.thread_id, nonmatching.thread_id]),
+      );
+      expect(
+        await direct({ threadIds: [matching.thread_id, nonmatching.thread_id], search: from("other@example.test") }),
+      ).toEqual(new Set([nonmatching.thread_id]));
+      expect(
+        await direct({ changedThreadIds: [matching.thread_id, readThread.thread_id, recipientThread.thread_id] }),
+      ).toEqual(new Set([matching.thread_id, readThread.thread_id, recipientThread.thread_id]));
+      expect(
+        await direct({
+          changedThreadIds: [matching.thread_id, readThread.thread_id, recipientThread.thread_id],
+          projectId: project.id,
+        }),
+      ).toEqual(new Set([matching.thread_id, readThread.thread_id]));
+      expect(
+        await direct({
+          changedThreadIds: [matching.thread_id, readThread.thread_id, recipientThread.thread_id],
+          personId: recipientPerson.id,
+          search: from("sender@example.test"),
+        }),
+      ).toEqual(new Set([recipientThread.thread_id]));
     });
   });
 });

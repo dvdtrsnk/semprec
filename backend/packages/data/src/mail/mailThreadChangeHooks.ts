@@ -91,8 +91,7 @@ export const mailThreadChangeItemRestoreHook: ItemRestoreHook = async ({ client,
 
 /**
  * The threads whose list rows an edge change reaches, by the property on each side (`$1` the definition, `$2` and `$3`
- * its items): an Emails item's folder or people, a Threads item's project or company, a project's area (the list's
- * area filter). With `$4` the edge's metadata changed and nothing else (an update, or a create of an edge that
+ * its items): an Emails item's folder or people, a Threads item's project or company. With `$4` the edge's metadata changed and nothing else (an update, or a create of an edge that
  * existed); that only reaches a row through a Sent folder edge, whose UID decides whether the copy is received.
  */
 const EDGE_THREADS_SQL = `WITH sides AS (
@@ -113,13 +112,7 @@ WHERE s.module = 'emails' AND (
       AND f.properties->>'specialPurpose' = 'sent'))))
 UNION
 SELECT t.id FROM sides s JOIN mail_threads t ON t.tenant_id = app_tenant_default() AND t.item_id = s.item_id
-WHERE s.module = 'threads' AND s.key IN ('project', 'company') AND NOT $4::boolean
-UNION
-SELECT t.id FROM sides s
-JOIN item_relations r ON r.tenant_id = app_tenant_default() AND (r.item_a = s.item_id OR r.item_b = s.item_id)
-JOIN mail_threads t ON t.tenant_id = app_tenant_default()
-  AND t.item_id = CASE WHEN r.item_a = s.item_id THEN r.item_b ELSE r.item_a END
-WHERE s.module = 'projects' AND s.key = 'area' AND NOT $4::boolean`;
+WHERE s.module = 'threads' AND s.key IN ('project', 'company') AND NOT $4::boolean`;
 
 export const mailThreadChangeEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
   const metadataOnly = context.op === "update" || context.repeated === true;
