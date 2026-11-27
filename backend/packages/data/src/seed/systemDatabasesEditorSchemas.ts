@@ -89,6 +89,7 @@ export const SYSTEM_DATABASES_EDITOR_SCHEMAS: Record<string, EditorSchemaDescrip
       field("project", "status", "seg"),
       field("project", "date", "date", { when: { field: "status", notEquals: "longTerm" } }),
       field("project", "color", "color"),
+      field("project", "tags", "multi"),
     ],
   }),
   area: schema({

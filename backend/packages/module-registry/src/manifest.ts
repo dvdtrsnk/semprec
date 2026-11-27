@@ -86,6 +86,12 @@ export interface ModuleDatabaseDescriptor {
   collectionFilter?: ModuleOpaqueFilter;
   /** The items a picker for this database offers by default; an opaque filter tree. */
   pickerFilter?: ModuleOpaqueFilter;
+  /**
+   * Key of the property whose values the collection screen shows as a bar of chips above its list;
+   * absent means no bar. The schema endpoint refuses to publish a key that is not a `select` or
+   * `multi_select` property of the database.
+   */
+  facetBarProperty?: string;
 }
 
 /**
@@ -510,6 +516,7 @@ const moduleDatabaseDescriptorSchema = z
     dateLabels: z.strictObject({ pastLabelKey: z.string().min(1), noDateLabelKey: z.string().min(1) }).optional(),
     collectionFilter: opaqueFilterSchema.optional(),
     pickerFilter: opaqueFilterSchema.optional(),
+    facetBarProperty: z.string().min(1).optional(),
   })
   .superRefine((database, ctx) => {
     const quickFilters = database.quickFilters ?? [];

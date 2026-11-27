@@ -350,3 +350,10 @@ describe("declared quick filters, default sorts and collection and picker filter
     ]);
   });
 });
+
+describe("the declared facet bar property", () => {
+  it("is declared as tags by Projects and by no other database of any loaded manifest", async () => {
+    const declaring = (await loadViewHintManifests()).filter((db) => db.facetBarProperty !== undefined);
+    expect(declaring.map((db) => [db.key, db.facetBarProperty])).toEqual([["projects", "tags"]]);
+  });
+});

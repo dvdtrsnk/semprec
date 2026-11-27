@@ -32,6 +32,9 @@ describe("systemDatabases reference i18n catalog (issue #236)", () => {
     expect(catalogs?.en["database.areas.name"]).toBe("Areas");
     expect(catalogs?.cs["database.areas.name"]).toBe("Oblasti");
 
+    expect(catalogs?.en["property.projects.tags.name"]).toBe("Tags");
+    expect(catalogs?.cs["property.projects.tags.name"]).toBe("Štítky");
+
     expect(catalogs?.en["database.notARealDatabase.name"]).toBeUndefined();
   });
 

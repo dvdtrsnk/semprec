@@ -752,6 +752,7 @@ describe("database quick filters, default sorts and collection and picker filter
     dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
     collectionFilter: { type: "is_empty", property: "systemActive" },
     pickerFilter: { type: "and", nodes: [{ type: "is_empty", property: "systemActive" }] },
+    facetBarProperty: "tags",
   };
   const base = {
     id: "quickFilters",
@@ -814,6 +815,17 @@ describe("database quick filters, default sorts and collection and picker filter
     ]);
   });
 
+  it("rejects a manifest whose facet bar property is not a string key when the module is loaded", async () => {
+    const registry = new ModuleRegistry(() => new Set(["quickFilters"]));
+    await expect(load(registry, manifestWith({ ...declared, facetBarProperty: 1 }))).rejects.toThrow(
+      /invalid manifest/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+    expect(moduleManifestSchema.safeParse(manifestWith({ ...declared, facetBarProperty: 1 })).error?.issues).toEqual([
+      expect.objectContaining({ path: ["databases", 0, "facetBarProperty"] }),
+    ]);
+  });
+
   it("rejects duplicate quick-filter keys within one database", () => {
     const duplicate = {
       ...declared,
@@ -851,6 +863,10 @@ describe("database quick filters, default sorts and collection and picker filter
       { quickFilters: [{ key: "a", labelKey: "a", sort: [{ property: "", direction: "asc" }] }] },
     ],
     ["date labels missing the no-date key", { dateLabels: { pastLabelKey: "p" } }],
+    ["an empty facet bar property", { facetBarProperty: "" }],
+    ["a null facet bar property", { facetBarProperty: null }],
+    ["a facet bar property that is a list of keys", { facetBarProperty: ["tags"] }],
+    ["a facet bar property that is an object", { facetBarProperty: { property: "tags" } }],
   ])("rejects %s", (_name, change) => {
     expect(moduleManifestSchema.safeParse(manifestWith({ key: "projects", name: "Projects", ...change })).success).toBe(
       false,

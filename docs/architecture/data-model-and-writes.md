@@ -303,6 +303,14 @@ empties the write registries.
   `owner_violation`, reason `system_owned`), and only the system may set the key
   (`assertSystemKeyWritable`, reason `system_key_reserved`). Seeds create system views with
   `createdBy: "system"`.
+- A module manifest's database descriptor carries the collection hints a client renders with
+  (`quickFilters`, `defaultSort`, `dateLabels`, `collectionFilter`, `pickerFilter`,
+  `facetBarProperty`; `packages/module-registry/src/manifest.ts`). The registry validates their
+  shape when the module loads; `GET /api/schema` publishes them per database. `facetBarProperty`
+  names the property whose values a collection shows as a chip bar and is absent for a database
+  that declares none; the schema handler publishes it only when it is a `select` or
+  `multi_select` property of that database in the response, and any other declaration fails the
+  request with 500 instead of being published or dropped.
 
 ## Pages and blocks
 

@@ -127,6 +127,8 @@ export async function seedTenDatabasesInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
+    // No shipped options: a person adds each tag through the option operations.
+    { key: "tags", name: "Tags", type: "multi_select", owner: "user", config: selectConfig([]) },
     // An AGENT.md equivalent; `sections` names the fixed structure a client renders as fields within one
     // longText value.
     {

@@ -863,6 +863,53 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(await res.json()).toEqual({ error: "Internal server error" });
   });
 
+  const facetBarBody = z.object({
+    databases: z.array(z.object({ key: z.string().nullable(), facetBarProperty: z.string().optional() }).passthrough()),
+  });
+
+  it("publishes facetBarProperty tags for Projects and no facetBarProperty for any other database", async () => {
+    const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("en") });
+    expect(res.status).toBe(200);
+    const body = facetBarBody.parse(await res.json());
+    expect(body.databases.length).toBeGreaterThan(1);
+    expect(body.databases.filter((db) => Object.hasOwn(db, "facetBarProperty")).map((db) => db.key)).toEqual([
+      "projects",
+    ]);
+    expect(body.databases.find((db) => db.key === "projects")?.facetBarProperty).toBe("tags");
+  });
+
+  it("publishes a declared facet bar property that is a select property", async () => {
+    const headers = await authHeader("en");
+    // Raw SQL: no API retypes a property of a schema-locked system database. A select is the other accepted type.
+    const retyped = await pool.query(
+      `UPDATE properties SET type = 'select'
+        WHERE key = 'tags' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'projects' AND system)`,
+    );
+    expect(retyped.rowCount).toBe(1);
+
+    const res = await fetch(`${baseUrl}/api/schema`, { headers });
+    expect(res.status).toBe(200);
+    const projects = facetBarBody.parse(await res.json()).databases.find((db) => db.key === "projects");
+    expect(projects?.facetBarProperty).toBe("tags");
+  });
+
+  it.each([
+    ["is not a select or multi_select property", "UPDATE properties SET type = 'text', config = '{}'"],
+    ["is missing from the database", "UPDATE properties SET key = 'formerTags'"],
+  ])("fails with a bare 500 and publishes nothing when the declared facet bar property %s", async (_name, change) => {
+    const headers = await authHeader("en");
+    // Raw SQL: no API retypes or renames a property of a schema-locked system database. This is the drifted tenant
+    // schema the pre-publish check exists for.
+    const drifted = await pool.query(
+      `${change} WHERE key = 'tags' AND database_id = (SELECT id FROM databases WHERE owner_module_id = 'projects' AND system)`,
+    );
+    expect(drifted.rowCount).toBe(1);
+
+    const res = await fetch(`${baseUrl}/api/schema`, { headers });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal server error" });
+  });
+
   it("rejects a request with no credentials", async () => {
     const res = await fetch(`${baseUrl}/api/schema`);
     expect(res.status).toBe(401);

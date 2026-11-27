@@ -212,7 +212,7 @@ export const manifest: ModuleManifest = {
         omit: [TASKS_MODULE_ID],
       },
       name: "Projects",
-      searchFields: ["name", "status", "agents", "area", "company"],
+      searchFields: ["name", "status", "tags", "agents", "area", "company"],
       icon: "folder",
       color: "#007AFF",
       overviewOrder: 1,
@@ -222,6 +222,7 @@ export const manifest: ModuleManifest = {
       dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
       collectionFilter: USER_PROJECTS_FILTER,
       pickerFilter: PROJECTS_PICKER_FILTER,
+      facetBarProperty: "tags",
     },
     {
       key: TASKS_MODULE_ID,
