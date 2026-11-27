@@ -23,7 +23,7 @@ import {
   PROJECTS_MODULE_ID,
   TASKS_MODULE_ID,
   TRANSCRIPTS_MODULE_ID,
-  type TenDatabaseModuleId,
+  type CoreDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
@@ -39,7 +39,7 @@ import {
 } from "../calendar/syncedEventKeys.js";
 import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
-export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
+export type TenDatabases = Record<CoreDatabaseModuleId, DatabaseRow>;
 
 /** `name` is the canonical label as documentation only: every property here is stored with a null name. */
 function createBuiltInProps(
@@ -55,7 +55,7 @@ function createBuiltInProps(
 }
 
 /** `key` is both `databases.key` and `owner_module_id`; the `name` of a system database is null (labels come from the catalog). */
-async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<DatabaseRow> {
+async function createDb(client: PoolClient, key: CoreDatabaseModuleId): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, {
     name: null,
     key,
@@ -624,7 +624,7 @@ export async function seedTenDatabasesInTransaction(
   registerTemporalSwitcherViewType(viewTypeRegistry);
   // `databases.name` is null for these, so the view's required `name` comes from the manifest label.
   const manifestDatabaseByKey = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
-  for (const [moduleId, database] of Object.entries(all) as [TenDatabaseModuleId, DatabaseRow][]) {
+  for (const [moduleId, database] of Object.entries(all) as [CoreDatabaseModuleId, DatabaseRow][]) {
     const manifestDatabase = manifestDatabaseByKey.get(moduleId);
     const type = manifestDatabase?.defaultViewType ?? "table";
     await viewsStore.createView(

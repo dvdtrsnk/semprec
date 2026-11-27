@@ -112,7 +112,7 @@ export interface EmailModuleResult {
 }
 
 /**
- * Seeds Mailboxes/Folders/Emails as one system project, after the ten databases. Also adds `People.emails`
+ * Seeds Mailboxes/Folders/Emails as one system project, after the core databases. Also adds `People.emails`
  * (one address per line in a longText; no property type holds a free list), briefly unlocking People.
  */
 export async function seedEmailModuleInTransaction(
