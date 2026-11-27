@@ -397,24 +397,48 @@ class CaptureOutboxTest {
         assertTrue(files().isEmpty())
     }
 
-    @Test fun `a server error a throttle and a refused session end the round until the next trigger`() = runTest {
+    /** Adds a capture the server answers with [answer] and tells whether a retry followed it after the backoff. */
+    private suspend fun TestScope.retriedAfter(answer: ApiResponse.Failure): Boolean {
         val layer = layer()
         layer.signIn()
-        server.item = { ApiResponse.Failure(FailureKind.UNAVAILABLE, 503) }
+        server.item = { answer }
         layer.add()
         runCurrent()
-        for (answer in listOf(
-            ApiResponse.Failure(FailureKind.UNAVAILABLE, 503),
-            ApiResponse.Failure(FailureKind.UNAVAILABLE, 429),
-            refusal(401),
-        )) {
-            server.item = { answer }
-            assertFalse(layer.captures.send())
-            val sent = server.items.size
-            advanceTimeBy(2.minutes)
-            assertEquals(sent, server.items.size, "No retry follows $answer")
-        }
+        assertEquals(1, server.items.size)
+        advanceTimeBy(1_001)
         assertEquals(listOf("c1.json"), files())
+        return server.items.size == 2
+    }
+
+    @Test fun `a server error is tried again after the backoff`() = runTest {
+        assertTrue(retriedAfter(ApiResponse.Failure(FailureKind.UNAVAILABLE, 503)))
+    }
+
+    @Test fun `a throttle is tried again after the backoff`() = runTest {
+        assertTrue(retriedAfter(ApiResponse.Failure(FailureKind.UNAVAILABLE, 429)))
+    }
+
+    @Test fun `a refused session ends the round until the next trigger`() = runTest {
+        assertFalse(retriedAfter(refusal(401)))
+        advanceTimeBy(2.minutes)
+        assertEquals(1, server.items.size)
+    }
+
+    @Test fun `a busy type keeps the capture with its type and is tried again after the backoff`() = runTest {
+        val layer = layer()
+        layer.signIn()
+        server.item = { refusal(409, """{"field":"typeId"}""") }
+        layer.add(capture(typeId = "t1"))
+        runCurrent()
+        assertEquals(listOf("item c1"), server.log, "A busy type is not sent again without it")
+        assertEquals("t1", kept("c1").typeId)
+        assertEquals(0, kept("c1").attempts)
+
+        server.item = { OUTBOX_CREATED }
+        advanceTimeBy(1_001)
+        assertEquals(listOf("item c1", "item c1"), server.log)
+        assertEquals("t1", server.items.last().json().getValue("typeId").jsonPrimitive.content)
+        assertTrue(files().isEmpty())
     }
 
     @Test fun `a refusal naming the type sends the capture again at once without it and writes the change`() =

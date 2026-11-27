@@ -57,16 +57,18 @@ once, as before.
   directory once more. Captures go out in creation order, one at a time: the file (`POST /api/blobs`) unless an
   uploaded blob id is recorded, then `POST /api/inbox/items` with the body a direct capture sends and
   `Idempotency-Key: <captureId>`. No answer, a `5xx`, a `429` or a `401` ends the round and keeps the capture, with no
-  limit on how often. A refusal of the item that names the type (`error.details.field` is `typeId`) is sent again at
-  once without the type, and the capture is written without it. A refusal of the item that names the blob
+  limit on how often. A `409` of the item that names the type (`error.details.field` is `typeId`: another change holds
+  the type's lock) is transient: it ends the round and keeps the capture with its type. Any other refusal of the item
+  that names the type is sent again at once without the type, and the capture is written without it. A refusal of the item that names the blob
   (`error.details.field` is `attachments`, or `error.details` has a `blobId`) is followed, once per delivery, by a new
   upload and a new send. Any other refusal of either request keeps the capture, counts it and does not try it again
   for 1 hour; the round goes on with the next capture. A capture whose file is missing and that was never uploaded is
   left as it is and goes on waiting.
 - **Triggers.** A round starts when a capture is added, when an answer ends the offline state or a sync socket
   connects, when a window starts (`OfflineLayer.warmUpWith`), and after a round that ended without an answer, with a
-  backoff from 1 s doubling to 60 s with jitter, for as long as the process runs. A round ended by a `5xx`, a `429` or
-  a `401` waits for the next trigger.
+  `5xx`, a `429` or a busy type (`409` naming `typeId`), with a backoff from 1 s doubling to 60 s with jitter, for as
+  long as the process runs, so a capture reaches the Inbox as soon as the server can take it. A round ended by a `401`
+  waits for the next trigger (a sign-in starts one).
 - **After a success** the layer's change flow emits, so the open screens of every window read again.
 - **Status.** The captures of the owner signed in count in `OfflineStatus.waiting`; with nobody signed in none count.
 
@@ -79,5 +81,6 @@ once, as before.
   same server, and are never sent with another person's session.
 - A capture the server keeps refusing is tried again every hour, at the next trigger after that hour, without end.
 - A refused type is dropped rather than losing the capture: the item reaches the Inbox without the type the person
-  picked.
-- A `5xx`, `429` or `401` is not retried on a timer; the capture waits for the next trigger.
+  picked. A type that is only busy is kept, and the capture waits for it.
+- A server that keeps answering `5xx` or `429` is asked again at most once a minute, for as long as the process runs.
+- A `401` is not retried on a timer; the capture waits for the next trigger.

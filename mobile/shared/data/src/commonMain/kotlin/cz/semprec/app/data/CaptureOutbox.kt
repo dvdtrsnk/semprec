@@ -28,6 +28,7 @@ import kotlin.time.Instant
 private val REFUSED_CAPTURE_WAIT: Duration = 1.hours
 
 private const val UNAUTHORIZED_STATUS = 401
+private const val CONFLICT_STATUS = 409
 private const val IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 private const val TYPE_FIELD = "typeId"
 private const val ATTACHMENTS_FIELD = "attachments"
@@ -43,9 +44,9 @@ private const val ATTACHMENTS_FIELD = "attachments"
  *
  * A round ([send], [sendSoon]) sends the captures of the owner signed in now through the window's [sender], one at a
  * time in the order they were made ([CaptureDelivery]), and only one round runs at a time: a trigger while one runs
- * makes it look at the directory once more instead of starting another. A round that ended without an answer is
- * followed by another after [nextReplayDelayMillis], for as long as the process runs. [waiting] counts the captures of
- * the owner signed in.
+ * makes it look at the directory once more instead of starting another. A round that ended without an answer, on a
+ * `5xx`, a `429` or a busy type is followed by another after [nextReplayDelayMillis], for as long as the process runs.
+ * [waiting] counts the captures of the owner signed in.
  */
 @OptIn(ExperimentalTime::class)
 internal class CaptureOutbox(
@@ -206,9 +207,10 @@ private enum class DeliveryEnd { ON, RETRY, STOP }
 /**
  * Sends one capture through a sender: its file (`POST /api/blobs`, raw body) unless an uploaded blob is recorded, then
  * its item (`POST /api/inbox/items` with `Idempotency-Key: <captureId>`). Success deletes the capture and tells every
- * window. No answer ends the round to retry it after a backoff; a `5xx`, a `429` and a `401` end it until the next
- * trigger. Each keeps the capture as it is, with no limit on how often. A refusal of the item that names
- * its type sends it again at once without the type, and writes that; one that names its blob uploads the file once
+ * window. No answer, a `5xx`, a `429` and a `409` of the item that names its type (the type is busy) end the round to
+ * retry it after a backoff; a `401` ends it until the next trigger. Each keeps the capture as it is, its type included,
+ * with no limit on how often. Any other refusal of the item that names its type sends it again at once without the
+ * type, and writes that; one that names its blob uploads the file once
  * more and sends the item again, once per delivery. Any other refusal of either request is counted and keeps the
  * capture from being sent for [REFUSED_CAPTURE_WAIT]; the round goes on.
  */
@@ -257,6 +259,8 @@ private class CaptureDelivery(
     ): DeliveryEnd {
         val named = refusal.namedFields()
         return when {
+            // A busy type is locked for a moment by another change of it: the capture keeps its type and waits.
+            refusal.status == CONFLICT_STATUS && TYPE_FIELD in named -> DeliveryEnd.RETRY
             capture.typeId != null && TYPE_FIELD in named -> {
                 val untyped = capture.copy(typeId = null)
                 // A failed write keeps the type on the device; the next refusal drops it again.
@@ -326,10 +330,10 @@ private fun itemRequest(capture: KeptCapture): ApiRequest {
     )
 }
 
-/** No answer ends the round to retry it, a `5xx`, a `429` and a `401` end it; `null` for a refusal. */
+/** No answer, a `5xx` and a `429` end the round to retry it, a `401` ends it; `null` for a refusal. */
 private fun ApiResponse.Failure.endOfRound(): DeliveryEnd? = when {
-    status == null -> DeliveryEnd.RETRY
-    kind == FailureKind.UNAVAILABLE || status == UNAUTHORIZED_STATUS -> DeliveryEnd.STOP
+    status == null || kind == FailureKind.UNAVAILABLE -> DeliveryEnd.RETRY
+    status == UNAUTHORIZED_STATUS -> DeliveryEnd.STOP
     else -> null
 }
 
