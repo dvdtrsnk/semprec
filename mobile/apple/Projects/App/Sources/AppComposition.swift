@@ -23,6 +23,8 @@ final class AppComposition: ObservableObject {
     /// The Semp chat and its bubble: whether the chat is open, what it shows, and where the bubble can pick up objects.
     let sempChat = SempChatPresenter()
     let dropTargets = DropTargetRegistry()
+    /// Whether the bubble is docked in Semp's button of the tab bar or floats.
+    let sempDock = SempDock()
     /// The tab the person is on, which the pages the chat opens appear in.
     var currentTab = AppTab.overview
     /// The models of the tabs not opened yet, made ahead so that they open on their content.

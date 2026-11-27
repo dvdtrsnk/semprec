@@ -82,7 +82,7 @@ two files disagree on `appleBundleId`, `frameworkName`, `versionName`,
 | Gradle root project | `semprec-mobile` | `projectName` |
 | Version | `0.1.0`, build `1` | `versionName`, `versionCode` |
 | Android SDK | min 28, compile and target 36, build tools 36.0.0 | `androidMinSdk`, `androidCompileSdk`, `androidTargetSdk`, `androidBuildTools` |
-| Apple minimum | iOS 26.0, macOS 26.0 | `iosMinimum`, `macosMinimum` |
+| Apple minimum | iOS 27.0, macOS 26.0 | `iosMinimum`, `macosMinimum` |
 
 ## Toolchain
 
@@ -119,7 +119,7 @@ The machine provides the rest:
   Java 17 bytecode on the JDK that runs Gradle.
 - **Android SDK** with platform 36 and build tools 36.0.0, through `ANDROID_HOME`,
   `ANDROID_SDK_ROOT` or `sdk.dir` in `local.properties`.
-- **An Apple silicon Mac with a full Xcode** whose SDKs cover iOS 26 and macOS 26.
+- **An Apple silicon Mac with a full Xcode** whose SDKs cover iOS 27 and macOS 26.
   The shared modules have arm64 Apple targets only (`iosArm64`,
   `iosSimulatorArm64`, `macosArm64`). When `xcode-select -p` points at the Command
   Line Tools, export `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` in

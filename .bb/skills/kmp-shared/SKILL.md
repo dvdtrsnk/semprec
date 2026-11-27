@@ -50,7 +50,7 @@ Each layer keeps its job:
 
 `semprec.kmp` declares `jvm()`, `androidTarget()`, `iosArm64()`,
 `iosSimulatorArm64()` and `macosArm64()`, and builds the Apple targets for the
-app's minimum OS versions (iOS 26.0, macOS 26.0 from
+app's minimum OS versions (iOS 27.0, macOS 26.0 from
 `mobile/gradle/project.properties`). An API used in `src/commonMain` must exist
 on all five. There are no x64 Apple targets, because the Apple app is arm64
 only.
