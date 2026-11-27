@@ -511,8 +511,8 @@ describe("NAV-OWNERSHIP", () => {
 describe("APPLE-IDENTITY", () => {
   it("fails a value that differs between the two files", () => {
     const root = copyOfTree();
-    replace(root, PROJECT_CONFIGURATION, 'iosMinimum = "26.0"', 'iosMinimum = "18.0"');
-    const [found] = assertViolations(root, ["APPLE-IDENTITY"], /iosMinimum is "18.0", but gradle\/project.properties has "26.0"/);
+    replace(root, PROJECT_CONFIGURATION, 'iosMinimum = "27.0"', 'iosMinimum = "18.0"');
+    const [found] = assertViolations(root, ["APPLE-IDENTITY"], /iosMinimum is "18.0", but gradle\/project.properties has "27.0"/);
     assert.equal(found.file, PROJECT_CONFIGURATION);
   });
 

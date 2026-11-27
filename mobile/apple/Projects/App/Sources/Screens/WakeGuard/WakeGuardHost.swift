@@ -4,7 +4,8 @@ import SwiftUI
 /// Covers one window with the wake guard while a mission rings. The window's own guard model decides when that is;
 /// when ringing starts, the sheets presented over the window's stacks are closed first, because a sheet would sit
 /// above the guard, and the window's navigation opens nothing until the guard goes. While it covers the window the
-/// content below takes no touch and is hidden from accessibility.
+/// content below takes no touch and is hidden from accessibility, and learns through `isWindowGuarded` that it is
+/// covered: the Semp layer, which is in a window of its own above this one, hides.
 struct WakeGuardHost: ViewModifier {
 
     // MARK: - Dependencies
@@ -21,6 +22,7 @@ struct WakeGuardHost: ViewModifier {
     // MARK: - Body
     func body(content: Content) -> some View {
         content
+            .environment(\.isWindowGuarded, isCovering)
             .disabled(isCovering)
             .accessibilityHidden(isCovering)
             .overlay {
@@ -45,6 +47,13 @@ private extension WakeGuardHost {
     var isCovering: Bool {
         viewModel.state.phase != .idle
     }
+}
+
+// MARK: - Environment
+extension EnvironmentValues {
+
+    /// Whether the wake guard covers the window.
+    @Entry var isWindowGuarded = false
 }
 
 // MARK: - View

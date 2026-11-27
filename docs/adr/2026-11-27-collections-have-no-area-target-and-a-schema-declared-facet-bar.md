@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-27
-area: [mobile]
+area: [mobile, backend]
 supersedes: []
 superseded-by: null
 ---

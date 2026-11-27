@@ -2,16 +2,20 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The floating bubble of Semp. A tap opens the chat; dragging moves it to an edge of the screen; dragging it onto an
-/// object that can be given to Semp and holding there lets the object go into Semp. What is given to Semp is decided in
-/// Kotlin; this view follows the finger, finds the object under it and animates.
+/// The bubble of Semp. A tap opens the chat; dragging it onto an object that can be given to Semp and holding there
+/// lets the object go into Semp. It either floats, and dragging moves it to an edge of the screen, or it is docked in
+/// a place the app gives it (Semp's button in the tab bar, which the system draws), where it shows only what the
+/// button lacks and, let go anywhere, springs back into that place. What is given to Semp is decided in Kotlin; this
+/// view follows the finger, finds the object under it and animates.
 struct SempBubbleScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: SempBubbleViewModel
     private let registry: DropTargetRegistry
+    private let dock: CGRect?
     private let zoom: Namespace.ID?
     private let open: () -> Void
+    private let reportFrame: (CGRect) -> Void
 
     // MARK: - Properties
     @AppStorage("semp.bubble.side")
@@ -19,20 +23,30 @@ struct SempBubbleScreen: View {
     @AppStorage("semp.bubble.y")
     private var restingY: Double = -1
     @State private var drag = SempBubbleDrag()
+    /// Set while a bubble let go is on its way back into its dock, where it is shown until it arrives.
+    @State private var returning = false
+    /// Clears `returning` once the bubble is back; a release while one is pending replaces it.
+    @State private var returningEnd: Task<Void, Never>?
 
     // MARK: - Init
-    /// `registry` holds the objects of the presentation the bubble floats over; `open` shows the chat; `zoom` is the
-    /// namespace in which the bubble is the source the chat zooms out of (`SempScreenFactory.bubbleTransitionID`).
+    /// `registry` holds the objects the bubble can be dragged onto; `dock` is the place it is docked in, in global
+    /// coordinates, or nil while it floats; `open` shows the chat; `zoom` is the namespace in which the bubble is the
+    /// source the chat zooms out of (`SempScreenFactory.bubbleTransitionID`); `reportFrame` is told the bubble's frame
+    /// in global coordinates whenever it changes.
     init(
         viewModel: @autoclosure @escaping () -> SempBubbleViewModel,
         registry: DropTargetRegistry,
+        dock: CGRect?,
         zoom: Namespace.ID?,
-        open: @escaping () -> Void
+        open: @escaping () -> Void,
+        reportFrame: @escaping (CGRect) -> Void = { _ in }
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         self.registry = registry
+        self.dock = dock
         self.zoom = zoom
         self.open = open
+        self.reportFrame = reportFrame
     }
 
     // MARK: - Body
@@ -40,10 +54,13 @@ struct SempBubbleScreen: View {
         GeometryReader { proxy in
             let placement = SempBubblePlacement(size: proxy.size)
             let origin = proxy.frame(in: .global).origin
+            let center = center(placement, origin: origin)
             ZStack(alignment: .topLeading) {
                 if let hover = drag.hover { highlight(hover.frame, origin: origin) }
-                bubble(placement)
-                    .position(center(placement))
+                bubble(placement, center: center)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { reportFrame($0) }
+                    .position(center)
+                    .animation(.spring(duration: 0.5, bounce: 0.25), value: dock)
                     .gesture(dragGesture(placement, origin: origin))
                 if let toast = viewModel.state.toast { toastView(toast).frame(maxWidth: .infinity, alignment: .top) }
             }
@@ -61,21 +78,36 @@ private extension SempBubbleScreen {
         SempBubbleSide(rawValue: sideName) ?? .right
     }
 
-    func center(_ placement: SempBubblePlacement) -> CGPoint {
+    /// Whether the bubble draws its glass and icon: always while it floats, and while it is held or on its way back
+    /// when docked, where the button the bubble sits on draws them otherwise.
+    var showsFace: Bool {
+        dock == nil || drag.moved || returning
+    }
+
+    var diameter: CGFloat {
+        dock?.width ?? SempBubblePlacement.diameter
+    }
+
+    func center(_ placement: SempBubblePlacement, origin: CGPoint) -> CGPoint {
         let radius = SempBubblePlacement.diameter / 2
         if let point = drag.center { return CGPoint(x: point.x, y: point.y) }
+        if let dock { return CGPoint(x: dock.midX - origin.x, y: dock.midY - origin.y) }
         let top = restingY < 0 ? placement.yRange.upperBound : placement.rest(top: restingY)
         return CGPoint(x: placement.x(for: side) + radius, y: top + radius)
     }
 
-    func bubble(_ placement: SempBubblePlacement) -> some View {
+    func bubble(_ placement: SempBubblePlacement, center: CGPoint) -> some View {
         ZStack {
-            Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(.primary)
-            if viewModel.state.badge > 0 { badge(viewModel.state.badge).offset(badgeOffset(placement)) }
+            Image(systemName: "sparkles")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.primary)
+                .opacity(showsFace ? 1 : 0)
+            if viewModel.state.badge > 0 { badge(viewModel.state.badge).offset(badgeOffset(placement, center: center)) }
             if viewModel.state.attachments > 0 { attachments(viewModel.state.attachments) }
         }
-        .frame(width: SempBubblePlacement.diameter, height: SempBubblePlacement.diameter)
-        .glassEffect(.regular.interactive(), in: Circle())
+        .frame(width: diameter, height: diameter)
+        .contentShape(Circle())
+        .glassEffect(showsFace ? .regular.interactive() : .identity, in: Circle())
         .zoomSource(SempScreenFactory.bubbleTransitionID, in: zoom)
         .overlay(Circle().stroke(Theme.Colors.accent, lineWidth: drag.armed ? 3 : 0))
         .scaleEffect(drag.armed ? 1.1 : (drag.moved ? 1.06 : 1))
@@ -104,12 +136,12 @@ private extension SempBubbleScreen {
             .padding(.vertical, 2)
             .background(Theme.Colors.accent, in: Capsule())
             .foregroundStyle(.white)
-            .offset(y: SempBubblePlacement.diameter / 2 + 4)
+            .offset(y: diameter / 2 + 4)
     }
 
-    func badgeOffset(_ placement: SempBubblePlacement) -> CGSize {
-        let onLeft = (drag.center.map { $0.x < placement.size.width / 2 } ?? (side == .left))
-        return CGSize(width: onLeft ? 24 : -24, height: -22)
+    /// The badge sits on the corner of the bubble that faces the middle of the screen.
+    func badgeOffset(_ placement: SempBubblePlacement, center: CGPoint) -> CGSize {
+        CGSize(width: center.x < placement.size.width / 2 ? 24 : -24, height: -22)
     }
 
     func highlight(_ frame: CGRect, origin: CGPoint) -> some View {
@@ -169,7 +201,7 @@ private extension SempBubbleScreen {
         DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 if drag.start == nil {
-                    drag.start = center(placement)
+                    drag.start = center(placement, origin: origin)
                     drag.startedAt = Date()
                 }
                 guard let start = drag.start else { return }
@@ -208,12 +240,23 @@ private extension SempBubbleScreen {
         let tapped = !moved && Date().timeIntervalSince(drag.startedAt ?? .now) < 0.5
         let last = drag.center
         drag.dwell?.cancel()
+        let docked = dock != nil
         withAnimation(.spring(duration: 0.5, bounce: 0.45)) {
             drag = SempBubbleDrag()
-            if moved, armedTarget == nil, let last {
+            returning = docked && moved
+            if moved, !docked, armedTarget == nil, let last {
                 let velocityX = (value.predictedEndLocation.x - value.location.x) / SempBubblePlacement.throwSeconds
                 sideName = placement.side(centerX: last.x, velocityX: velocityX).rawValue
                 restingY = Double(placement.rest(top: last.y - SempBubblePlacement.diameter / 2))
+            }
+        }
+        returningEnd?.cancel()
+        returningEnd = nil
+        if docked, moved {
+            returningEnd = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.15)) { returning = false }
             }
         }
         if let armedTarget {

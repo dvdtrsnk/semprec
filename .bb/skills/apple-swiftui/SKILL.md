@@ -19,7 +19,7 @@ commands.
 ## 1. One codebase, both platforms
 
 Every target uses `SemprecProject.destinations` (`[.iPhone, .iPad, .mac]`) and
-`SemprecProject.deploymentTargets` (iOS 26.0 and macOS 26.0 from
+`SemprecProject.deploymentTargets` (iOS 27.0 and macOS 26.0 from
 `Tuist/ProjectDescriptionHelpers/ProjectConfiguration.swift`), builds arm64
 only (`ProjectConfiguration.architectures`, the `ARCHS` of every project and of
 the Swift packages), and compiles in Swift 6 with complete strict concurrency.

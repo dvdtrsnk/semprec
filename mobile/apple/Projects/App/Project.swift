@@ -59,8 +59,6 @@ let project = Project(
                 "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",
-                    "UIInterfaceOrientationLandscapeLeft",
-                    "UIInterfaceOrientationLandscapeRight",
                 ],
                 "UISupportedInterfaceOrientations~ipad": [
                     "UIInterfaceOrientationPortrait",
@@ -140,6 +138,7 @@ let project = Project(
                 "UITests/**",
                 "Sources/AppIdentifiers.swift",
                 "../../Modules/Features/Overview/Sources/OverviewIdentifiers.swift",
+                "../../Modules/Features/Semp/Sources/SempIdentifiers.swift",
                 "../../Modules/Features/Sleep/Sources/SleepIdentifiers.swift",
             ],
             dependencies: [.target(name: app)]
