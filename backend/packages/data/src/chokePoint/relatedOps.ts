@@ -8,7 +8,7 @@ import {
 } from "../agentGrants/agentDatabaseAccess.js";
 import { compareCollections, type CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { DatabaseRow } from "../types.js";
 import { compileFilterNode } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
@@ -17,17 +17,10 @@ import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import { relatedRowContributorsFor, type RelatedCollectionRow } from "./relatedContributors.js";
-import {
-  areaRoutes,
-  areaThreadsRoute,
-  companyRoutes,
-  projectRoutes,
-  type RelatedRoute,
-  type RelatedRoutes,
-} from "./relatedRoutes.js";
+import { companyRoutes, projectRoutes, type RelatedRoute, type RelatedRoutes } from "./relatedRoutes.js";
 
-/** What the read needs of the manifests; a resolver that declares no related order or area filter declares none. */
-export type RelatedResolver = Pick<CollectionMetadataResolver, "resolve" | "relatedOrder" | "areaFilter">;
+/** What the read needs of the manifests; a resolver that declares no related order declares none. */
+export type RelatedResolver = Pick<CollectionMetadataResolver, "resolve" | "relatedOrder">;
 
 interface DirectCollectionRow {
   database_id: string;
@@ -84,25 +77,10 @@ async function countSelected(client: PoolClient, databaseId: string, filter: Fil
   return count;
 }
 
-function routesOf(
-  viewed: DatabaseRow,
-  itemId: string,
-  databases: readonly DatabaseRow[],
-  resolver: RelatedResolver,
-): RelatedRoutes {
+function routesOf(viewed: DatabaseRow, itemId: string): RelatedRoutes {
   if (viewed.key === COMPANIES_MODULE_ID) return companyRoutes(itemId);
   if (viewed.key === PROJECTS_MODULE_ID) return projectRoutes(itemId);
-  if (viewed.key !== AREAS_MODULE_ID) return new Map();
-
-  const declarations = databases.flatMap((database) => {
-    const template = resolver.areaFilter?.(database);
-    return database.key !== null && template !== undefined ? [{ databaseKey: database.key, template }] : [];
-  });
-  const routes = areaRoutes(itemId, declarations);
-  if (databases.some((database) => database.key === THREADS_MODULE_ID) && !routes.has(THREADS_MODULE_ID)) {
-    routes.set(THREADS_MODULE_ID, areaThreadsRoute(itemId));
-  }
-  return routes;
+  return new Map();
 }
 
 /**
@@ -177,7 +155,7 @@ export async function listRelatedWithClient(
     });
   }
 
-  const routes = routesOf(viewed, item.id, databases, resolver);
+  const routes = routesOf(viewed, item.id);
   for (const [databaseKey, route] of routes) {
     const database = databases.find((candidate) => candidate.key === databaseKey);
     if (!database) continue;

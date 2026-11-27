@@ -70,8 +70,6 @@
   "agentStep.title.operation.page.convertToBlock": "Převod bloku stránky",
   "agentStep.title.operation.database.facets": "Seskupení {targetMany}",
   "agentStep.title.operation.search": "Hledání ve všech záznamech",
-  "agentStep.target.areas.one": "oblasti",
-  "agentStep.target.areas.many": "oblastí",
   "agentStep.target.projects.one": "projektu",
   "agentStep.target.projects.many": "projektů",
   "agentStep.target.tasks.one": "úkolu",

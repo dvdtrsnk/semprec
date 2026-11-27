@@ -279,7 +279,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
             ruleKey: "test.twoSources",
             sources: [
               { kind: "item", sourceItemId: project.id, sourcePropertyKey: "company" },
-              { kind: "item", sourceItemId: project.id, sourcePropertyKey: "area" },
+              { kind: "item", sourceItemId: project.id, sourcePropertyKey: "name" },
             ],
           }),
         ),

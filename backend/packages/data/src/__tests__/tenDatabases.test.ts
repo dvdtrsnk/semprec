@@ -50,9 +50,8 @@ describe("ten hardcoded databases (issue #24)", () => {
     await pool?.end();
   });
 
-  it("seeds all ten databases as system, schema-locked databases with a default system view", async () => {
+  it("seeds every core database as system, schema-locked databases with a default system view", async () => {
     const moduleIds = [
-      "areas",
       "projects",
       "tasks",
       "people",
@@ -90,24 +89,20 @@ describe("ten hardcoded databases (issue #24)", () => {
     ).toEqual([{ type: "multi_select", owner: "user", ownerProcess: null, locked: false, config: { options: [] } }]);
   });
 
-  it("links Areas and Projects through a real bidirectional relation, not text", async () => {
-    const areasId = await databaseIdFor("areas");
-    const projectsId = await databaseIdFor("projects");
-    const area = await chokePoint.createItem({ databaseId: areasId, properties: { name: "Leisure" } });
-    const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Vacation planning" } });
-
-    const { rows: propRows } = await pool.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'area'", [
-      projectsId,
-    ]);
-    await chokePoint.createRelation({
-      relationPropertyId: propRows[0].id,
-      callerItemId: project.id,
-      targetItemId: area.id,
-    });
-
-    const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, area.id));
-    expect(edges).toHaveLength(1);
-    expect([edges[0]!.itemA, edges[0]!.itemB]).toContain(project.id);
+  it("seeds no Areas database and no relation property keyed area on any database", async () => {
+    const { rows: areas } = await pool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = 'areas' OR key = 'areas'",
+    );
+    expect(areas).toEqual([]);
+    const { rows: areaRelations } = await pool.query<{ key: string }>(
+      "SELECT key FROM properties WHERE type = 'relation' AND key = 'area'",
+    );
+    expect(areaRelations).toEqual([]);
+    // The query reaches seeded relations at all: Projects.company is one.
+    const { rows: companyRelations } = await pool.query<{ key: string }>(
+      "SELECT p.key FROM properties p JOIN databases d ON d.id = p.database_id WHERE d.owner_module_id = 'projects' AND p.type = 'relation' AND p.key = 'company'",
+    );
+    expect(companyRelations).toEqual([{ key: "company" }]);
   });
 
   it("Projects->Companies is a real relation (fix), not the mock's free-form select", async () => {
@@ -162,17 +157,6 @@ describe("ten hardcoded databases (issue #24)", () => {
     const ordinary = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Side project" } });
     const deleted = await chokePoint.softDeleteItem(projectsId, ordinary.id);
     expect(deleted?.deletedAt).not.toBeNull();
-  });
-
-  it("Health records <-> Areas is bidirectional (fix: was one-directional in the mock)", async () => {
-    const healthRecordsId = await databaseIdFor("healthRecords");
-    const { rows } = await pool.query(
-      "SELECT p.id, rd.property_id_a, rd.property_id_b FROM properties p JOIN relation_definitions rd ON rd.property_id_a = p.id OR rd.property_id_b = p.id WHERE p.database_id = $1 AND p.key = 'area'",
-      [healthRecordsId],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].property_id_a).not.toBeNull();
-    expect(rows[0].property_id_b).not.toBeNull();
   });
 
   it("Transcripts.status is owner:system and rejected by the generic item-update path", async () => {
@@ -445,7 +429,7 @@ describe("ten hardcoded databases (issue #24)", () => {
     expect(rows[0].n).toBe(2);
   });
 
-  it("journal has no default area (fix: the mock hardwired every entry to one Area)", async () => {
+  it("a new journal entry has no relation edge", async () => {
     const journalId = await databaseIdFor("journal");
     const item = await withTransaction(pool, (client) =>
       getOrCreateJournalItem(client, journalId, "month", new Date("2026-08-01T00:00:00Z"), "Europe/Prague"),

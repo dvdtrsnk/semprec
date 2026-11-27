@@ -15,11 +15,11 @@ let pool: Pool;
 let cp: ChokePoint;
 let databases: Record<string, string>;
 let taskProject: PropertyRow;
-let projectArea: PropertyRow;
+let projectCompany: PropertyRow;
 let fileProjects: PropertyRow;
 
 function filter(value: string, first = "project") {
-  return { type: "relation_path_contains", path: [first, "area"], value };
+  return { type: "relation_path_contains", path: [first, "company"], value };
 }
 
 async function item(database: string) {
@@ -66,7 +66,7 @@ describe("relation_path_contains production queries", () => {
     const rows = await pool.query<{ id: string; key: string }>("SELECT id, key FROM databases");
     databases = Object.fromEntries(rows.rows.map((row) => [row.key, row.id]));
     taskProject = await property("tasks", "project");
-    projectArea = await property("projects", "area");
+    projectCompany = await property("projects", "company");
     fileProjects = await property("files", "projects");
   });
 
@@ -75,14 +75,14 @@ describe("relation_path_contains production queries", () => {
   });
 
   it("returns only tasks in Work, excluding no project and soft-deleted projects", async () => {
-    const work = await item("areas");
-    const personal = await item("areas");
+    const work = await item("companies");
+    const personal = await item("companies");
     const workProject = await item("projects");
     const personalProject = await item("projects");
     const deletedProject = await item("projects");
-    await relation(projectArea, workProject.id, work.id);
-    await relation(projectArea, personalProject.id, personal.id);
-    await relation(projectArea, deletedProject.id, work.id);
+    await relation(projectCompany, workProject.id, work.id);
+    await relation(projectCompany, personalProject.id, personal.id);
+    await relation(projectCompany, deletedProject.id, work.id);
     const matching = await item("tasks");
     const other = await item("tasks");
     const deleted = await item("tasks");
@@ -99,15 +99,15 @@ describe("relation_path_contains production queries", () => {
     expect((await cp.queryDatabaseItems(databases.tasks!, { filter: filter(randomUUID()) })).items).toEqual([]);
   });
 
-  it("matches a file when any of several projects belongs to the area, once", async () => {
-    const work = await item("areas");
-    const personal = await item("areas");
+  it("matches a file when any of several projects belongs to the company, once", async () => {
+    const work = await item("companies");
+    const personal = await item("companies");
     const first = await item("projects");
     const second = await item("projects");
     const third = await item("projects");
-    await relation(projectArea, first.id, personal.id);
-    await relation(projectArea, second.id, work.id);
-    await relation(projectArea, third.id, work.id);
+    await relation(projectCompany, first.id, personal.id);
+    await relation(projectCompany, second.id, work.id);
+    await relation(projectCompany, third.id, work.id);
     const matching = await item("files");
     const other = await item("files");
     await item("files");
@@ -120,12 +120,12 @@ describe("relation_path_contains production queries", () => {
     ).toEqual([matching.id]);
   });
 
-  it("updates saved view results on the next view.query after an area move without editing views", async () => {
-    const work = await item("areas");
-    const personal = await item("areas");
+  it("updates saved view results on the next view.query after a company move without editing views", async () => {
+    const work = await item("companies");
+    const personal = await item("companies");
     const project = await item("projects");
     const task = await item("tasks");
-    await relation(projectArea, project.id, personal.id);
+    await relation(projectCompany, project.id, personal.id);
     await relation(taskProject, task.id, project.id);
     const workView = await cp.createView({
       databaseId: databases.tasks!,
@@ -142,11 +142,11 @@ describe("relation_path_contains production queries", () => {
     expect((await cp.queryViewItems(workView.id, {})).items).toEqual([]);
     expect((await cp.queryViewItems(personalView.id, {})).items.map((row) => row.id)).toEqual([task.id]);
     await cp.deleteRelation({
-      relationPropertyId: projectArea.id,
+      relationPropertyId: projectCompany.id,
       callerItemId: project.id,
       targetItemId: personal.id,
     });
-    await relation(projectArea, project.id, work.id);
+    await relation(projectCompany, project.id, work.id);
     expect((await cp.queryViewItems(workView.id, {})).items.map((row) => row.id)).toEqual([task.id]);
     expect((await cp.queryViewItems(personalView.id, {})).items).toEqual([]);
     expect((await cp.queryView(workView.id)).items.map((row) => row.id)).toEqual([task.id]);
@@ -155,12 +155,12 @@ describe("relation_path_contains production queries", () => {
   });
 
   it.each([
-    { path: ["missing", "area"] },
-    { path: ["name", "area"] },
+    { path: ["missing", "company"] },
+    { path: ["name", "company"] },
     { path: ["project", "missing"] },
     { path: ["project", "name"] },
     { path: ["project"] },
-    { path: ["project", "area", "projects"] },
+    { path: ["project", "company", "projects"] },
     { value: "invalid" },
   ])("rejects invalid query input %j with 400 on filter", async (override) => {
     const query = cp.queryDatabaseItems(databases.tasks!, { filter: { ...filter(randomUUID()), ...override } });
@@ -178,13 +178,13 @@ describe("relation_path_contains production queries", () => {
           expect(spy).toHaveBeenCalledTimes(2);
           const projects = metadata.get("projects");
           expect(projects?.targetDatabaseId).toBe(databases.projects);
-          expect(projects?.targetRelationProperties?.get("area")).toMatchObject({
+          expect(projects?.targetRelationProperties?.get("company")).toMatchObject({
             type: "relation",
             relationSide: "b",
           });
           expect(projects?.targetRelationProperties?.has("name")).toBe(false);
-          expect(projects?.targetRelationProperties?.get("area")?.targetRelationProperties).toBeUndefined();
-          expect(metadata.get("area")?.targetDatabaseId).toBe(databases.areas);
+          expect(projects?.targetRelationProperties?.get("company")?.targetRelationProperties).toBeUndefined();
+          expect(metadata.get("companies")?.targetDatabaseId).toBe(databases.companies);
         } finally {
           spy.mockRestore();
         }
@@ -213,10 +213,10 @@ describe("relation_path_contains production queries", () => {
   });
 
   it("EXPLAIN probes the intermediate item by index for the exact compiled predicate", async () => {
-    const work = await item("areas");
+    const work = await item("companies");
     const project = await item("projects");
     const task = await item("tasks");
-    await relation(projectArea, project.id, work.id);
+    await relation(projectCompany, project.id, work.id);
     await relation(taskProject, task.id, project.id);
     await pool.query("ANALYZE items");
     const props = await cp.listProperties(databases.tasks!);

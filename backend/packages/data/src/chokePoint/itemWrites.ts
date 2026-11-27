@@ -499,7 +499,7 @@ export async function createItemReportingReplay(
     writer,
     initialRelations,
   });
-  // A create hook may write the new item again (Areas assigns its `position`): answer with the row as stored.
+  // A create hook may write the new item again: answer with the row as stored.
   const item =
     itemsStore.itemPropertyWriteCount(client, inserted.databaseId, inserted.id) === 0
       ? inserted

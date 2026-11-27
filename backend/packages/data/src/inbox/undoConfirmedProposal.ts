@@ -240,7 +240,7 @@ async function cancelFollowUps(
  *
  * - A Files item that received a moved attachment has no reverse and is returned as a `KeptItem`.
  * - Only edges recorded in the confirmation entry are reversed, so a manually settled speaker card keeps its edges.
- * - A `journalEntry` loses its blocks and inserted `project`/`area` edge, but the Journal day stays.
+ * - A `journalEntry` loses its blocks and inserted `project` edge, but the Journal day stays.
  * - Not reversed: an Events item materialized for a synthetic occurrence, and the release of a trashed Event edge.
  *
  * The caller has locked the card, handled non-`confirmed` cases and checked `ifVersion`.

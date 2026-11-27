@@ -101,7 +101,6 @@ export * from "./views/filterTree.js";
 export { compileFilterNode, type FilterProperty, type FilterProperties } from "./views/filterCompiler.js";
 export * from "./views/sortSpec.js";
 export { compileSort } from "./views/sortCompiler.js";
-export { expandAreaFilter, resolveDatabaseAreaFilters } from "./views/areaFilter.js";
 export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
@@ -633,7 +632,6 @@ export {
 } from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
-export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
 export { setThreadTaskPeopleDelivery, type ThreadTaskPeopleDelivery } from "./mail/threadTaskPeople.js";
 export {

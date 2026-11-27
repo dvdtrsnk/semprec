@@ -19,18 +19,18 @@ it("advertises overviewHidden as an optional boolean of the database patch (issu
   expect(z.array(z.string()).optional().parse(patch.required) ?? []).not.toContain("overviewHidden");
 });
 const value = "11111111-1111-4111-8111-111111111111";
-const validLeaf = { type: "relation_path_contains", path: ["project", "area"], value };
+const validLeaf = { type: "relation_path_contains", path: ["project", "company"], value };
 const invalidLeaves = [
   { name: "missing path and value", leaf: { type: validLeaf.type } },
   { name: "missing path", leaf: { type: validLeaf.type, value } },
   { name: "missing value", leaf: { type: validLeaf.type, path: validLeaf.path } },
   { name: "empty path", leaf: { ...validLeaf, path: [] } },
   { name: "short path", leaf: { ...validLeaf, path: ["project"] } },
-  { name: "long path", leaf: { ...validLeaf, path: ["project", "area", "extra"] } },
-  { name: "non-array path", leaf: { ...validLeaf, path: "project.area" } },
-  { name: "empty first key", leaf: { ...validLeaf, path: ["", "area"] } },
+  { name: "long path", leaf: { ...validLeaf, path: ["project", "company", "extra"] } },
+  { name: "non-array path", leaf: { ...validLeaf, path: "project.company" } },
+  { name: "empty first key", leaf: { ...validLeaf, path: ["", "company"] } },
   { name: "empty second key", leaf: { ...validLeaf, path: ["project", ""] } },
-  { name: "non-string first key", leaf: { ...validLeaf, path: [0, "area"] } },
+  { name: "non-string first key", leaf: { ...validLeaf, path: [0, "company"] } },
   { name: "non-string second key", leaf: { ...validLeaf, path: ["project", null] } },
   { name: "invalid UUID", leaf: { ...validLeaf, value: "not-a-uuid" } },
   { name: "non-string UUID", leaf: { ...validLeaf, value: 123 } },
@@ -180,7 +180,7 @@ const defaultHashes: Record<string, string> = {
   "database.facets": "235227f7c8f084dacb50f7f510123fec368bc59519700b48202c4cfae366ad56",
   "page.ensureJournalPeriod": "832c35c2d97c0677e49f6587e557825083481936b880a30f73d84b81ab40d3a9",
   "page.mergeJournalDuplicates": "a34df63d5931b36d578a6e20e17f36818f9853db2266f9e253b0dc73932ae387",
-  search: "9b2840da72eb61fc284c5065a1575b9bbdc64dca4d0df006f2ca317d6009b2b8",
+  search: "03349455db3b934f325d57653966fe9e6a03ffedfe7982c6388238cd7cbe4622",
   "relation.related": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
   "page.convertToBlock": "460090728b8b2d2a93b3501fb6fa0e8d285d2e099d92314d53d701ad609eb924",
 };
@@ -252,7 +252,6 @@ describe("search generated input", () => {
       "task",
       "event",
       "project",
-      "area",
       "contact",
       "journal",
       "file",

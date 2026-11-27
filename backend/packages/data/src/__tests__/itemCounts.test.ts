@@ -272,13 +272,13 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       expect(await count(entries)).toEqual(live);
     }));
 
-  it("groups active projects by area: one count per area that occurs, the projects without one, and the total", () =>
+  it("groups active projects by company: one count per company that occurs, the projects without one, and the total", () =>
     runInTenant(tenant, async () => {
       const projects = await database("projects");
-      const work = await make("areas", { name: "Work" });
-      const home = await make("areas", { name: "Home" });
-      // An area no active project belongs to gets no group.
-      const unused = await make("areas", { name: "Unused" });
+      const work = await make("companies", { name: "Work" });
+      const home = await make("companies", { name: "Home" });
+      // A company no active project belongs to gets no group.
+      const unused = await make("companies", { name: "Unused" });
       const active = [
         await make("projects", { name: "Launch", status: "inProgress" }),
         await make("projects", { name: "Hiring", status: "longTerm" }),
@@ -286,17 +286,17 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
         await make("projects", { name: "Someday", status: "inProgress" }),
       ];
       const finished = await make("projects", { name: "Old", status: "done" });
-      await link(active[0]!, "area", work);
-      await link(active[1]!, "area", work);
-      await link(active[2]!, "area", home);
-      await link(finished, "area", unused);
+      await link(active[0]!, "company", work);
+      await link(active[1]!, "company", work);
+      await link(active[2]!, "company", home);
+      await link(finished, "company", unused);
 
       const [answer] = await count([
         {
           databaseId: projects.id,
           collection: true,
           filter: { type: "in", property: "status", value: ["inProgress", "longTerm"] },
-          groupBy: "area",
+          groupBy: "company",
         },
       ]);
 

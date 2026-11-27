@@ -395,23 +395,13 @@ export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
  * Search groups in their fixed order. `contact` holds People and Companies; `mail` holds one entry per mail thread;
  * `chat` holds a person's Semp threads and is never given to an agent actor.
  */
-export const SEARCH_GROUP_TYPES = [
-  "task",
-  "event",
-  "project",
-  "area",
-  "contact",
-  "journal",
-  "file",
-  "mail",
-  "chat",
-] as const;
+export const SEARCH_GROUP_TYPES = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"] as const;
 export type SearchGroupType = (typeof SEARCH_GROUP_TYPES)[number];
 
 /** The groups whose results are items, in the order of `SEARCH_GROUP_TYPES`; the others are threads and carry a `threadId`. */
-export const SEARCH_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "journal", "file"] as const;
+export const SEARCH_ITEM_GROUP_TYPES = ["task", "event", "project", "contact", "journal", "file"] as const;
 export type SearchItemGroupType = (typeof SEARCH_ITEM_GROUP_TYPES)[number];
-const SEARCH_NON_JOURNAL_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "file"] as const;
+const SEARCH_NON_JOURNAL_ITEM_GROUP_TYPES = ["task", "event", "project", "contact", "file"] as const;
 const SEARCH_THREAD_GROUP_TYPES = ["mail", "chat"] as const;
 
 /** The Journal period types a subpage can be created under; mirrors the data package's `JOURNAL_PERIOD_TYPES`. */
@@ -424,12 +414,10 @@ export const SEARCH_SUBTITLE_KINDS = [
   "place",
   "recurrence",
   "project",
-  "area",
   "people",
   "phone",
   "relationship",
   "status",
-  "count",
   "sender",
   "movedFrom",
   "missedInEvent",

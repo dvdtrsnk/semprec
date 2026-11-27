@@ -22,14 +22,13 @@ function threadGroup(type: ThreadSearchGroup["type"]): ThreadSearchGroup {
 }
 
 describe("the registry that domainWriteHooks fills", () => {
-  it("holds the seven item groups with exactly their owner modules, and the chat thread group", () => {
+  it("holds the six item groups with exactly their owner modules, and the chat thread group", () => {
     expect(
       composedItemGroups.map((group) => group && { type: group.type, ownerModuleIds: [...group.ownerModuleIds] }),
     ).toEqual([
       { type: "task", ownerModuleIds: ["tasks"] },
       { type: "event", ownerModuleIds: ["events"] },
       { type: "project", ownerModuleIds: ["projects"] },
-      { type: "area", ownerModuleIds: ["areas"] },
       { type: "contact", ownerModuleIds: ["people", "companies"] },
       { type: "journal", ownerModuleIds: ["journal"] },
       { type: "file", ownerModuleIds: ["files"] },

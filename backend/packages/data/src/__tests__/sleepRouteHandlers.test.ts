@@ -50,7 +50,6 @@ const responseSchema = z
     timezone: z.string(),
     planCount: z.number(),
     goalMinutes: z.number(),
-    areaId: z.string().nullable(),
     nights: z.array(nightSchema),
   })
   .strict();
@@ -177,7 +176,6 @@ describe("GET /api/sleep/nights (issue gh-1809)", () => {
       timezone: "Europe/Prague",
       planCount: 2,
       goalMinutes: 480,
-      areaId: null,
       nights: [
         {
           night: "2026-10-15",

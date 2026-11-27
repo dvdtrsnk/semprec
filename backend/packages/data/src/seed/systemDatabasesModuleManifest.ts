@@ -1,6 +1,5 @@
-import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import { EMAILS_MODULE_ID } from "./emailModuleKeys.js";
-import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
+import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "./systemDatabasesEditorSchemas.js";
@@ -11,7 +10,6 @@ import {
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
 } from "../transcription/transcriptionActions.js";
 import {
-  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -77,23 +75,6 @@ export {
 export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
 export { createMaterializeEventOccurrenceRouteHandler } from "../calendar/eventOccurrenceRouteHandlers.js";
 export { createRemindersFeedRouteHandler } from "../calendar/remindersFeedRouteHandler.js";
-export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
-
-const AREA_VALUE = { areaValue: true } as const;
-
-/** Items whose own `area` relation points at the area. */
-const OWN_AREA_FILTER: AreaFilterTemplate = { type: "relation_contains", property: "area", value: AREA_VALUE };
-
-/** Items whose project is in the area or, without a live project, whose own area is it. */
-function projectOrOwnAreaFilter(projectKey: string): AreaFilterTemplate {
-  return {
-    type: "or",
-    nodes: [
-      { type: "relation_path_contains", path: [projectKey, "area"], value: AREA_VALUE },
-      { type: "and", nodes: [{ type: "relation_is_empty", property: projectKey }, OWN_AREA_FILTER] },
-    ],
-  };
-}
 
 type QuickFilters = NonNullable<ModuleDatabaseDescriptor["quickFilters"]>;
 
@@ -172,31 +153,6 @@ export const manifest: ModuleManifest = {
   systemProject: true,
   databases: [
     {
-      key: AREAS_MODULE_ID,
-      relatedOrder: {
-        order: [
-          PROJECTS_MODULE_ID,
-          TASKS_MODULE_ID,
-          EVENTS_MODULE_ID,
-          FILES_MODULE_ID,
-          "threads",
-          HEALTH_RECORDS_MODULE_ID,
-          COMPANIES_MODULE_ID,
-          PEOPLE_MODULE_ID,
-          BOOKS_MODULE_ID,
-          MOVIES_MODULE_ID,
-        ],
-        omit: [JOURNAL_MODULE_ID],
-      },
-      name: "Areas",
-      searchFields: ["name", "note"],
-      icon: "compass",
-      color: "#30B0C7",
-      overviewOrder: null,
-      switcherOrder: null,
-      clientVisible: true,
-    },
-    {
       key: PROJECTS_MODULE_ID,
       relatedOrder: {
         order: [
@@ -212,12 +168,11 @@ export const manifest: ModuleManifest = {
         omit: [TASKS_MODULE_ID],
       },
       name: "Projects",
-      searchFields: ["name", "status", "tags", "agents", "area", "company"],
+      searchFields: ["name", "status", "tags", "agents", "company"],
       icon: "folder",
       color: "#007AFF",
       overviewOrder: 1,
       switcherOrder: 1,
-      areaFilter: OWN_AREA_FILTER,
       quickFilters: PROJECTS_QUICK_FILTERS,
       dateLabels: { pastLabelKey: "dateLabel.projects.past", noDateLabelKey: "dateLabel.projects.noDate" },
       collectionFilter: USER_PROJECTS_FILTER,
@@ -232,8 +187,6 @@ export const manifest: ModuleManifest = {
       color: "#34C759",
       overviewOrder: null,
       switcherOrder: 2,
-      // A task has no area of its own: only its project's area counts, so a task without a project never matches.
-      areaFilter: { type: "relation_path_contains", path: ["project", "area"], value: AREA_VALUE },
       defaultSort: DATE_ASCENDING,
     },
     {
@@ -273,7 +226,6 @@ export const manifest: ModuleManifest = {
       color: "#8E8E93",
       overviewOrder: 5,
       switcherOrder: 7,
-      areaFilter: projectOrOwnAreaFilter("projects"),
       quickFilters: chipsWithAll("files", [
         // "Recent" is `last30` (D-30 through today inclusive), as everywhere.
         ["recent", { type: "date_relative", property: "date", preset: "last30" }],
@@ -291,7 +243,6 @@ export const manifest: ModuleManifest = {
       color: "#FF3B30",
       overviewOrder: 2,
       switcherOrder: 3,
-      areaFilter: projectOrOwnAreaFilter("project"),
       quickFilters: EVENTS_QUICK_FILTERS,
       defaultSort: DATE_ASCENDING,
     },
@@ -303,7 +254,6 @@ export const manifest: ModuleManifest = {
       color: "#FF2D55",
       overviewOrder: 6,
       switcherOrder: 8,
-      areaFilter: projectOrOwnAreaFilter("projects"),
       quickFilters: chipsWithAll("healthRecords", [
         ["monitoring", inValues("status", ["monitoring"])],
         ["resolved", inValues("status", ["resolved"])],
@@ -317,7 +267,6 @@ export const manifest: ModuleManifest = {
       color: "#5AC8FA",
       overviewOrder: 4,
       switcherOrder: 6,
-      areaFilter: OWN_AREA_FILTER,
     },
     {
       key: TRANSCRIPTS_MODULE_ID,
@@ -338,7 +287,6 @@ export const manifest: ModuleManifest = {
       color: "#AF52DE",
       overviewOrder: null,
       switcherOrder: 4,
-      areaFilter: OWN_AREA_FILTER,
     },
   ],
   capabilities: [],
@@ -655,14 +603,6 @@ export const manifest: ModuleManifest = {
       // The existence check, the copy of the series Event and its edges commit together under the occurrence's
       // advisory lock.
       justification: "transactional-semantics",
-    },
-    {
-      name: "areaOverview",
-      method: "GET",
-      path: "/api/areas/:id/overview",
-      handlerExport: "createAreaOverviewRouteHandler",
-      // The head of an area's page: project and task counts and upcoming tasks and events, read in one transaction.
-      justification: "single-consumer-read",
     },
     {
       name: "createTranscriptActionItemTask",

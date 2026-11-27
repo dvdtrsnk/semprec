@@ -130,28 +130,32 @@ describe("choke-point listItemRelations (issue #1404)", () => {
 
   it("lists a one-directional edge from its source side only, with the target and its database", async () => {
     const files = await chokePoint.createDatabase({ name: "Files" });
-    const areas = await chokePoint.createDatabase({ name: "Areas" });
-    const { property: area } = await chokePoint.createRelationProperty({
+    const labels = await chokePoint.createDatabase({ name: "Labels" });
+    const { property: label } = await chokePoint.createRelationProperty({
       sourceDatabaseId: files.id,
-      key: "area",
-      name: "Area",
-      targetDatabaseId: areas.id,
+      key: "label",
+      name: "Label",
+      targetDatabaseId: labels.id,
     });
     const file = await chokePoint.createItem({ databaseId: files.id, properties: {} });
-    const areaItem = await chokePoint.createItem({ databaseId: areas.id, properties: {} });
-    await chokePoint.createRelation({ relationPropertyId: area.id, callerItemId: file.id, targetItemId: areaItem.id });
+    const labelItem = await chokePoint.createItem({ databaseId: labels.id, properties: {} });
+    await chokePoint.createRelation({
+      relationPropertyId: label.id,
+      callerItemId: file.id,
+      targetItemId: labelItem.id,
+    });
 
     expect(await chokePoint.listItemRelations(file.id)).toEqual([
       {
-        relationPropertyId: area.id,
-        propertyKey: "area",
-        targetItemId: areaItem.id,
-        targetDatabaseId: areas.id,
+        relationPropertyId: label.id,
+        propertyKey: "label",
+        targetItemId: labelItem.id,
+        targetDatabaseId: labels.id,
         metadata: {},
       },
     ]);
-    // The Areas database has no property for this edge, so the target side reads nothing.
-    expect(await chokePoint.listItemRelations(areaItem.id)).toEqual([]);
+    // The Labels database has no property for this edge, so the target side reads nothing.
+    expect(await chokePoint.listItemRelations(labelItem.id)).toEqual([]);
   });
 
   it("reports a paired edge from each end under that end's own property", async () => {
@@ -338,20 +342,24 @@ describe("choke-point listItemRelations (issue #1404)", () => {
 
   it("treats a relation property whose definition is gone as having no edges", async () => {
     const files = await chokePoint.createDatabase({ name: "Files" });
-    const areas = await chokePoint.createDatabase({ name: "Areas" });
-    const { property: area } = await chokePoint.createRelationProperty({
+    const labels = await chokePoint.createDatabase({ name: "Labels" });
+    const { property: label } = await chokePoint.createRelationProperty({
       sourceDatabaseId: files.id,
-      key: "area",
-      name: "Area",
-      targetDatabaseId: areas.id,
+      key: "label",
+      name: "Label",
+      targetDatabaseId: labels.id,
     });
     const file = await chokePoint.createItem({ databaseId: files.id, properties: {} });
-    const areaItem = await chokePoint.createItem({ databaseId: areas.id, properties: {} });
-    await chokePoint.createRelation({ relationPropertyId: area.id, callerItemId: file.id, targetItemId: areaItem.id });
+    const labelItem = await chokePoint.createItem({ databaseId: labels.id, properties: {} });
+    await chokePoint.createRelation({
+      relationPropertyId: label.id,
+      callerItemId: file.id,
+      targetItemId: labelItem.id,
+    });
 
     // Raw SQL: no choke-point write removes a definition under a live relation property. The edges cascade
     // with the definition.
-    const definitionId = area.config.relationDefinitionId;
+    const definitionId = label.config.relationDefinitionId;
     if (typeof definitionId !== "string") throw new Error("expected the relation property to name its definition");
     await pool.query("DELETE FROM relation_definitions WHERE id = $1", [definitionId]);
 
