@@ -60,20 +60,25 @@ public enum SempScreenFactory {
     }
 
     // MARK: - Bubble
-    /// The floating bubble, over the whole area it is placed in. `registry` holds the objects of the presentation it
-    /// floats over, and `open` shows the chat.
+    /// The bubble, over the whole area it is placed in. `registry` holds the objects it can be dragged onto, `dock` is
+    /// the place it is docked in (in global coordinates) or nil while it floats, `open` shows the chat, and
+    /// `reportFrame` is told where the bubble is (in global coordinates) whenever it moves.
     public static func bubble(
         makeModel: @escaping @MainActor () -> any SempBubbleScreenModel,
         router: any SempRouting,
         registry: DropTargetRegistry,
+        dock: CGRect? = nil,
         zoom: Namespace.ID? = nil,
-        open: @escaping () -> Void
+        open: @escaping () -> Void,
+        reportFrame: @escaping (CGRect) -> Void = { _ in }
     ) -> some View {
         SempBubbleScreen(
             viewModel: SempBubbleViewModel(model: makeModel(), router: router),
             registry: registry,
+            dock: dock,
             zoom: zoom,
-            open: open
+            open: open,
+            reportFrame: reportFrame
         )
     }
 

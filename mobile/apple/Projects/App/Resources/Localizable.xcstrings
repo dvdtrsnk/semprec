@@ -1281,6 +1281,22 @@
         }
       }
     },
+    "tab.semp" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semp"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semp"
+          }
+        }
+      }
+    },
     "wake.camera.denied" : {
       "localizations" : {
         "cs" : {

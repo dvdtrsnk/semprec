@@ -58,7 +58,7 @@ export function parseJournalEntryAnswer(
   const { reason, confidence, ...entry } = answer;
   if (entry.projectId !== undefined && !listedIds(workspace, "projects").has(entry.projectId)) {
     delete entry.projectId;
-    logger.info({ count: 1 }, "Dropped journal entry references");
+    logger.info("Dropped an unlisted projectId from a journal entry answer");
   }
   return {
     properties: entry,
