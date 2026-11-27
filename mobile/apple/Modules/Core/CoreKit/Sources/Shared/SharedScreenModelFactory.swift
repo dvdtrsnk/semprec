@@ -38,7 +38,7 @@ public final class SharedScreenModelFactory {
         case .memory: nil
         }
         let dataDirectory: String? = switch sessionStore {
-        case .keychain: Self.offlineDirectory()
+        case .keychain: OfflineDirectory.path()
         case .memory: nil
         }
         sdk = SharedSDK.HomeSDK(
@@ -53,21 +53,6 @@ public final class SharedScreenModelFactory {
             sleepAlarms: deviceServices.sleepAlarms,
             debugAlarms: deviceServices.debugAlarms
         )
-    }
-
-    /// `Application Support/Offline`, which the system does not empty as it may empty the caches, created and excluded
-    /// from backups: it holds a copy of the server's data, which a restored device reads again. When the directory
-    /// cannot be created or excluded here, its path is still handed over: the shared layer creates it on its first
-    /// write, and it is then backed up with the app's other data, which loses nothing.
-    private static func offlineDirectory() -> String? {
-        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        else { return nil }
-        var directory = support.appendingPathComponent("Offline", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? directory.setResourceValues(values)
-        return directory.path
     }
 }
 
