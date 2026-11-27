@@ -54,6 +54,11 @@ struct ProjectSettingsSheet: View {
         guard let before else { return false }
         return !now.isSubset(of: before)
     }
+
+    /// Whether a new tag can be sent: the name is not blank and no write is running, which would drop it.
+    static func canAddTag(named name: String, saving: Bool) -> Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !saving
+    }
 }
 
 // MARK: - Sections
@@ -102,10 +107,10 @@ private extension ProjectSettingsSheet {
                 if tags.editable {
                     HStack {
                         TextField(text: $newTag) { Text("project.tags.new", bundle: .module) }
-                            .onSubmit { addTag(to: tags) }
+                            .onSubmit { if canAddTag { addTag(to: tags) } }
                             .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsNewTag)
                         Button { addTag(to: tags) } label: { Text("project.tags.add", bundle: .module) }
-                            .disabled(newTag.isEmpty || state.saving)
+                            .disabled(!canAddTag)
                             .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsAddTag)
                     }
                 }
@@ -148,6 +153,8 @@ private extension ProjectSettingsSheet {
             Text("project.settings.mailSignals.footer", bundle: .module)
         }
     }
+
+    var canAddTag: Bool { Self.canAddTag(named: newTag, saving: state.saving) }
 
     /// Sends the typed name as a new tag of the project; the field keeps it until the tag is on the project.
     func addTag(to tags: FieldView) {

@@ -70,6 +70,14 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testANewTagIsSentOnlyWithANameAndNoRunningWrite() {
+        XCTAssertTrue(ProjectSettingsSheet.canAddTag(named: "Client", saving: false))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "Client", saving: true))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "", saving: false))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "  ", saving: false))
+    }
+
+    @MainActor
     func testOpenItemEffectsGoToTheScreenOfTheirKind() async throws {
         let model = ScriptedItemScreenModel(
             state: state(databaseKey: "projects"),

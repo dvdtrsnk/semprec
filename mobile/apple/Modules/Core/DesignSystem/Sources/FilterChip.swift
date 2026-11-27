@@ -21,7 +21,7 @@ public struct FilterChip<Accessory: View>: View {
     // MARK: - Body
     public var body: some View {
         HStack(spacing: Theme.Spacing.small / 2) {
-            Circle().fill(color).frame(width: 8, height: 8)
+            Circle().fill(color).frame(width: 8, height: 8).accessibilityHidden(true)
             Text(title).font(.footnote).lineLimit(1)
             accessory
         }
