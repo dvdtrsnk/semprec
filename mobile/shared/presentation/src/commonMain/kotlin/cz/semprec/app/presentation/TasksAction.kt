@@ -6,9 +6,6 @@ sealed interface TasksAction {
     data class SelectTab(val tab: TasksTab) : TasksAction
     data object ToggleHideDone : TasksAction
 
-    /** `null` is every area. Choosing an area other than the chosen project's drops the project. */
-    data class SetArea(val areaId: String?) : TasksAction
-
     /** `null` is every project. */
     data class SetProject(val projectId: String?) : TasksAction
     data class SetFlaggedOnly(val flaggedOnly: Boolean) : TasksAction

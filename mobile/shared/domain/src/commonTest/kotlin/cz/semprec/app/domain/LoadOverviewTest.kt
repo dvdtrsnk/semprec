@@ -8,11 +8,8 @@ import kotlin.test.assertIs
 
 private val SUMMARY = OverviewSummary(9, 5, 2)
 
-private fun area(id: String, position: Double?, active: Boolean = true) =
-    OverviewArea(id, id.uppercase(), null, null, position, active)
-
 private fun project(id: String, order: Double?, pinned: Boolean = true) =
-    OverviewProject(id, id, null, null, "inProgress", pinned, order)
+    OverviewProject(id, id, null, "inProgress", pinned, order)
 
 private fun collection(id: String, order: Int?, visible: Boolean = true, hidden: Boolean = false) =
     OverviewCollection(id, "owner-$id", id, null, null, order, visible, hidden)
@@ -27,30 +24,10 @@ class LoadOverviewTest {
         return assertIs<RepositoryResult.Content<Overview>>(result).value
     }
 
-    @Test fun `areas are the active ones by position then name with unpositioned last`() = runTest {
-        val loaded = load(
-            Overview(
-                SUMMARY,
-                listOf(
-                    area("c", null),
-                    area("b", 2.0),
-                    area("gone", 1.0, active = false),
-                    area("a", 2.0),
-                    area("d", 1.0),
-                ),
-                emptyList(),
-                emptyList(),
-            ),
-        )
-
-        assertEquals(listOf("d", "a", "b", "c"), loaded.areas.map { it.id })
-    }
-
     @Test fun `projects are the pinned ones by their pinned order`() = runTest {
         val loaded = load(
             Overview(
                 SUMMARY,
-                emptyList(),
                 listOf(
                     project("b", 2.0),
                     project("unpinned", 0.0, pinned = false),
@@ -69,7 +46,6 @@ class LoadOverviewTest {
             Overview(
                 SUMMARY,
                 emptyList(),
-                emptyList(),
                 listOf(
                     collection("b", 2),
                     collection("hidden", 1, hidden = true),
@@ -84,7 +60,7 @@ class LoadOverviewTest {
     }
 
     @Test fun `the summary passes through and a failure is kept`() = runTest {
-        assertEquals(SUMMARY, load(Overview(SUMMARY, emptyList(), emptyList(), emptyList())).summary)
+        assertEquals(SUMMARY, load(Overview(SUMMARY, emptyList(), emptyList())).summary)
 
         val failed = LoadOverview(FakeOverviewRepository(RepositoryResult.Failure(FailureKind.UNAVAILABLE)))()
 

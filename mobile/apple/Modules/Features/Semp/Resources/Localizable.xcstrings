@@ -2449,38 +2449,6 @@
         }
       }
     },
-    "semp.kind.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "area"
-          }
-        }
-      }
-    },
-    "semp.kind.area.with" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "oblastí"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "the area"
-          }
-        }
-      }
-    },
     "semp.kind.book" : {
       "localizations" : {
         "cs" : {

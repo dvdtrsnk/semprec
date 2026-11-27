@@ -3,6 +3,7 @@ package cz.semprec.app.data
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CollectionDatabase
 import cz.semprec.app.domain.FieldValue
+import cz.semprec.app.domain.PropertyOption
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 private fun <T> RepositoryResult<T>.content(): T = assertIs<RepositoryResult.Content<T>>(this).value
@@ -95,15 +97,18 @@ class HttpCollectionWritesTest {
     @Test
     fun creatingSendsTheTitleAndTheRelationItBelongsTo() = runTest {
         val f = fixture { json(PROJECT_JSON, HttpStatusCode.Created) }
-        f.writes.create(projects(f), "Nový projekt", "area" to AREA_ITEM).content()
+        f.writes.create(projects(f), "Nový projekt", "company" to COMPANY_ITEM).content()
         val request = f.recorder.requests.last()
         assertEquals(HttpMethod.Post, request.method)
         assertEquals("/api/databases/$PROJECTS_ID/items", request.url.encodedPath)
         val body = f.recorder.bodyJson(1)
         assertEquals("Nový projekt", body.getValue("properties").obj().getValue("name").jsonPrimitive.content)
         val relation = body.getValue("relations").jsonArray.single().obj()
-        assertEquals("area", relation.getValue("propertyKey").jsonPrimitive.content)
-        assertEquals(listOf(AREA_ITEM), relation.getValue("targetItemIds").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("company", relation.getValue("propertyKey").jsonPrimitive.content)
+        assertEquals(
+            listOf(COMPANY_ITEM),
+            relation.getValue("targetItemIds").jsonArray.map { it.jsonPrimitive.content },
+        )
     }
 
     @Test
@@ -120,16 +125,16 @@ class HttpCollectionWritesTest {
     @Test
     fun relationsAreSetLinkedAndUnlinkedByTheirPropertyKey() = runTest {
         val f = fixture { json("{}") }
-        f.writes.setRelation(PROJECT_ITEM, "area", AREA_ITEM).content()
-        f.writes.setRelation(PROJECT_ITEM, "area", null).content()
+        f.writes.setRelation(PROJECT_ITEM, "company", COMPANY_ITEM).content()
+        f.writes.setRelation(PROJECT_ITEM, "company", null).content()
         f.writes.link(PROJECT_ITEM, "people", "x").content()
         f.writes.unlinkEdge(PROJECT_ITEM, "people", "x").content()
         val requests = f.recorder.requests
         assertEquals(
-            HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/area",
+            HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/company",
             requests[0].method to requests[0].url.encodedPath
         )
-        assertEquals(AREA_ITEM, f.recorder.bodyJson(0).getValue("targetItemId").jsonPrimitive.content)
+        assertEquals(COMPANY_ITEM, f.recorder.bodyJson(0).getValue("targetItemId").jsonPrimitive.content)
         assertEquals(JsonNull, f.recorder.bodyJson(1).getValue("targetItemId"))
         assertEquals(
             HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/people/x",
@@ -214,5 +219,29 @@ class HttpCollectionWritesTest {
         assertEquals(null, request.headers["X-Attach-To-Item"])
         assertEquals(null, request.headers["X-Attach-Relation"])
         assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(result).kind)
+    }
+
+    @Test
+    fun aNewOptionIsPostedByItsLabelToTheOptionsRouteOfItsProperty() = runTest {
+        val f = fixture { json("""{"key":"client","label":"Client","color":"#FF9500"}""", HttpStatusCode.Created) }
+        val tags = assertNotNull(projects(f).property("tags"))
+        val option = f.writes.addOption(tags, "Client").content()
+        val request = f.recorder.requests.last()
+        assertEquals(HttpMethod.Post, request.method)
+        assertEquals("/api/properties/p7/options", request.url.encodedPath)
+        assertEquals("Client", f.recorder.bodyJson(f.recorder.bodies.lastIndex).getValue("label").jsonPrimitive.content)
+        assertEquals(PropertyOption("client", "Client", "#FF9500"), option)
+    }
+
+    @Test
+    fun aRefusedNewOptionIsRejectedAndAnUnreadableAnswerIsInvalidData() = runTest {
+        val refused = fixture { json("""{"error":"conflict"}""", HttpStatusCode.Conflict) }
+        val tags = assertNotNull(projects(refused).property("tags"))
+        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused.writes.addOption(tags, "A")).kind)
+        val unreadable = fixture { json("""{"label":"A"}""", HttpStatusCode.Created) }
+        assertEquals(
+            FailureKind.INVALID_DATA,
+            assertIs<RepositoryResult.Failure>(unreadable.writes.addOption(tags, "A")).kind,
+        )
     }
 }

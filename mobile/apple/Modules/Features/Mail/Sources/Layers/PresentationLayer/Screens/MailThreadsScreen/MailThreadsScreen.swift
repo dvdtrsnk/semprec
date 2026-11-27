@@ -2,9 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The thread list of the mail: a search, quick filters, the areas and projects the threads belong to, a notice for a
-/// mailbox that needs signing in again, and the threads. It is the one screen for all mail, an area, a project, a
-/// folder and a mailbox: the model it is made over carries which.
+/// The thread list of the mail: a search, quick filters, the projects the threads belong to, a notice for a mailbox
+/// that needs signing in again, and the threads. It is the one screen for all mail, a project, a folder and a mailbox:
+/// the model it is made over carries which.
 struct MailThreadsScreen: View {
 
     // MARK: - Dependencies
@@ -220,7 +220,7 @@ private extension MailThreadsScreen {
     }
 
     var hasContext: Bool {
-        viewModel.state.areaId != nil || viewModel.state.projectId != nil
+        viewModel.state.projectId != nil
     }
 
     struct ContextChip {
@@ -230,17 +230,10 @@ private extension MailThreadsScreen {
         let clear: () -> Void
     }
 
-    /// The chips of the area and project the list is narrowed to; each clears its own.
+    /// The chip of the project the list is narrowed to; it clears it.
     var contextChips: [ContextChip] {
         var chips: [ContextChip] = []
         let state = viewModel.state
-        if state.areaId != nil {
-            let name = state.areaName ?? String(localized: "mail.filter.area", bundle: .module)
-            let title = String(format: String(localized: "mail.chip.area", bundle: .module), locale: .current, name)
-            chips.append(ContextChip(title: title, color: state.facets.areas.first { $0.id == state.areaId }?.color) {
-                viewModel.send(.setArea(nil))
-            })
-        }
         if state.projectId != nil {
             let name = state.projectName ?? String(localized: "mail.filter.project", bundle: .module)
             let title = String(format: String(localized: "mail.chip.project", bundle: .module), locale: .current, name)
@@ -288,7 +281,7 @@ private extension MailListFilter {
     }
 }
 
-/// An area or a project the list is narrowed to, as a capsule with a color dot and a button that removes it.
+/// The project the list is narrowed to, as a capsule with a color dot and a button that removes it.
 private struct MailContextChip: View {
 
     // MARK: - Dependencies

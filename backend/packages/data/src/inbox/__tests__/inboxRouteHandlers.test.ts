@@ -3942,6 +3942,17 @@ describe("inbox custom route handlers", () => {
       expect(fieldOf(listed, "status")).toMatchObject({ control: "seg" });
     });
 
+    it("offers a project card the project's tags as a multi field labelled in the user's language", async () => {
+      const card = await createCard("Kitchen renovation", "projects", { name: "Kitchen renovation" });
+
+      expect(fieldOf(await listedCard(card.cardId), "tags")).toEqual({ key: "tags", control: "multi", label: "Tags" });
+      expect(fieldOf(await listedCard(card.cardId, "cs"), "tags")).toEqual({
+        key: "tags",
+        control: "multi",
+        label: "Štítky",
+      });
+    });
+
     it("gives an editorSchema of null to a card whose base kind no module declares", async () => {
       const userId = (await createTenantZeroUser(pool)).id;
       const run = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "probe" });

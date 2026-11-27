@@ -37,7 +37,7 @@ private extension SearchSubtitle {
         case .date: date.text(iso: part.value)
         case .time: part.value
         case .timeRange: DisplayDate.time(part.value)
-        case .place, .project, .area, .people, .phone, .sender: part.value
+        case .place, .project, .people, .phone, .sender: part.value
         case .recurrence: recurrence(part.value)
         case .relationship: relationship(part.value)
         case .status: status(part.value)

@@ -7,7 +7,6 @@ internal object WorkKeys {
     const val TASKS = "tasks"
     const val EVENTS = "events"
     const val PROJECTS = "projects"
-    const val AREAS = "areas"
     const val PEOPLE = "people"
     const val NAME = "name"
     const val STATUS = "status"
@@ -23,15 +22,14 @@ internal object WorkKeys {
     const val RECURRENCE = "recurrence"
     const val COLOR = "color"
     const val PROJECT = "project"
-    const val AREA = "area"
     const val FILES = "files"
     const val HOST_EVENTS = "hostEvents"
     const val COMPANY = "company"
 
     fun databaseKey(kind: ItemKind): String = if (kind == ItemKind.TASK) TASKS else EVENTS
 
-    /** The relations a task list expands: the project, and through it the area. */
-    val listRelations: Map<String, List<String>> = mapOf(PROJECT to listOf(AREA))
+    /** The relations a task list expands: the project. */
+    val listRelations: Map<String, List<String>> = mapOf(PROJECT to emptyList())
 
     /** The relations the Podrobnosti sheet expands. */
     fun detailRelations(kind: ItemKind): Map<String, List<String>> = when (kind) {

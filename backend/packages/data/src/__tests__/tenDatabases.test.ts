@@ -82,6 +82,14 @@ describe("ten hardcoded databases (issue #24)", () => {
     }
   });
 
+  it("gives Projects a user-owned tags multi_select with no shipped options", async () => {
+    const properties = await chokePoint.listProperties(await databaseIdFor("projects"));
+    const tags = properties.filter((property) => property.key === "tags");
+    expect(
+      tags.map(({ type, owner, ownerProcess, locked, config }) => ({ type, owner, ownerProcess, locked, config })),
+    ).toEqual([{ type: "multi_select", owner: "user", ownerProcess: null, locked: false, config: { options: [] } }]);
+  });
+
   it("links Areas and Projects through a real bidirectional relation, not text", async () => {
     const areasId = await databaseIdFor("areas");
     const projectsId = await databaseIdFor("projects");

@@ -15,11 +15,6 @@ sealed interface CollectionTarget {
     /** Every item of the database. */
     data class Whole(override val databaseKey: String?, override val databaseId: String?) : CollectionTarget
 
-    /** The items of one area, selected by the area filter the database declares. */
-    data class OfArea(override val databaseKey: String, val areaId: String) : CollectionTarget {
-        override val databaseId: String? get() = null
-    }
-
     /** The items whose relation [relationKey] holds the item [itemId] (the files of a project). */
     data class OfItem(override val databaseKey: String, val relationKey: String, val itemId: String) :
         CollectionTarget {
@@ -39,7 +34,6 @@ internal fun CollectionTarget.toConfig(): CollectionConfig = CollectionConfig(
     databaseId = databaseId,
     scope = when (this) {
         is CollectionTarget.Whole -> CollectionScope.Everything
-        is CollectionTarget.OfArea -> CollectionScope.Area(areaId)
         is CollectionTarget.OfItem -> CollectionScope.Related(relationKey, itemId)
         is CollectionTarget.Matching -> CollectionScope.Matching(FilterTree(filterJson))
     },

@@ -27,9 +27,9 @@ final class OverviewViewModelTests: XCTestCase {
         let viewModel = OverviewViewModel(model: model, router: RouterSpy())
         viewModel.retry()
         viewModel.open(.tasks)
-        viewModel.open(.area(id: "work"))
+        viewModel.open(.project(id: "p1"))
         viewModel.reload()
-        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.area(id: "work")), .refresh])
+        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.project(id: "p1")), .refresh])
     }
 
     @MainActor

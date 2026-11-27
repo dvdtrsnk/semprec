@@ -209,7 +209,10 @@ public struct ItemState: Equatable, Sendable {
     public var picker: PickerView?
     public var deletion: DeletionView?
     public var saving: Bool
+    /// The last write that failed; the item screen shows it as an alert.
     public var writeFailure: ItemWriteFailure?
+    /// The last new choice (`.edit(.addChoice)`) that could not be added and set, shown only where choices are added.
+    public var choiceFailure: ItemWriteFailure?
     public var deleted: Bool
 
     public init(
@@ -224,6 +227,7 @@ public struct ItemState: Equatable, Sendable {
         deletion: DeletionView? = nil,
         saving: Bool = false,
         writeFailure: ItemWriteFailure? = nil,
+        choiceFailure: ItemWriteFailure? = nil,
         deleted: Bool = false
     ) {
         self.phase = phase
@@ -237,6 +241,7 @@ public struct ItemState: Equatable, Sendable {
         self.deletion = deletion
         self.saving = saving
         self.writeFailure = writeFailure
+        self.choiceFailure = choiceFailure
         self.deleted = deleted
     }
 }
@@ -262,6 +267,9 @@ public enum ItemAction: Equatable, Sendable {
         case setNumber(propertyKey: String, number: Double?)
         case setFlag(propertyKey: String, isOn: Bool)
         case setChoices(propertyKey: String, keys: [String])
+        /// Adds a new choice named `label` to a select or multi-select and sets it on the item, a multi-select keeping
+        /// the choices it holds; a blank name changes nothing.
+        case addChoice(propertyKey: String, label: String)
         /// Ends the link that makes a value follow its source; the value stays as the item's own.
         case unlink(propertyKey: String)
         /// Makes the value follow its source again.

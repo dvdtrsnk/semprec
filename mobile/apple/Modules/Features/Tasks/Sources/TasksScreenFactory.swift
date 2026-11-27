@@ -8,8 +8,8 @@ import SwiftUI
 public enum TasksScreenFactory {
 
     // MARK: - Screens
-    /// The Tasks screen. Every start of it (today, an area, a project, the open tasks of an area) is the same screen
-    /// over a model that was made for that start.
+    /// The Tasks screen. Every start of it (today, the tasks of a project) is the same screen over a model that was
+    /// made for that start.
     public static func tasks(
         makeModel: @escaping @MainActor () -> any TasksScreenModel,
         router: any TasksRouting

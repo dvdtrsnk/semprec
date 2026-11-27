@@ -20,12 +20,11 @@ import io.ktor.http.encodeURLPathPart
 
 private const val PAGE_LIMIT = "50"
 private const val EMPTY_BODY = "{}"
-private const val AREAS_KEY = "areas"
 private const val PROJECTS_KEY = "projects"
 
 /**
  * The mail reads and thread actions of `/api/mail/threads*` (the list's changes since a cursor included), `/api/mail/summary` and `/api/mail/contacts`. The names
- * and colors of the areas and projects in the filter are read as items, because the counts carry only their ids. A
+ * and colors of the projects in the filter are read as items, because the counts carry only their ids. A
  * read mark, flag or move refused with a known code is [MailOutcome.Refused].
  */
 class HttpMailRepository internal constructor(
@@ -52,16 +51,10 @@ class HttpMailRepository internal constructor(
                 MailThreadChanges(changes.cursor, changes.threads.map { it.toDomain() }, changes.removed, changes.reset)
             }
 
-    override suspend fun facets(areaId: String?, projectId: String?): RepositoryResult<MailFacets> {
-        val parameters = listOfNotNull(areaId?.let { "areaId" to it }, projectId?.let { "projectId" to it })
+    override suspend fun facets(projectId: String?): RepositoryResult<MailFacets> {
+        val parameters = listOfNotNull(projectId?.let { "projectId" to it })
         return api.send(HttpMethod.Get, "/api/mail/threads/facets", parameters).decode<MailFacetsDto>()
-            .then { counts ->
-                names(AREAS_KEY).then { areaNames ->
-                    names(PROJECTS_KEY).map { projectNames ->
-                        counts.toDomain(areaNames, projectNames, areaId, projectId)
-                    }
-                }
-            }
+            .then { counts -> names(PROJECTS_KEY).map { projectNames -> counts.toDomain(projectNames, projectId) } }
     }
 
     override suspend fun summary(): RepositoryResult<MailSummary> =
@@ -106,7 +99,6 @@ private fun MailThreadQuery.viewParameters(): List<Pair<String, String>> = build
     add("box" to box.wire())
     mailboxId?.let { add("mailboxId" to it) }
     folderId?.let { add("folderId" to it) }
-    areaId?.let { add("areaId" to it) }
     projectId?.let { add("projectId" to it) }
     if (unreadOnly) add("unread" to "true")
 }
@@ -123,21 +115,16 @@ private fun MailBox.wire(): String = when (this) {
 
 /** The options of the filter; one whose item is gone or has no name is left out, as it could not be shown. */
 private fun MailFacetsDto.toDomain(
-    areaNames: Map<String, MailNameAndColor>,
     projectNames: Map<String, MailNameAndColor>,
-    selectedAreaId: String?,
     selectedProjectId: String?,
 ) = MailFacets(
     total = total,
-    areasTotal = areas.total,
     projectsTotal = projects.total,
-    areas = areas.items.mapNotNull { item -> item.option(areaNames) },
     projects = projects.items.mapNotNull { item -> item.option(projectNames) },
-    selectedAreaName = selectedAreaId?.let { areaNames[it]?.name },
     selectedProjectName = selectedProjectId?.let { projectNames[it]?.name },
 )
 
 private fun MailFacetItemDto.option(names: Map<String, MailNameAndColor>): MailFacetOption? {
     val known = names[id] ?: return null
-    return known.name?.let { MailFacetOption(id, it, known.color, count, areaId) }
+    return known.name?.let { MailFacetOption(id, it, known.color, count) }
 }

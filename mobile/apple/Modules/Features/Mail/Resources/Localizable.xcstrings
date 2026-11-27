@@ -177,22 +177,6 @@
         }
       }
     },
-    "mail.chip.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblast: %@"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Area: %@"
-          }
-        }
-      }
-    },
     "mail.chip.project" : {
       "localizations" : {
         "cs" : {
@@ -721,22 +705,6 @@
         }
       }
     },
-    "mail.filter.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Area"
-          }
-        }
-      }
-    },
     "mail.filter.clear" : {
       "localizations" : {
         "cs" : {
@@ -822,13 +790,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pošta patří do projektu, jen když má vlákno vazbu na projekt. Do oblasti se dostane přes projekt."
+            "value" : "Pošta patří do projektu, jen když má vlákno vazbu na projekt."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mail belongs to a project only when its thread is linked to the project. It reaches an area through the project."
+            "value" : "Mail belongs to a project only when its thread is linked to the project."
           }
         }
       }

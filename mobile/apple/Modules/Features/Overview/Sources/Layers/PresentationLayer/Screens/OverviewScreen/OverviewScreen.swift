@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The overview: what waits for the person, the areas, the pinned projects and the collections, with a search that
+/// The overview: what waits for the person, the pinned projects and the collections, with a search that
 /// opens in place and a profile button. Rows ask the shared ViewModel to open their target; the app shows it.
 ///
 /// The page is a native grouped list with a large navigation title. On iOS the search and profile buttons are toolbar
@@ -105,7 +105,6 @@ private extension OverviewScreen {
     func overview(_ content: OverviewContent) -> some View {
         List {
             section("overview.section.main", rows: OverviewRows.main(content))
-            section("overview.section.areas", rows: OverviewRows.areas(content))
             section("overview.section.projects", rows: OverviewRows.projects(content))
             section("overview.section.collections", rows: OverviewRows.collections(content))
         }

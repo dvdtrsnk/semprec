@@ -50,14 +50,11 @@ extension SharedTasksScreenModel {
             phase: phase(state),
             tab: TasksTab(state.tab),
             hideDone: state.hideDone,
-            areaId: state.areaId,
             projectId: state.projectId,
             flaggedOnly: state.flaggedOnly,
             groups: state.groups.map(group),
             openCount: Int(state.openCount),
-            areaOptions: state.areaOptions.map(option),
             projectOptions: state.projectOptions.map(option),
-            areaAllCount: Int(state.areaAllCount),
             projectAllCount: Int(state.projectAllCount),
             matchesNothing: state.matchesNothing,
             notice: state.notice.map(FailureKind.init)
@@ -68,7 +65,6 @@ extension SharedTasksScreenModel {
         switch action {
         case .selectTab(let tab): SharedSDK.TasksActionSelectTab(tab: tab.shared)
         case .toggleHideDone: SharedSDK.TasksActionToggleHideDone.shared
-        case .setArea(let id): SharedSDK.TasksActionSetArea(areaId: id)
         case .setProject(let id): SharedSDK.TasksActionSetProject(projectId: id)
         case .setFlaggedOnly(let flagged): SharedSDK.TasksActionSetFlaggedOnly(flaggedOnly: flagged)
         case .clearFilters: SharedSDK.TasksActionClearFilters.shared
@@ -118,12 +114,6 @@ extension SharedTasksScreenModel {
     }
 
     private static func option(_ option: SharedSDK.TaskFilterOption) -> TaskFilterOption {
-        TaskFilterOption(
-            id: option.id,
-            title: option.title,
-            color: option.color,
-            count: Int(option.count),
-            areaId: option.areaId
-        )
+        TaskFilterOption(id: option.id, title: option.title, color: option.color, count: Int(option.count))
     }
 }

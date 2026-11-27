@@ -96,11 +96,6 @@ final class AppComposition: ObservableObject {
         AppTasksRouter(context: navigation, tab: tab)
     }
 
-    /// The router of an area screen that sits on the stack of `tab`.
-    func areasRouter(in tab: AppTab) -> AppAreasRouter {
-        AppAreasRouter(context: navigation, tab: tab)
-    }
-
     /// The router of a recordings, transcript or event page screen that sits on the stack of `tab`.
     func recordingsRouter(in tab: AppTab) -> AppRecordingsRouter {
         AppRecordingsRouter(context: navigation, tab: tab)

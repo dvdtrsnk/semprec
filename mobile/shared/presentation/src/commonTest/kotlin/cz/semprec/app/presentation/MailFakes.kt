@@ -88,7 +88,7 @@ internal class ScriptedMailRepository(
     val threads: MailCall<MailThreadQuery, MailThreadPage> = MailCall(mailContent(mailPage())),
     val changes: MailCall<Pair<MailThreadQuery, String>, MailThreadChanges> =
         MailCall(mailContent(MailThreadChanges("c-next", emptyList(), emptyList(), reset = false))),
-    val facets: MailCall<Pair<String?, String?>, MailFacets> = MailCall(mailContent(mailFacets())),
+    val facets: MailCall<String?, MailFacets> = MailCall(mailContent(mailFacets())),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
     val read: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(false)),
@@ -106,7 +106,7 @@ internal class ScriptedMailRepository(
 
     override suspend fun threadChanges(query: MailThreadQuery, since: String) = changes.answer(query to since)
 
-    override suspend fun facets(areaId: String?, projectId: String?) = facets.answer(areaId to projectId)
+    override suspend fun facets(projectId: String?) = facets.answer(projectId)
 
     override suspend fun summary() = summary.answer(Unit)
 
@@ -283,20 +283,14 @@ internal fun mailSearch(
     remote = MailRemoteSearch(listOf("m1"), failed, unindexed),
 )
 
-internal fun mailFacets() = MailFacets(
+internal fun mailFacets(selectedProjectName: String? = null) = MailFacets(
     total = 9,
-    areasTotal = 9,
     projectsTotal = 7,
-    areas = listOf(
-        MailFacetOption("ar1", "Práce", "#5856D6", 4, null),
-        MailFacetOption("ar2", "Domácnost", null, 2, null),
-    ),
     projects = listOf(
-        MailFacetOption("pr1", "Web", "#FF9500", 3, "ar1"),
-        MailFacetOption("pr2", "Koupelna", null, 2, "ar2"),
+        MailFacetOption("pr1", "Web", "#FF9500", 3),
+        MailFacetOption("pr2", "Koupelna", null, 2),
     ),
-    selectedAreaName = null,
-    selectedProjectName = null,
+    selectedProjectName = selectedProjectName,
 )
 
 internal fun mailSummary() = MailSummary(5, 2, 1, 2, emptyList())

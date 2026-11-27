@@ -227,7 +227,7 @@ extension SharedInboxScreenModel {
 
     /// The kinds have the same names on both sides; an unknown one can only be discarded.
     private static let types: [SharedSDK.InboxCardType: InboxCardType] = [
-        .task: .task, .event: .event, .page: .page, .journal: .journal, .project: .project, .area: .area,
+        .task: .task, .event: .event, .page: .page, .journal: .journal, .project: .project,
         .company: .company, .person: .person, .health: .health, .file: .file, .recording: .recording, .mcp: .mcp,
         .invalid: .invalid, .clarify: .clarify, .transcriptEvent: .transcriptEvent, .speaker: .speaker,
         .approval: .approval, .unsupported: .unsupported

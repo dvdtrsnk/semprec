@@ -36,9 +36,12 @@ interface CollectionReads {
     suspend fun blob(blobId: String): RepositoryResult<BlobContent>
 }
 
-/** The writing half of the generic item API; each method answers an expected failure as a value. */
-interface CollectionWrites {
-    /** Creates an item with its title and, optionally, one relation (a project of an area, a file of a project). */
+/**
+ * The writing half of the generic item API, with the choices of a property that the items' values pick from; each
+ * method answers an expected failure as a value.
+ */
+interface CollectionWrites : PropertyWrites {
+    /** Creates an item with its title and, optionally, one relation (a file of a project). */
     suspend fun create(
         database: CollectionDatabase,
         title: String,
@@ -82,4 +85,10 @@ interface CollectionWrites {
         bytes: ByteArray,
         attachTo: Pair<String, String>?,
     ): RepositoryResult<CollectionItem>
+}
+
+/** The writes of a property's own choices; each method answers an expected failure as a value. */
+interface PropertyWrites {
+    /** Adds a choice with [label] to a select or multi-select [property]; the server makes its key. */
+    suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption>
 }

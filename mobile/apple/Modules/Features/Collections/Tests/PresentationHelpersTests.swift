@@ -28,7 +28,7 @@ final class PresentationHelpersTests: XCTestCase {
 
     func testTheSystemDatabasesHaveSymbolsOfTheirOwn() {
         let keys = [
-            "projects", "tasks", "events", "people", "companies", "files", "journal", "threads", "transcripts", "areas"
+            "projects", "tasks", "events", "people", "companies", "files", "journal", "threads", "transcripts"
         ]
         XCTAssertEqual(Set(keys.map { CollectionIcon.symbol(forDatabase: $0) }).count, keys.count)
     }
@@ -62,19 +62,12 @@ final class PresentationHelpersTests: XCTestCase {
     @MainActor
     func testTheConcreteCollectionsAreTargetsOfTheOneScreen() {
         XCTAssertEqual(CollectionsScreenFactory.projects(), .whole(databaseKey: "projects", databaseId: nil))
-        XCTAssertEqual(CollectionsScreenFactory.projects(areaId: "a1"), .ofArea(databaseKey: "projects", areaId: "a1"))
         XCTAssertEqual(CollectionsScreenFactory.people(), .whole(databaseKey: "people", databaseId: nil))
         XCTAssertEqual(CollectionsScreenFactory.companies(), .whole(databaseKey: "companies", databaseId: nil))
-        XCTAssertEqual(
-            CollectionsScreenFactory.companies(areaId: "a1"),
-            .ofArea(databaseKey: "companies", areaId: "a1")
-        )
         XCTAssertEqual(CollectionsScreenFactory.events(), .whole(databaseKey: "events", databaseId: nil))
-        XCTAssertEqual(CollectionsScreenFactory.events(areaId: "a1"), .ofArea(databaseKey: "events", areaId: "a1"))
         XCTAssertEqual(CollectionsScreenFactory.files(), .whole(databaseKey: "files", databaseId: nil))
-        XCTAssertEqual(CollectionsScreenFactory.files(areaId: "a1"), .ofArea(databaseKey: "files", areaId: "a1"))
         XCTAssertEqual(
-            CollectionsScreenFactory.files(areaId: "a1", projectId: "p1"),
+            CollectionsScreenFactory.files(projectId: "p1"),
             .ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")
         )
     }

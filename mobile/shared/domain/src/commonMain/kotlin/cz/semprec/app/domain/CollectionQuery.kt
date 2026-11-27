@@ -1,14 +1,8 @@
 package cz.semprec.app.domain
 
-/**
- * Which items of a database a collection shows beyond its own filter: all, those of one area, or those related to
- * one item.
- */
+/** Which items of a database a collection shows beyond its own filter: all, those related to one item, or a filter's. */
 sealed interface CollectionScope {
     data object Everything : CollectionScope
-
-    /** The items of an area, selected by the area filter the database declares. */
-    data class Area(val areaId: String) : CollectionScope
 
     /** The items whose relation [propertyKey] contains [itemId] (the files of a project, the people of a company). */
     data class Related(val propertyKey: String, val itemId: String) : CollectionScope

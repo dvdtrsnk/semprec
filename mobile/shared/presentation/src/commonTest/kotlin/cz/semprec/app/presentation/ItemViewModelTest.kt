@@ -48,13 +48,13 @@ class ItemViewModelTest : MainDispatcherTest() {
             ),
             Author.AGENT
         ),
-        "area" to ValueOrigin(ValueKind.DERIVED, listOf(OriginSource("p1", "projects", "", null)), null),
+        "people" to ValueOrigin(ValueKind.DERIVED, listOf(OriginSource("p1", "projects", "", null)), null),
     )
     private val project = projectItem(
         "p1",
         "Semprec iOS",
         date = "2027-01-31",
-        area = "Work",
+        person = "Work",
         extra = mapOf(
             "pinned" to FieldValue.Flag(true),
             "budget" to FieldValue.Number(1000.0),
@@ -96,12 +96,12 @@ class ItemViewModelTest : MainDispatcherTest() {
             state.header
         )
         assertEquals(
-            listOf("status", "date", "area", "company", "pinned", "tags", "budget", "note", "completedAt"),
+            listOf("status", "date", "people", "company", "pinned", "tags", "budget", "note", "completedAt"),
             state.fields.map { it.propertyKey },
         )
         assertEquals(listOf(RelatedView(FILES, "files", "Files", "doc", "#636366", 3)), state.related)
         assertEquals(PageView(PageStatus.READY, "# Notes", null), state.page)
-        assertEquals(listOf("item:p1:area,company"), fake.calls)
+        assertEquals(listOf("item:p1:company,people"), fake.calls)
         vm.close()
     }
 
@@ -128,7 +128,7 @@ class ItemViewModelTest : MainDispatcherTest() {
     @Test fun `an unknown hint reads the item twice and an empty system property is hidden`() = runTest(dispatcher) {
         arrange()
         val vm = open(hint = null)
-        assertEquals(listOf("item:p1:", "item:p1:area,company"), fake.calls)
+        assertEquals(listOf("item:p1:", "item:p1:company,people"), fake.calls)
         assertTrue(vm.state.value.fields.any { it.propertyKey == "completedAt" })
         vm.close()
         val bare = FakeCollections().also { it.itemAnswer = { RepositoryResult.Content(projectItem("p2", "P2")) } }
@@ -149,9 +149,9 @@ class ItemViewModelTest : MainDispatcherTest() {
         val broken = assertNotNull(state.field("date").origin)
         assertEquals(OriginKind.INHERITED_BROKEN, broken.kind)
         assertEquals(OriginAuthor.AGENT, broken.brokenBy)
-        val derived = assertNotNull(state.field("area").origin)
+        val derived = assertNotNull(state.field("people").origin)
         assertEquals(OriginKind.DERIVED, derived.kind)
-        assertFalse(state.field("area").editable)
+        assertFalse(state.field("people").editable)
         assertTrue(state.field("status").editable)
         assertNull(state.field("pinned").origin)
         vm.close()
@@ -273,7 +273,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         val vm = open()
         vm.onAction(ItemAction.Edit.SetText("completedAt", "2026-01-01"))
         assertEquals(ItemWriteFailure("completedAt", FailureKind.REJECTED), vm.state.value.writeFailure)
-        vm.onAction(ItemAction.Edit.SetChoices("area", listOf("x")))
+        vm.onAction(ItemAction.Edit.SetChoices("people", listOf("x")))
         vm.onAction(ItemAction.Edit.SetText("nonexistent", "x"))
         assertTrue(fake.updates.isEmpty())
         vm.onAction(ItemAction.DismissWriteFailure)
@@ -323,8 +323,8 @@ class ItemViewModelTest : MainDispatcherTest() {
             runCurrent()
             assertEquals(
                 listOf(
-                    "item:p1:area,company", "unlinkValue:p1:status", "item:p1:area,company",
-                    "relinkValue:p1:status", "item:p1:area,company"
+                    "item:p1:company,people", "unlinkValue:p1:status", "item:p1:company,people",
+                    "relinkValue:p1:status", "item:p1:company,people"
                 ),
                 fake.calls
             )
@@ -342,20 +342,23 @@ class ItemViewModelTest : MainDispatcherTest() {
             fake.queryAnswer = { _, _ ->
                 page(
                     cz.semprec.app.domain.CollectionItem(
-                        "area-2", AREAS,
+                        "person-2", PEOPLE_DB,
                         mapOf("name" to FieldValue.Text("Home")), emptyMap(), "c", "v"
                     )
                 )
             }
-            vm.onAction(ItemAction.Picker.Open("area"))
-            assertEquals(PickerView("area", "Area", true, null, emptyList()), vm.state.value.picker)
+            vm.onAction(ItemAction.Picker.Open("people"))
+            assertEquals(PickerView("people", "People", true, null, emptyList()), vm.state.value.picker)
             runCurrent()
-            assertEquals(listOf(TargetView("area-2", "areas", "Home", null)), vm.state.value.picker?.candidates)
+            assertEquals(listOf(TargetView("person-2", "people", "Home", null)), vm.state.value.picker?.candidates)
             assertFalse(vm.state.value.picker!!.loading)
-            vm.onAction(ItemAction.Picker.Choose("area-2"))
+            vm.onAction(ItemAction.Picker.Choose("person-2"))
             assertNull(vm.state.value.picker)
             runCurrent()
-            assertEquals(listOf("item:p1:area,company", "set:p1:area:area-2", "item:p1:area,company"), fake.calls)
+            assertEquals(
+                listOf("item:p1:company,people", "set:p1:people:person-2", "item:p1:company,people"),
+                fake.calls,
+            )
             vm.close()
         }
 
@@ -379,11 +382,11 @@ class ItemViewModelTest : MainDispatcherTest() {
         arrange()
         val vm = open()
         fake.setRelationAnswer = { failure(FailureKind.UNAVAILABLE) }
-        vm.onAction(ItemAction.Picker.Open("area"))
+        vm.onAction(ItemAction.Picker.Open("people"))
         runCurrent()
         vm.onAction(ItemAction.Picker.Choose("a"))
         runCurrent()
-        assertEquals(ItemWriteFailure("area", FailureKind.UNAVAILABLE), vm.state.value.writeFailure)
+        assertEquals(ItemWriteFailure("people", FailureKind.UNAVAILABLE), vm.state.value.writeFailure)
         assertTrue(fake.calls.none { it.startsWith("link:") })
         vm.close()
     }
@@ -394,7 +397,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         vm.onAction(ItemAction.Picker.Search("ignored while closed"))
         runCurrent()
         assertTrue(fake.queries.isEmpty())
-        vm.onAction(ItemAction.Picker.Open("area"))
+        vm.onAction(ItemAction.Picker.Open("people"))
         runCurrent()
         vm.onAction(ItemAction.Picker.Search("wo"))
         runCurrent()
@@ -415,7 +418,7 @@ class ItemViewModelTest : MainDispatcherTest() {
             vm.onAction(ItemAction.Picker.Open("status"))
             assertNull(vm.state.value.picker)
             fake.queryAnswer = { _, _ -> failure(FailureKind.UNAVAILABLE) }
-            vm.onAction(ItemAction.Picker.Open("area"))
+            vm.onAction(ItemAction.Picker.Open("people"))
             runCurrent()
             assertEquals(Failed(FailureKind.UNAVAILABLE), vm.state.value.picker?.failure)
             vm.close()
@@ -575,7 +578,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         vm.onAction(ItemAction.Navigate.OpenRelated(FILES))
         vm.onAction(ItemAction.Navigate.OpenRelated("db-unknown"))
         vm.onAction(ItemAction.Navigate.OpenRelated("not-there"))
-        vm.onAction(ItemAction.Navigate.OpenTarget("area-1", "areas"))
+        vm.onAction(ItemAction.Navigate.OpenTarget("person-1", "people"))
         val received = mutableListOf<ItemEffect>()
         val collector = launch { vm.effects.collect { received += it } }
         runCurrent()
@@ -583,7 +586,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         assertEquals(
             listOf(
                 ItemEffect.OpenCollection(FILES, "files", """{"type":"relation_contains"}"""),
-                ItemEffect.OpenItem("area-1", "areas"),
+                ItemEffect.OpenItem("person-1", "people"),
             ),
             received,
         )

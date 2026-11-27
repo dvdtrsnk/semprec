@@ -6,7 +6,6 @@ enum OverviewIdentifiers {
     static let profile = "overview.profile"
     static let content = "overview.content"
     static let rowPrefix = "overview.row."
-    static let areaPrefix = "overview.area."
     static let projectPrefix = "overview.project."
     static let collectionPrefix = "overview.collection."
 

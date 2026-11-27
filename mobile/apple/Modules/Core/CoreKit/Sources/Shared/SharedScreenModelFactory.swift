@@ -106,7 +106,6 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         let shared = SharedSDK.TasksStart(
             tab: start.tab.shared,
             hideDone: start.hideDone,
-            areaId: start.areaId,
             projectId: start.projectId
         )
         return SharedTasksScreenModel(sdk.tasksViewModel(today: { IsoDay.today() }, start: shared))

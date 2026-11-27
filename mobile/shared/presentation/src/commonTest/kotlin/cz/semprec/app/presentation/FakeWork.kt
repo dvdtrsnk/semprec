@@ -18,9 +18,8 @@ import cz.semprec.app.domain.WorkItem
 
 const val WORK_TODAY = "2026-10-16"
 
-val WORK_PROJECT = ProjectRef("p-work", "Semprec iOS", "#007AFF", "a-work", "Práce")
-val HOME_PROJECT = ProjectRef("p-home", "Koupelna", "#AF52DE", "a-home", "Domácnost")
-val AREA_LIST = listOf(EntityRef("a-work", "Práce", "#5856D6"), EntityRef("a-home", "Domácnost", "#FF9500"))
+val WORK_PROJECT = ProjectRef("p-work", "Semprec iOS", "#007AFF")
+val HOME_PROJECT = ProjectRef("p-home", "Koupelna", "#AF52DE")
 
 fun aTask(
     id: String,
@@ -58,7 +57,6 @@ class FakeWork {
         ItemChange
     ) -> RepositoryResult<WorkItem> = { item, _ -> RepositoryResult.Content(item) }
     var onDelete: suspend (ItemKind, String) -> RepositoryResult<Unit> = { _, _ -> RepositoryResult.Content(Unit) }
-    var areaAnswer: RepositoryResult<List<EntityRef>> = RepositoryResult.Content(AREA_LIST)
     var projectAnswer: RepositoryResult<List<ProjectRef>> = RepositoryResult.Content(listOf(WORK_PROJECT, HOME_PROJECT))
     var peopleAnswer: RepositoryResult<List<EntityRef>> = RepositoryResult.Content(listOf(EntityRef("u1", "Karel")))
 
@@ -96,12 +94,10 @@ class FakeWork {
     }
 
     private val catalogRepository = object : CatalogRepository {
-        override suspend fun areas(): RepositoryResult<List<EntityRef>> {
+        override suspend fun projects(): RepositoryResult<List<ProjectRef>> {
             catalogCalls += 1
-            return areaAnswer
+            return projectAnswer
         }
-
-        override suspend fun projects(): RepositoryResult<List<ProjectRef>> = projectAnswer
 
         override suspend fun people(): RepositoryResult<List<EntityRef>> = peopleAnswer
     }

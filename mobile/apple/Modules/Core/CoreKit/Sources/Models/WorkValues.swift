@@ -49,21 +49,17 @@ public struct EntityRef: Equatable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// A project with the area it belongs to.
+/// A project a task or an event can be tied to.
 public struct ProjectRef: Equatable, Hashable, Sendable, Identifiable {
 
     public let id: String
     public let title: String
     public let color: String?
-    public let areaId: String?
-    public let areaTitle: String?
 
-    public init(id: String, title: String, color: String? = nil, areaId: String? = nil, areaTitle: String? = nil) {
+    public init(id: String, title: String, color: String? = nil) {
         self.id = id
         self.title = title
         self.color = color
-        self.areaId = areaId
-        self.areaTitle = areaTitle
     }
 }
 

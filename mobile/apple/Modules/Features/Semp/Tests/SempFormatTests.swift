@@ -149,7 +149,7 @@ final class SempFormatTests: XCTestCase {
 
     func testEveryKindOfObjectHasAnIconAndNames() {
         let kinds: [SempTargetKind] = [
-            .task, .event, .mail, .inbox, .journal, .project, .area, .person, .company, .file, .note, .recording,
+            .task, .event, .mail, .inbox, .journal, .project, .person, .company, .file, .note, .recording,
             .finance, .health, .recipe, .book, .movie, .run, .other
         ]
         XCTAssertEqual(Set(kinds.map(\.symbol)).count, kinds.count)

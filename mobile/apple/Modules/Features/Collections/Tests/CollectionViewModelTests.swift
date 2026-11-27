@@ -48,6 +48,32 @@ final class CollectionViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAChipOfTheFacetBarTogglesItsValueInTheFilterSheetsSelection() {
+        let bar = FacetBar(
+            propertyKey: "tags",
+            chips: [
+                FilterOption(value: "client", label: "Client", color: "#FF9500", count: 3, selected: false),
+                FilterOption(value: "home", label: "Home", color: nil, count: 1, selected: true)
+            ]
+        )
+        var state = loaded
+        state.facetBar = bar
+        let model = ScriptedCollectionScreenModel(state: state)
+        let viewModel = CollectionViewModel(model: model, router: RouterSpy())
+        XCTAssertEqual(viewModel.state.facetBar, bar)
+        for chip in bar.chips {
+            viewModel.send(CollectionFacetBarView.toggle(chip, of: bar))
+        }
+        XCTAssertEqual(
+            model.actions,
+            [
+                .filter(.toggle(propertyKey: "tags", value: "client")),
+                .filter(.toggle(propertyKey: "tags", value: "home"))
+            ]
+        )
+    }
+
+    @MainActor
     func testOpenItemEffectsBecomeRouterCallsIncludingOnesRaisedBeforeObservation() async throws {
         let model = ScriptedCollectionScreenModel(
             state: loaded,

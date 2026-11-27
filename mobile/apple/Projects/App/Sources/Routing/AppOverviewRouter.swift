@@ -27,7 +27,6 @@ extension AppOverviewRouter: OverviewRouting {
         case .recordings: context.push(.recordings(tab: .overview), in: .overview)
         case .tasks: context.showTasks(TasksStart(), in: .overview)
         case .finance: pending(String(localized: "pending.finance"))
-        case .area(let id): context.push(.area(areaId: id, tab: .overview), in: .overview)
         case .project(let id): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
         case .collection(_, let databaseId):
             context.push(.collection(.whole(databaseKey: nil, databaseId: databaseId)), in: .overview)
@@ -39,7 +38,6 @@ extension AppOverviewRouter: OverviewRouting {
         case (.task, let id?): context.showDetails(kind: .task, id: id, from: .overview)
         case (.event, let id?): context.showDetails(kind: .event, id: id, from: .overview)
         case (.project, let id?): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
-        case (.area, let id?): context.push(.area(areaId: id, tab: .overview), in: .overview)
         case (.contact, let id?), (.file, let id?):
             context.showItem(itemId: id, databaseKey: link.databaseKey, from: .overview)
         case (.journal, _): context.select(.journal)

@@ -123,13 +123,11 @@ final class MailComposeAccountMappingTests: XCTestCase {
                 as? SharedSDK.MailFoldersActionOpenFolder
         )
         XCTAssertEqual([folder.mailboxId, folder.folderId], ["m1", "f1"])
-        let start = SharedSDK.MailListStart(
-            areaId: "a", projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"
-        )
+        let start = SharedSDK.MailListStart(projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f")
         XCTAssertEqual(
             SharedMailFoldersScreenModel.effect(SharedSDK.MailFoldersEffectOpenList(start: start, title: "Klienti")),
             .openList(
-                CoreKit.MailListStart(areaId: "a", projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"),
+                CoreKit.MailListStart(projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"),
                 title: "Klienti"
             )
         )

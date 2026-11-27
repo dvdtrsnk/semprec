@@ -41,7 +41,7 @@ private const val SERVER = "https://s.example"
 private const val TASKS_ID = "11111111-1111-4111-8111-111111111111"
 private const val TASK_ID = "22222222-2222-4222-8222-222222222222"
 private const val DATABASES = """{"databases":[
-    {"id":"$TASKS_ID","key":"tasks"},{"id":"db-events","key":"events"},{"id":"db-areas","key":"areas"},
+    {"id":"$TASKS_ID","key":"tasks"},{"id":"db-events","key":"events"},
     {"id":"db-projects","key":"projects"},{"id":"db-people","key":"people"}]}"""
 private const val BARE_TASK = """{"id":"$TASK_ID","databaseId":"$TASKS_ID"}"""
 private const val TASK_JSON = """{"id":"$TASK_ID","databaseId":"$TASKS_ID",
@@ -50,7 +50,7 @@ private const val TASK_JSON = """{"id":"$TASK_ID","databaseId":"$TASKS_ID",
     "timeFrom":"14:00","timeTo":"15:30","flagged":true,"description":"Za zari",
     "recurrence":{"preset":"daily","mode":"fixed"}},
     "relations":{
-      "project":[{"id":"p1","title":"Ucetnictvi","color":"#8E8E93","properties":{"area":[{"id":"a1","title":"Prace"}]}}],
+      "project":[{"id":"p1","title":"Ucetnictvi","color":"#8E8E93"}],
       "people":[{"id":"u1","title":"Karel Zlaty"},{"id":"u2","hidden":true}],
       "files":[{"id":"f1","title":"Faktura.pdf"}],
       "hostEvents":[{"id":"e1","title":"Zubar"}]},
@@ -82,17 +82,10 @@ class WorkRepositoriesTest {
             "/api/databases/$TASKS_ID/query" -> json("""{"items":[$TASK_JSON]}""")
             "/api/databases/$TASKS_ID/items" ->
                 json("""{"id":"$TASK_ID","databaseId":"$TASKS_ID"}""", HttpStatusCode.Created)
-            "/api/databases/db-areas/query" -> json(
-                """{"items":[
-                {"id":"a2","databaseId":"db-areas","properties":{"name":"Zdravi","position":2}},
-                {"id":"a1","databaseId":"db-areas","properties":{"name":"Prace","position":1,"color":"#5856D6"}},
-                {"id":"a3","databaseId":"db-areas","properties":{"name":"Skryta","active":false}}]}""",
-            )
             "/api/databases/db-projects/query" -> json(
                 """{"items":[
                 {"id":"p2","databaseId":"db-projects","properties":{"name":"Zeta","status":"inProgress"}},
-                {"id":"p1","databaseId":"db-projects","properties":{"name":"Alfa","status":"longTerm","color":"#007AFF"},
-                  "relations":{"area":[{"id":"a1","title":"Prace"}]}},
+                {"id":"p1","databaseId":"db-projects","properties":{"name":"Alfa","status":"longTerm","color":"#007AFF"}},
                 {"id":"p3","databaseId":"db-projects","properties":{"name":"Hotovy","status":"done"}},
                 {"id":"p4","databaseId":"db-projects","properties":{"name":"Kalendar","systemActive":true}}]}""",
             )
@@ -122,7 +115,7 @@ class WorkRepositoriesTest {
         assertTrue("\"hiddenUntil\"" in text && "completedInEvent" in text && "\"effectiveDate\"" in text)
         assertTrue("\"completedOn\"" in text && "\"today\"" in text)
         val project = query.getValue("include").jsonObject.getValue("relations").jsonObject.getValue("project")
-        assertEquals("area", project.jsonArray.single().jsonPrimitive.content)
+        assertTrue(project.jsonArray.isEmpty())
     }
 
     @Test
@@ -139,7 +132,7 @@ class WorkRepositoriesTest {
     }
 
     @Test
-    fun aTaskIsMappedWithItsProjectAreaPeopleAndLinks() = runTest {
+    fun aTaskIsMappedWithItsProjectPeopleAndLinks() = runTest {
         val data = work { standard(it) }
 
         val task = loaded(data)
@@ -152,9 +145,7 @@ class WorkRepositoriesTest {
         assertEquals(TaskRepeat.DAILY, task.repeat)
         assertTrue(task.flagged)
         assertEquals("Za zari", task.description)
-        assertEquals("Ucetnictvi", task.project?.title)
-        assertEquals("a1", task.project?.areaId)
-        assertEquals("Prace", task.project?.areaTitle)
+        assertEquals(ProjectRef("p1", "Ucetnictvi", "#8E8E93"), task.project)
         assertEquals(listOf("Karel Zlaty"), task.people.map { it.title })
         assertEquals(listOf("Faktura.pdf"), task.files.map { it.title })
         assertEquals(listOf("Zubar"), task.hostEvents.map { it.title })
@@ -164,7 +155,7 @@ class WorkRepositoriesTest {
         assertEquals(LinkState.INHERITED, task.peopleLink?.state)
         val url = requests.last().url
         assertEquals("links,relations", url.parameters["include"])
-        assertEquals("area", url.parameters["relations.project"])
+        assertEquals("", url.parameters["relations.project"])
     }
 
     @Test
@@ -405,15 +396,10 @@ class WorkRepositoriesTest {
     fun theCatalogsAreSortedAndLeaveOutWhatIsHiddenClosedOrKeptByAModule() = runTest {
         val data = work { standard(it) }
 
-        val areas = assertIs<RepositoryResult.Content<List<EntityRef>>>(data.catalog.areas()).value
         val projects = assertIs<RepositoryResult.Content<List<ProjectRef>>>(data.catalog.projects()).value
         val people = assertIs<RepositoryResult.Content<List<EntityRef>>>(data.catalog.people()).value
 
-        assertEquals(listOf("Prace", "Zdravi"), areas.map { it.title })
-        assertEquals("#5856D6", areas.first().color)
-        assertEquals(listOf("Alfa", "Zeta"), projects.map { it.title })
-        assertEquals("a1", projects.first().areaId)
-        assertNull(projects.last().areaId)
+        assertEquals(listOf(ProjectRef("p1", "Alfa", "#007AFF"), ProjectRef("p2", "Zeta")), projects)
         assertEquals(listOf("Adam", "Zora"), people.map { it.title })
     }
 
@@ -423,7 +409,7 @@ class WorkRepositoriesTest {
 
         val kinds = listOf(
             assertIs<RepositoryResult.Failure>(data.tasks.tasks(TaskScope.ALL)).kind,
-            assertIs<RepositoryResult.Failure>(data.catalog.areas()).kind,
+            assertIs<RepositoryResult.Failure>(data.catalog.projects()).kind,
             assertIs<RepositoryResult.Failure>(data.details.load(ItemKind.TASK, "x")).kind,
         )
         assertEquals(List(3) { FailureKind.UNAUTHORIZED }, kinds)

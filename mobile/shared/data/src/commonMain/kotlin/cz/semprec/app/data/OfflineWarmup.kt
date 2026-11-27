@@ -18,7 +18,7 @@ private val WARMUP_MONTHS = -1..2
  * Reads the offline set ahead of the screens of a window, with the requests those screens send, so that the answers
  * are kept under them and the screens open without a connection
  * (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md). In order: the schema and the databases, the
- * task lists of every [TaskScope], the areas, projects and people, the calendars, the invitations, the calendar
+ * task lists of every [TaskScope], the projects and people, the calendars, the invitations, the calendar
  * windows of the current month, the one before and the two after, the agenda's first page from today, the diary's days
  * from [WARMUP_DIARY_DAYS] back to as many ahead with their pages, the overview, the sleep of tonight, and the Inbox
  * cards and types. Each read goes through a repository over the window's [api], as the screens' do; one that fails or
@@ -49,7 +49,6 @@ class OfflineWarmup(private val api: AuthenticatedApi, private val today: () -> 
     private suspend fun work(reads: Reads) {
         val work = WorkData(api)
         TaskScope.entries.forEach { scope -> reads.read { work.tasks.tasks(scope) } }
-        reads.read { work.catalog.areas() }
         reads.read { work.catalog.projects() }
         reads.read { work.catalog.people() }
     }

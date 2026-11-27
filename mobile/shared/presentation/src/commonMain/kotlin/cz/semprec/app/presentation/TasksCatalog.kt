@@ -1,6 +1,5 @@
 package cz.semprec.app.presentation
 
-import cz.semprec.app.core.EntityRef
 import cz.semprec.app.core.ProjectRef
 import cz.semprec.app.core.TaskSectionKind
 import cz.semprec.app.core.TaskStatus
@@ -9,20 +8,15 @@ import cz.semprec.app.domain.TaskFilter
 import cz.semprec.app.domain.TaskSections
 import cz.semprec.app.domain.WorkItem
 
-/** The areas and projects the filter sheet offers. */
-internal class TasksCatalog(val areas: List<EntityRef> = emptyList(), val projects: List<ProjectRef> = emptyList())
+/** The projects the filter sheet offers. */
+internal class TasksCatalog(val projects: List<ProjectRef> = emptyList())
 
-/** [this] after a filter action; any other action leaves it as it is. Choosing another area drops a project of its own. */
-internal fun TasksState.after(action: TasksAction, projects: List<ProjectRef>): TasksState = when (action) {
+/** [this] after a filter action; any other action leaves it as it is. */
+internal fun TasksState.after(action: TasksAction): TasksState = when (action) {
     TasksAction.ToggleHideDone -> copy(hideDone = !hideDone)
-    is TasksAction.SetArea -> {
-        val projectArea = projects.firstOrNull { it.id == projectId }?.areaId
-        val keepsProject = projectId == null || action.areaId == null || projectArea == action.areaId
-        copy(areaId = action.areaId, projectId = if (keepsProject) projectId else null)
-    }
     is TasksAction.SetProject -> copy(projectId = action.projectId)
     is TasksAction.SetFlaggedOnly -> copy(flaggedOnly = action.flaggedOnly)
-    TasksAction.ClearFilters -> copy(areaId = null, projectId = null, flaggedOnly = false)
+    TasksAction.ClearFilters -> copy(projectId = null, flaggedOnly = false)
     else -> this
 }
 
@@ -33,7 +27,7 @@ internal fun TasksState.after(action: TasksAction, projects: List<ProjectRef>): 
 internal fun TasksState.shaped(loaded: List<WorkItem>, catalog: TasksCatalog, today: String): TasksState {
     val day = IsoDate.parse(today)
     if (phase != TasksPhase.CONTENT || day == null) return this
-    val filter = TaskFilter(areaId, projectId, flaggedOnly)
+    val filter = TaskFilter(projectId, flaggedOnly)
     val matching = loaded.filter(filter::matches)
     val shown = if (hideDone) matching.filter { it.status != TaskStatus.DONE } else matching
     val groups = TaskSections.group(shown, day, tab)
@@ -43,14 +37,9 @@ internal fun TasksState.shaped(loaded: List<WorkItem>, catalog: TasksCatalog, to
     return copy(
         groups = groups,
         openCount = matching.count { it.status != TaskStatus.DONE },
-        areaOptions = catalog.areas.map { area ->
-            TaskFilterOption(area.id, area.title, area.color, count(filter.copy(areaId = area.id)))
+        projectOptions = catalog.projects.map { project ->
+            TaskFilterOption(project.id, project.title, project.color, count(filter.copy(projectId = project.id)))
         },
-        projectOptions = catalog.projects.filter { areaId == null || it.areaId == areaId }.map { project ->
-            val narrowed = filter.copy(projectId = project.id)
-            TaskFilterOption(project.id, project.title, project.color, count(narrowed), project.areaId)
-        },
-        areaAllCount = count(filter.copy(areaId = null)),
         projectAllCount = count(filter.copy(projectId = null)),
         matchesNothing = filter.isActive && matching.isEmpty(),
     )

@@ -89,6 +89,10 @@ final class FieldFormatTests: XCTestCase {
     func testASubtitleJoinsWhatThereIsAndLeavesOutWhatIsEmpty() {
         XCTAssertEqual(format.subtitle([.text("Novák Web"), .empty, .day("2026-10-17")]), "Novák Web · Tomorrow")
         XCTAssertEqual(format.subtitle([]), "")
+        let tags: FieldContent = .choices([
+            FieldOption(key: "client", label: "Client", color: nil), FieldOption(key: "home", label: "Home", color: nil)
+        ])
+        XCTAssertEqual(format.subtitle([.text("Novák Web"), tags]), "Novák Web · Client, Home")
         XCTAssertEqual(format.subtitle([.empty, .flag(false)]), "")
     }
 

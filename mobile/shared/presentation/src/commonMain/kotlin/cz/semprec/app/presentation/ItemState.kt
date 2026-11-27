@@ -72,6 +72,9 @@ data class ItemWriteFailure(val propertyKey: String?, val kind: FailureKind?)
 
 /**
  * Everything one item detail shows. [saving] is true while a write is in flight; [deleted] once the item is gone.
+ * [writeFailure] is the last write that failed; [choiceFailure] is the last new choice ([ItemAction.Edit.AddChoice])
+ * that could not be added and set, kept apart so that only the place that adds choices shows it. The next write
+ * clears both.
  */
 data class ItemState(
     val phase: ItemPhase = ItemPhase.LOADING,
@@ -85,5 +88,6 @@ data class ItemState(
     val deletion: DeletionView? = null,
     val saving: Boolean = false,
     val writeFailure: ItemWriteFailure? = null,
+    val choiceFailure: ItemWriteFailure? = null,
     val deleted: Boolean = false,
 )

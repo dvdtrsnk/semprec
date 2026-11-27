@@ -39,12 +39,16 @@ private fun CollectionItem.ratingOf(database: CollectionDatabase): Int? {
     return (values[property.key] as? FieldValue.Number)?.number?.toInt()?.takeIf { it in 1..MAX_RATING }
 }
 
-/** Time, context relations and one plain text or link, in this order, the empty ones left out. */
+/**
+ * Time, context relations, the values of the facet bar property (a project's tags) and one plain text or link, in
+ * this order, the empty ones left out.
+ */
 private fun CollectionItem.subtitleOf(database: CollectionDatabase): List<FieldContent> {
     val times = database.properties.filter { it.kind == PropertyKind.TIME && !it.system }
     val relations = database.contextRelations().take(2)
+    val bar = listOfNotNull(database.facetBarProperty?.let(database::property))
     val texts = database.properties.filter { it.kind in SUBTITLE_TEXT_KINDS && it.key !in HIDDEN_TEXT_KEYS }
-    return (times + relations + texts)
+    return (times + relations + bar + texts)
         .map { contentOf(it, values[it.key]) }
         .filter { it != FieldContent.Empty }
         .take(MAX_SUBTITLE)

@@ -54,15 +54,12 @@ class CollectionSDKTest {
 
     @Test fun `a collection can be narrowed by a relation or by a filter`() = runTest(dispatcher) {
         val sdk = HomeSDK()
-        val area = sdk.collections.collectionViewModel(CollectionTarget.OfArea("projects", "a1"))
         val related = sdk.collections.collectionViewModel(CollectionTarget.OfItem("files", "projects", "p1"))
         val emptyFilter = """{"type":"is_empty"}"""
         val filtered = sdk.collections.collectionViewModel(CollectionTarget.Matching("files", null, emptyFilter))
         runCurrent()
         assertEquals(FailureKind.UNAUTHORIZED, related.state.value.failure)
         assertEquals(FailureKind.UNAUTHORIZED, filtered.state.value.failure)
-        assertEquals(FailureKind.UNAUTHORIZED, area.state.value.failure)
-        area.close()
         related.close()
         filtered.close()
     }

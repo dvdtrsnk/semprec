@@ -53,7 +53,6 @@ struct SearchResultRow: View {
         case .task: .blue
         case .event: .red
         case .project: .purple
-        case .area: .indigo
         case .contact: .teal
         case .journal: .orange
         case .file: .gray

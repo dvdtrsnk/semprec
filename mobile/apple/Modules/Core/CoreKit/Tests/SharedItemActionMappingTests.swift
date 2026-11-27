@@ -39,6 +39,10 @@ final class SharedItemActionMappingTests: XCTestCase {
             action(.setChoices(propertyKey: "status", keys: ["done"])),
             SharedSDK.ItemActionEditSetChoices(propertyKey: "status", keys: ["done"])
         )
+        XCTAssertEqual(
+            action(.addChoice(propertyKey: "tags", label: "Client")),
+            SharedSDK.ItemActionEditAddChoice(propertyKey: "tags", label: "Client")
+        )
         XCTAssertEqual(action(.unlink(propertyKey: "status")), SharedSDK.ItemActionEditUnlink(propertyKey: "status"))
         XCTAssertEqual(action(.relink(propertyKey: "status")), SharedSDK.ItemActionEditRelink(propertyKey: "status"))
         XCTAssertEqual(
@@ -51,8 +55,8 @@ final class SharedItemActionMappingTests: XCTestCase {
     func testItemMapsEachPickerAndPageAction() {
         let action = SharedItemScreenModel.action
         XCTAssertEqual(
-            action(.picker(.open(propertyKey: "area"))) as? NSObject,
-            SharedSDK.ItemActionPickerOpen(propertyKey: "area")
+            action(.picker(.open(propertyKey: "company"))) as? NSObject,
+            SharedSDK.ItemActionPickerOpen(propertyKey: "company")
         )
         XCTAssertEqual(action(.picker(.search("wo"))) as? NSObject, SharedSDK.ItemActionPickerSearch(text: "wo"))
         XCTAssertEqual(
@@ -80,8 +84,8 @@ final class SharedItemActionMappingTests: XCTestCase {
             SharedSDK.ItemActionNavigateOpenRelated(databaseId: "f")
         )
         XCTAssertEqual(
-            action(.navigate(.openTarget(id: "a", databaseKey: "areas"))) as? NSObject,
-            SharedSDK.ItemActionNavigateOpenTarget(id: "a", databaseKey: "areas")
+            action(.navigate(.openTarget(id: "a", databaseKey: "companies"))) as? NSObject,
+            SharedSDK.ItemActionNavigateOpenTarget(id: "a", databaseKey: "companies")
         )
     }
 }

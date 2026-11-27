@@ -58,6 +58,7 @@ export interface ModuleDatabaseProjection {
   dateLabels?: ModuleDatabaseDescriptor["dateLabels"];
   collectionFilter?: ModuleDatabaseDescriptor["collectionFilter"];
   pickerFilter?: ModuleDatabaseDescriptor["pickerFilter"];
+  facetBarProperty?: ModuleDatabaseDescriptor["facetBarProperty"];
 }
 
 export interface ModuleAgentToolProjection {
@@ -477,6 +478,7 @@ export class ModuleRegistry {
         ...(db.dateLabels !== undefined ? { dateLabels: structuredClone(db.dateLabels) } : {}),
         ...(db.collectionFilter !== undefined ? { collectionFilter: structuredClone(db.collectionFilter) } : {}),
         ...(db.pickerFilter !== undefined ? { pickerFilter: structuredClone(db.pickerFilter) } : {}),
+        ...(db.facetBarProperty !== undefined ? { facetBarProperty: db.facetBarProperty } : {}),
       })),
     );
   }

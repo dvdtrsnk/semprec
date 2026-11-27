@@ -1,7 +1,6 @@
 package cz.semprec.app.data
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -85,9 +84,6 @@ internal fun JsonObject.flag(key: String): Boolean = (this[key] as? JsonPrimitiv
 
 /** A numeric property, or `null` when it is missing or not a number. */
 internal fun JsonObject.number(key: String): Double? = (this[key] as? JsonPrimitive)?.doubleOrNull
-
-/** The elements of an array property, empty when it is missing or not an array. */
-internal fun JsonObject.elements(key: String): List<JsonElement> = (this[key] as? JsonArray) ?: emptyList()
 
 /** A JSON value for a nullable string. */
 internal fun String?.toJson(): JsonElement = if (this == null) JsonNull else JsonPrimitive(this)

@@ -38,11 +38,6 @@ extension AppCollectionsRouter: CollectionsRouting {
         context.showItem(itemId: itemId, databaseKey: "events", from: tab)
     }
 
-    func showArea(areaId: String) {
-        leaveSheet()
-        context.push(.area(areaId: areaId, tab: tab), in: tab)
-    }
-
     func showProjectMail(projectId: String) {
         leaveSheet()
         context.showMail(MailListStart(projectId: projectId), in: tab)

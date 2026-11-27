@@ -69,9 +69,9 @@ final class SharedCollectionScreenModelTests: XCTestCase {
     @MainActor
     func testOpeningATargetOfAnItemDeliversItsEffect() async {
         let model = isolatedFactory().makeItem(itemId: "i1", databaseKey: nil)
-        model.send(.navigate(.openTarget(id: "a1", databaseKey: "areas")))
+        model.send(.navigate(.openTarget(id: "a1", databaseKey: "companies")))
         let received = await effects(of: model, count: 1)
-        XCTAssertEqual(received, [.openItem(itemId: "a1", databaseKey: "areas")])
+        XCTAssertEqual(received, [.openItem(itemId: "a1", databaseKey: "companies")])
     }
 
     @MainActor

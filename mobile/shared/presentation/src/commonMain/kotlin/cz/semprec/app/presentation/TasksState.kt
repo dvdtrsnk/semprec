@@ -29,17 +29,11 @@ data class TaskRow(
 
 data class TaskGroup(val kind: TaskSectionKind, val rows: List<TaskRow>)
 
-/** One choice of the filter sheet and the number of tasks it leaves. [areaId] is the area of a project choice. */
-data class TaskFilterOption(
-    val id: String,
-    val title: String,
-    val color: String?,
-    val count: Int,
-    val areaId: String? = null,
-)
+/** One choice of the filter sheet and the number of tasks it leaves. */
+data class TaskFilterOption(val id: String, val title: String, val color: String?, val count: Int)
 
 /**
- * The Tasks screen. The filter is [areaId], [projectId] and [flaggedOnly]; [groups] are what it leaves, grouped by
+ * The Tasks screen. The filter is [projectId] and [flaggedOnly]; [groups] are what it leaves, grouped by
  * day, and [matchesNothing] says a filter hid every task. [notice] is a failed write; the list shows what the server
  * holds again.
  */
@@ -48,17 +42,14 @@ data class TasksState(
     val failure: FailureKind? = null,
     val tab: TasksTab = TasksTab.TODAY,
     val hideDone: Boolean = false,
-    val areaId: String? = null,
     val projectId: String? = null,
     val flaggedOnly: Boolean = false,
     val groups: List<TaskGroup> = emptyList(),
     val openCount: Int = 0,
-    val areaOptions: List<TaskFilterOption> = emptyList(),
     val projectOptions: List<TaskFilterOption> = emptyList(),
-    val areaAllCount: Int = 0,
     val projectAllCount: Int = 0,
     val matchesNothing: Boolean = false,
     val notice: FailureKind? = null,
 ) {
-    val filterActive: Boolean get() = areaId != null || projectId != null || flaggedOnly
+    val filterActive: Boolean get() = projectId != null || flaggedOnly
 }

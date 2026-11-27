@@ -2,12 +2,15 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.AddPropertyOption
+import cz.semprec.app.domain.CollectionProperty
 import cz.semprec.app.domain.CollectionReads
 import cz.semprec.app.domain.CollectionWrites
 import cz.semprec.app.domain.FieldValue
 import cz.semprec.app.domain.FindRelationTargets
 import cz.semprec.app.domain.ItemDetail
 import cz.semprec.app.domain.LoadItemDetail
+import cz.semprec.app.domain.PropertyKind
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -39,6 +42,7 @@ class ItemViewModel internal constructor(
     private val page = ItemPageFlow(host, reads, writes, itemId)
     private val preview = ItemPreviewFlow(host, reads)
     private val deletion = ItemDeletionFlow(host, reads, writes, itemId)
+    private val addOption = AddPropertyOption(reads, writes)
     private val picker = ItemPickerFlow(host, findTargets, writes, itemId, { detail?.database }, ::mutate)
 
     init {
@@ -51,7 +55,7 @@ class ItemViewModel internal constructor(
         when (action) {
             ItemAction.Retry -> load(quiet = false)
             ItemAction.Refresh -> load(quiet = true)
-            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null) }
+            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null, choiceFailure = null) }
             is ItemAction.Edit -> edit(action)
             is ItemAction.Picker -> picker.handle(action)
             is ItemAction.Page -> page.handle(action)
@@ -93,6 +97,7 @@ class ItemViewModel internal constructor(
                 write(action.propertyKey, mapOf(action.propertyKey to FieldValue.Flag(action.on)))
             is ItemAction.Edit.SetChoices ->
                 write(action.propertyKey, mapOf(action.propertyKey to choiceValue(action.keys)))
+            is ItemAction.Edit.AddChoice -> addChoice(action.propertyKey, action.label)
             is ItemAction.Edit.Unlink -> mutate(action.propertyKey) { writes.unlinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.Relink -> mutate(action.propertyKey) { writes.relinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.RemoveTarget ->
@@ -114,11 +119,7 @@ class ItemViewModel internal constructor(
     private fun write(propertyKey: String?, changes: Map<String, FieldValue?>) {
         val current = detail
         if (current == null || changes.isEmpty()) return
-        val blocked = changes.keys.any { key ->
-            current.database.property(key)?.system != false ||
-                state.value.fields.firstOrNull { it.propertyKey == key }?.editable == false
-        }
-        if (blocked) {
+        if (changes.keys.any { isBlocked(current, it) }) {
             update { it.copy(writeFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
         } else {
             mutate(propertyKey) { writes.update(current.database, itemId, current.item.version, changes) }
@@ -126,20 +127,67 @@ class ItemViewModel internal constructor(
     }
 
     /**
+     * Adds the choice, then writes it into the item's value; a refused add writes nothing. A refused add, a failed
+     * write of the value and a property that is not a select or multi-select (refused without a request) are each an
+     * [ItemState.choiceFailure], never an [ItemState.writeFailure].
+     */
+    private fun addChoice(propertyKey: String, label: String) {
+        val current = detail
+        val name = label.trim()
+        if (current == null || name.isEmpty()) return
+        val property = current.database.property(propertyKey)
+        if (property == null || property.kind !in CHOICE_KINDS || isBlocked(current, propertyKey)) {
+            update { it.copy(choiceFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
+        } else {
+            mutate(propertyKey, choice = true, call = {
+                when (val added = addOption(property, name)) {
+                    is RepositoryResult.Failure -> added
+                    is RepositoryResult.Content -> {
+                        val change = FieldValue.Choices(chosenWith(current, property, added.value.key))
+                        writes.update(current.database, itemId, current.item.version, mapOf(propertyKey to change))
+                    }
+                }
+            })
+        }
+    }
+
+    /** The keys a choice property holds once [key] is chosen: a multi-select adds it, a select holds only it. */
+    private fun chosenWith(current: ItemDetail, property: CollectionProperty, key: String): List<String> {
+        if (property.kind != PropertyKind.MULTI_SELECT) return listOf(key)
+        val held = (current.item.values[property.key] as? FieldValue.Choices)?.keys.orEmpty()
+        return if (key in held) held else held + key
+    }
+
+    /** Whether the person cannot write the property here: it is system-owned, derived, or not in the item's database. */
+    private fun isBlocked(current: ItemDetail, propertyKey: String): Boolean =
+        current.database.property(propertyKey)?.system != false ||
+            state.value.fields.firstOrNull { it.propertyKey == propertyKey }?.editable == false
+
+    /**
      * Runs a write, then reads the item again so its values, origins and version are the server's. A refused write
      * reads it again too: the usual refusal is a version another writer (Semp filling in a new book) moved on, and the
      * person's next attempt must carry the version the server has now.
      */
-    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) {
+    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) =
+        mutate(propertyKey, choice = false, call = call)
+
+    /** [mutate], where the failure of a [choice] write is its [ItemState.choiceFailure]. */
+    private fun mutate(propertyKey: String?, choice: Boolean, call: suspend () -> RepositoryResult<Any?>) {
         if (writeJob?.isActive == true) return
-        update { it.copy(saving = true, writeFailure = null) }
+        update { it.copy(saving = true, writeFailure = null, choiceFailure = null) }
         writeJob = viewModelScope.launch {
             val result = answer(call)
             ensureActive()
             if (result is Answer.Rejected) {
-                update { it.copy(saving = false, writeFailure = ItemWriteFailure(propertyKey, result.kind)) }
+                val failure = ItemWriteFailure(propertyKey, result.kind)
+                update {
+                    if (choice) it.copy(saving = false, choiceFailure = failure)
+                    else it.copy(saving = false, writeFailure = failure)
+                }
             }
             load(quiet = true)
         }
     }
 }
+
+private val CHOICE_KINDS = setOf(PropertyKind.SELECT, PropertyKind.MULTI_SELECT)

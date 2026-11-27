@@ -32,7 +32,7 @@ sealed interface CollectionAction {
 
     /** Adding to the collection. */
     sealed interface Write : CollectionAction {
-        /** Creates an item with this title (in the area or relation the collection is scoped to) and opens it. */
+        /** Creates an item with this title (in the relation the collection is scoped to) and opens it. */
         data class Create(val title: String) : Write
 
         /** Uploads a file, given as Base64 text of its bytes, attached to what the collection is scoped to. */

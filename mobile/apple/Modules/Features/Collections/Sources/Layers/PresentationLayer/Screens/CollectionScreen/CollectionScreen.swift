@@ -3,8 +3,9 @@ import DesignSystem
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One collection of any database: a list, gallery or board of its items with search, quick filters, order and a
-/// filter sheet. Projects, People, Companies, Events and Files are this screen over different targets.
+/// One collection of any database: a list, gallery or board of its items with search, quick filters, order, a
+/// filter sheet and, where the database declares one, a bar of chips above the items. Projects, People, Companies,
+/// Events and Files are this screen over different targets.
 struct CollectionScreen: View {
 
     // MARK: - Dependencies
@@ -53,6 +54,11 @@ private extension CollectionScreen {
     var loaded: some View {
         let state = viewModel.state
         return items(state)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let bar = state.facetBar {
+                    CollectionFacetBarView(bar: bar, send: viewModel.send).background(.bar)
+                }
+            }
             .searchable(
                 text: $query,
                 placement: Self.searchPlacement,

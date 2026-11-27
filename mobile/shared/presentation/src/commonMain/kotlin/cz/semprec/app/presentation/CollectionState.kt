@@ -68,12 +68,19 @@ data class FilterGroup(
     val options: List<FilterOption>,
 )
 
+/**
+ * The chips above the list, one per value of the database's facet bar property that items hold. A chip toggles its
+ * value in the same selection the filter sheet edits ([CollectionAction.Filter.Toggle] with [propertyKey]).
+ */
+data class FacetBar(val propertyKey: String, val chips: List<FilterOption>)
+
 /** What the filter sheet shows once it was opened: its groups, or why they are missing. */
 data class FilterSheet(val loading: Boolean, val failure: Failed?, val groups: List<FilterGroup>)
 
 /**
- * Everything one collection screen shows. [refreshing] is true while a new query runs over the rows still on
- * screen; [creating] while a new item or an uploaded file is saved; [writeFailure] is the last write that failed.
+ * Everything one collection screen shows. [facetBar] is `null` when the database declares no bar or no item holds a
+ * value of it; [refreshing] is true while a new query runs over the rows still on screen; [creating] while a new item
+ * or an uploaded file is saved; [writeFailure] is the last write that failed.
  */
 data class CollectionState(
     val phase: CollectionPhase = CollectionPhase.LOADING,
@@ -89,6 +96,7 @@ data class CollectionState(
     val layout: CollectionLayout = CollectionLayout.LIST,
     val sections: List<CollectionSection> = emptyList(),
     val filterSheet: FilterSheet? = null,
+    val facetBar: FacetBar? = null,
     val activeFilterCount: Int = 0,
     val hasMore: Boolean = false,
     val loadingMore: Boolean = false,

@@ -3,11 +3,13 @@ package cz.semprec.app.data
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CollectionDatabase
 import cz.semprec.app.domain.CollectionItem
+import cz.semprec.app.domain.CollectionProperty
 import cz.semprec.app.domain.CollectionReads
 import cz.semprec.app.domain.CollectionWrites
 import cz.semprec.app.domain.FieldValue
 import cz.semprec.app.domain.PageContent
 import cz.semprec.app.domain.PropertyKind
+import cz.semprec.app.domain.PropertyOption
 import cz.semprec.app.domain.RepositoryResult
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -88,6 +90,15 @@ class HttpCollectionWrites(private val api: AuthenticatedApi, private val reads:
 
     override suspend fun delete(itemId: String): RepositoryResult<Unit> =
         api.send(HttpMethod.Delete, itemPath(itemId)).ignoreBody()
+
+    override suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption> {
+        val body = buildJsonObject { put("label", label) }
+        val path = "/api/properties/${property.id.encodeURLPathPart()}/options"
+        return when (val result = api.send(HttpMethod.Post, path, body = body.toString()).decode<OptionDto>()) {
+            is RepositoryResult.Failure -> result
+            is RepositoryResult.Content -> RepositoryResult.Content(result.value.toDomain())
+        }
+    }
 
     override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageContent> {
         val response = api.send(

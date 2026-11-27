@@ -83,10 +83,6 @@ final class SharedCollectionActionMappingTests: XCTestCase {
             SharedSDK.CollectionTargetWhole(databaseKey: "projects", databaseId: nil)
         )
         XCTAssertEqual(
-            target(.ofArea(databaseKey: "projects", areaId: "a1")) as? NSObject,
-            SharedSDK.CollectionTargetOfArea(databaseKey: "projects", areaId: "a1")
-        )
-        XCTAssertEqual(
             target(.ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")) as? NSObject,
             SharedSDK.CollectionTargetOfItem(databaseKey: "files", relationKey: "projects", itemId: "p1")
         )
@@ -110,7 +106,7 @@ final class SharedCollectionActionMappingTests: XCTestCase {
 
     func testFieldContentMapsEveryContent() {
         let option = SharedSDK.OptionView(key: "a", label: "A", color: nil)
-        let target = SharedSDK.TargetView(id: "t", databaseKey: "areas", title: "Work", color: "#5856D6")
+        let target = SharedSDK.TargetView(id: "t", databaseKey: "companies", title: "Novák Web", color: "#5856D6")
         XCTAssertEqual(CoreKit.FieldContent(SharedSDK.FieldContentEmpty.shared), .empty)
         XCTAssertEqual(CoreKit.FieldContent(SharedSDK.FieldContentText(text: "x")), .text("x"))
         XCTAssertEqual(CoreKit.FieldContent(SharedSDK.FieldContentNumber(number: 1.5)), .number(1.5))
@@ -124,7 +120,7 @@ final class SharedCollectionActionMappingTests: XCTestCase {
         )
         XCTAssertEqual(
             CoreKit.FieldContent(SharedSDK.FieldContentTargets(targets: [target])),
-            .targets([FieldTarget(id: "t", databaseKey: "areas", title: "Work", color: "#5856D6")])
+            .targets([FieldTarget(id: "t", databaseKey: "companies", title: "Novák Web", color: "#5856D6")])
         )
         let blob = SharedSDK.FieldContentBlob(
             blobId: "b", filename: "a.pdf", mimeType: "application/pdf", byteSize: 2_048

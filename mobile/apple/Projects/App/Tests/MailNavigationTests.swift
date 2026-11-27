@@ -66,16 +66,16 @@ final class MailNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheContextShowsMailForAnAreaAndAProjectOnTheStackOfATab() {
+    func testTheContextShowsAllMailAndTheMailOfAProjectOnTheStackOfATab() {
         let context = NavigationContext()
         let journal = MailStackSpy()
         context.register(journal, for: .journal)
-        context.showMail(MailListStart(areaId: "a1"), in: .journal)
+        context.showMail(MailListStart(), in: .journal)
         context.showMail(MailListStart(projectId: "p1"), title: nil, in: .journal)
         XCTAssertEqual(
             journal.pushed,
             [
-                .mailList(MailListStart(areaId: "a1"), title: nil, tab: .journal),
+                .mailList(MailListStart(), title: nil, tab: .journal),
                 .mailList(MailListStart(projectId: "p1"), title: nil, tab: .journal)
             ]
         )
