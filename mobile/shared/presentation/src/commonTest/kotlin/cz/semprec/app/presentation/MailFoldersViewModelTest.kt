@@ -21,7 +21,8 @@ class MailFoldersViewModelTest : MainDispatcherTest() {
     private fun viewModel(
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
-    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail, sync = sync).foldersViewModel()
+    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail, mail, sync = sync)
+        .foldersViewModel()
 
     private val sync = SyncChanges()
 

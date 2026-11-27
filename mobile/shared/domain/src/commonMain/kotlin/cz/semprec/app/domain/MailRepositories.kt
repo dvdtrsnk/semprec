@@ -30,6 +30,12 @@ interface MailRepository {
     suspend fun createTask(threadId: String): RepositoryResult<MailNamedRef>
 }
 
+/** The name of a project a thread list starts with, which the facet options leave out when it holds no thread. */
+fun interface MailProjectNames {
+    /** The name of the project [projectId]; `null` when it is gone or has none. */
+    suspend fun projectName(projectId: String): RepositoryResult<String?>
+}
+
 /** What changed in a thread list view since a changes cursor ([MailThreadPage.changesCursor]). */
 interface MailThreadChangesRepository {
     /** The changes of the list view [query] names (its search and cursor are not used) since the changes cursor [since]. */

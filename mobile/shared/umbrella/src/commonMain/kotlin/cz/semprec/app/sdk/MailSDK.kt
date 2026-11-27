@@ -45,6 +45,7 @@ class MailSDK internal constructor(
             HttpMailDraftRepository(api),
             mailboxes,
             HttpMailContentRepository(api),
+            mail,
             api.changes.events,
             sync,
             threadLists,

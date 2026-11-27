@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailFacets
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSearchResult
 import cz.semprec.app.domain.MailThreadList
@@ -36,6 +37,7 @@ class MailThreadsViewModel internal constructor(
     private val mailboxes: MailboxRepository,
     private val content: MailContentRepository,
     private val lists: SyncMailThreadList,
+    private val projectNames: MailProjectNames,
     start: MailListStart,
     changes: Flow<Unit> = emptyFlow(),
     remoteChanges: Flow<Unit> = emptyFlow(),
@@ -63,6 +65,7 @@ class MailThreadsViewModel internal constructor(
         load(showWait = true)
         loadFacets()
         loadMailboxes()
+        start.projectId?.let(::loadProjectName)
     }
 
     override fun onAction(action: MailThreadsAction) {
@@ -169,6 +172,16 @@ class MailThreadsViewModel internal constructor(
             val result = mailAttempt { mail.facets() }
             ensureActive()
             update { it.afterFacets(result) }
+        }
+    }
+
+    /** Names the project the list starts with, also one without threads. */
+    private fun loadProjectName(projectId: String) {
+        viewModelScope.launch {
+            val result = mailAttempt { projectNames.projectName(projectId) }
+            ensureActive()
+            val name = if (result is RepositoryResult.Content) result.value else null
+            if (name != null) update { if (it.projectId == projectId) it.copy(projectName = name) else it }
         }
     }
 

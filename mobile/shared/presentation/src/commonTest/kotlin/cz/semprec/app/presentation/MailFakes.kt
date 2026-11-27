@@ -28,6 +28,7 @@ import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
 import cz.semprec.app.domain.MailPasswordAccount
 import cz.semprec.app.domain.MailPrefill
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRemoteSearch
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailRepository
@@ -89,6 +90,7 @@ internal class ScriptedMailRepository(
     val changes: MailCall<Pair<MailThreadQuery, String>, MailThreadChanges> =
         MailCall(mailContent(MailThreadChanges("c-next", emptyList(), emptyList(), reset = false))),
     val facets: MailCall<Unit, MailFacets> = MailCall(mailContent(mailFacets())),
+    val projectNames: MailCall<String, String?> = MailCall(mailContent(null)),
     val summary: MailCall<Unit, MailSummary> = MailCall(mailContent(mailSummary())),
     val thread: MailCall<String, MailThreadDetail> = MailCall(mailContent(mailDetail())),
     val read: MailCall<Pair<String, Boolean>, MailOutcome<Boolean>> = MailCall(mailDone(false)),
@@ -99,7 +101,7 @@ internal class ScriptedMailRepository(
         MailCall(mailFetched(MailMessageContent("e3", "Celý text"))),
     val saves: MailCall<Pair<String, String>, MailContentOutcome<String>> = MailCall(mailFetched("f9")),
     val searches: MailCall<Pair<String, String?>, MailSearchResult> = MailCall(mailContent(mailSearch())),
-) : MailRepository, MailThreadChangesRepository, MailContentRepository {
+) : MailRepository, MailThreadChangesRepository, MailContentRepository, MailProjectNames {
     val moved = mutableListOf<String>()
 
     override suspend fun threads(query: MailThreadQuery) = threads.answer(query)
@@ -107,6 +109,8 @@ internal class ScriptedMailRepository(
     override suspend fun threadChanges(query: MailThreadQuery, since: String) = changes.answer(query to since)
 
     override suspend fun facets() = facets.answer(Unit)
+
+    override suspend fun projectName(projectId: String) = projectNames.answer(projectId)
 
     override suspend fun summary() = summary.answer(Unit)
 

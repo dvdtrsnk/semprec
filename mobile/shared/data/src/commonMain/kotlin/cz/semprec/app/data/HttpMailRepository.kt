@@ -5,6 +5,7 @@ import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailThreadChanges
@@ -30,7 +31,7 @@ private const val PROJECTS_KEY = "projects"
 class HttpMailRepository internal constructor(
     private val api: AuthenticatedApi,
     private val items: ItemsApi,
-) : MailRepository, MailThreadChangesRepository {
+) : MailRepository, MailThreadChangesRepository, MailProjectNames {
     constructor(api: AuthenticatedApi) : this(api, ItemsApi(api))
 
     override suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage> {
@@ -54,6 +55,9 @@ class HttpMailRepository internal constructor(
     override suspend fun facets(): RepositoryResult<MailFacets> =
         api.send(HttpMethod.Get, "/api/mail/threads/facets").decode<MailFacetsDto>()
             .then { counts -> names(PROJECTS_KEY).map { projectNames -> counts.toDomain(projectNames) } }
+
+    override suspend fun projectName(projectId: String): RepositoryResult<String?> =
+        names(PROJECTS_KEY).map { projectNames -> projectNames[projectId]?.name }
 
     override suspend fun summary(): RepositoryResult<MailSummary> =
         api.send(HttpMethod.Get, "/api/mail/summary").decode<MailSummaryDto>().map { it.toDomain() }

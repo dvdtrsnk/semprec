@@ -42,7 +42,8 @@ private const val FACETS = """{"total":9,
 
 private const val PROJECTS = """{"items":[
     {"id":"pr1","databaseId":"$PROJECTS_DB","properties":{"name":"Web","color":"#FF9500"}},
-    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}}]}"""
+    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}},
+    {"id":"quiet","databaseId":"$PROJECTS_DB","properties":{"name":"Zahrada"}}]}"""
 
 private const val DATABASES = """{"databases":[{"id":"$PROJECTS_DB","key":"projects","name":"Projects"}]}"""
 
@@ -237,6 +238,20 @@ class HttpMailRepositoryTest {
             listOf("/api/mail/threads/facets", "/api/databases", "/api/databases/$PROJECTS_DB/query"),
             server.requests.map { it.url.encodedPath },
         )
+    }
+
+    @Test
+    fun aProjectIsNamedFromTheProjectsWithoutAskingTheFacets() = runTest {
+        val expected = mapOf("pr1" to "Web", "quiet" to "Zahrada", "nameless" to null, "gone" to null)
+        for ((projectId, name) in expected) {
+            val server = server(::routes)
+
+            assertEquals(RepositoryResult.Content(name), server.mail().projectName(projectId), projectId)
+            assertEquals(
+                listOf("/api/databases", "/api/databases/$PROJECTS_DB/query"),
+                server.requests.map { it.url.encodedPath },
+            )
+        }
     }
 
     @Test
