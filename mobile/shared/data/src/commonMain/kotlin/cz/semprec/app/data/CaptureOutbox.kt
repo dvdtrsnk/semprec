@@ -103,6 +103,15 @@ internal class CaptureOutbox(
         return owner != null && files.count(owner) == 0
     }
 
+    /**
+     * Whether a capture of the owner signed in waits, counted in the directory now rather than taken from [waiting];
+     * `false` when nobody is signed in or no person is kept for the session, since then none of them could be sent.
+     */
+    suspend fun waits(): Boolean {
+        val owner = signedInOwner() ?: return false
+        return files.count(owner) > 0
+    }
+
     /** The session ended: no owner is signed in, so none of the captures, which stay, is counted. */
     fun cleared() {
         files.noOwner()

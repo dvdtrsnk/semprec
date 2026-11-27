@@ -8,7 +8,8 @@ import Foundation
 /// (`ScanPresenter`); the scanned pages are kept as one PDF. Either capture is kept on the device with the day and the
 /// current time of this device, gets a few seconds to reach the server, and waits in the device's outbox until it
 /// does, also without a connection
-/// (docs/adr/2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk.md).
+/// (docs/adr/2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk.md); while it waits, the
+/// background tasks that send it are scheduled (`CaptureSending`).
 struct AddToInboxIntent: AppIntent {
 
     // MARK: - Shared
@@ -88,6 +89,7 @@ struct AddToInboxIntent: AppIntent {
         )
         guard let failure else {
             await Self.sendBriefly(capture)
+            await CaptureSending.shared.captureAdded()
             return "intent.addToInbox.saved"
         }
         switch failure.kind {
@@ -102,7 +104,8 @@ struct AddToInboxIntent: AppIntent {
 
     #if os(iOS)
     /// Brings the app to the foreground and waits for the scanner's outcome. The presenter writes the capture itself,
-    /// so a scan the person finishes is kept even when the system ends this run before it answers.
+    /// and schedules its background sending, so a scan the person finishes is kept even when the system ends this run
+    /// before it answers.
     @MainActor
     private func captureScan(_ capture: InboxShortcutCapture, type: InboxTypeEntity) async throws -> IntentDialog {
         guard DocumentScanner.isSupported else { return "intent.addToInbox.scan.unavailable" }

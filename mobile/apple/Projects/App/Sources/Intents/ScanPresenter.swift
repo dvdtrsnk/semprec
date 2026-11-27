@@ -6,7 +6,8 @@ import PDFKit
 /// Shows the system document scanner for `AddToInboxIntent` and keeps what it scanned: the intent asks for a scan, one
 /// scene of the app shows the scanner full screen (`ScanPresentation`), and the scanner's outcome comes back here. The
 /// presenter itself writes a finished scan to the device's capture outbox, in a task of the app rather than of the
-/// intent's run, so the capture is kept even when the system ends that run first.
+/// intent's run, so the capture is kept even when the system ends that run first, and then reports it (`captured`),
+/// which schedules its background sending while it waits.
 ///
 /// It is one per process, because the system runs the intent outside any scene; a request is shown by the first
 /// active scene that claims it, so only one window shows the scanner.
@@ -50,13 +51,21 @@ final class ScanPresenter: ObservableObject {
 
     // MARK: - Dependencies
     private let capture: Capture
+    /// Called once a scan's capture is kept.
+    private let captured: @MainActor () async -> Void
     private let now: @MainActor () -> Date
     private var waiting: CheckedContinuation<Outcome, Never>?
 
     // MARK: - Init
-    /// Over the capture bridge of the intents by default; tests pass their own `capture` and clock.
-    init(capture: @escaping Capture = ScanPresenter.inbox, now: @escaping @MainActor () -> Date = { Date.now }) {
+    /// Over the capture bridge of the intents and the app's `CaptureSending` by default; tests pass their own
+    /// `capture`, `captured` and clock.
+    init(
+        capture: @escaping Capture = ScanPresenter.inbox,
+        captured: @escaping @MainActor () async -> Void = { await CaptureSending.shared.captureAdded() },
+        now: @escaping @MainActor () -> Date = { Date.now }
+    ) {
         self.capture = capture
+        self.captured = captured
         self.now = now
     }
 
@@ -79,7 +88,8 @@ final class ScanPresenter: ObservableObject {
     }
 
     /// The person finished the scan with `pages`: the scanner closes, the pages become one PDF and the capture is
-    /// written to the outbox; the outcome is `.saved` once it is kept. No page counts as cancelled.
+    /// written to the outbox; the outcome is `.saved` once it is kept, and then `captured` is called. No page counts
+    /// as cancelled.
     func finish(pages: [PDFPage]) {
         guard let request else { return }
         guard !pages.isEmpty else {
@@ -93,6 +103,7 @@ final class ScanPresenter: ObservableObject {
         }
         guard let waiting = take() else { return }
         let capture = capture
+        let captured = captured
         Task { @MainActor in
             let failure = await capture(
                 request.text,
@@ -102,6 +113,7 @@ final class ScanPresenter: ObservableObject {
                 file
             )
             waiting.resume(returning: failure.map(Outcome.failed) ?? .saved)
+            if failure == nil { await captured() }
         }
     }
 

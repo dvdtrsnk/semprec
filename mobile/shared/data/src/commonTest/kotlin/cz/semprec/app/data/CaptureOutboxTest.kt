@@ -682,6 +682,40 @@ class CaptureOutboxTest {
         assertEquals(0, layer.status.first().waiting)
     }
 
+    @Test fun `whether captures wait is counted for the person signed in and is false with nobody signed in`() =
+        runTest {
+            val layer = layer()
+            layer.signIn()
+            assertFalse(layer.capturesWait(), "nothing was captured yet")
+
+            offline()
+            layer.add()
+            runCurrent()
+            assertTrue(layer.capturesWait())
+
+            layer.signIn(StoredSession(OUTBOX_SERVER, "tok-bob"), OUTBOX_OTHER)
+            assertFalse(layer.capturesWait(), "Bob has no capture of his own")
+
+            server.session = null
+            assertFalse(layer.capturesWait(), "nobody is signed in")
+
+            layer.signIn()
+            online()
+            assertTrue(layer.captures.send())
+            assertFalse(layer.capturesWait(), "the capture reached the server")
+        }
+
+    @Test fun `whether captures wait is false while no person is kept for the session`() = runTest {
+        val layer = layer()
+        layer.signIn()
+        offline()
+        layer.add()
+        runCurrent()
+
+        server.session = StoredSession("https://other.example", "tok")
+        assertFalse(layer.capturesWait())
+    }
+
     @Test fun `an Inbox capture is not a route of the write queue`() {
         assertNull(QueuedRoute.of(HttpMethod.Post, INBOX_ITEMS_PATH))
     }

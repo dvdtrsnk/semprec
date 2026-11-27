@@ -39,6 +39,8 @@ final class ScanPresenterTests: XCTestCase {
         XCTAssertEqual(call.file.source, .camera)
         let document = try XCTUnwrap(PDFDocument(data: try XCTUnwrap(Data(base64Encoded: call.file.base64))))
         XCTAssertEqual(document.pageCount, 2)
+        try await eventually { captures.reported == 1 }
+        XCTAssertEqual(captures.reported, 1, "A kept scan is reported once, so its background sending is scheduled")
     }
 
     func testAFinishedScanKeepsTheChosenDayAndNoType() async throws {
@@ -70,6 +72,8 @@ final class ScanPresenterTests: XCTestCase {
 
         XCTAssertEqual(outcome, .failed(Failed(kind: .unauthorized)))
         XCTAssertEqual(captures.calls.count, 1)
+        await Task.yield()
+        XCTAssertEqual(captures.reported, 0, "A capture that was not kept is not reported")
     }
 
     func testAScanFinishedWithNoPageCapturesNothingAndAnswersCancelled() async throws {
@@ -175,6 +179,7 @@ final class ScanPresenterTests: XCTestCase {
             capture: { text, day, time, typeId, file in
                 captures.record(CaptureRecorder.Call(text: text, day: day, time: time, typeId: typeId, file: file))
             },
+            captured: { captures.reported += 1 },
             now: { now }
         )
     }
@@ -200,6 +205,8 @@ private final class CaptureRecorder {
 
     // MARK: - Properties
     private(set) var calls: [Call] = []
+    /// How often the presenter reported a kept capture.
+    var reported = 0
     private let answer: Failed?
 
     // MARK: - Init

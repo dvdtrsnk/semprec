@@ -8,7 +8,7 @@ final class JournalCaptureViewModelTests: XCTestCase {
     @MainActor
     func testEveryIntentIsForwardedToTheModel() {
         let model = ScriptedInboxCaptureScreenModel(state: InboxCaptureState())
-        let viewModel = JournalCaptureViewModel(model: model)
+        let viewModel = JournalCaptureViewModel(model: model, onCaptured: {})
         let file = CaptureFile(filename: "a.png", mimeType: "image/png", base64: "YWJj")
         viewModel.loadTypes()
         viewModel.pickType("t1")
@@ -29,19 +29,23 @@ final class JournalCaptureViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testTheStateIsRepublishedAndEveryCaptureIsCounted() async throws {
+    func testTheStateIsRepublishedAndEveryCaptureIsCountedAndReported() async throws {
         let model = ScriptedInboxCaptureScreenModel(state: InboxCaptureState())
-        let viewModel = JournalCaptureViewModel(model: model)
+        var reported = 0
+        let viewModel = JournalCaptureViewModel(model: model, onCaptured: { reported += 1 })
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
         model.publish(InboxCaptureState(sending: true))
         try await eventually { viewModel.state.sending }
         XCTAssertEqual(viewModel.captured, 0)
+        XCTAssertEqual(reported, 0, "A state change reports no capture")
         model.emit(.captured)
         try await eventually { viewModel.captured == 1 }
+        XCTAssertEqual(reported, 1)
         model.emit(.captured)
         try await eventually { viewModel.captured == 2 }
         XCTAssertEqual(viewModel.captured, 2)
+        XCTAssertEqual(reported, 2)
     }
 
     @MainActor

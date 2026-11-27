@@ -11,16 +11,18 @@ public enum JournalScreenFactory {
     /// The diary, the root of the Journal tab. `makeModel` receives the device's current day (`YYYY-MM-DD`), which
     /// the diary opens on until the server's answer names its own today.
     /// `makeCapture` makes the model of the capture row under today's Inbox, `makeNote` the model of the note of a
-    /// period, each time a period's note is shown.
+    /// period, each time a period's note is shown. `onCaptured` is called after each capture of that row went through
+    /// (the app schedules its sending in the background there).
     public static func journal(
         makeModel: @escaping @MainActor (_ initialDay: String) -> any JournalScreenModel,
         makeCapture: @escaping @MainActor () -> any InboxCaptureScreenModel,
         makeNote: @escaping @MainActor (NoteEditorSource) -> any NoteEditorScreenModel,
+        onCaptured: @escaping @MainActor () -> Void,
         router: any JournalRouting
     ) -> some View {
         JournalScreen(
             viewModel: JournalViewModel(model: makeModel(JournalDates.deviceToday()), router: router),
-            capture: JournalCaptureViewModel(model: makeCapture()),
+            capture: JournalCaptureViewModel(model: makeCapture(), onCaptured: onCaptured),
             notes: JournalNotes(makeModel: makeNote, router: JournalNoteRouter(router: router))
         )
     }

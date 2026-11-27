@@ -164,8 +164,10 @@ class InboxCaptureSDKTest {
             windowRestores()
             server.status = 503
             val sdk = InboxCaptureSDK(storage, directory)
+            assertFalse(sdk.capturesWait())
 
             assertEquals(InboxCaptureAnswer.Kept, sdk.capture("  Buy milk ", "2026-11-27", "07:45", "t1", null))
+            assertTrue(sdk.capturesWait())
             val kept = keptCaptures().single().readText()
             assertTrue(""""text":"Buy milk"""" in kept, kept)
             assertTrue(""""day":"2026-11-27"""" in kept, kept)
@@ -173,10 +175,12 @@ class InboxCaptureSDKTest {
             assertTrue(""""typeId":"t1"""" in kept, kept)
             assertFalse(sdk.send())
             assertEquals(1, keptCaptures().size)
+            assertTrue(sdk.capturesWait(), "a capture the server did not take still waits")
 
             server.status = 200
             assertTrue(sdk.send())
             assertEquals(emptyList(), keptCaptures())
+            assertFalse(sdk.capturesWait())
             val delivered = server.items().last()
             assertEquals("POST", delivered.method)
             assertNotNull(delivered.key)
@@ -233,6 +237,8 @@ class InboxCaptureSDKTest {
         assertFalse(signedOut.signedIn())
         assertEquals(unauthorized, signedOut.capture("Text", "2026-11-27", "08:00", null, null))
         assertFalse(signedOut.send())
+        assertFalse(noPerson.capturesWait())
+        assertFalse(signedOut.capturesWait())
         assertEquals(emptyList(), keptCaptures())
         assertEquals(emptyList(), server.items())
     }

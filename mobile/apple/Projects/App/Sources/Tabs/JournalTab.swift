@@ -11,6 +11,7 @@ enum JournalTab {
             makeModel: { composition.preparedTabs.journalModel(initialDay: $0) },
             makeCapture: { composition.models.makeInboxCapture() },
             makeNote: { composition.models.makeNoteEditor(source: $0) },
+            onCaptured: { Task { await CaptureSending.shared.captureAdded() } },
             router: composition.journalRouter
         )
     }

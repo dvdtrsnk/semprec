@@ -86,6 +86,8 @@ final class InboxShortcutCaptureTests: XCTestCase {
         XCTAssertEqual(captured, Failed(kind: .unauthorized))
         let sent = await capture.send()
         XCTAssertFalse(sent)
+        let waits = await capture.capturesWait()
+        XCTAssertFalse(waits)
     }
 
     func testABlankTextIsRefusedAsInvalid() async {

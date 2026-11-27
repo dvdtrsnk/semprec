@@ -204,6 +204,13 @@ class OfflineLayer internal constructor(
      */
     suspend fun sendCaptures(): Boolean = captures.send()
 
+    /**
+     * Whether an Inbox capture of the person signed in waits for the server ([CaptureOutbox.waits]); `false` when
+     * nobody is signed in. For an entry without a window that decides whether to send them later, such as the Apple
+     * app's background tasks.
+     */
+    suspend fun capturesWait(): Boolean = captures.waits()
+
     /** The sync socket of a window received a frame: something the server keeps changed. */
     internal suspend fun frameArrived() {
         state.locked { state.freshness.changed() }

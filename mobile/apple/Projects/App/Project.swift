@@ -43,8 +43,15 @@ let project = Project(
                 "NSCameraUsageDescription": "Semprec reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox.",
                 "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
-                // `remote-notification` lets a silent push wake the app to read its reminders again.
-                "UIBackgroundModes": ["audio", "remote-notification"],
+                // The background tasks that send the Inbox captures waiting in the device's outbox
+                // (`CaptureBackgroundTasks`, iOS only): a processing task that needs the network and an app refresh.
+                "BGTaskSchedulerPermittedIdentifiers": [
+                    "cz.semprec.app.inboxCaptures.send",
+                    "cz.semprec.app.inboxCaptures.refresh",
+                ],
+                // `remote-notification` lets a silent push wake the app to read its reminders again; `fetch` and
+                // `processing` let the system run the app refresh and processing tasks above.
+                "UIBackgroundModes": ["audio", "fetch", "processing", "remote-notification"],
                 // The APNs environment the device token is registered for, by build configuration.
                 "SemprecApnsEnvironment": "$(SEMPREC_APNS_ENVIRONMENT)",
                 "UILaunchScreen": [:],

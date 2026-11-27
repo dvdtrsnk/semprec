@@ -77,6 +77,13 @@ public final class InboxShortcutCapture {
         guard let sent = try? await sdk.send() else { return false }
         return sent.boolValue
     }
+
+    /// Whether a capture of the person signed in waits for the server, counted on the device now; false when nobody is
+    /// signed in, when no window has kept the person of the session, and when the call throws (it was cancelled).
+    public func capturesWait() async -> Bool {
+        guard let waits = try? await sdk.capturesWait() else { return false }
+        return waits.boolValue
+    }
 }
 
 // MARK: - Mapping

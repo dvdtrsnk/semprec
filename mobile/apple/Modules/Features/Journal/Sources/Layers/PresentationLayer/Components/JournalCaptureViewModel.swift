@@ -4,12 +4,14 @@ import Foundation
 
 /// Thin adapter between the capture row of the diary's Inbox and its shared screen model: republishes the state and
 /// forwards intents. A capture that went through bumps `captured`, so the row clears its text and the diary shows the
-/// day again.
+/// day again, and is reported to the app through `onCaptured`.
 @MainActor
 final class JournalCaptureViewModel: ObservableObject {
 
     // MARK: - Dependencies
     private let model: any InboxCaptureScreenModel
+    /// The app's hook for a capture that went through, which schedules its sending while the app is not running.
+    private let onCaptured: @MainActor () -> Void
 
     // MARK: - Published Properties
     @Published private(set) var state: InboxCaptureState
@@ -17,8 +19,9 @@ final class JournalCaptureViewModel: ObservableObject {
     @Published private(set) var captured = 0
 
     // MARK: - Init
-    init(model: any InboxCaptureScreenModel) {
+    init(model: any InboxCaptureScreenModel, onCaptured: @escaping @MainActor () -> Void) {
         self.model = model
+        self.onCaptured = onCaptured
         state = model.state
     }
 
@@ -29,7 +32,9 @@ final class JournalCaptureViewModel: ObservableObject {
             onState: { [weak self] in self?.state = $0 },
             onEffect: { [weak self] effect in
                 switch effect {
-                case .captured: self?.captured += 1
+                case .captured:
+                    self?.captured += 1
+                    self?.onCaptured()
                 }
             }
         )

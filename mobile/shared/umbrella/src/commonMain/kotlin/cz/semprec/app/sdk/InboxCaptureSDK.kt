@@ -118,6 +118,19 @@ class InboxCaptureSDK(sessionStorage: SessionStorage, dataDirectory: String) {
     } catch (_: Exception) {
         false
     }
+
+    /**
+     * Whether a capture of the person signed in waits for the server, counted on the device now; `false` when nobody
+     * is signed in or no window has kept the person of the session, since then none could be sent, and when the
+     * count failed unexpectedly.
+     */
+    suspend fun capturesWait(): Boolean = try {
+        offline.capturesWait()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        false
+    }
 }
 
 private suspend fun <T> guarded(call: suspend () -> RepositoryResult<T>): RepositoryResult<T>? = try {
