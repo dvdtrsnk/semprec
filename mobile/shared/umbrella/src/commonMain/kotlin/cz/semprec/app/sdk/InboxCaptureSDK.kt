@@ -48,15 +48,22 @@ data class InboxCaptureFileInput(
  * [dataDirectory], the directory the windows keep their data in: the types are answered from what the device keeps
  * when the server cannot answer, and a capture waits in the device's capture outbox
  * (docs/adr/2026-11-27-inbox-captures-wait-in-a-device-outbox-that-outlives-the-session.md). Creating it attaches
- * its sender to that layer, which the outbox's rounds then use. It reads nothing ahead, opens no sync socket and holds
- * no ViewModel; a `401` does not end the session, which the next window's own call ends. Every call answers a value:
+ * its sender to that layer only when no window has attached one, so the outbox's rounds go through a window's sender
+ * whenever one exists, and a window created later replaces it. It reads nothing ahead, opens no sync socket and holds
+ * no ViewModel; a `401` of its own calls does not end the session, which the next window's own call ends. Every call answers a value:
  * an unexpected exception is a failure without a kind, and cancellation is rethrown.
  */
 class InboxCaptureSDK(sessionStorage: SessionStorage, dataDirectory: String) {
     private val storage = sessionStorage
     private val offline = OfflineLayer.shared(dataDirectory)
     private val repository = HttpInboxCaptureRepository(
-        AuthenticatedApi(ApiClient(), sessionStorage, offline = offline, onSessionRejected = {}),
+        AuthenticatedApi(
+            ApiClient(),
+            sessionStorage,
+            offline = offline,
+            takesOverSender = false,
+            onSessionRejected = {},
+        ),
     )
 
     /** Whether a session is stored; a session the server no longer knows still counts until a window ends it. */

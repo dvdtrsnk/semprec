@@ -24,6 +24,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val TYPES_ANSWER =
@@ -37,10 +38,12 @@ private data class Received(val method: String, val path: String, val key: Strin
 
 /**
  * A Semprec server on the loopback interface. [status] is the status every request gets, `200` (or `201` for an item)
- * with the answers above; anything else answers that status with an empty error.
+ * with the answers above; anything else answers that status with an empty error. [itemStatus], when set, is the status
+ * of `POST /api/inbox/items` alone.
  */
 private class TestServer {
     @Volatile var status = 200
+    @Volatile var itemStatus: Int? = null
     val received: MutableList<Received> = Collections.synchronizedList(mutableListOf())
     private val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
         createContext("/") { exchange -> answer(exchange) }
@@ -52,8 +55,10 @@ private class TestServer {
         val path = exchange.requestURI.path
         val body = exchange.requestBody.readBytes().decodeToString()
         received += Received(exchange.requestMethod, path, exchange.requestHeaders.getFirst("Idempotency-Key"), body)
+        val refusedItem = itemStatus.takeIf { path == "/api/inbox/items" }
         val (code, text) = when {
             status != 200 -> status to """{"error":{"code":"failed"}}"""
+            refusedItem != null -> refusedItem to """{"error":{"code":"failed"}}"""
             path == "/api/auth/session" -> 200 to SESSION_ANSWER
             path == "/api/inbox-types" -> 200 to TYPES_ANSWER
             path == "/api/inbox/items" -> 201 to CREATED_ANSWER
@@ -83,7 +88,45 @@ class InboxCaptureSDKTest {
 
     /** A window signs in as the person of the session, so the device keeps that person for the outbox. */
     private suspend fun windowRestores() {
-        HttpAuthRepository(ApiClient(), storage, DEVICE, offline = OfflineLayer.shared(directory)).restore()
+        window().restore()
+    }
+
+    /** A window's auth over the session and the layer; a `401` of its sender signs the session out. */
+    private fun window() = HttpAuthRepository(ApiClient(), storage, DEVICE, offline = OfflineLayer.shared(directory))
+
+    /** Captures with the item refused as `401`: the session ends only when a window's sender sent the capture. */
+    private suspend fun sendRefusedCapture(sdk: InboxCaptureSDK) {
+        server.itemStatus = 401
+        assertEquals(InboxCaptureAnswer.Kept, sdk.capture("Buy milk", "2026-11-27", "07:45", null, null))
+        assertFalse(sdk.send())
+        assertTrue(server.items().isNotEmpty())
+    }
+
+    @Test fun `with a window first the captures go out through the window's sender, not the SDK's`() = runTest {
+        windowRestores()
+        val sdk = InboxCaptureSDK(storage, directory)
+
+        sendRefusedCapture(sdk)
+        assertNull(storage.load())
+    }
+
+    @Test fun `a window created after the SDK takes over its sender`() = runTest {
+        val sdk = InboxCaptureSDK(storage, directory)
+        windowRestores()
+
+        sendRefusedCapture(sdk)
+        assertNull(storage.load())
+    }
+
+    @Test fun `without a window the SDK's own sender sends, and its 401 keeps the session`() = runTest {
+        // The person was kept by a window of an earlier process; this one has no window.
+        val earlier = Files.createTempDirectory("semprec-inbox-capture-sdk-earlier").toString()
+        HttpAuthRepository(ApiClient(), storage, DEVICE, offline = OfflineLayer.shared(earlier)).restore()
+        File(earlier, "offline").copyRecursively(File(directory, "offline"))
+        val sdk = InboxCaptureSDK(storage, directory)
+
+        sendRefusedCapture(sdk)
+        assertNotNull(storage.load())
     }
 
     private fun keptCaptures(): List<File> =

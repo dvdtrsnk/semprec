@@ -43,9 +43,14 @@ Rejected:
   captures. An intent never sees a Kotlin type, as no other app code does
   ([[2026-10-24-kotlin-multiplatform-below-native-mobile-ui]]).
 - **What a headless SDK does not do.** It builds an `AuthenticatedApi` over the process's `OfflineLayer`, so reads of
-  the offline set answer from what the device keeps and its sender is the one the layer's rounds use, but it registers
-  no warm-up (`OfflineLayer.warmUpWith`), opens no sync socket and holds no screen ViewModel. Its `401` does not end
-  the session: the next window's own calls meet the same refusal and end it there, where the person sees the sign-in.
+  the offline set answer from what the device keeps, but it registers no warm-up (`OfflineLayer.warmUpWith`), opens
+  no sync socket and holds no screen ViewModel. Its `401` does not end the session: the next window's own calls meet
+  the same refusal and end it there, where the person sees the sign-in.
+- **The layer's sender stays a window's.** The layer's rounds (the write queue's replays, the note pages and the
+  capture outbox) go through one sender. A headless SDK attaches its api's sender only when none is attached yet
+  (`AuthenticatedApi(takesOverSender = false)`), so a window's sender, whose `401` signs that window out, stays in
+  charge whenever one exists; a window created later replaces the headless one, as every window replaces the sender
+  before it.
 - **Lifetime.** A bridge, and its SDK, is created per intent run or entity query and released after it; the process's
   `OfflineLayer` and what it keeps outlive it.
 
@@ -53,9 +58,8 @@ Rejected:
 
 - An intent works offline whenever a window has kept the answers it reads; with nothing kept it gets the failure of
   the read, and has to offer what it can without it (the type query offers only "No type").
-- Creating the SDK attaches its sender to the layer, which replays the write queue and sends the captures that wait
-  through it from then on, also for a window that is open in the same process, until a window is created again. A
-  `401` of such a replay does not end the session; the window's next own call does.
+- In a process without a window the headless sender carries the layer's rounds, and a `401` of one of them does not
+  end the session; the next window's own call does. With a window open, an intent changes nothing about who sends.
 - A later system entry point (another intent, a control) follows the same shape: its own headless SDK entry and CoreKit
   bridge, never a `HomeSDK`. One that must run outside the app's process (a widget or control extension) needs a new
   decision about sharing the session and the outbox between processes.

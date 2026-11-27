@@ -109,6 +109,14 @@ internal class OfflineWrites(
         replaySoon()
     }
 
+    /**
+     * Attaches [sender] as [attach] does only when no sender is attached yet, so an entry without a window never
+     * takes over the sender of a window, whose `401` signs that window out; a window attached later replaces it.
+     */
+    fun attachIfNone(sender: QueueSender) {
+        if (replayer.sender(sender, replace = false)) replaySoon()
+    }
+
     /** Sends or queues [request], a write of [route] made with [session]; [transmit] sends it to the server. */
     suspend fun write(
         session: StoredSession,
@@ -225,8 +233,15 @@ internal class QueueReplayer(
     private val sender = AtomicReference<QueueSender?>(null)
     private val retry = AtomicReference<Job?>(null)
 
-    fun sender(next: QueueSender) {
+    /**
+     * Stores [next] in place of the sender stored before, or, without [replace], only when none is stored; answers
+     * whether it was stored.
+     */
+    fun sender(next: QueueSender, replace: Boolean = true): Boolean = if (replace) {
         sender.store(next)
+        true
+    } else {
+        sender.compareAndSet(null, next)
     }
 
     fun account(): String? = sender.load()?.account()

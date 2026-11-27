@@ -22,12 +22,17 @@ import io.ktor.http.HttpMethod
  * connection.md); the window's [AuthenticatedApi] sends what the layer replays, and the Inbox captures its outbox keeps
  * ([CaptureOutbox]). Every other request still goes to the server, and the layer learns from its outcome whether the
  * server was reached and whether a write may have changed what it keeps.
+ *
+ * A window's api ([takesOverSender] `true`) attaches its sender to [offline] and replaces the one attached before; an
+ * entry without a window (`false`, `InboxCaptureSDK`) attaches its sender only when none is attached yet
+ * (docs/adr/2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk.md).
  */
 class AuthenticatedApi(
     private val client: ApiClient,
     private val storage: SessionStorage,
     val changes: ItemChanges = ItemChanges(),
     internal val offline: OfflineLayer? = null,
+    takesOverSender: Boolean = true,
     private val onSessionRejected: suspend () -> Unit,
 ) {
     /**
@@ -55,7 +60,7 @@ class AuthenticatedApi(
     }
 
     init {
-        offline?.writes?.attach(queueSender)
+        if (takesOverSender) offline?.writes?.attach(queueSender) else offline?.writes?.attachIfNone(queueSender)
     }
 
     /** The session the calls go out with, or `null` when nobody is signed in. */
