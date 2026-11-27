@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-c0ef4ee6-d2da-42db-863b-e44de06ab462"
 title: "[areas-removal 03/04] Remove areas from the mobile apps"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-7ff00d8e-6c3e-49f2-b5a8-89ca1157e807"
 assignees: []
 milestone: null
 createdAt: "2026-11-27T12:51:55.690Z"
-updatedAt: "2026-11-27T12:52:01.027Z"
-closedAt: null
+updatedAt: "2026-11-27T18:55:59.069Z"
+closedAt: "2026-11-27T18:55:59.069Z"
 source: null
 approval: {"specSha256":"92169b45ab2bb9baef2ec11a884a8546c1e924250539b893d58dd63a1af7f7ba","source":"repository","actor":"david","at":"2026-11-27T12:52:01.027Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"b0d716796621b4948580934d6603a162e42cd885","at":"2026-11-27T18:55:59.069Z"}
 ---
 **Blocked by:** sp-28bb2413-43da-438b-99ae-372da169ba94
 **Model tier:** high
