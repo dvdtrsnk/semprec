@@ -127,6 +127,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "delete property": "services/semprec-api/src/propertiesHandler.ts",
   "add property option": "services/semprec-api/src/propertiesHandler.ts",
   "update property option": "services/semprec-api/src/propertiesHandler.ts",
+  "remove property option": "services/semprec-api/src/propertiesHandler.ts",
   "list views": "services/semprec-api/src/viewsHandler.ts",
   "view detail": "services/semprec-api/src/viewsHandler.ts",
   "create view": "services/semprec-api/src/viewsHandler.ts",

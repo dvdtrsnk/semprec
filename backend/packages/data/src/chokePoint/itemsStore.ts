@@ -342,6 +342,48 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
+/**
+ * Every row, live or trashed, whose `propertyKey` value is `optionKey` or an array holding it, locked `FOR NO KEY
+ * UPDATE` in id order by the statement that tests the value, so a row updated while it waits is tested again on its
+ * latest committed version.
+ */
+export async function lockItemsHoldingOption(
+  client: Queryable,
+  databaseId: string,
+  propertyKey: string,
+  optionKey: string,
+): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items
+      WHERE database_id = $1 AND (properties @> $2::jsonb OR properties @> $3::jsonb)
+      ORDER BY id FOR NO KEY UPDATE`,
+    [databaseId, JSON.stringify({ [propertyKey]: optionKey }), JSON.stringify({ [propertyKey]: [optionKey] })],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Sets one key of a trashed row's `properties` and advances `updated_at` and `version`, in the caller's transaction.
+ * Throws when the row is gone or live.
+ */
+export async function setTrashedItemProperty(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+  key: string,
+  value: unknown[] | null,
+): Promise<void> {
+  requireAffectedRows(
+    await client.query(
+      `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now(),
+              version = version + 1
+        WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`,
+      [databaseId, itemId, key, JSON.stringify(value)],
+    ),
+    "trashed item property write",
+  );
+}
+
 /** Every row regardless of `deleted_at`: the cascade traversal must see live and trashed rows alike. */
 export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(

@@ -39,7 +39,7 @@ import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
  * this transaction, so existing values become searchable or stop being. The job key names the
  * database, so repeated writes collapse. Emails are not reindexed (mail owns their rows). Outside a tenant scope the job cannot be keyed, so nothing is queued.
  */
-async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Iterable<string>): Promise<void> {
+export async function enqueuePropertySearchReindex(client: PoolClient, databaseIds: Iterable<string>): Promise<void> {
   if (currentTenantScope()?.kind !== "tenant") return;
   for (const databaseId of new Set(databaseIds)) {
     const database = await databasesStore.getDatabase(client, databaseId);

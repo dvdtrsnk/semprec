@@ -200,8 +200,11 @@ Paths that cannot impose a global order use nonblocking admission instead of wai
 
 A change to any of these paths must keep the order:
 
-- **Item update:** module pre-lock hooks (e.g. the Calendars default-mark advisory lock) → item row →
-  value-link rows.
+- **Item update:** select/multi-select property rows the patch names (`FOR SHARE`, id order, user and
+  agent writers only; the same on create) → module pre-lock hooks (e.g. the Calendars default-mark
+  advisory lock) → item row → value-link rows.
+- **Select option removal:** property row (`FOR UPDATE`) → every item holding the key, live and
+  trashed (`FOR NO KEY UPDATE`, id order, one statement) → each live item's update path.
 - **Value-link item write:** item row before any link row; required link keys checked in sorted order.
 - **User/agent edge write on a link rule's via relation:** edge row → rule target item rows
   (`linkRuleEdgeLockHook`, before-link-break hook) → value-link rows (`project` → `people` →

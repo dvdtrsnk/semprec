@@ -18,8 +18,7 @@ function requestUrl(rawUrl: string | undefined): URL {
 /**
  * `PATCH` sends only the fields present as `property.patch`'s `patch`; an empty body is
  * `validation_failed` (`empty_patch`) and a relation property's `type`/`config` is rejected
- * (`relation_definition_required`), both raised by the application service. No successful mutation
- * returns 204.
+ * (`relation_definition_required`), both raised by the application service.
  *
  * `GET /api/properties?databaseId=` and `GET /api/properties/:id` return the raw binding output
  * including `config`, so agents can discover relation definition and target ids. This deliberately
@@ -27,8 +26,9 @@ function requestUrl(rawUrl: string | undefined): URL {
  *
  * `POST /api/properties/:id/options` and `PATCH /api/properties/:id/options/:key` add or
  * rename/recolor a select option, also on a schema-locked database, and answer with the option (201
- * for the add). `:key` is decoded once because a stored key may hold a space, non-ASCII or `/`;
- * invalid percent-encoding is 400 naming `key`.
+ * for the add). `DELETE /api/properties/:id/options/:key` removes the option and its key from every
+ * item value and answers 204 with no body. `:key` is decoded once because a stored
+ * key may hold a space, non-ASCII or `/`; invalid percent-encoding is 400 naming `key`.
  */
 export function createPropertyRoutes(
   service: GenericApplicationPort,
@@ -123,6 +123,19 @@ export function createPropertyRoutes(
           { propertyId, key, label: body.label, color: body.color },
         );
         return { status: 200, body: option };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/api/properties/:id/options/:key",
+      handler: async (ctx) => {
+        const propertyId = requireUuidParam(ctx.params, "id");
+        const key = requireDecodedStringParam(ctx.params, "key");
+        await dispatchGenericOperation(service, "property.option.remove", restActor(ctx.identity.user.id), {
+          propertyId,
+          key,
+        });
+        return { status: 204, body: undefined };
       },
     },
     {

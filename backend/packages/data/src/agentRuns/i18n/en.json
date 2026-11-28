@@ -33,6 +33,7 @@
   "agentStep.title.operation.property.delete": "Deleting a property",
   "agentStep.title.operation.property.option.add": "Adding an option",
   "agentStep.title.operation.property.option.update": "Changing an option",
+  "agentStep.title.operation.property.option.remove": "Removing an option",
   "agentStep.title.operation.view.list": "Listing views",
   "agentStep.title.operation.view.get": "Reading a view",
   "agentStep.title.operation.view.create": "Creating a view",

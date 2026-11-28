@@ -5356,6 +5356,18 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(aOptions).toContainEqual(SEEDED_MEDICATION_OPTION);
     expect(aOptions.map((option) => option.label)).not.toContain(label);
   },
+  "remove property option": async () => {
+    const aTags = await healthTagsPropertyId(a);
+    await leavesAUnchanged(async () => {
+      await expectForeign404(b.member, [aTags], ([id]) => DELETE(`/api/properties/${id}/options/medication`));
+    });
+    expect(await storedOptions(a, aTags)).toContainEqual(SEEDED_MEDICATION_OPTION);
+    // The same request on B's property is served, so the foreign answer is a refusal of A's row.
+    const bProperty = await caseOptionPropertyId(b, "Isolation option remove");
+    const own = await send(b.member, DELETE(`/api/properties/${bProperty}/options/one`));
+    expect(own.status, own.text).toBe(204);
+    expect(await storedOptions(b, bProperty)).toEqual([]);
+  },
 
   // --- tenant: views -------------------------------------------------------------------------
   "list views": async () => {
@@ -6313,7 +6325,7 @@ const MCP_CASES = {
   "property.patch": (p) =>
     p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId, patch: { name: "Renamed by B" } })),
   "property.delete": (p) => p.foreignLikeRandom([a.propertyId], ([propertyId]) => ({ propertyId })),
-  // REST-only: MCP answers both as unknown tools.
+  // REST-only: MCP answers each as an unknown tool.
   "property.option.add": async (p) => {
     const aTags = await healthTagsPropertyId(a);
     await p.foreignLikeRandom([aTags], ([propertyId]) => ({ propertyId, label: "Isolation MCP probe" }));
@@ -6326,6 +6338,11 @@ const MCP_CASES = {
       key: "medication",
       label: "Isolation MCP rename",
     }));
+    expect(await storedOptions(a, aTags)).toContainEqual(SEEDED_MEDICATION_OPTION);
+  },
+  "property.option.remove": async (p) => {
+    const aTags = await healthTagsPropertyId(a);
+    await p.foreignLikeRandom([aTags], ([propertyId]) => ({ propertyId, key: "medication" }));
     expect(await storedOptions(a, aTags)).toContainEqual(SEEDED_MEDICATION_OPTION);
   },
   // Curated views only, as for `GET /api/views`.

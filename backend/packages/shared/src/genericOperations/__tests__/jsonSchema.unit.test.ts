@@ -146,6 +146,7 @@ const defaultHashes: Record<string, string> = {
   "property.delete": "3ec9951c274d2a39f8bcb97e988d1c6db52f925747d827a4c6dc44a6a6009b0a",
   "property.option.add": "ef192f416ee0d3847dd865f8df602dc1c449edf6aa87255e59468b1542f7f2f4",
   "property.option.update": "9729f94bc6a8a391595961b6e0facecdfcfe90777136aaaeb57ff5372126fd8a",
+  "property.option.remove": "a5fb797ddf8ddc8693af7c12be3c8a5e21a719edecb7077849c14774c460a994",
   "view.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "view.get": "559a12505aff3c7f9f61c27fec8615a10d0416ebccb3801031274c7cacc8c06f",
   "view.create": "b3c015042164623a164a5518c20d6e5994ad15593d408e181bf636cf03fca2db",
