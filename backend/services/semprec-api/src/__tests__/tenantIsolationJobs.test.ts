@@ -187,6 +187,8 @@ interface SystemTaskCase {
   /** A and B unless given. */
   tenants?(): Promise<[Tenant, Tenant]>;
   seed(tenant: Tenant): Promise<SeededWork>;
+  /** Keeps a bystander's own work from falling due during the run; returns what restores it. */
+  holdBystander?(tenant: Tenant): Promise<() => Promise<void>>;
 }
 
 interface GlobalSystemTaskCase {
@@ -1750,6 +1752,31 @@ const cases: Record<string, TaskCase> = {
         ),
       );
     },
+    // A bystander's own heartbeat falls due whenever the wall clock passes its next_fire_at, and the sweep then rightly
+    // fires it in that tenant. With all of them deferred for the run, any change to a bystander is a write the sweep
+    // should not have made. Raw SQL: production writers only ever recompute next_fire_at from the rule.
+    async holdBystander(tenant) {
+      const deferred = await inTenant(tenant, async () =>
+        z.array(z.object({ id: z.uuid(), next_fire_at: z.date() })).parse(
+          (
+            await pool.query(
+              `WITH held AS (SELECT id, next_fire_at FROM project_heartbeats WHERE next_fire_at IS NOT NULL FOR UPDATE)
+                 UPDATE project_heartbeats h SET next_fire_at = now() + interval '1 day' FROM held
+                  WHERE h.id = held.id RETURNING h.id, held.next_fire_at`,
+            )
+          ).rows,
+        ),
+      );
+      return async () => {
+        await inTenant(tenant, () =>
+          pool.query(
+            `UPDATE project_heartbeats h SET next_fire_at = held.next_fire_at
+               FROM unnest($1::uuid[], $2::timestamptz[]) AS held(id, next_fire_at) WHERE h.id = held.id`,
+            [deferred.map((row) => row.id), deferred.map((row) => row.next_fire_at)],
+          ),
+        );
+      };
+    },
   },
   [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: {
     tenancy: "system",
@@ -2697,19 +2724,28 @@ describe("background task isolation across two tenants: api runtime", () => {
         const firstWork = await c.seed(first);
         const secondWork = await c.seed(second);
         const bystanders = [tenantZero, tenantA, tenantB].filter((tenant) => tenant !== first && tenant !== second);
-        const bystandersBefore = await Promise.all(bystanders.map((tenant) => fingerprint(tenant)));
-        const firstNotificationsBefore = await notifications(first);
-        const secondNotificationsBefore = await notifications(second);
+        const releases: Array<() => Promise<void>> = [];
+        await settled(
+          async () => {
+            for (const tenant of bystanders) if (c.holdBystander) releases.push(await c.holdBystander(tenant));
+            const bystandersBefore = await Promise.all(bystanders.map((tenant) => fingerprint(tenant)));
+            const firstNotificationsBefore = await notifications(first);
+            const secondNotificationsBefore = await notifications(second);
 
-        expect(await jobOutcome(await runSystemJob(name))).toEqual(COMPLETED);
+            expect(await jobOutcome(await runSystemJob(name))).toEqual(COMPLETED);
 
-        await firstWork.check();
-        await secondWork.check();
-        expect(await tablesMentioning(second, firstWork.markers)).toEqual([]);
-        expect(await tablesMentioning(first, secondWork.markers)).toEqual([]);
-        expect(await Promise.all(bystanders.map((tenant) => fingerprint(tenant)))).toEqual(bystandersBefore);
-        await expectNewNotificationsAddressedTo(first, firstNotificationsBefore);
-        await expectNewNotificationsAddressedTo(second, secondNotificationsBefore);
+            await firstWork.check();
+            await secondWork.check();
+            expect(await tablesMentioning(second, firstWork.markers)).toEqual([]);
+            expect(await tablesMentioning(first, secondWork.markers)).toEqual([]);
+            expect(await Promise.all(bystanders.map((tenant) => fingerprint(tenant)))).toEqual(bystandersBefore);
+            await expectNewNotificationsAddressedTo(first, firstNotificationsBefore);
+            await expectNewNotificationsAddressedTo(second, secondNotificationsBefore);
+          },
+          async () => {
+            for (const release of releases) await release();
+          },
+        );
       },
     );
 
