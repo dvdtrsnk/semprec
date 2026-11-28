@@ -42,7 +42,7 @@ struct AddToInboxIntent: AppIntent {
     // MARK: - Methods
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let capture = InboxShortcutCapture()
+        let capture = InboxShortcutCapture.shared
         guard capture.isSignedIn else { return .result(dialog: "intent.addToInbox.signIn") }
         let type: InboxTypeEntity
         if let chosen = self.type {

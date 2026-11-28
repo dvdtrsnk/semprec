@@ -8,8 +8,8 @@ import Foundation
 /// for apps, so there only becoming active sends.
 ///
 /// It is one per process, as the outbox is: the app delegate registers its tasks at launch, `SemprecApp` reports the
-/// app's phase, and the intent, the scanner and the diary report a capture they added. Each call makes its own bridge
-/// (`makeCaptures`) and releases it afterwards.
+/// app's phase, and the intent, the scanner and the diary report a capture they added. Every call goes through the one
+/// bridge of the process (`InboxShortcutCapture.shared`), so no call creates another Kotlin SDK or HTTP client.
 @MainActor
 final class CaptureSending {
 
@@ -17,7 +17,7 @@ final class CaptureSending {
     static let shared = CaptureSending()
 
     // MARK: - Dependencies
-    private let makeCaptures: @MainActor () -> any WaitingCaptures
+    private let captures: any WaitingCaptures
     #if os(iOS)
     /// The two background tasks that send the captures while the app is not running.
     let backgroundTasks: CaptureBackgroundTasks
@@ -27,16 +27,16 @@ final class CaptureSending {
     #if os(iOS)
     /// Over the bridge of the intents and the system's scheduler by default; tests pass their own.
     init(
-        makeCaptures: @escaping @MainActor () -> any WaitingCaptures = { InboxShortcutCapture() },
+        captures: any WaitingCaptures = InboxShortcutCapture.shared,
         scheduler: any CaptureTaskScheduler = CaptureBackgroundTasks.systemScheduler
     ) {
-        self.makeCaptures = makeCaptures
-        backgroundTasks = CaptureBackgroundTasks(scheduler: scheduler, makeCaptures: makeCaptures)
+        self.captures = captures
+        backgroundTasks = CaptureBackgroundTasks(scheduler: scheduler, captures: captures)
     }
     #else
     /// Over the bridge of the intents by default; tests pass their own.
-    init(makeCaptures: @escaping @MainActor () -> any WaitingCaptures = { InboxShortcutCapture() }) {
-        self.makeCaptures = makeCaptures
+    init(captures: any WaitingCaptures = InboxShortcutCapture.shared) {
+        self.captures = captures
     }
     #endif
 
@@ -44,7 +44,7 @@ final class CaptureSending {
     /// The app became active: sends the captures that wait now. A window's own triggers send them too; this one also
     /// covers a process whose windows started before the captures were added.
     func appBecameActive() async {
-        _ = await makeCaptures().send()
+        _ = await captures.send()
     }
 
     /// The app moved to the background: on iOS, schedules both background tasks when captures wait.

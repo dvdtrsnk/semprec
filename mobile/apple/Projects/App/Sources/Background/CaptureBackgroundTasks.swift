@@ -21,12 +21,13 @@ final class CaptureBackgroundTasks {
 
     // MARK: - Dependencies
     private let scheduler: any CaptureTaskScheduler
-    private let makeCaptures: @MainActor () -> any WaitingCaptures
+    private let captures: any WaitingCaptures
 
     // MARK: - Init
-    init(scheduler: any CaptureTaskScheduler, makeCaptures: @escaping @MainActor () -> any WaitingCaptures) {
+    /// Over `captures`, the bridge of the process in production.
+    init(scheduler: any CaptureTaskScheduler, captures: any WaitingCaptures) {
         self.scheduler = scheduler
-        self.makeCaptures = makeCaptures
+        self.captures = captures
     }
 
     // MARK: - Methods
@@ -47,7 +48,7 @@ final class CaptureBackgroundTasks {
 
     /// Schedules both tasks when a capture of the person signed in waits; nothing when none does.
     func scheduleIfWaiting() async {
-        guard await makeCaptures().capturesWait() else { return }
+        guard await captures.capturesWait() else { return }
         schedule()
     }
 
@@ -59,7 +60,7 @@ final class CaptureBackgroundTasks {
     @discardableResult
     func run(_ task: any CaptureBackgroundTask) -> Task<Void, Never> {
         let completion = Completion(task)
-        let captures = makeCaptures()
+        let captures = self.captures
         let sending = Task { @MainActor in
             let waits = if await captures.send() { false } else { await captures.capturesWait() }
             // An expired task was scheduled again and completed by its expiration handler.

@@ -129,8 +129,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
 
     // MARK: - Private
     private func sending() -> CaptureSending {
-        let captures = captures
-        return CaptureSending(makeCaptures: { captures }, scheduler: scheduler)
+        CaptureSending(captures: captures, scheduler: scheduler)
     }
 
     /// The processing task, which needs a network, and the app refresh were submitted, once each.

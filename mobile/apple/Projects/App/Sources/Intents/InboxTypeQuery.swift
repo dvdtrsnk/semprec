@@ -17,7 +17,7 @@ struct InboxTypeQuery: EntityQuery {
     // MARK: - Private
     @MainActor
     private static func offered() async -> [InboxTypeEntity] {
-        switch await InboxShortcutCapture().types() {
+        switch await InboxShortcutCapture.shared.types() {
         case .loaded(let types): [InboxTypeEntity.noType] + types.map(InboxTypeEntity.init)
         case .failed: [InboxTypeEntity.noType]
         }

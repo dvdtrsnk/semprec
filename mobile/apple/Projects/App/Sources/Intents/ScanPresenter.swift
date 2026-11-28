@@ -136,7 +136,7 @@ final class ScanPresenter: ObservableObject {
         typeId: String?,
         file: InboxShortcutCapture.File
     ) async -> Failed? {
-        await InboxShortcutCapture().capture(text: text, day: day, time: time, typeId: typeId, file: file)
+        await InboxShortcutCapture.shared.capture(text: text, day: day, time: time, typeId: typeId, file: file)
     }
 
     /// Ends the request shown now, if any, and answers its waiting continuation with `outcome`.

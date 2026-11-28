@@ -6,7 +6,9 @@ import Foundation
 /// (docs/adr/2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk.md). It signs in with the
 /// Keychain session of the windows and keeps its data in their `Application Support/Offline`, so it reads the types
 /// they kept and its captures wait in the device's capture outbox until the server takes them. A refused session is
-/// left for the next window to end. Create one per intent run or query.
+/// left for the next window to end. The app uses the one instance of the process, `shared`, so exactly one Kotlin SDK
+/// and one HTTP client serve every system entry point and the background sending
+/// (docs/adr/2026-11-27-apple-app-sends-waiting-inbox-captures-from-background-tasks.md).
 @MainActor
 public final class InboxShortcutCapture {
 
@@ -33,12 +35,17 @@ public final class InboxShortcutCapture {
         }
     }
 
+    // MARK: - Shared
+    /// The one bridge of the process, over the Keychain session and the offline directory of the windows.
+    public static let shared = InboxShortcutCapture()
+
     // MARK: - Dependencies
     private let sdk: SharedSDK.InboxCaptureSDK
 
     // MARK: - Init
-    /// Over the Keychain session and the offline directory of the windows' `SharedScreenModelFactory`.
-    public convenience init() {
+    /// Over the Keychain session and the offline directory of the windows' `SharedScreenModelFactory`; the app uses
+    /// `shared` rather than making another.
+    private convenience init() {
         self.init(sessionStorage: KeychainSessionStorage(), dataDirectory: OfflineDirectory.path())
     }
 

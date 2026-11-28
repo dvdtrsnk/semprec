@@ -58,6 +58,15 @@ Rejected:
   Journal feature gets an `onCaptured` closure from the app through `JournalScreenFactory.journal`, and its capture
   ViewModel calls it for each `captured` effect. This is a plain closure, not a router method, because it is not
   navigation ([[2026-10-24-app-owned-mobile-navigation-through-feature-routers]] keeps routers for navigation).
+- **One bridge per process.** The app uses one `InboxShortcutCapture`, `InboxShortcutCapture.shared`, for the intent,
+  the type query, the scanner presenter, the background tasks, the send on activation and the diary hook. So the
+  process holds exactly one `InboxCaptureSDK` and one HTTP client for them. Every `InboxCaptureSDK` builds its own
+  `ApiClient`, whose Ktor client is never closed, so a bridge per call would add a client on every activation, task
+  run and intent run. This narrows the lifetime that
+  [[2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk]] gave the bridge (one per intent run or
+  entity query) for the Inbox captures. The rest of that decision stands: the bridge's SDK attaches its sender only
+  when no window has, and a window created later replaces it. Holding the bridge longer changes neither rule. Its
+  initializer over a session store and a directory stays internal for CoreKitTests.
 
 ## Consequences
 
