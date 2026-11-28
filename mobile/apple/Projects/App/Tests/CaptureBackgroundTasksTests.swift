@@ -55,6 +55,18 @@ final class CaptureBackgroundTasksTests: XCTestCase {
         XCTAssertTrue(scheduler.requests.isEmpty)
     }
 
+    func testAnIntentsCaptureIsScheduledBeforeItsBriefSend() async throws {
+        captures.waits = .waiting
+        var scheduledBeforeSend: Int?
+        captures.onSend = { scheduledBeforeSend = self.scheduler.requests.count }
+
+        await AddToInboxIntent.captureKept(captures, sending: sending())
+
+        XCTAssertEqual(scheduledBeforeSend, 2)
+        XCTAssertEqual(captures.sends, 1)
+        try assertBothScheduled()
+    }
+
     func testARefusedRequestStillSubmitsTheOtherOne() async {
         captures.waits = .waiting
         scheduler.refuses = [CaptureBackgroundTasks.sendIdentifier]

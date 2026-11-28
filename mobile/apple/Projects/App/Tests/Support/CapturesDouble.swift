@@ -12,6 +12,8 @@ final class CapturesDouble: WaitingCaptures {
     var sendAnswer = true
     var holdsSend = false
     var waits: InboxShortcutCapture.Waiting = .nothing
+    /// Called when a send starts.
+    var onSend: (() -> Void)?
     private(set) var sends = 0
     private(set) var sendWasCancelled = false
     private(set) var waitChecks = 0
@@ -19,6 +21,7 @@ final class CapturesDouble: WaitingCaptures {
     // MARK: - Methods
     func send() async -> Bool {
         sends += 1
+        onSend?()
         guard holdsSend else { return sendAnswer }
         try? await Task.sleep(for: .seconds(3600))
         sendWasCancelled = Task.isCancelled

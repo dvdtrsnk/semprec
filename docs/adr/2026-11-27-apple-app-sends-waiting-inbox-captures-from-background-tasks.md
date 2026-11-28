@@ -50,7 +50,7 @@ Rejected:
   expired task leaves no request of its own running while the system suspends the app. Nothing is lost: a capture is
   deleted only after the server created its item, and one sent again carries the same `Idempotency-Key`.
 - **When they are scheduled.** Both are scheduled together, and only while captures wait or the count failed: after a capture is added by
-  the intent (after its brief send), by the scanner (once the scan's capture is kept), or by the diary's capture row,
+  the intent (before its brief send, so they are submitted even when the system suspends the app during it), by the scanner (once the scan's capture is kept), or by the diary's capture row,
   and when the app moves to the background. A new request replaces the pending one with the same identifier. A
   refused submission is not retried; the next trigger schedules again.
 - **Sending when active.** When the app as a whole becomes active (`scenePhase` of `SemprecApp`), it runs one send

@@ -60,11 +60,20 @@ struct AddToInboxIntent: AppIntent {
         return scan
     }
 
+    /// A capture was kept: first schedules the background tasks that send it (`sending.captureAdded()`), so they are
+    /// submitted even when the system suspends the app during the wait, then gives it `sendingWait` to reach the
+    /// server. A capture that gets there leaves the tasks a run that finds nothing to send.
+    @MainActor
+    static func captureKept(_ capture: any WaitingCaptures, sending: CaptureSending) async {
+        await sending.captureAdded()
+        await sendBriefly(capture)
+    }
+
     /// Waits for `capture.send()` at most `sendingWait`, so a slow connection does not hold the answer back. Cancelling
     /// the wait leaves the sending running, because adding the capture started the outbox's round, which waits for it
     /// too.
     @MainActor
-    static func sendBriefly(_ capture: InboxShortcutCapture) async {
+    static func sendBriefly(_ capture: any WaitingCaptures) async {
         let sending = Task { @MainActor in _ = await capture.send() }
         let deadline = Task {
             try? await Task.sleep(for: sendingWait)
@@ -92,8 +101,7 @@ struct AddToInboxIntent: AppIntent {
             file: nil
         )
         guard let failure else {
-            await Self.sendBriefly(capture)
-            await CaptureSending.shared.captureAdded()
+            await Self.captureKept(capture, sending: .shared)
             return "intent.addToInbox.saved"
         }
         switch failure.kind {
