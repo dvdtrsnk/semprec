@@ -62,7 +62,7 @@ describe("project notes", () => {
   });
 
   it("keeps distinct captions for repeated page ids on a truncated prefix", async () => {
-    const page = "[First](semprec://page/child)\n\n[Second](semprec://page/child)";
+    const page = "[First](alldots://page/child)\n\n[Second](alldots://page/child)";
     const markdown = `${page}\n\n${"x".repeat(33000)}`;
     const subpages = [
       { id: "child", title: "First" },

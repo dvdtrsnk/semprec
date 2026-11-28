@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
@@ -15,7 +15,7 @@ import {
   retrySempReply,
 } from "../sempMessagesStore.js";
 
-/** Reply-problem adapter on the runtime role pool; the calling turn handler is covered in `semprec-agents`. */
+/** Reply-problem adapter on the runtime role pool; the calling turn handler is covered in `alldots-agents`. */
 
 let admin: Pool;
 let runtime: Pool;
@@ -104,7 +104,7 @@ describe("the problem of a Semp reply (issue #1931)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     tenantA = await createTestTenant(admin);
     tenantB = await createTestTenant(admin);
     tenantWithoutUser = await createTestTenant(admin);

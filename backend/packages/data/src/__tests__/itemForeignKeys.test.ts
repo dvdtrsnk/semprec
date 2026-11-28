@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
@@ -25,7 +25,7 @@ import {
 /**
  * The foreign keys to `items` (decision table: docs/architecture/data-model-and-writes.md, Storage). Dependent rows
  * are raw INSERTs: no production flow writes one row into every dependent table of one item, and several writers
- * check the item first, so they would never reach the key. Every assertion runs on a `semprec_data` pool, under
+ * check the item first, so they would never reach the key. Every assertion runs on a `alldots_data` pool, under
  * row-level security. Interpolated identifiers come from the closed `KEYS` list; values are bound.
  */
 
@@ -587,7 +587,7 @@ function deleteItem(client: PoolClient, itemId: string) {
 describe("foreign keys to items", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("test:item-foreign-key-role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

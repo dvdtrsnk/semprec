@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { ChokePointError, NotFoundError, ValidationError } from "../errors.js";
@@ -49,8 +49,8 @@ describe("invites (issue #1040)", () => {
 
   beforeAll(async () => {
     pool = getTestPool();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
   });
 
   beforeEach(async () => {
@@ -288,7 +288,7 @@ describe("invites (issue #1040)", () => {
     await expect(attempt).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("refuses INSERT into invites from semprec_side", async () => {
+  it("refuses INSERT into invites from alldots_side", async () => {
     await expect(
       sidePool.query(
         "INSERT INTO invites (email, token_hash, expires_at) VALUES ('x@example.com', 'hash', now() + interval '1 day')",

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -231,7 +231,7 @@ describe("getAiUsageReport across tenants (issue #1048)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { createBlob, getBlob } from "../blobs/blobsStore.js";
 import { requireManagedTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";

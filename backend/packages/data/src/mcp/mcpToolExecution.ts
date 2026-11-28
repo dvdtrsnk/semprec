@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";

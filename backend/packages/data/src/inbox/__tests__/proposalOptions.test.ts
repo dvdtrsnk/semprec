@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
@@ -51,7 +51,7 @@ describe("the options of a proposal card", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    runtime ??= await createRuntimeRolePool(pool, "semprec_data");
+    runtime ??= await createRuntimeRolePool(pool, "alldots_data");
     [tenantA, tenantB] = [await createTestTenant(pool), await createTestTenant(pool)];
     for (const tenant of [tenantA, tenantB])
       await runInTenant(tenant, () => seedSystem(runtime, createViewTypeRegistry()));

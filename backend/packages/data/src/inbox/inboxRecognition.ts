@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { z } from "zod";
 import { INBOX_TYPE_TARGET_DATABASES } from "./inboxTypeTargets.js";
 import type { InboxTypeSummary } from "./inboxTypesStore.js";

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { writeBlock } from "@semprec/block-model";
+import { runInTenant } from "@alldots/shared";
+import { writeBlock } from "@alldots/block-model";
 import * as Y from "yjs";
 import { z } from "zod";
 import "../../domainWriteHooks.js";
@@ -26,7 +26,7 @@ let pool: Pool;
 let tenant: string;
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);

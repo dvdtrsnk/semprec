@@ -1,5 +1,5 @@
 import "../../domainWriteHooks.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
@@ -56,7 +56,7 @@ async function threadsOfTask(propertyId: string, taskId: string): Promise<string
 describe("Threads.tasks relation (issue #1612)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

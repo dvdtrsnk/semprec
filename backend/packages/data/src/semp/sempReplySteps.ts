@@ -1,4 +1,4 @@
-import type { GenericOperationName } from "@semprec/shared";
+import type { GenericOperationName } from "@alldots/shared";
 import type { AgentRunEventRow } from "../agentRuns/agentRunEventsStore.js";
 import { AGENT_RUN_STEP_TARGET_NAME_MAX_LENGTH, boundValue } from "../agentRuns/agentRunStepPages.js";
 import type { SempReplyTargets } from "./sempReplyTargets.js";

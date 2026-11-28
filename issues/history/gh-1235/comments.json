@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343629365",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1235#issuecomment-6343629365",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1235",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6343629365",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1235#issuecomment-6343629365",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1235",
     "id": 6343629365,
     "node_id": "IC_kwDOUFuQ4c8AAAABehwaNQ",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-10-22T14:46:54Z",
     "updated_at": "2026-10-22T14:46:54Z",
-    "body": "Implementation prepared ahead of its gate on branch [`mt/1235-item-insert-foreign-database-id`](https://github.com/dvdtrsnk/semprec/tree/mt/1235-item-insert-foreign-database-id) (head `14c1dce5c`). It is stacked on mt/1066 (branched from develop `35d087f45`), so a pull request opened from it shows only this issue's commits once the branches below it have landed.\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through independent reviews against this issue's Task, Acceptance criteria and Out of scope, and those findings are fixed on the branch. Production steps were neither performed nor simulated.\n\nDo not merge before #1058 is signed off. When it is: merge `develop` into the branch, renumber the migration if a newer ordinal has landed meanwhile, and open the pull request against `develop`. `agent:ready` is removed so Relay does not implement this again; the branch is the implementation.",
+    "body": "Implementation prepared ahead of its gate on branch [`mt/1235-item-insert-foreign-database-id`](https://github.com/dvdtrsnk/alldots/tree/mt/1235-item-insert-foreign-database-id) (head `14c1dce5c`). It is stacked on mt/1066 (branched from develop `35d087f45`), so a pull request opened from it shows only this issue's commits once the branches below it have landed.\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through independent reviews against this issue's Task, Acceptance criteria and Out of scope, and those findings are fixed on the branch. Production steps were neither performed nor simulated.\n\nDo not merge before #1058 is signed off. When it is: merge `develop` into the branch, renumber the migration if a newer ordinal has landed meanwhile, and open the pull request against `develop`. `agent:ready` is removed so Relay does not implement this again; the branch is the implementation.",
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343629365/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6343629365/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

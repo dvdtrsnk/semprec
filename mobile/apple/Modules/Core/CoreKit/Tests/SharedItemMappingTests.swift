@@ -41,7 +41,7 @@ final class SharedItemMappingTests: XCTestCase {
     func testItemMapsTheHeaderTheFieldsAndTheRelatedCollections() {
         let mapped = SharedItemScreenModel.state(fullState())
         XCTAssertEqual(mapped.phase, .content)
-        XCTAssertEqual(mapped.header?.title, "Semprec")
+        XCTAssertEqual(mapped.header?.title, "Alldots")
         XCTAssertEqual(mapped.header?.databaseKey, "projects")
         XCTAssertEqual(mapped.fields.map(\.propertyKey), ["status"])
         XCTAssertEqual(mapped.fields.first?.editable, false)
@@ -156,7 +156,7 @@ private extension SharedItemMappingTests {
                 databaseName: "Projects",
                 icon: "folder",
                 color: "#AF52DE",
-                title: "Semprec"
+                title: "Alldots"
             ),
             fields: [statusField()],
             related: [

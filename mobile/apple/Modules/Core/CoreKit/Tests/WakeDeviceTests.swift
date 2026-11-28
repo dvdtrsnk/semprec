@@ -37,8 +37,8 @@ final class WakeDeviceTests: XCTestCase {
     @MainActor
     func testStoredValuesThatCannotBeReadCountAsNothingStored() throws {
         let defaults = try Self.isolatedDefaults()
-        defaults.set(Data("not json".utf8), forKey: "cz.semprec.wakeSettings")
-        defaults.set(Data("not json".utf8), forKey: "cz.semprec.wakeMissions")
+        defaults.set(Data("not json".utf8), forKey: "cz.alldots.wakeSettings")
+        defaults.set(Data("not json".utf8), forKey: "cz.alldots.wakeMissions")
 
         let storage = DefaultsWakeStorage(defaults: defaults)
 
@@ -131,6 +131,6 @@ final class WakeDeviceTests: XCTestCase {
 private extension WakeDeviceTests {
 
     static func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "cz.semprec.tests.\(UUID().uuidString)"))
+        try XCTUnwrap(UserDefaults(suiteName: "cz.alldots.tests.\(UUID().uuidString)"))
     }
 }

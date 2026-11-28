@@ -3,7 +3,7 @@ import {
   type GenericOperationName,
   type McpToolEventIdentity,
   type ToolResultEventPayload,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import type { AgentRunEventRow } from "../agentRuns/agentRunEventsStore.js";
 import { isRedactedResult, toolResultFailed } from "../agentRuns/agentRunStepPages.js";
 

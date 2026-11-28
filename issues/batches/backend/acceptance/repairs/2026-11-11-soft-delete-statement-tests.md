@@ -24,7 +24,7 @@ The whole integration tier ran on the tip `9395a4c89ccc21085318ad70c3986aaf59ca3
 | 2 | 2 | `backend/packages/data/src/__tests__/inboxPipeline.test.ts` | Inbox pipeline databases (issue #101) > deleting a type referenced by locked and unlocked Inbox items reserves cards and mirrors the rollup-recompute step | `AssertionError: expected -1 to be greater than or equal to 0` | fail (1 failed, 14 passed) | real |
 | 3 | 2 | `backend/packages/data/src/__tests__/transcriptDelete.test.ts` | DELETE /api/transcripts/:id and its restore (issue #1642) > rolls everything back when the transcript's source changes before the transcript is locked | `Error: promise resolved "{ status: 200, body: { …(2) } }" instead of rejecting` | fail (1 failed, 9 passed) | real |
 | 4 | 1 | `backend/packages/data/src/__tests__/mcpConnectionFactory.test.ts` | MCP connection factory (issue #231) > stdio > gives the child exactly the inherited names, the config's env names and the credential name | `AssertionError: expected [ 'HOME', 'LOGNAME', …(6) ] to deeply equal [ 'HOME', 'LOGNAME', …(5) ]` | fail (1 failed, 54 passed) | baseline |
-| 5 | 1 | `backend/services/semprec-api/src/__tests__/cacheControl.test.ts` | Cache-Control on every API response (issue #1072) > GET /api/blobs/:id answers an unsatisfiable range (416) with no-store | `TypeError: fetch failed` | pass (140 passed) | load |
+| 5 | 1 | `backend/services/alldots-api/src/__tests__/cacheControl.test.ts` | Cache-Control on every API response (issue #1072) > GET /api/blobs/:id answers an unsatisfiable range (416) with no-store | `TypeError: fetch failed` | pass (140 passed) | load |
 | 6 | 2 | `backend/packages/data/src/__tests__/mailThreadBackfillCli.test.ts` | runs the compiled migration root twice and queues one keyed mail-thread backfill | `error: canceling statement due to statement timeout` | pass (3 passed) | load |
 | 7 | 2 | `backend/packages/data/src/__tests__/mailThreadBackfillCli.test.ts` | settles its creator and removes the database when a committed create acknowledgement is lost | `Error: Injected lost CREATE acknowledgement` | pass (3 passed) | load |
 | 8 | 4 | `backend/packages/data/src/__tests__/mailDraftsStore.test.ts` | upgrades populated legacy state before installing the draft table | `Error: STACK_TRACE_ERROR` | pass (12 passed) | load |
@@ -104,7 +104,7 @@ Run in `backend/` of the integration worktree with `npx -y pnpm@9.12.0`, on the 
 | Targeted integration run, the known baseline case of `mcpConnectionFactory.test.ts` | FAIL | "gives the child exactly the inherited names, the config's env names and the credential name": the child has the additional name `__CF_USER_TEXT_ENCODING`. This is the known baseline of the macOS delivery host, with the same diff as in the full tier's `alone-mcpConnectionFactory.log`. It is not a result of this repair and did not hold the landing. The other 54 tests of the file passed. |
 | `install --frozen-lockfile` | NOT RUN | The merge changes neither the lockfile nor any `package.json`. |
 | `run check:pi-import-paths` | NOT RUN | Not part of the gate set for this repair. The repair changes three integration test files. |
-| `--filter @semprec/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
+| `--filter @alldots/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
 | `run test:e2e` | NOT RUN | Not part of the gate set for this repair. The repair changes no end-to-end file and no production file. |
 | Whole integration tier | NOT RUN | See "Not repaired and open". |
 
@@ -116,7 +116,7 @@ The targeted integration run was one process, `exec vitest run --config vitest.i
 | `packages/data/src/__tests__/inboxPipeline.test.ts` | repaired | 15 passed |
 | `packages/data/src/__tests__/transcriptDelete.test.ts` | repaired | 10 passed |
 | `packages/data/src/__tests__/mcpConnectionFactory.test.ts` | failure list (baseline) | 54 passed, 1 failed (the baseline case) |
-| `services/semprec-api/src/__tests__/cacheControl.test.ts` | failure list (load) | 140 passed |
+| `services/alldots-api/src/__tests__/cacheControl.test.ts` | failure list (load) | 140 passed |
 | `packages/data/src/__tests__/mailThreadBackfillCli.test.ts` | failure list (load) | 3 passed |
 | `packages/data/src/__tests__/mailDraftsStore.test.ts` | failure list (load) | 12 passed |
 

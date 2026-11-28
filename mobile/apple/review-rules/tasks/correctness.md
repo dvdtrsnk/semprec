@@ -25,7 +25,7 @@ Check for correctness bugs and gaps:
    `NavigationTests` case, a change to how `AppScene` registers a stack,
    presents a destination or provides its view without an
    `AppSceneNavigationTests` case, or a new user flow that `SmokeFlowTests`
-   (`SemprecUITests`) does not walk.
+   (`AlldotsUITests`) does not walk.
 8. A `swiftlint:disable` without a stated reason, or a rule relaxed or removed
    in `.swiftlint.yml` without the Task calling for it — medium: every module
    is held to that configuration.

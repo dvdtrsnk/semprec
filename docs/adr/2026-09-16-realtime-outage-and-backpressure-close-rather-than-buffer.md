@@ -19,7 +19,7 @@ than twice in two files' doc comments.
 
 The reason is already established by
 [[2026-09-12-thin-user-scoped-realtime-invalidations]]: a realtime frame on
-`semprec_events` is thin. It carries identifiers, an `op` and an `updatedAt`,
+`alldots_events` is thin. It carries identifiers, an `op` and an `updatedAt`,
 never a durable row's content, and a client heals by refetching over REST on
 connect. A frame is therefore not a durable message that must be delivered — it
 is a hint that the client's copy of a row is stale. That makes "close the socket

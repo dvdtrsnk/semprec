@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -105,7 +105,7 @@ describe("Files transcription trigger (issue #180)", () => {
   it("enqueues both tenant-scoped lanes for audio and neither for a non-audio file", async () => {
     const audio = await createFileItem("audio/mpeg");
     const document = await createFileItem("application/pdf");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const observed: unknown[] = [];
     const originals = new Map<PoolClient, PropertyDescriptor | undefined>();
     const onAcquire = (client: PoolClient) => {
@@ -277,7 +277,7 @@ describe("Files transcription trigger (issue #180)", () => {
   });
 });
 
-/** Runs on a `semprec_data` pool inside the tenant, so the trigger reads the relation and edges under RLS. */
+/** Runs on a `alldots_data` pool inside the tenant, so the trigger reads the relation and edges under RLS. */
 describe("Files transcription trigger and Event attachments (issue #1698)", () => {
   let admin: Pool;
   let runtime: Pool;
@@ -290,7 +290,7 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check transcription action role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

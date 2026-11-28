@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/data",
+  "name": "@alldots/data",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -20,11 +20,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@node-rs/argon2": "^2.2.0",
-    "@semprec/block-model": "workspace:*",
-    "@semprec/credentials": "workspace:*",
-    "@semprec/module-registry": "workspace:*",
-    "@semprec/queue": "workspace:*",
-    "@semprec/shared": "workspace:*",
+    "@alldots/block-model": "workspace:*",
+    "@alldots/credentials": "workspace:*",
+    "@alldots/module-registry": "workspace:*",
+    "@alldots/queue": "workspace:*",
+    "@alldots/shared": "workspace:*",
     "ical.js": "2.2.1",
     "imapflow": "^1.7.6",
     "luxon": "^3.7.2",

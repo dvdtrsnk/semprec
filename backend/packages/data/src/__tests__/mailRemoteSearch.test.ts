@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { resolveModuleAgentToolsForRun } from "../agentTools/moduleAgentTools.js";
@@ -258,7 +258,7 @@ function routeRefusal(dependencies: MailSearchRouteDependencies, query: string) 
 describe("two-layer mail search", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -736,7 +736,7 @@ describe("two-layer mail search", () => {
       expect(await searchTool(runId, projectItemId, new Set(["mail.draft"]))).toBeUndefined();
 
       const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing the Semprec project");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing the Alldots project");
       const elsewhere = await mailRun(inbox.ownerProjectItemId);
       expect(await searchTool(elsewhere.runId, elsewhere.projectItemId)).toBeUndefined();
     });

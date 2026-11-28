@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { installQueueSchema } from "../../db/queueSchema.js";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -36,7 +36,7 @@ import {
 } from "../inboxVoiceNote.js";
 
 // The two store functions of the voice note transcription and its job's key, on the runtime role pool with a second
-// tenant. The handler that runs them is tested in `semprec-transcribe`'s `inboxVoiceNoteTranscribe.test.ts`.
+// tenant. The handler that runs them is tested in `alldots-transcribe`'s `inboxVoiceNoteTranscribe.test.ts`.
 
 let adminPool: Pool;
 let runtimePool: Pool;
@@ -47,10 +47,10 @@ let previousScope: string | undefined;
 const VOICE_NOTE: InboxAttachmentMetadata = { durationSeconds: 30, audioKind: "voiceNote", pages: null };
 
 beforeAll(async () => {
-  previousScope = process.env.SEMPREC_TENANT_SCOPE;
-  process.env.SEMPREC_TENANT_SCOPE = "strict";
+  previousScope = process.env.ALLDOTS_TENANT_SCOPE;
+  process.env.ALLDOTS_TENANT_SCOPE = "strict";
   adminPool = getTestPool();
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 beforeEach(async () => {
@@ -65,8 +65,8 @@ beforeEach(async () => {
 afterAll(async () => {
   await runtimePool?.end();
   await adminPool?.end();
-  if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-  else process.env.SEMPREC_TENANT_SCOPE = previousScope;
+  if (previousScope === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+  else process.env.ALLDOTS_TENANT_SCOPE = previousScope;
 });
 
 function inTenant<T>(tenant: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -148,7 +148,7 @@ describe("createAgentRun actor in a tenant (issue #1018)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "alldots_data"));
   });
 
   beforeEach(async () => {
@@ -503,7 +503,7 @@ describe("setAgentRunMcpClientName in a tenant (issue #1788)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "alldots_data"));
   });
 
   beforeEach(async () => {

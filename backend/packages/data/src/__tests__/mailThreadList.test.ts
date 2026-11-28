@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -28,8 +28,8 @@ let storageRoot: string;
 describe("mail thread list", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-threads-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-threads-"));
     const role = await runAsSystem("verify mail test role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -16,7 +16,7 @@ import { OptionLabelExistsError, ValidationError } from "../errors.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import {
   assertValidProposalEnvelope,
-  createSemprecTickAction,
+  createAlldotsTickAction,
   MAX_PROPOSAL_NEW_OPTIONS,
   parseStoredProposalEnvelope,
   storedEnvelopeStillValid,
@@ -138,7 +138,7 @@ async function createHealthCard(
         type: type.id,
       }),
     );
-    await createSemprecTickAction(runtime, async () => result)(
+    await createAlldotsTickAction(runtime, async () => result)(
       {
         inboxDatabaseId: fixture.inbox,
         inboxItemTypesDatabaseId: fixture.types,
@@ -236,7 +236,7 @@ function envelopeOf(properties: Record<string, unknown>, extra: Partial<Proposal
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

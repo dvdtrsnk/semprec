@@ -1,4 +1,4 @@
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createPool } from "./pool.js";
 import { logger } from "./logger.js";
 import { runMigrations } from "./migrate.js";
@@ -15,7 +15,7 @@ const pool = createPool(connectionString, { statementTimeoutMs: 0 });
 try {
   await runAsSystem("deploy migrations", async () => {
     await runMigrations(pool);
-    // graphile-worker's schema exists only after installQueueSchema, so semprec_side's grants on it cannot
+    // graphile-worker's schema exists only after installQueueSchema, so alldots_side's grants on it cannot
     // live in the SQL migrations; testSupport/globalSetup.ts makes the same calls for tests.
     await installQueueSchema(pool);
   });

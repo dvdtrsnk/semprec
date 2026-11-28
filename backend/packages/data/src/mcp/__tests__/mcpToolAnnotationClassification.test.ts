@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRiskClass } from "@semprec/shared";
+import { isRiskClass } from "@alldots/shared";
 import {
   classifyMcpToolFromAnnotations,
   type McpToolAnnotationHints,

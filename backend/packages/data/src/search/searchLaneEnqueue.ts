@@ -1,7 +1,7 @@
 // The only producer path onto the per-tenant `item-search-index` lane (see
 // docs/architecture/tenancy-and-security.md#queue-lanes-and-job-keys).
 import type { PoolClient } from "pg";
-import { prepareJob, type PreparedJobOptions, type SearchTaskIdentifier } from "@semprec/queue";
+import { prepareJob, type PreparedJobOptions, type SearchTaskIdentifier } from "@alldots/queue";
 import { registerSearchJob } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 

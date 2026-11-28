@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -53,7 +53,7 @@ describe("the daily next-occurrence refresh (issue gh-1905)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

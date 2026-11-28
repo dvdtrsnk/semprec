@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { readPastEventDurations } from "../inbox/pastEventDurations.js";
@@ -82,7 +82,7 @@ const read = (fixture: Fixture, personIds: string[]) =>
 describe("readPastEventDurations (issue gh-1993)", () => {
   beforeEach(async () => {
     admin ??= getTestPool();
-    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    runtime ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
   });
   afterAll(async () => {

@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createPool } from "../db/pool.js";
 import { parseTenantDeletionLedger } from "./tenantDeletionLedger.js";
 import { replayTenantDeletions } from "./tenantPurgeJob.js";

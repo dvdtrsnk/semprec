@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
@@ -89,7 +89,7 @@ describe("tenant deactivation signal (issue #1042)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getItemById, lockItemById } from "../../chokePoint/itemsStore.js";
@@ -250,8 +250,8 @@ function recordThreadAnnouncements(): void {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-draft-retirement-"));
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-draft-retirement-"));
   storage = new LocalFsBlobStorageWriter(storageRoot);
 });
 

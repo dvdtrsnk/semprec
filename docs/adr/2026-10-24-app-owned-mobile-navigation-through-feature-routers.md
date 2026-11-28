@@ -107,7 +107,7 @@ effects, an Apple feature ViewModel holds at most its router protocol, and no `N
   SettingsRoute`, declared with `composable<T>` and read with `toRoute<T>()`. A route argument is a
   non-null typed property of its route class: a non-null `String` comes back exactly as it went in,
   the literal `"null"`, the empty string and route characters such as `/`, `?`, `%` and `#`
-  included, so the detail reads its id without `requireNotNull`. `semprec.android.application`
+  included, so the detail reads its id without `requireNotNull`. `alldots.android.application`
   applies the kotlinx-serialization plugin, and the app depends on `kotlinx-serialization-core`.
 - `Detail(id)` pushes a new `DetailRoute(id)` entry, with its own `ViewModelStore` and so its own
   `DetailViewModel`, unless the entry on top already is the detail of that id. Details of different
@@ -173,7 +173,7 @@ effects, an Apple feature ViewModel holds at most its router protocol, and no `N
   hosts one `AppScene`.
 - `NAV-OWNERSHIP` in `mobile/scripts/architecture.mjs` fails on an `androidx.navigation` import or a
   `NavController`/`NavHostController` outside `:android:app` or in any ViewModel, and on a
-  NavigatorUI import outside the app target and its tests (`SemprecTests`, which drive the real
+  NavigatorUI import outside the app target and its tests (`AlldotsTests`, which drive the real
   stacks) or in a `*ViewModel.swift` file.
 - The apps declare no deep link, and Android discards whatever the launch intent and every new
   intent carry. The first deep link needs its own decision, and its Android side reads the
@@ -195,5 +195,5 @@ effects, an Apple feature ViewModel holds at most its router protocol, and no `N
   in a window and check that the Home router pushes onto the Home stack and the Settings router
   presents About as a sheet over the Settings stack; `SceneLifetimeTests` checks that a closed
   scene releases its composition and its screen model factory; and the XCUITest `SmokeFlowTests`
-  (`SemprecUITests`, iOS simulator only) walk the list, the detail, Back, About and a tab switch.
+  (`AlldotsUITests`, iOS simulator only) walk the list, the detail, Back, About and a tab switch.
   No automated test kills the process.

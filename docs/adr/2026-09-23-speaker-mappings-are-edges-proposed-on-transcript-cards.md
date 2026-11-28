@@ -24,7 +24,7 @@ undecided:
    function existed (`writeTranscriptSpeakerEdge`), but a user's `PUT /api/items/:id/relations/speakers/:personId`
    never went through it.
 2. The AI needs a card shape for a mapping.
-   [[2026-09-23-processing-proposals-card-creation-owned-per-kind]] makes `semprec-transcribe`'s
+   [[2026-09-23-processing-proposals-card-creation-owned-per-kind]] makes `alldots-transcribe`'s
    match step the only producer of `transcript` cards. It also says a second producer for an
    existing kind is a new decision. The alternatives were a new card `kind` with its own schema
    change, a new Processing proposals property carrying the mapping, or reusing the `'relation'`
@@ -50,7 +50,7 @@ undecided:
   edge's metadata. One card maps one key. A transcript card keeps its role for life: `revise`
   may change the person or the Event, but never turn an Event proposal into a speaker mapping or
   back.
-- **`semprec-transcribe` gets a second `transcript`-card production site.** After the match step,
+- **`alldots-transcribe` gets a second `transcript`-card production site.** After the match step,
   a `suggestSpeakers` step reads the linked Event's named participants who are not yet mapped and
   the unmapped keys. When both exist, it calls `gateway.complete()` once
   (`operation: 'transcript_speaker_suggestion'`, no project). It then creates one card per valid
@@ -64,8 +64,8 @@ undecided:
 
   | `kind`       | Producer process | Production sites | Source relation |
   |--------------|------------------|------------------|-----------------|
-  | `inbox`      | Inbox pipeline, `semprec.tick` | `inboxTickAction.ts` | `sourceInbox` |
-  | `transcript` | `semprec-transcribe` | match step (`transcriptEventMatch.ts`), suggestion step (`transcriptSpeakerSuggestion.ts`) | `sourceTranscript` |
+  | `inbox`      | Inbox pipeline, `alldots.tick` | `inboxTickAction.ts` | `sourceInbox` |
+  | `transcript` | `alldots-transcribe` | match step (`transcriptEventMatch.ts`), suggestion step (`transcriptSpeakerSuggestion.ts`) | `sourceTranscript` |
 
   Everything else that ADR decided carries over unchanged: a producer creates cards through the
   choke-point package, sets only the system keys it needs at creation, writes its source relation

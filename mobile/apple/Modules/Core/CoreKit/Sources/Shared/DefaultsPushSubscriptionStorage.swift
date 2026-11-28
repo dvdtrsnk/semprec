@@ -10,7 +10,7 @@ final class DefaultsPushSubscriptionStorage: NSObject, SharedSDK.PushSubscriptio
     private let key: String
 
     // MARK: - Init
-    init(defaults: UserDefaults = .standard, key: String = "cz.semprec.pushSubscriptionId") {
+    init(defaults: UserDefaults = .standard, key: String = "cz.alldots.pushSubscriptionId") {
         self.defaults = defaults
         self.key = key
     }

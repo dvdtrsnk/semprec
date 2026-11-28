@@ -128,7 +128,7 @@ async function countRows(table: string, tenant: Tenant): Promise<number> {
 describe("formerly global unique keys hold per tenant", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

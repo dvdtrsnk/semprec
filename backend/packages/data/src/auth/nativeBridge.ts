@@ -15,7 +15,7 @@ import type { SessionPlatform } from "./types.js";
  * login response; the editor keeps the token in memory only (the Keychain owns persistence) and
  * never falls back to `/api/auth/login` while the bridge is present.
  */
-export const NATIVE_SESSION_BRIDGE_HANDLER_NAME = "semprecNativeSession";
+export const NATIVE_SESSION_BRIDGE_HANDLER_NAME = "alldotsNativeSession";
 
 export interface NativeSessionBridgeReply {
   token: string;

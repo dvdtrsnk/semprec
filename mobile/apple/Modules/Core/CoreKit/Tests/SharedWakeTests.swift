@@ -236,7 +236,7 @@ final class SharedWakeTests: XCTestCase {
 private extension SharedWakeTests {
 
     static func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "cz.semprec.tests.\(UUID().uuidString)"))
+        try XCTUnwrap(UserDefaults(suiteName: "cz.alldots.tests.\(UUID().uuidString)"))
     }
 
     /// The first state of `model` that matches `predicate`, or `nil` when none arrives within five seconds.

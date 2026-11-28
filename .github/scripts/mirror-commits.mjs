@@ -7,7 +7,7 @@
  * branch's worktree after `git fetch origin`. Each `<have>` is a ref GitHub already has: always
  * `origin/develop`, and `origin/<branch>` once the branch exists there. The commits planned are
  * `git rev-list HEAD --not <have>...`, so a merge from `develop` plans only the merge commit, not
- * the `develop` commits it brings in. The repo defaults to `dvdtrsnk/semprec`.
+ * the `develop` commits it brings in. The repo defaults to `dvdtrsnk/alldots`.
  *
  * ## Why
  *
@@ -107,7 +107,7 @@ function payloadText(value) {
 }
 
 /** Writes the payloads of the commits of HEAD that `have` lacks into `outDir` and returns the plan. */
-export function planMirror({ cwd, have, outDir, repo = "dvdtrsnk/semprec" }) {
+export function planMirror({ cwd, have, outDir, repo = "dvdtrsnk/alldots" }) {
   if (have.length === 0) throw new Error("Name at least one ref GitHub already has");
   const commits = git(cwd, ["rev-list", "--reverse", "--topo-order", "HEAD", "--not", ...have])
     .split("\n")

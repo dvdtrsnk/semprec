@@ -1,4 +1,4 @@
-import { resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 
 /** Names a resolution title can carry; a name that is absent or blank is written as the catalog's neutral word. */
 export type ResolutionTitleParams = {

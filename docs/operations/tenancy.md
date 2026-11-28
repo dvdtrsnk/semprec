@@ -14,7 +14,7 @@ rollback rule ([migrations.md](migrations.md),
 `deploy/deploy.sh --rollback` starts the previous release against the new schema, so that
 previous release must already carry the tenant scope on every path.
 
-On 2026-10-22 no production deployment of Semprec exists. No host has been provisioned with
+On 2026-10-22 no production deployment of Alldots exists. No host has been provisioned with
 `deploy/provision.sh`, no release tag exists, and `main` was last promoted on 2026-08-27
 (PR #57). There is no running release to roll back to and no production log to read, so the
 evidence the checkpoint asks for cannot exist. The repository owner therefore waived the
@@ -26,7 +26,7 @@ What this means for each checklist item of #1058:
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `AI_GLOBAL_DAILY_CAP_USD` and `AI_GLOBAL_MONTHLY_CAP_USD` set     | Not done: no gateway environment exists                                                          |
 | Promote `develop` to `main`, tag and deploy                       | Not done: promotion PR #1229 stays open, no tag, no deploy                                       |
-| `SEMPREC_TENANT_SCOPE` unset or `warn` for every service          | Not done: no service runs                                                                        |
+| `ALLDOTS_TENANT_SCOPE` unset or `warn` for every service          | Not done: no service runs                                                                        |
 | The tag's `integration` job green, including the isolation suites | No tag. `integration` passed on PR #1229 at `develop` `3c40b63ba1eb20a33e7928e9d6410c379696fe03` |
 | Exactly one tenant and `tenants_single_tenant_guard` present      | Not done: no production database                                                                 |
 | No user without a tenant                                          | Not done: no production database                                                                 |
@@ -52,7 +52,7 @@ What this means for each checklist item of #1068:
 | Checklist item                                                                                        | Result                              |
 | ----------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | Promote `develop` to `main`, tag and deploy                                                           | Not done: no tag, no deploy         |
-| No service sets `SEMPREC_TENANT_SCOPE` other than `strict`                                            | Not done: no service runs           |
+| No service sets `ALLDOTS_TENANT_SCOPE` other than `strict`                                            | Not done: no service runs           |
 | `app_tenant_default()` strict and `users.tenant_id` not nullable in production                        | Not checked: no production database |
 | No `external_credentials` row with `scheme = 'master'`                                                | Not checked: no production database |
 | Seven days without `TenantScopeMissingError`, `tenant_scope_missing` and `tenant_task_without_tenant` | Not observed                        |
@@ -134,13 +134,13 @@ No tests, services, production checks or additional reviewers ran as part of tha
   2026-11-15: on the local candidate of sp-994caf89-dfb8-465d-983f-5698cdc851af all eleven compiled entries of the
   deploy scripts, units and restore runbook loaded under plain Node 26.12.1 and reached their own configuration
   refusal (`backend/scripts/check-native-entrypoints.mjs`, now run by `deploy.sh` before the migration), and the
-  compiled `semprec-ai-gateway`, `semprec-agents` and `semprec-transcribe` started against an owned database as the
-  runtime role and exited 0 on SIGTERM; `semprec-api` was not started and its start under strict tenant scope stays
+  compiled `alldots-ai-gateway`, `alldots-agents` and `alldots-transcribe` started against an owned database as the
+  runtime role and exited 0 on SIGTERM; `alldots-api` was not started and its start under strict tenant scope stays
   open, nothing is claimed about a deployed host, and production readiness stays BLOCKED.
-  2026-11-15: on the local candidate of sp-b08abab8-34a6-4359-acb6-5d0e249ef45e the compiled `semprec-api` was
-  started from its compiled entry with `SEMPREC_TENANT_SCOPE` unset against an owned database as the runtime role,
+  2026-11-15: on the local candidate of sp-b08abab8-34a6-4359-acb6-5d0e249ef45e the compiled `alldots-api` was
+  started from its compiled entry with `ALLDOTS_TENANT_SCOPE` unset against an owned database as the runtime role,
   listened, answered `GET /healthz` with 200 `{"status":"ok"}` and exited 0 on SIGTERM, and the compiled
-  `semprec-agents`, `semprec-ai-gateway` and `semprec-transcribe` were started under the same condition; the earlier
+  `alldots-agents`, `alldots-ai-gateway` and `alldots-transcribe` were started under the same condition; the earlier
   failure came from a deploy-time migration called from the API start, which is removed, and nothing is claimed about
   a deployed host while production readiness stays BLOCKED.
 - **F6 — unavailable production evidence, full verify and historical cleanup. Retained blockers and exact limits.**

@@ -330,7 +330,7 @@ extension ProjectTagsSheet {
         options: [
             FieldOption(key: "client", label: "Client", color: "#FF9500"),
             FieldOption(key: "home", label: "Home", color: nil),
-            FieldOption(key: "semprec", label: "Semprec", color: "#34C759")
+            FieldOption(key: "alldots", label: "Alldots", color: "#34C759")
         ],
         editable: true,
         origin: nil

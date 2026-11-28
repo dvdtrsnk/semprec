@@ -70,31 +70,31 @@ describe("route_gmail_address (issue #998)", () => {
     dataPool = undefined;
   });
 
-  it("is a SECURITY DEFINER function owned by semprec_router with a pinned search_path", async () => {
+  it("is a SECURITY DEFINER function owned by alldots_router with a pinned search_path", async () => {
     const { rows } = await pool.query<{ secdef: boolean; owner: string; config: string[] | null }>(
       `SELECT p.prosecdef AS secdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config
        FROM pg_proc p WHERE p.proname = 'route_gmail_address'`,
     );
     expect(rows).toEqual([
-      { secdef: true, owner: "semprec_router", config: ["search_path=pg_catalog, public, pg_temp"] },
+      { secdef: true, owner: "alldots_router", config: ["search_path=pg_catalog, public, pg_temp"] },
     ]);
   });
 
-  it("grants EXECUTE to semprec_data only, and semprec_router cannot read last_error", async () => {
+  it("grants EXECUTE to alldots_data only, and alldots_router cannot read last_error", async () => {
     const { rows } = await pool.query<{ data: boolean; side: boolean; pub: boolean; last_error: boolean }>(
-      `SELECT has_function_privilege('semprec_data', 'route_gmail_address(text)', 'EXECUTE') AS data,
-              has_function_privilege('semprec_side', 'route_gmail_address(text)', 'EXECUTE') AS side,
+      `SELECT has_function_privilege('alldots_data', 'route_gmail_address(text)', 'EXECUTE') AS data,
+              has_function_privilege('alldots_side', 'route_gmail_address(text)', 'EXECUTE') AS side,
               has_function_privilege('public', 'route_gmail_address(text)', 'EXECUTE') AS pub,
-              has_column_privilege('semprec_router', 'mail_account_sync_state', 'last_error', 'SELECT') AS last_error`,
+              has_column_privilege('alldots_router', 'mail_account_sync_state', 'last_error', 'SELECT') AS last_error`,
     );
     expect(rows[0]).toEqual({ data: true, side: false, pub: false, last_error: false });
   });
 
-  it("routes past RLS for semprec_data under an unrelated tenant, only for gmail_api rows, and refuses semprec_side", async () => {
+  it("routes past RLS for alldots_data under an unrelated tenant, only for gmail_api rows, and refuses alldots_side", async () => {
     const tenantZero = getTenantZeroId();
     const gmail = await registerMailbox(tenantZero, "user@example.com");
     await registerMailbox(tenantZero, "user@example.com", "imap");
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
 
     const result = await withTenantTransaction(dataPool, randomUUID(), async (client) => {
       const visible = await client.query<{ count: string }>(
@@ -112,7 +112,7 @@ describe("route_gmail_address (issue #998)", () => {
       unknown: [],
     });
 
-    const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    const sidePool = await createRuntimeRolePool(pool, "alldots_side");
     try {
       await expect(sidePool.query("SELECT * FROM route_gmail_address('user@example.com')")).rejects.toMatchObject({
         code: "42501",
@@ -142,7 +142,7 @@ describe("route_gmail_address (issue #998)", () => {
     const tenantB = await createTestTenant(pool);
     const zero = await registerMailbox(tenantZero, "shared@example.com");
     const b = await registerMailbox(tenantB, "shared@example.com");
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
     const { transport, acks } = fakeTransport([{ ackId: "ack-1", emailAddress: "shared@example.com", historyId: "1" }]);
     const dispatcher = createGmailPubSubDispatcher(dataPool, transport, { pullEmptyBackoffMs: 1 });
 
@@ -157,8 +157,8 @@ describe("route_gmail_address (issue #998)", () => {
   it("routes and enqueues in strict mode when started and stopped with no scope", async () => {
     const tenantB = await createTestTenant(pool);
     const b = await registerMailbox(tenantB, "strict@example.com");
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
-    vi.stubEnv("SEMPREC_TENANT_SCOPE", "strict");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
+    vi.stubEnv("ALLDOTS_TENANT_SCOPE", "strict");
     const errors: unknown[] = [];
     const { transport, acks } = fakeTransport([{ ackId: "ack-s", emailAddress: "strict@example.com", historyId: "1" }]);
     const dispatcher = createGmailPubSubDispatcher(dataPool, transport, {

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/941",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/941",
   "id": 5676576630,
   "node_id": "I_kwDOUFuQ4c8AAAABUlmvdg",
   "number": 941,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -45,7 +45,7 @@
     {
       "id": 12386016783,
       "node_id": "LA_kwDOUFuQ4c8AAAAC4kOeDw",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/followups:issue",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/followups:issue",
       "name": "followups:issue",
       "color": "bfd4f2",
       "default": false,
@@ -70,14 +70,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/935",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/935",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** none\n\n## Context\n\nHarvest issue #934 collected findings about code and text that no longer say what they should.\n\n- PR #826, `backend/services/semprec-ai-gateway/src/structuredProviders/anthropicProvider.ts:17`: `RETRYABLE_STATUSES` contains 529, which the `status >= 500 && status <= 599` branch of `isRetryableStatus` already covers.\n- PR #826, `anthropicProvider.ts:171`: the deadline-exceeded error says `after ${attempt} attempts` unconditionally, so a first attempt reads \"after 1 attempts\".\n- PR #828, `backend/packages/module-boundaries/src/__tests__/module-boundaries.unit.test.ts:53`: the `it.each` title says \"rejects a route handler or module importing %s directly\" although the importers are fixtures under `services/`.\n- PR #862, `web/src/views/agentPage/ToolsBlock.tsx:38`: the comment says the mount guard is checked \"at lines 47 and 50\"; the checks are now at lines 59 and 62.\n\n## Task\n\n1. In `anthropicProvider.ts`, change `RETRYABLE_STATUSES` to `new Set([429])`.\n2. In `anthropicProvider.ts`, make the deadline-exceeded message at line 171 say \"1 attempt\" when `attempt === 1` and \"<n> attempts\" otherwise, and add a test for both forms in `anthropicProvider.unit.test.ts`.\n3. In `module-boundaries.unit.test.ts`, change the title to \"rejects a service importing %s directly (issue #154)\".\n4. In `ToolsBlock.tsx`, replace \"at lines 47 and 50\" in the comment with wording that names the two guards (the `mounted.current` checks in `load`) without line numbers.\n\n## Touches\n\n- backend/services/semprec-ai-gateway/src/structuredProviders/anthropicProvider.ts\n- backend/services/semprec-ai-gateway/src/structuredProviders/__tests__/anthropicProvider.unit.test.ts\n- backend/packages/module-boundaries/src/__tests__/module-boundaries.unit.test.ts\n- web/src/views/agentPage/ToolsBlock.tsx\n\n## Scope\n\n### In scope\n\nThe four edits above.\n\n### Out of scope\n\nEvery other finding of harvest issue #934 and anything adjacent to the lines named in the Task, even in the same file.\n\n## Acceptance criteria\n\n- A 529 response is still retried: the existing tests \"retries a 529 once and resolves with the second response…\" and \"rejects with ProviderCallError after 3 attempts on repeated 500s…\" in `anthropicProvider.unit.test.ts` pass without modification. `isRetryableStatus` stays module-private — it is not exported for a test.\n- When the first attempt's retry delay would exceed the remaining deadline, the thrown message ends in \"after 1 attempt\"; after two or more attempts it ends in \"after <n> attempts\"; a test covers both.\n- The `it.each` title in `module-boundaries.unit.test.ts` no longer contains the word \"module\".\n- The comment in `ToolsBlock.tsx` contains no line numbers.\n\n\n<!-- crb-followup:v1 pr=826 key=1c131aaa44 -->\n<!-- crb-followup:v1 pr=826 key=93925718fd -->\n<!-- crb-followup:v1 pr=828 key=dab7d42d8c -->\n<!-- crb-followup:v1 pr=862 key=225ab573c0 -->\n",
+  "body": "**Blocked by:** none\n\n## Context\n\nHarvest issue #934 collected findings about code and text that no longer say what they should.\n\n- PR #826, `backend/services/alldots-ai-gateway/src/structuredProviders/anthropicProvider.ts:17`: `RETRYABLE_STATUSES` contains 529, which the `status >= 500 && status <= 599` branch of `isRetryableStatus` already covers.\n- PR #826, `anthropicProvider.ts:171`: the deadline-exceeded error says `after ${attempt} attempts` unconditionally, so a first attempt reads \"after 1 attempts\".\n- PR #828, `backend/packages/module-boundaries/src/__tests__/module-boundaries.unit.test.ts:53`: the `it.each` title says \"rejects a route handler or module importing %s directly\" although the importers are fixtures under `services/`.\n- PR #862, `web/src/views/agentPage/ToolsBlock.tsx:38`: the comment says the mount guard is checked \"at lines 47 and 50\"; the checks are now at lines 59 and 62.\n\n## Task\n\n1. In `anthropicProvider.ts`, change `RETRYABLE_STATUSES` to `new Set([429])`.\n2. In `anthropicProvider.ts`, make the deadline-exceeded message at line 171 say \"1 attempt\" when `attempt === 1` and \"<n> attempts\" otherwise, and add a test for both forms in `anthropicProvider.unit.test.ts`.\n3. In `module-boundaries.unit.test.ts`, change the title to \"rejects a service importing %s directly (issue #154)\".\n4. In `ToolsBlock.tsx`, replace \"at lines 47 and 50\" in the comment with wording that names the two guards (the `mounted.current` checks in `load`) without line numbers.\n\n## Touches\n\n- backend/services/alldots-ai-gateway/src/structuredProviders/anthropicProvider.ts\n- backend/services/alldots-ai-gateway/src/structuredProviders/__tests__/anthropicProvider.unit.test.ts\n- backend/packages/module-boundaries/src/__tests__/module-boundaries.unit.test.ts\n- web/src/views/agentPage/ToolsBlock.tsx\n\n## Scope\n\n### In scope\n\nThe four edits above.\n\n### Out of scope\n\nEvery other finding of harvest issue #934 and anything adjacent to the lines named in the Task, even in the same file.\n\n## Acceptance criteria\n\n- A 529 response is still retried: the existing tests \"retries a 529 once and resolves with the second response…\" and \"rejects with ProviderCallError after 3 attempts on repeated 500s…\" in `anthropicProvider.unit.test.ts` pass without modification. `isRetryableStatus` stays module-private — it is not exported for a test.\n- When the first attempt's retry delay would exceed the remaining deadline, the thrown message ends in \"after 1 attempt\"; after two or more attempts it ends in \"after <n> attempts\"; a test covers both.\n- The `it.each` title in `module-boundaries.unit.test.ts` no longer contains the word \"module\".\n- The comment in `ToolsBlock.tsx` contains no line numbers.\n\n\n<!-- crb-followup:v1 pr=826 key=1c131aaa44 -->\n<!-- crb-followup:v1 pr=826 key=93925718fd -->\n<!-- crb-followup:v1 pr=828 key=dab7d42d8c -->\n<!-- crb-followup:v1 pr=862 key=225ab573c0 -->\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -100,7 +100,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -111,7 +111,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/941/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/941/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

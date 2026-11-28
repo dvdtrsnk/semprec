@@ -103,7 +103,7 @@ function calendarPath(calendar: RemoteCalendar): string {
 const MAX_CREATE_ID_GENERATIONS = 8;
 const BASE32HEX = "0123456789abcdefghijklmnopqrstuv";
 /** The private extended property naming the local Event a Google event was created for. */
-const CREATE_KEY_PROPERTY = "semprecCreateKey";
+const CREATE_KEY_PROPERTY = "alldotsCreateKey";
 
 /**
  * The id a new Event is created with: base32hex (Google's id alphabet) of a hash of the calendar, the local Event and

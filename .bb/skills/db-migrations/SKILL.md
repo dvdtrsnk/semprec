@@ -27,7 +27,7 @@ from an earlier version:
 ## Always
 
 **Every table declares its tenancy** in the file that creates it:
-`COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'` (or `global`, only for
+`COMMENT ON TABLE <t> IS 'alldots:tenancy=tenant'` (or `global`, only for
 identity-plane, admin-plane and operator tables without user content). A tenant
 table gets `tenant_id`, RLS and both policies:
 
@@ -37,7 +37,7 @@ CREATE TABLE widgets (
   tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id),
   -- ... application columns follow, so the comma above is required
 );
-COMMENT ON TABLE widgets IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE widgets IS 'alldots:tenancy=tenant';
 ALTER TABLE widgets ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON widgets AS RESTRICTIVE
   USING (tenant_id = (SELECT app_tenant_default()))

@@ -1,8 +1,8 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { assertRelationCreatableWithClient, createRelationWithClient } from "../chokePoint/relationOps.js";
 import { getRelationDefinitionByPropertyId, tryLockRelationDefinition } from "../chokePoint/relationsStore.js";
@@ -59,7 +59,7 @@ async function withReleasedGate(
 describe("derived value creation guard", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify relation role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

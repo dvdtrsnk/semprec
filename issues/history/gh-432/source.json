@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/432",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/432",
   "id": 5493184000,
   "node_id": "I_kwDOUFuQ4c8AAAABR2tWAA",
   "number": 432,
@@ -34,7 +34,7 @@
     {
       "id": 11973197793,
       "node_id": "LA_kwDOUFuQ4c8AAAACyah_4Q",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/enhancement",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/enhancement",
       "name": "enhancement",
       "color": "a2eeef",
       "default": true,
@@ -45,7 +45,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -76,7 +76,7 @@
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "## Context\n\n`resolveRelationProperty` in `backend/services/semprec-api/src/itemsHandler.ts` resolves a relation route's `:propertyKey` path segment to exactly one RELATION-typed property (issue #219). It does this by calling `property.list` for the caller item's database and filtering the full result set in memory:\n\n```ts\nconst properties = await dispatchGenericOperation(service, \"property.list\", actor, { databaseId: item.databaseId });\nconst matches = properties.filter((property) => property.key === propertyKey && property.type === \"relation\");\n```\n\nThis is O(N) in the database's property count, on every `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId` call. Before #219's rebase, this used `chokePoint.getPropertyByKey(databaseId, key)` — an O(1) lookup backed by the `UNIQUE(database_id, key)` index.\n\n## Why the direct lookup can't just be restored\n\n`getPropertyByKey` doesn't satisfy #219's requirements for this resolution step:\n- It doesn't filter by property type, so a non-relation property with a matching key would incorrectly resolve.\n- On no match it doesn't produce the `404 not_found` shape `{ resource: 'relationProperty', databaseId, propertyKey }` that #219 requires.\n- It returns at most one row, so it can't detect or report the multiple-match/ambiguous case (`409 validation_failed` with `{ field: 'propertyKey', reason: 'ambiguous' }`) at all.\n\n## Proposed fix\n\nAdd a `property.getByKey` operation to `GenericApplicationPort` that takes `{ databaseId, key, type? }` (or equivalent) and does the indexed lookup plus the type filter and ambiguity detection in one call, backed by the database rather than an in-memory scan. `resolveRelationProperty` would then dispatch that single operation instead of `property.list` + `Array.filter`.\n\nThis wasn't done as part of #219 itself because #219 explicitly closes the generic-operation catalog at exactly 28 operations (its acceptance criteria require \"parameterized contract tests across all 28 operations\"), and adding a 29th operation for this one call site is the kind of scope growth `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md` rules out for that issue. This issue tracks it as deliberate follow-up work instead.\n\n## Task\n\n- Add a `property.getByKey` operation (input schema, port method, binding) to the generic-operation catalog, implemented as an indexed query in `packages/data`'s choke-point.\n- Update `resolveRelationProperty` in `itemsHandler.ts` to use it instead of `property.list` + in-memory filter.\n- Keep the existing 404/409 response shapes exactly as `resolveRelationProperty` currently produces them.\n\n## Out of scope\n\n- Any other call site currently using `property.list`.",
+  "body": "## Context\n\n`resolveRelationProperty` in `backend/services/alldots-api/src/itemsHandler.ts` resolves a relation route's `:propertyKey` path segment to exactly one RELATION-typed property (issue #219). It does this by calling `property.list` for the caller item's database and filtering the full result set in memory:\n\n```ts\nconst properties = await dispatchGenericOperation(service, \"property.list\", actor, { databaseId: item.databaseId });\nconst matches = properties.filter((property) => property.key === propertyKey && property.type === \"relation\");\n```\n\nThis is O(N) in the database's property count, on every `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId` call. Before #219's rebase, this used `chokePoint.getPropertyByKey(databaseId, key)` — an O(1) lookup backed by the `UNIQUE(database_id, key)` index.\n\n## Why the direct lookup can't just be restored\n\n`getPropertyByKey` doesn't satisfy #219's requirements for this resolution step:\n- It doesn't filter by property type, so a non-relation property with a matching key would incorrectly resolve.\n- On no match it doesn't produce the `404 not_found` shape `{ resource: 'relationProperty', databaseId, propertyKey }` that #219 requires.\n- It returns at most one row, so it can't detect or report the multiple-match/ambiguous case (`409 validation_failed` with `{ field: 'propertyKey', reason: 'ambiguous' }`) at all.\n\n## Proposed fix\n\nAdd a `property.getByKey` operation to `GenericApplicationPort` that takes `{ databaseId, key, type? }` (or equivalent) and does the indexed lookup plus the type filter and ambiguity detection in one call, backed by the database rather than an in-memory scan. `resolveRelationProperty` would then dispatch that single operation instead of `property.list` + `Array.filter`.\n\nThis wasn't done as part of #219 itself because #219 explicitly closes the generic-operation catalog at exactly 28 operations (its acceptance criteria require \"parameterized contract tests across all 28 operations\"), and adding a 29th operation for this one call site is the kind of scope growth `docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md` rules out for that issue. This issue tracks it as deliberate follow-up work instead.\n\n## Task\n\n- Add a `property.getByKey` operation (input schema, port method, binding) to the generic-operation catalog, implemented as an indexed query in `packages/data`'s choke-point.\n- Update `resolveRelationProperty` in `itemsHandler.ts` to use it instead of `property.list` + in-memory filter.\n- Keep the existing 404/409 response shapes exactly as `resolveRelationProperty` currently produces them.\n\n## Out of scope\n\n- Any other call site currently using `property.list`.",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -99,7 +99,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -110,7 +110,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

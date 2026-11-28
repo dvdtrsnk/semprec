@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentRun, type AgentRunRow } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
@@ -345,8 +345,8 @@ async function sentAtOf(draftId: string): Promise<Date | null> {
 describe("approval of a mail send by an agent (issue gh-1913)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-send-approval-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-send-approval-"));
   });
 
   beforeEach(async () => {

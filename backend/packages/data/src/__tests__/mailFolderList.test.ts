@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { loadModuleCatalogs } from "@semprec/module-registry";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { loadModuleCatalogs } from "@alldots/module-registry";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
@@ -23,8 +23,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 // The real loader behind a spy, so one test can make a single load fail.
-vi.mock("@semprec/module-registry", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/module-registry")>();
+vi.mock("@alldots/module-registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/module-registry")>();
   return { ...actual, loadModuleCatalogs: vi.fn(actual.loadModuleCatalogs) };
 });
 
@@ -217,14 +217,14 @@ async function gmailSystemFolders(
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runAsSystem("verify mail folder list test role", () =>
     runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     ),
   );
   expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-folder-list-"));
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-folder-list-"));
   storage = new LocalFsBlobStorageWriter(storageRoot);
 });
 
@@ -322,7 +322,7 @@ describe("GET /api/mail/mailboxes/:id/folders (issue gh-1689)", () => {
     const fixture = await mailFixture(tenant);
     const box = await fixture.mailbox("Gmail", "gmail");
     const system = await gmailSystemFolders(fixture, box);
-    // One draft Gmail reported, as the sync files it, and one the user wrote in Semprec.
+    // One draft Gmail reported, as the sync files it, and one the user wrote in Alldots.
     await fixture.message({ mailboxId: box, folderId: system.drafts, messageId: "<synced-draft@example.test>" });
     await fixture.draft(system.drafts);
 

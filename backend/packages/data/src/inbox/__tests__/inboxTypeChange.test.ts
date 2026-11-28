@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
-import { runOnce, type TaskList } from "@semprec/queue";
+import { runInTenant } from "@alldots/shared";
+import { runOnce, type TaskList } from "@alldots/queue";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
@@ -29,7 +29,7 @@ import {
 import { ChokePointError } from "../../errors.js";
 import type { ItemRow } from "../../types.js";
 import { createChangeInboxItemTypeRouteHandler } from "../inboxRouteHandlers.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inboxTickAction.js";
 import { changeInboxItemTypeWithClient } from "../inboxTypeChange.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import {
@@ -39,7 +39,7 @@ import {
 } from "../proposalActions.js";
 
 /**
- * `PUT /api/inbox/items/:id/type`, through the route's handler and the production writers on a `semprec_data` pool
+ * `PUT /api/inbox/items/:id/type`, through the route's handler and the production writers on a `alldots_data` pool
  * inside a tenant, so row-level security applies; the queue is read through the superuser pool, which sees every tenant.
  */
 
@@ -127,9 +127,9 @@ async function capture(p: Pipeline, text: string, typeId?: string): Promise<stri
   return item.id;
 }
 
-async function tick(p: Pipeline, itemId: string, compute: ComputeSemprecProposalFn): Promise<void> {
+async function tick(p: Pipeline, itemId: string, compute: ComputeAlldotsProposalFn): Promise<void> {
   await runInTenant(p.tenant, () =>
-    createSemprecTickAction(pool, compute)(
+    createAlldotsTickAction(pool, compute)(
       {
         inboxDatabaseId: p.inboxId,
         inboxItemTypesDatabaseId: p.typesId,
@@ -140,7 +140,7 @@ async function tick(p: Pipeline, itemId: string, compute: ComputeSemprecProposal
   );
 }
 
-const noCandidates: ComputeSemprecProposalFn = async () => ({ properties: {}, candidates: [] });
+const noCandidates: ComputeAlldotsProposalFn = async () => ({ properties: {}, candidates: [] });
 
 async function proposedTaskItem(p: Pipeline, text = "Buy milk") {
   const typeId = await createType(p, "Task", TASK_TYPE);
@@ -246,7 +246,7 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

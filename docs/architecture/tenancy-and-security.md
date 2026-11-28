@@ -1,6 +1,6 @@
 # Tenancy and security
 
-A tenant is one user's complete Semprec environment, 1:1 with that user. Tenants share nothing. All
+A tenant is one user's complete Alldots environment, 1:1 with that user. Tenants share nothing. All
 tenants live in one database and one schema. Postgres row-level security (RLS) isolates them, and a
 tenant scope that every process carries in memory selects the tenant.
 
@@ -44,7 +44,7 @@ Related documents:
 
 ### Table classification and unique keys
 
-- Every table carries `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'` or `'semprec:tenancy=global'`,
+- Every table carries `COMMENT ON TABLE <t> IS 'alldots:tenancy=tenant'` or `'alldots:tenancy=global'`,
   written by the migration that creates it. Global is only for identity-plane, admin-plane and
   operator tables that hold no user content.
 - Every unique index, unique constraint or primary key on a tenant table leads with `tenant_id`.
@@ -69,20 +69,20 @@ declared shapes. It does not prove arbitrary policy expressions or function bodi
 The roles and their grants are listed in [database-roles.md](../operations/database-roles.md).
 The rules:
 
-- `semprec_data` hosts the choke point. Only `semprec-api`, `semprec-agents` and
-  `semprec-transcribe` connect with it.
-- `semprec_side` can read the choke-point tables but cannot write them, and has full DML on module
-  side tables and the queue schema. Every other process connects as `semprec_side`. A write to a
+- `alldots_data` hosts the choke point. Only `alldots-api`, `alldots-agents` and
+  `alldots-transcribe` connect with it.
+- `alldots_side` can read the choke-point tables but cannot write them, and has full DML on module
+  side tables and the queue schema. Every other process connects as `alldots_side`. A write to a
   choke-point table from this role fails in Postgres.
 - A table that holds a bearer credential, a session secret or a delivery endpoint, or a row that
   makes an actor (`agent_runs`, `agent_run_mcp_credentials`, `approval_requests`,
   `push_subscriptions`, `sessions`, `password_reset_tokens`, …), is granted directly to
-  `semprec_data` and gets nothing on `semprec_side` beyond what that document lists. A compromised
+  `alldots_data` and gets nothing on `alldots_side` beyond what that document lists. A compromised
   side process must not be able to mint a session or an MCP run credential, or register a push
   endpoint.
 - A new table extends the grant lists explicitly in its own migration. No default-privilege rule
   grants tables automatically.
-- Accepted remainder: `semprec_side` still reaches every module side table of any tenant it names
+- Accepted remainder: `alldots_side` still reaches every module side table of any tenant it names
   with `set_config`, including the encrypted `external_credentials` and the wrapped `tenant_keys`.
 
 ### SECURITY DEFINER functions
@@ -104,7 +104,7 @@ The rules:
 
 - An external identifier that names a tenant before any tenant is known (a Graph subscription id, a
   Gmail address, a calendar push channel id), or an operator aggregate across tenants, goes through a `SECURITY DEFINER`
-  function owned by `semprec_router`. That role is `NOLOGIN BYPASSRLS` and holds column-level
+  function owned by `alldots_router`. That role is `NOLOGIN BYPASSRLS` and holds column-level
   `SELECT` only on the columns its functions read.
 - A router function pins `search_path` (ending in `pg_temp`), revokes `EXECUTE` from `PUBLIC`,
   grants it to exactly one runtime role, and returns only ids or numbers, never content. The caller
@@ -132,7 +132,7 @@ The rules:
   open shared I/O resources, never to run work.
 - Use `AsyncLocalStorage.run` only, never `enterWith`, which would leak the scope into the
   surrounding async context.
-- `enforceTenantScope(site)` runs at every database access site. When `SEMPREC_TENANT_SCOPE` is unset,
+- `enforceTenantScope(site)` runs at every database access site. When `ALLDOTS_TENANT_SCOPE` is unset,
   empty or `strict`, a missing scope throws `TenantScopeMissingError` before a connection is taken.
   `warn` is an operator escape hatch that only logs `tenant_scope_missing`, and production must not
   set it.
@@ -214,7 +214,7 @@ tenant by earliest, first or `LIMIT 1`.
   data is `"${tenantId}:${itemId}"`, so a ciphertext copied to another row or tenant does not open.
   Only the `tenant` scheme exists.
 - The tenant data key lives in `tenant_keys`, wrapped under `CREDENTIALS_MASTER_KEY` with the
-  associated data `semprec:tenant-key:v1:<tenantId>`. `master_key_version` records which master key
+  associated data `alldots:tenant-key:v1:<tenantId>`. `master_key_version` records which master key
   wrapped it. The key store is `backend/packages/data/src/credentials/tenantKeysStore.ts`.
 - `tenant_keys` has no `UPDATE` grant (a rewrite would orphan everything sealed under the key) and no
   `ON DELETE CASCADE`. Deleting the row is the crypto-shred of account deletion.
@@ -237,7 +237,7 @@ tenant by earliest, first or `LIMIT 1`.
   1. re-reads the binding with `lockUserTenantBinding` (user row `FOR KEY SHARE`, then tenant row
      `FOR SHARE`);
   2. takes the installation lock `lockSessionDevice`, which is
-     `pg_advisory_xact_lock(2334, hashtext('semprec_device:<userId>:<deviceId>'))`;
+     `pg_advisory_xact_lock(2334, hashtext('alldots_device:<userId>:<deviceId>'))`;
   3. creates the session and revokes the user's other unrevoked sessions with the same `deviceId`
      (`sessionsStore.revokeSessionsForDevice`), together with their push subscriptions.
 
@@ -277,7 +277,7 @@ tenant by earliest, first or `LIMIT 1`.
   acceptance, the mail OAuth callback, the Google and Graph calendar webhooks, the Graph mail
   webhook) are throttled per
   client address in process memory (`createClientIpThrottle` in
-  `backend/services/semprec-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`). The
+  `backend/services/alldots-api/src/clientIpThrottle.ts`, limits in `CLIENT_IP_THROTTLE_LIMITS`). The
   same throttle counts five signed-in actions per user id: mailbox credential verification, a mail
   provider fetch on demand (`mailContentFetch`), a mail search that asks the providers
   (`mailRemoteSearch`), a native client's IMAP history claim or upload (`mailHistoryUpload`) and a
@@ -294,14 +294,14 @@ tenant by earliest, first or `LIMIT 1`.
   slot. A refused attempt gets `429 rate_limited` with `Retry-After`.
 - An IPv4 address is its own key, an IPv4-mapped address counts as its IPv4 address, and any other
   IPv6 address is grouped by its `/64`. At most `maxKeys` keys are held.
-- This holds only because there is one `semprec-api` process. A second process needs a new design.
+- This holds only because there is one `alldots-api` process. A second process needs a new design.
   Addresses come from `clientIpFromRequest`, so the throttle is only as trustworthy as `TRUST_PROXY`.
 
 ### Same-origin check
 
 - A request counts as same-origin when it has no `Origin`, or when its `Origin` is an `http:`/`https:`
   URL whose host (lowercase, with port) equals the `Host` header. Forwarding headers are never read.
-- `dispatch` (`semprec-api/src/app.ts`, check in `src/originCheck.ts`) answers any method other than
+- `dispatch` (`alldots-api/src/app.ts`, check in `src/originCheck.ts`) answers any method other than
   `GET`/`HEAD`/`OPTIONS` that fails the check with `403 origin_not_allowed` before routing.
 - The `WS /api/sync` upgrade refuses a foreign `Origin` with a raw `403` before authentication
   (`src/syncHandler.ts`).
@@ -340,7 +340,7 @@ tenant by earliest, first or `LIMIT 1`.
   `409 invalid_account_status`, or `NotFoundError` when the tenant is missing.
 - A mutation that can change who counts as an active admin (a role change, or a status change of a
   tenant with an admin) starts with `lockAdminMembership`
-  (`pg_advisory_xact_lock(hashtext('semprec_admin_membership'))`), locks the target user row
+  (`pg_advisory_xact_lock(hashtext('alldots_admin_membership'))`), locks the target user row
   `FOR UPDATE`, runs `assertAnotherActiveAdminRemains`, and only then writes. Hot paths never take
   this lock.
 
@@ -350,7 +350,7 @@ tenant by earliest, first or `LIMIT 1`.
 
 - A writer that moves a tenant out of `active` calls `publishTenantDeactivated(client, tenantId)`
   (`tenancy/tenantStatusSignal.ts`) inside the status-changing transaction. It sends a NOTIFY on
-  `semprec_tenant_status` with the payload `{"tenantId":"<uuid>"}`. Postgres delivers it only on
+  `alldots_tenant_status` with the payload `{"tenantId":"<uuid>"}`. Postgres delivers it only on
   commit. Reactivation publishes nothing.
 - `startTenantDeactivationListener` runs `LISTEN` and then reads every `suspended`/`deleting`
   tenant. It does this on the first connect and on every reconnect (backoff 200 ms to 5 s), and it
@@ -366,7 +366,7 @@ tenant by earliest, first or `LIMIT 1`.
 - `POST /api/account/exports` inserts a `pending` row and enqueues `tenantExport` (`maxAttempts: 1`)
   in one transaction. At most one export per tenant is pending or running.
 - `tenancy/tenantExportJob.ts` exports every public table commented
-  `semprec:tenancy=tenant`, except `EXPORT_EXCLUDED_TABLES`. A new tenant table holding a server-only
+  `alldots:tenancy=tenant`, except `EXPORT_EXCLUDED_TABLES`. A new tenant table holding a server-only
   secret must be added to that list in the same change. Rows are read with
   `to_jsonb(t) WHERE t.tenant_id = app_current_tenant()` through a cursor, inside one
   `repeatable_read` transaction, so every file describes one instant.
@@ -385,11 +385,11 @@ tenant by earliest, first or `LIMIT 1`.
   system scope and deliberately works outside the choke point, because nobody can observe the tenant
   any more.
   - It takes a per-tenant session try-lock
-    (`pg_try_advisory_lock(hashtextextended('semprec_tenant_purge:' || id, 0))`) on a dedicated
+    (`pg_try_advisory_lock(hashtextextended('alldots_tenant_purge:' || id, 0))`) on a dedicated
     connection, then re-reads the tenant.
   - Bytes are removed before rows: blob keys from both roots, export files, and the `<root>/<tenantId>`
     directories, again just before finalisation. A failed file deletion blocks finalisation.
-  - It purges every table commented `semprec:tenancy=tenant`, children before parents in the
+  - It purges every table commented `alldots:tenancy=tenant`, children before parents in the
     foreign-key order computed by `orderTablesForPurge` (`tenantPurgeOrder.ts`), so no delete meets a
     key a later table still holds. Deletes run in chunks of 1000, one transaction per chunk, each with
     an explicit `tenant_id = $1` predicate on top of RLS. A row a running writer adds behind the
@@ -413,7 +413,7 @@ The restore runbook and the monthly restore test are in `deploy/README.md`. The 
 `tenancy/restoreTenantKeys.ts`, `restorePostgresTools.ts`, `validateRestoreLedger.ts` and
 `replayTenantDeletionsCli.ts`.
 
-- Before `pg_restore`, the target cluster gets `semprec_side`, `semprec_data` and `semprec_router` with
+- Before `pg_restore`, the target cluster gets `alldots_side`, `alldots_data` and `alldots_router` with
   their migration attributes. The production restore keeps owners and privileges and passes
   passwords through `\getenv`, never through argv.
 - Services, workers and timers stay offline throughout the restore, key import, ledger validation and

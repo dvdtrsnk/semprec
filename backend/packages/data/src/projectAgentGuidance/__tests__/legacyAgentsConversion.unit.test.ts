@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeProjectAgentGuidanceMarkdown } from "@semprec/shared";
+import { composeProjectAgentGuidanceMarkdown } from "@alldots/shared";
 import { legacyAgentsTextToSections } from "../legacyAgentsConversion.js";
 
 describe("legacyAgentsTextToSections (issue #1449)", () => {

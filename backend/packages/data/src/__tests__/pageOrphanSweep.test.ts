@@ -3,8 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import type * as Y from "yjs";
-import { deleteBlocks, insertBlocks, readPageBlocks } from "@semprec/block-model";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { deleteBlocks, insertBlocks, readPageBlocks } from "@alldots/block-model";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { registerItemDeleteHook } from "../chokePoint/hooks.js";
@@ -45,7 +45,7 @@ registerItemDeleteHook(async ({ item, rootItemId, writerKind, actingUserId }) =>
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(runtime);
 });
 beforeEach(async () => {

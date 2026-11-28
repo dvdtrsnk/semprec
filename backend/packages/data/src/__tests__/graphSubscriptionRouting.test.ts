@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -59,40 +59,40 @@ describe("route_graph_subscription (issue #997)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
       secdef: true,
-      owner: "semprec_router",
+      owner: "alldots_router",
       config: ["search_path=pg_catalog, public, pg_temp"],
     });
 
     const role = await pool.query<{ rolbypassrls: boolean; rolcanlogin: boolean; rolsuper: boolean }>(
-      "SELECT rolbypassrls, rolcanlogin, rolsuper FROM pg_roles WHERE rolname = 'semprec_router'",
+      "SELECT rolbypassrls, rolcanlogin, rolsuper FROM pg_roles WHERE rolname = 'alldots_router'",
     );
     expect(role.rows[0]).toEqual({ rolbypassrls: true, rolcanlogin: false, rolsuper: false });
   });
 
-  it("grants EXECUTE to semprec_data only", async () => {
+  it("grants EXECUTE to alldots_data only", async () => {
     const { rows } = await pool.query<{ data: boolean; side: boolean; pub: boolean }>(
-      `SELECT has_function_privilege('semprec_data', 'route_graph_subscription(text)', 'EXECUTE') AS data,
-              has_function_privilege('semprec_side', 'route_graph_subscription(text)', 'EXECUTE') AS side,
+      `SELECT has_function_privilege('alldots_data', 'route_graph_subscription(text)', 'EXECUTE') AS data,
+              has_function_privilege('alldots_side', 'route_graph_subscription(text)', 'EXECUTE') AS side,
               has_function_privilege('public', 'route_graph_subscription(text)', 'EXECUTE') AS pub`,
     );
     expect(rows[0]).toEqual({ data: true, side: false, pub: false });
   });
 
-  it("limits semprec_router to column-level SELECT on the two columns it reads", async () => {
+  it("limits alldots_router to column-level SELECT on the two columns it reads", async () => {
     const { rows } = await pool.query<{ table_select: boolean; last_error: boolean; sub: boolean; tenant: boolean }>(
-      `SELECT has_table_privilege('semprec_router', 'mail_account_sync_state', 'SELECT') AS table_select,
-              has_column_privilege('semprec_router', 'mail_account_sync_state', 'last_error', 'SELECT') AS last_error,
-              has_column_privilege('semprec_router', 'mail_account_sync_state', 'graph_subscription_id', 'SELECT') AS sub,
-              has_column_privilege('semprec_router', 'mail_account_sync_state', 'tenant_id', 'SELECT') AS tenant`,
+      `SELECT has_table_privilege('alldots_router', 'mail_account_sync_state', 'SELECT') AS table_select,
+              has_column_privilege('alldots_router', 'mail_account_sync_state', 'last_error', 'SELECT') AS last_error,
+              has_column_privilege('alldots_router', 'mail_account_sync_state', 'graph_subscription_id', 'SELECT') AS sub,
+              has_column_privilege('alldots_router', 'mail_account_sync_state', 'tenant_id', 'SELECT') AS tenant`,
     );
     expect(rows[0]).toEqual({ table_select: false, last_error: false, sub: true, tenant: true });
   });
 
-  it("routes past RLS for semprec_data under an unrelated tenant, and refuses semprec_side", async () => {
+  it("routes past RLS for alldots_data under an unrelated tenant, and refuses alldots_side", async () => {
     const tenantZero = getTenantZeroId();
     await registerMailbox(tenantZero, "sub-zero", "state-zero");
     const unrelated = randomUUID();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
 
     const result = await withTenantTransaction(dataPool, unrelated, async (client) => {
       const visible = await client.query<{ count: string }>(
@@ -106,7 +106,7 @@ describe("route_graph_subscription (issue #997)", () => {
     });
     expect(result).toEqual({ visible: "0", routed: tenantZero, unknown: null });
 
-    const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    const sidePool = await createRuntimeRolePool(pool, "alldots_side");
     try {
       await expect(sidePool.query("SELECT route_graph_subscription('sub-zero')")).rejects.toMatchObject({
         code: "42501",
@@ -121,7 +121,7 @@ describe("route_graph_subscription (issue #997)", () => {
     const tenantB = await createTestTenant(pool);
     const itemZero = await registerMailbox(tenantZero, "sub-zero", "state-zero");
     const itemB = await registerMailbox(tenantB, "sub-b", "state-b");
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
     const scopedPool = dataPool;
 
     const outcome = await runAsSystem("test", () =>

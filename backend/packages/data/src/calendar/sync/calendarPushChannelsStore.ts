@@ -2,7 +2,7 @@
 // sync about provider changes. This module is the table's only writer.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import type { Queryable } from "../../db/pool.js";
 import { MAILBOXES_MODULE_ID } from "../../seed/emailModuleKeys.js";
 

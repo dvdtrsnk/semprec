@@ -3,7 +3,7 @@ import {
   type McpToolEventIdentity,
   type ToolResultChange,
   type ToolUseEventPayload,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { approvalConflictReason } from "../mcp/approvalConflictReason.js";
 import type { ApprovalRequestStateView } from "../mcp/approvalRequestsStore.js";
 import type { AgentRunEventKind, AgentRunEventRow } from "./agentRunEventsStore.js";

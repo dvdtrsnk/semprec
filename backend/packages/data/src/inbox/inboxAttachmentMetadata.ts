@@ -1,9 +1,9 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
-// The shape of `inbox_attachments.metadata`, computed by `semprec-transcribe`'s `inboxAttachmentMetadata.ts` job.
+// The shape of `inbox_attachments.metadata`, computed by `alldots-transcribe`'s `inboxAttachmentMetadata.ts` job.
 
 /** The single definition of the voice note / recording boundary, in seconds. */
 export const INBOX_RECORDING_MIN_SECONDS = 120;

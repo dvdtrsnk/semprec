@@ -1,0 +1,120 @@
+package cz.alldots.app.domain
+
+/**
+ * The reads and thread actions of the mail screens. Every call answers with a [RepositoryResult]; a read mark, a flag
+ * or a move the server refused for a known reason is [MailOutcome.Refused].
+ */
+interface MailRepository {
+    suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage>
+
+    /** The thread counts of the filter, over every visible thread. */
+    suspend fun facets(): RepositoryResult<MailFacets>
+
+    suspend fun summary(): RepositoryResult<MailSummary>
+
+    suspend fun thread(threadId: String): RepositoryResult<MailThreadDetail>
+
+    /** Marks the thread read or unread and answers whether it is unread afterwards. */
+    suspend fun setRead(threadId: String, read: Boolean): RepositoryResult<MailOutcome<Boolean>>
+
+    /** Flags or unflags the thread and answers whether it is flagged afterwards. */
+    suspend fun setFlagged(threadId: String, flagged: Boolean): RepositoryResult<MailOutcome<Boolean>>
+
+    suspend fun archive(threadId: String): RepositoryResult<MailOutcome<Unit>>
+
+    suspend fun trash(threadId: String): RepositoryResult<MailOutcome<Unit>>
+
+    suspend fun restore(threadId: String): RepositoryResult<MailOutcome<Unit>>
+
+    /** Asks the server to make a task from the thread and to name it from the conversation. */
+    suspend fun createTask(threadId: String): RepositoryResult<MailNamedRef>
+}
+
+/** The name of a project a thread list starts with, which the facet options leave out when it holds no thread. */
+fun interface MailProjectNames {
+    /** The name of the project [projectId]; `null` when it is gone or has none. */
+    suspend fun projectName(projectId: String): RepositoryResult<String?>
+}
+
+/** What changed in a thread list view since a changes cursor ([MailThreadPage.changesCursor]). */
+interface MailThreadChangesRepository {
+    /** The changes of the list view [query] names (its search and cursor are not used) since the changes cursor [since]. */
+    suspend fun threadChanges(query: MailThreadQuery, since: String): RepositoryResult<MailThreadChanges>
+}
+
+/**
+ * The mail calls the server may answer by asking the mail provider, which can be slow: the body of a message the
+ * server holds only as an index entry, an attachment saved into Files, and the search. A body or an attachment the
+ * server could not fetch from the provider is [MailContentOutcome.Unavailable].
+ */
+interface MailContentRepository {
+    /**
+     * The body of the message [emailId]; the server fetches it from the provider when it holds none, which can be
+     * slow and can be [MailContentOutcome.Unavailable].
+     */
+    suspend fun messageContent(emailId: String): RepositoryResult<MailContentOutcome<MailMessageContent>>
+
+    /**
+     * Saves the attachment [attachmentId] of the message [emailId] into Files and answers the id of its Files item;
+     * one saved before answers the same item.
+     */
+    suspend fun saveAttachment(emailId: String, attachmentId: String): RepositoryResult<MailContentOutcome<String>>
+
+    /** The threads that match [query], in every mailbox or in [mailboxId], with what the provider search added. */
+    suspend fun search(query: String, mailboxId: String?): RepositoryResult<MailSearchResult>
+}
+
+/**
+ * The drafts of the signed-in person. Sending goes through the server as the person; agents only propose. A draft
+ * write or a send the server refused for a known reason is [MailOutcome.Refused].
+ */
+interface MailDraftRepository {
+    suspend fun create(fields: MailDraftFields, threadId: String?): RepositoryResult<MailOutcome<MailDraft>>
+
+    suspend fun createPrefilled(prefill: MailPrefill): RepositoryResult<MailOutcome<MailDraft>>
+
+    suspend fun read(draftId: String): RepositoryResult<MailDraft>
+
+    suspend fun update(
+        draftId: String,
+        version: String,
+        fields: MailDraftFields,
+    ): RepositoryResult<MailOutcome<MailDraft>>
+
+    suspend fun discard(draftId: String): RepositoryResult<Unit>
+
+    suspend fun send(draftId: String): RepositoryResult<MailOutcome<MailSentDraft>>
+
+    /** People whose name or address contains [query], without the addresses in [exclude]. */
+    suspend fun contacts(query: String, exclude: List<String>): RepositoryResult<List<MailContact>>
+}
+
+/** The mailboxes (accounts) of the signed-in person. */
+interface MailboxRepository {
+    suspend fun mailboxes(): RepositoryResult<List<MailAccount>>
+
+    suspend fun mailbox(mailboxId: String): RepositoryResult<MailAccount>
+
+    suspend fun folders(mailboxId: String): RepositoryResult<List<MailFolder>>
+
+    suspend fun removalImpact(mailboxId: String): RepositoryResult<MailRemovalImpact>
+
+    suspend fun remove(mailboxId: String): RepositoryResult<Unit>
+
+    /** Connects a mailbox once the server checked the login; a login it refused is [MailConnectOutcome.Refused]. */
+    suspend fun connect(account: MailPasswordAccount): RepositoryResult<MailConnectOutcome>
+
+    /**
+     * Signs a password mailbox in again with [password] and, when not `null`, [username]; `null` keeps the stored user
+     * name. The server checks the login first, as for [connect].
+     */
+    suspend fun updatePassword(
+        mailboxId: String,
+        password: String,
+        username: String?,
+    ): RepositoryResult<MailConnectOutcome>
+
+    suspend fun rename(mailboxId: String, name: String): RepositoryResult<Unit>
+
+    suspend fun setConnectionLimit(mailboxId: String, limit: Int): RepositoryResult<Unit>
+}

@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import type { SearchSubtitlePart } from "@semprec/shared";
+import type { SearchSubtitlePart } from "@alldots/shared";
 import {
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,

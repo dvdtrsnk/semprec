@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -273,7 +273,7 @@ async function reload(tenant: Tenant, requestId: string): Promise<ApprovalReques
 describe("calendar agent tools (issue gh-1957)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
     registry = await loadFullModuleRegistry();
     registerItemCreateHook(async ({ database, writer, humanWriterUserId }) => {

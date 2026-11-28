@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { requireAffectedRows, runAfterCommit, withTransaction } from "../db/pool.js";
 import type { CreatedBy, DocKind } from "../types.js";
 import { notifyDocUpdate } from "../realtimeHook.js";

@@ -7,7 +7,7 @@ import {
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createBlob, recordDetectedBlobMimeType, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";

@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent, type AgentRunEventKind } from "../../agentRuns/agentRunEventsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";

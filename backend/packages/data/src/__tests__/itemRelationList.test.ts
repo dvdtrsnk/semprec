@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -82,7 +82,7 @@ describe("choke-point listItemRelations (issue #1404)", () => {
         metadata: {},
       });
     }
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const wrapped = new Map<PoolClient, PoolClient["query"]>();
     let selects = 0;
     const instrument = (client: PoolClient) => {

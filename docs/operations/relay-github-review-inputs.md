@@ -1,10 +1,10 @@
 # Scoped GitHub review inputs
 
-Semprec's `fix-review-findings` and `recover-blocked-issue` workflows start with
+Alldots's `fix-review-findings` and `recover-blocked-issue` workflows start with
 `github-review-inputs`. Relay obtains the source issue, the open PR and complete
 summary/inline review comments through Access Hub before starting the repair
-agent. The explicit grant is `semprec-relay-github-review`, restricted to
-`dvdtrsnk/semprec` and assigned to Semprec's approved repository binding.
+agent. The explicit grant is `alldots-relay-github-review`, restricted to
+`dvdtrsnk/alldots` and assigned to Alldots's approved repository binding.
 
 Access Hub trusts only Relay's verified plugin caller and database-backed run
 identity. It rechecks current grants and project sources on every read and checks

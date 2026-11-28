@@ -10,7 +10,7 @@ enum PreviewOverview {
         mailUnread: 5,
         problemCount: 2,
         projects: [
-            OverviewProject(id: "p1", name: "Semprec iOS", color: "#007AFF", status: "inProgress")
+            OverviewProject(id: "p1", name: "Alldots iOS", color: "#007AFF", status: "inProgress")
         ],
         collections: [
             OverviewCollection(

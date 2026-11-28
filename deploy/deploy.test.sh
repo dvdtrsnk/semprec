@@ -6,11 +6,11 @@ readonly REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 readonly TEST_ROOT="$(mktemp -d)"
 readonly TEST_BIN="$TEST_ROOT/bin"
 readonly TEST_STATE="$TEST_ROOT/state"
-readonly TEST_SEMPREC_ROOT="$TEST_ROOT/opt/semprec"
+readonly TEST_ALLDOTS_ROOT="$TEST_ROOT/opt/alldots"
 readonly ORIGIN="$TEST_ROOT/origin.git"
 readonly AUTHOR="$TEST_ROOT/author"
 readonly OPERATOR="$TEST_ROOT/operator"
-export TEST_STATE TEST_SEMPREC_ROOT
+export TEST_STATE TEST_ALLDOTS_ROOT
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 
@@ -19,10 +19,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_BIN" "$TEST_STATE/proc" "$TEST_STATE/pids" "$TEST_SEMPREC_ROOT/releases" "$TEST_SEMPREC_ROOT/shared/env"
-printf 'SEMPREC_MIGRATE_DATABASE_URL=postgres://migrate-secret-value\n' > "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
-printf 'SEMPREC_API_DATABASE_URL=postgres://data-role-value\n' > "$TEST_SEMPREC_ROOT/shared/env/data-role.env"
-readonly MIGRATE_ENV_CHECKSUM="$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')"
+mkdir -p "$TEST_BIN" "$TEST_STATE/proc" "$TEST_STATE/pids" "$TEST_ALLDOTS_ROOT/releases" "$TEST_ALLDOTS_ROOT/shared/env"
+printf 'ALLDOTS_MIGRATE_DATABASE_URL=postgres://migrate-secret-value\n' > "$TEST_ALLDOTS_ROOT/shared/env/migrate.env"
+printf 'ALLDOTS_API_DATABASE_URL=postgres://data-role-value\n' > "$TEST_ALLDOTS_ROOT/shared/env/data-role.env"
+readonly MIGRATE_ENV_CHECKSUM="$(sha256sum "$TEST_ALLDOTS_ROOT/shared/env/migrate.env" | awk '{print $1}')"
 
 # ---- Repositories: origin holds main and the tags; the operator checkout runs deploy.sh. ----
 
@@ -31,9 +31,9 @@ git clone --quiet "$ORIGIN" "$AUTHOR" 2>/dev/null
 commit_release_content() {
   local marker="$1"
   mkdir -p "$AUTHOR/backend" "$AUTHOR/web"
-  printf '{"name":"semprec","private":true}\n' > "$AUTHOR/backend/package.json"
+  printf '{"name":"alldots","private":true}\n' > "$AUTHOR/backend/package.json"
   printf '%s\n' "$marker" > "$AUTHOR/backend/marker"
-  printf '{"name":"@semprec/web","private":true}\n' > "$AUTHOR/web/package.json"
+  printf '{"name":"@alldots/web","private":true}\n' > "$AUTHOR/web/package.json"
   git -C "$AUTHOR" add -A
   git -C "$AUTHOR" commit --quiet -m "$marker"
 }
@@ -53,7 +53,7 @@ git -C "$AUTHOR" push --quiet origin feature v9.0.0
 git clone --quiet "$ORIGIN" "$OPERATOR"
 mkdir -p "$OPERATOR/deploy"
 cp "$REPOSITORY_ROOT/deploy/deploy.sh" "$OPERATOR/deploy/deploy.sh"
-sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_SEMPREC_ROOT|" "$OPERATOR/deploy/deploy.sh"
+sed -i "s|readonly ALLDOTS_ROOT=/opt/alldots|readonly ALLDOTS_ROOT=$TEST_ALLDOTS_ROOT|" "$OPERATOR/deploy/deploy.sh"
 sed -i "s|readonly PROC_ROOT=/proc|readonly PROC_ROOT=$TEST_STATE/proc|" "$OPERATOR/deploy/deploy.sh"
 
 # ---- Mocks ----
@@ -67,7 +67,7 @@ write_mock() {
 
 # Records a violation, checked at the end, when `current` names the release still being prepared.
 write_mock assert-not-current '
-if [[ -L "$TEST_SEMPREC_ROOT/current" && "$(readlink -f "$TEST_SEMPREC_ROOT/current")" == "$(readlink -f "$1")" ]]; then
+if [[ -L "$TEST_ALLDOTS_ROOT/current" && "$(readlink -f "$TEST_ALLDOTS_ROOT/current")" == "$(readlink -f "$1")" ]]; then
   echo "current targets a release that is still being prepared: $1" >> "$TEST_STATE/violations"
 fi'
 write_mock id 'if [[ "${1:-}" == "-u" ]]; then echo 0; fi'
@@ -104,7 +104,7 @@ case "$1" in
     pid=$(( $(cat "$TEST_STATE/next-pid" 2>/dev/null || echo 100) + 1 ))
     echo "$pid" > "$TEST_STATE/next-pid"
     mkdir -p "$TEST_STATE/proc/$pid"
-    cat "$TEST_SEMPREC_ROOT/shared/env/data-role.env" "$TEST_SEMPREC_ROOT/current/release.env" | tr "\n" "\0" > "$TEST_STATE/proc/$pid/environ"
+    cat "$TEST_ALLDOTS_ROOT/shared/env/data-role.env" "$TEST_ALLDOTS_ROOT/current/release.env" | tr "\n" "\0" > "$TEST_STATE/proc/$pid/environ"
     echo "$pid" > "$TEST_STATE/pids/$2"
     ;;
   show)
@@ -128,14 +128,14 @@ expect_refused() {
 }
 
 assert_no_partial_releases() {
-  if compgen -G "$TEST_SEMPREC_ROOT/releases/.*.partial.*" > /dev/null; then
+  if compgen -G "$TEST_ALLDOTS_ROOT/releases/.*.partial.*" > /dev/null; then
     echo "a partial release was left behind" >&2
     exit 1
   fi
 }
 
 assert_current() {
-  test "$(readlink "$TEST_SEMPREC_ROOT/current")" == "$TEST_SEMPREC_ROOT/releases/$1"
+  test "$(readlink "$TEST_ALLDOTS_ROOT/current")" == "$TEST_ALLDOTS_ROOT/releases/$1"
 }
 
 # A successful deploy runs the native entrypoint check once, after the build and before the migration,
@@ -155,11 +155,11 @@ assert_native_check_after_build_before_migration() {
 # The seed and the tenancy verification use the migrate URL; the verification also uses the same
 # unit properties as the migrations. Reads the commands of exactly one deploy.
 assert_pre_activation_order() {
-  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
+  grep -n 'ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' "$TEST_STATE/commands" \
     | cut -d: -f1 > "$TEST_STATE/migrate.line"
-  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
+  grep -n 'ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' "$TEST_STATE/commands" \
     | cut -d: -f1 > "$TEST_STATE/seed.line"
-  grep -n 'SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
+  grep -n 'ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' "$TEST_STATE/commands" \
     | cut -d: -f1 > "$TEST_STATE/verify.line"
   test "$(wc -l < "$TEST_STATE/migrate.line")" -eq 1
   test "$(wc -l < "$TEST_STATE/seed.line")" -eq 1
@@ -179,33 +179,33 @@ assert_pre_activation_order() {
 for bad_tag in 1.0.0 v1.0 v01.0.0 v1.0.0-rc.1 main; do
   expect_refused 'invalid release tag' "$bad_tag"
 done
-test ! -e "$TEST_SEMPREC_ROOT/current"
+test ! -e "$TEST_ALLDOTS_ROOT/current"
 test ! -e "$TEST_STATE/commands"
 
 # ---- First deploy: every process type restarts and reports the one version. ----
 
 run_deploy v1.0.0 > "$TEST_STATE/deploy.out"
 assert_current v1.0.0
-grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
-grep -qx 'APP_VERSION=v1.0.0' "$TEST_SEMPREC_ROOT/releases/v1.0.0/release.env"
-for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+grep -qx one "$TEST_ALLDOTS_ROOT/releases/v1.0.0/backend/marker"
+grep -qx 'APP_VERSION=v1.0.0' "$TEST_ALLDOTS_ROOT/releases/v1.0.0/release.env"
+for unit in alldots-ai-gateway alldots-api alldots-agents alldots-transcribe; do
   grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
   grep -qx "$unit.service: v1.0.0" "$TEST_STATE/deploy.out"
 done
 test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
 test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 4
-test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
+test "$(grep -c "EnvironmentFile=$TEST_ALLDOTS_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
 test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 3
 assert_pre_activation_order
 assert_native_check_after_build_before_migration
-test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
+test -f "$TEST_ALLDOTS_ROOT/releases/v1.0.0/web/dist/index.html"
 grep -qx 'pnpm run build' "$TEST_STATE/commands"
 if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
   echo 'deploy output exposed the migrate secret' >&2
   exit 1
 fi
-test -z "$(find "$TEST_SEMPREC_ROOT/releases" -name .env)"
+test -z "$(find "$TEST_ALLDOTS_ROOT/releases" -name .env)"
 assert_no_partial_releases
 
 # ---- Pre-activation failures leave current and the services unchanged. ----
@@ -240,7 +240,7 @@ expect_refused 'tenancy verification failed' v1.1.0
 grep -q 'verifyTenancyCli.js' "$TEST_STATE/commands"
 rm "$TEST_STATE/fail-verify"
 assert_current v1.0.0
-test ! -e "$TEST_SEMPREC_ROOT/releases/v1.1.0"
+test ! -e "$TEST_ALLDOTS_ROOT/releases/v1.1.0"
 assert_no_partial_releases
 if grep -q 'systemctl restart' "$TEST_STATE/commands"; then
   echo 'a failed deploy restarted a service' >&2
@@ -263,9 +263,9 @@ run_deploy v1.1.0 > "$TEST_STATE/deploy.out"
 assert_current v1.1.0
 assert_pre_activation_order
 assert_native_check_after_build_before_migration
-grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
-grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
-for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+grep -qx two "$TEST_ALLDOTS_ROOT/releases/v1.1.0/backend/marker"
+grep -qx one "$TEST_ALLDOTS_ROOT/releases/v1.0.0/backend/marker"
+for unit in alldots-ai-gateway alldots-api alldots-agents alldots-transcribe; do
   grep -qx "$unit.service: v1.1.0" "$TEST_STATE/deploy.out"
 done
 assert_no_partial_releases
@@ -279,9 +279,9 @@ assert_pre_activation_order
 assert_native_check_after_build_before_migration
 rm "$TEST_STATE/commands"
 # A staging directory left by an interrupted deploy is not a release and must not count as the newest.
-mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
-releases_before="$(ls -a "$TEST_SEMPREC_ROOT/releases")"
-previous_release_inode="$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")"
+mkdir "$TEST_ALLDOTS_ROOT/releases/.v1.4.0.partial.test"
+releases_before="$(ls -a "$TEST_ALLDOTS_ROOT/releases")"
+previous_release_inode="$(stat -c %i "$TEST_ALLDOTS_ROOT/releases/v1.1.0")"
 
 expect_refused 'invalid release tag' --rollback v1.1
 expect_refused 'Usage' --rollback
@@ -289,10 +289,10 @@ expect_refused 'Usage' --rollback v1.1.0 extra
 expect_refused 'is not a deployed release' --rollback v1.2.0
 expect_refused 'can only roll back to v1.1.0' --rollback v1.0.0
 expect_refused 'can only roll back to v1.1.0' --rollback v1.3.0
-cp "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env" "$TEST_STATE/release.env.saved"
-printf 'APP_VERSION=v1.0.0\n' > "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+cp "$TEST_ALLDOTS_ROOT/releases/v1.1.0/release.env" "$TEST_STATE/release.env.saved"
+printf 'APP_VERSION=v1.0.0\n' > "$TEST_ALLDOTS_ROOT/releases/v1.1.0/release.env"
 expect_refused 'does not declare APP_VERSION=v1.1.0' --rollback v1.1.0
-cp "$TEST_STATE/release.env.saved" "$TEST_SEMPREC_ROOT/releases/v1.1.0/release.env"
+cp "$TEST_STATE/release.env.saved" "$TEST_ALLDOTS_ROOT/releases/v1.1.0/release.env"
 assert_current v1.3.0
 test ! -e "$TEST_STATE/commands"
 
@@ -300,7 +300,7 @@ readonly ROLLBACK_OUTPUT="$TEST_STATE/rollback.out"
 run_deploy --rollback v1.1.0 > "$ROLLBACK_OUTPUT"
 assert_current v1.1.0
 grep -qx 'Rolled back to v1.1.0; the database schema was not changed' "$ROLLBACK_OUTPUT"
-for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
+for unit in alldots-ai-gateway alldots-api alldots-agents alldots-transcribe; do
   grep -qx "systemctl restart $unit.service" "$TEST_STATE/commands"
   grep -qx "$unit.service: v1.1.0" "$ROLLBACK_OUTPUT"
 done
@@ -309,10 +309,10 @@ if grep -v '^systemctl restart ' "$TEST_STATE/commands"; then
   echo 'a rollback ran something other than service restarts' >&2
   exit 1
 fi
-test "$(ls -a "$TEST_SEMPREC_ROOT/releases")" == "$releases_before"
-test "$(stat -c %i "$TEST_SEMPREC_ROOT/releases/v1.1.0")" == "$previous_release_inode"
-grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
-rm -r "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"
+test "$(ls -a "$TEST_ALLDOTS_ROOT/releases")" == "$releases_before"
+test "$(stat -c %i "$TEST_ALLDOTS_ROOT/releases/v1.1.0")" == "$previous_release_inode"
+grep -qx two "$TEST_ALLDOTS_ROOT/releases/v1.1.0/backend/marker"
+rm -r "$TEST_ALLDOTS_ROOT/releases/.v1.4.0.partial.test"
 
 # Two releases back is refused: the schema is already the newest release's.
 rm "$TEST_STATE/commands"
@@ -322,13 +322,13 @@ assert_current v1.1.0
 test ! -e "$TEST_STATE/commands"
 
 # Without the migrate group file deploy.sh stops before building anything.
-mv "$TEST_SEMPREC_ROOT/shared/env/migrate.env" "$TEST_STATE/migrate.env.moved"
+mv "$TEST_ALLDOTS_ROOT/shared/env/migrate.env" "$TEST_STATE/migrate.env.moved"
 rm -f "$TEST_STATE/commands"
 expect_refused 'run provision.sh first' v1.4.0
 test ! -e "$TEST_STATE/commands"
-mv "$TEST_STATE/migrate.env.moved" "$TEST_SEMPREC_ROOT/shared/env/migrate.env"
+mv "$TEST_STATE/migrate.env.moved" "$TEST_ALLDOTS_ROOT/shared/env/migrate.env"
 
-test "$(sha256sum "$TEST_SEMPREC_ROOT/shared/env/migrate.env" | awk '{print $1}')" == "$MIGRATE_ENV_CHECKSUM"
+test "$(sha256sum "$TEST_ALLDOTS_ROOT/shared/env/migrate.env" | awk '{print $1}')" == "$MIGRATE_ENV_CHECKSUM"
 test ! -e "$TEST_STATE/violations"
 
 echo 'deploy.sh behavior test passed'

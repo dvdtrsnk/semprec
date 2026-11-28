@@ -5,7 +5,7 @@ import OverviewFeature
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the overview's rows and its profile button do in the app: the router changes the stack of the Overview tab,
 /// and the real scene shows the result.

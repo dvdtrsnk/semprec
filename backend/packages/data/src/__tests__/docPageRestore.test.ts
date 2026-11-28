@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import * as Y from "yjs";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -336,8 +336,8 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
   it("holds the live item while restore waits for the document, so deletion follows restore", async () => {
     const page = await pageWithUserBlocks();
     await agentEdit(page);
-    const restorePool = await createRuntimeRolePool(pool, "semprec_data");
-    const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+    const restorePool = await createRuntimeRolePool(pool, "alldots_data");
+    const deletePool = await createRuntimeRolePool(pool, "alldots_data");
     const restoring = observeStatementPid(restorePool, /FROM doc_snapshots\b[\s\S]*FOR UPDATE/i);
     const deleting = observeStatementPid(deletePool, /FROM items\b[\s\S]*FOR NO KEY UPDATE/i);
     let release!: () => void;
@@ -421,8 +421,8 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
     const page = await pageWithUserBlocks();
     await agentEdit(page);
     const before = await updateCount(page.docId);
-    const deletingPool = await createRuntimeRolePool(pool, "semprec_data");
-    const restoringPool = await createRuntimeRolePool(pool, "semprec_data");
+    const deletingPool = await createRuntimeRolePool(pool, "alldots_data");
+    const restoringPool = await createRuntimeRolePool(pool, "alldots_data");
     const competing = observeStatementPid(restoringPool, /FROM items\b[\s\S]*FOR NO KEY UPDATE/i);
     let release!: () => void;
     let ready!: (pid: number) => void;

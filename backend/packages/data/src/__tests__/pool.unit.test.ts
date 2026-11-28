@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, DatabaseError, Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   CORE_TASK_NAMES,
   prepareJob,
   SEARCH_TASK_IDENTIFIERS,
   SearchTaskIdentifiersNotRegisteredError,
-} from "@semprec/queue";
+} from "@alldots/queue";
 import {
   createPool,
   markManagedTransactionRollbackOnly,

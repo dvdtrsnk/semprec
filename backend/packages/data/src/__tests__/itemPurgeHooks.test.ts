@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createBlob } from "../blobs/blobsStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -22,7 +22,7 @@ import type { DatabaseRow, ItemRow } from "../types.js";
 
 /** The superuser pool: resets, DDL, backdating, and cross-tenant reads from outside a purge transaction. */
 let admin: Pool;
-/** The `semprec_data` runtime role, subject to row-level security: every production call and hook runs on it. */
+/** The `alldots_data` runtime role, subject to row-level security: every production call and hook runs on it. */
 let pool: Pool;
 let cp: ChokePoint;
 let tenant: string;
@@ -110,7 +110,7 @@ async function reservedItemIds(ids: string[]): Promise<string[]> {
  */
 async function createDomainRows(itemIds: string[]): Promise<void> {
   await admin.query("CREATE TABLE item_purge_hook_test_rows (item_id uuid PRIMARY KEY)");
-  await admin.query("GRANT SELECT, DELETE ON item_purge_hook_test_rows TO semprec_data");
+  await admin.query("GRANT SELECT, DELETE ON item_purge_hook_test_rows TO alldots_data");
   await admin.query("INSERT INTO item_purge_hook_test_rows (item_id) SELECT unnest($1::uuid[])", [itemIds]);
 }
 
@@ -160,7 +160,7 @@ const byId = <T extends { id: string }>(rows: T[]): T[] =>
 describe("item purge hooks", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     const role = await runAsSystem("verify item purge hook role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -534,7 +534,7 @@ describe("item purge hooks", () => {
       expect(purged.purgedItemIds).toEqual([trashed.id]);
       // The hook's own tenant's rows are returned, the other tenant's are not.
       expect(seen).toEqual([
-        { tenantId: tenant, role: "semprec_data", itemIds: [kept.id], databaseIds: [database.id] },
+        { tenantId: tenant, role: "alldots_data", itemIds: [kept.id], databaseIds: [database.id] },
       ]);
     });
     // Both rows the hook asked for exist: only its scope kept the foreign one out of its result.
@@ -578,7 +578,7 @@ describe("item purge hooks", () => {
     const calls = recordPurgeHook();
     // The erase removes `<root>/<tenant id>` under both roots; this tenant stored no bytes, so neither path
     // exists.
-    const root = join(tmpdir(), `semprec-test-item-purge-hooks-${randomUUID()}`);
+    const root = join(tmpdir(), `alldots-test-item-purge-hooks-${randomUUID()}`);
 
     await handleTenantPurgeTask(pool, { files: join(root, "files"), mailAttachments: join(root, "mail") });
 

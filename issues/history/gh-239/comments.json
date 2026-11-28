@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631703832",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/239#issuecomment-5631703832",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/239",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631703832",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/239#issuecomment-5631703832",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/239",
     "id": 5631703832,
     "node_id": "IC_kwDOUFuQ4c8AAAABT6z7GA",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631703832/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631703832/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632273432",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/239#issuecomment-5632273432",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/239",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632273432",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/239#issuecomment-5632273432",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/239",
     "id": 5632273432,
     "node_id": "IC_kwDOUFuQ4c8AAAABT7WsGA",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-11T09:16:15Z",
     "updated_at": "2026-09-11T09:16:15Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #377\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-239-generic-rest-02-09-mount-named-custom-thr_gzk8zqd7kz` pushed to origin.\n\n## Summary\n\nImplements issue #239: extends `ModuleManifest` with an optional `customRoutes` array so a module can declare a named custom route (name, HTTP method, `/api` path, handler export, justification). `ModuleRegistry` fail-fasts on duplicate method+path registration, identifying both owning modules, and rejects any entry missing a `transactional-semantics`/`single-consumer-read` justification.\n\n`semprec-api` mounts these routes at startup via `mountCustomRoutes`, built on the #238 REST adapter (shared auth, validation, status mapping, `{error:{code,details}}` error contract). The four existing named exceptions are now registered exclusively through this mechanism as thin handlers wrapping existing service functions, reimplementing no domain rules:\n\n- `POST /api/proposals/:id/confirm` and `GET /api/inbox-types` (owned by `inboxPipeline`)\n- `POST /api/push-subscriptions` / `POST /api/push-subscriptions/:id/revoke` and `GET /api/ai-usage` (owned by `schemaCore`)\n\nTheir previous ad hoc prefix-routed handlers in `app.ts` (`aiUsageHandler.ts`, `pushSubscriptionsHandler.ts`) were removed.\n\n`pnpm run verify` (lint, format, build, unit/integration/e2e tests) passes cleanly: 197 unit tests, 937 integration tests, 5 e2e tests, all green.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #377\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-239-generic-rest-02-09-mount-named-custom-thr_gzk8zqd7kz` pushed to origin.\n\n## Summary\n\nImplements issue #239: extends `ModuleManifest` with an optional `customRoutes` array so a module can declare a named custom route (name, HTTP method, `/api` path, handler export, justification). `ModuleRegistry` fail-fasts on duplicate method+path registration, identifying both owning modules, and rejects any entry missing a `transactional-semantics`/`single-consumer-read` justification.\n\n`alldots-api` mounts these routes at startup via `mountCustomRoutes`, built on the #238 REST adapter (shared auth, validation, status mapping, `{error:{code,details}}` error contract). The four existing named exceptions are now registered exclusively through this mechanism as thin handlers wrapping existing service functions, reimplementing no domain rules:\n\n- `POST /api/proposals/:id/confirm` and `GET /api/inbox-types` (owned by `inboxPipeline`)\n- `POST /api/push-subscriptions` / `POST /api/push-subscriptions/:id/revoke` and `GET /api/ai-usage` (owned by `schemaCore`)\n\nTheir previous ad hoc prefix-routed handlers in `app.ts` (`aiUsageHandler.ts`, `pushSubscriptionsHandler.ts`) were removed.\n\n`pnpm run verify` (lint, format, build, unit/integration/e2e tests) passes cleanly: 197 unit tests, 937 integration tests, 5 e2e tests, all green.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632273432/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632273432/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632568449",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/239#issuecomment-5632568449",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/239",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632568449",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/239#issuecomment-5632568449",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/239",
     "id": 5632568449,
     "node_id": "IC_kwDOUFuQ4c8AAAABT7osgQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-11T09:42:05Z",
     "updated_at": "2026-09-11T09:42:05Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #377\n\nTokens: 0 · Cost: $0.0000\n\nWorking tree was already clean (nothing new to commit). Pushed the new commit to the existing branch `bb/relay-239-generic-rest-02-09-mount-named-custom-thr_gzk8zqd7kz`, which already has PR #377 open.\n\nThis push addresses both medium-severity findings from the PR #377 code review:\n- Added `docs/adr/2026-09-11-module-manifest-custom-routes.md` documenting the custom-route-manifest architectural decision.\n- Removed the unused `ModuleRegistry.getCustomRoutes()` / `ModuleCustomRouteProjection` (scope creep — `semprec-api` only ever used `getCustomRouteDefinitions()`).\n\nFull `pnpm run verify` passed (197 unit tests, 937 integration tests, 5 e2e tests, all green) before pushing.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #377\n\nTokens: 0 · Cost: $0.0000\n\nWorking tree was already clean (nothing new to commit). Pushed the new commit to the existing branch `bb/relay-239-generic-rest-02-09-mount-named-custom-thr_gzk8zqd7kz`, which already has PR #377 open.\n\nThis push addresses both medium-severity findings from the PR #377 code review:\n- Added `docs/adr/2026-09-11-module-manifest-custom-routes.md` documenting the custom-route-manifest architectural decision.\n- Removed the unused `ModuleRegistry.getCustomRoutes()` / `ModuleCustomRouteProjection` (scope creep — `alldots-api` only ever used `getCustomRouteDefinitions()`).\n\nFull `pnpm run verify` passed (197 unit tests, 937 integration tests, 5 e2e tests, all green) before pushing.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632568449/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632568449/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632730370",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/239#issuecomment-5632730370",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/239",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632730370",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/239#issuecomment-5632730370",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/239",
     "id": 5632730370,
     "node_id": "IC_kwDOUFuQ4c8AAAABT7ylAg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5632730370/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5632730370/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

@@ -4,8 +4,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Notification, Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@alldots/queue";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -45,7 +45,7 @@ import { findOrphanedOwnerProcessIds } from "../../manifest/moduleRegistryDriftC
 import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 
 /**
- * Production writes go through the choke point or the mail writers on a `semprec_data` pool, so RLS applies.
+ * Production writes go through the choke point or the mail writers on a `alldots_data` pool, so RLS applies.
  * Recompute and sweep run through the production handlers drained with `runOnce`, except where a case needs a
  * different clock and calls the job entry point with that `now`.
  */
@@ -391,7 +391,7 @@ async function createTranscriptWithSpeaker(
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(pool);
   const full = createCoreTaskList(pool, createActionRegistry());
   const recompute = full[CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE];

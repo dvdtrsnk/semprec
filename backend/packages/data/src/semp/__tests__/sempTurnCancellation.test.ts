@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
@@ -78,7 +78,7 @@ describe("the Semp turn cancel request", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     tenantA = await createTestTenant(admin);
     tenantB = await createTestTenant(admin);
     for (const tenantId of [tenantA, tenantB]) {

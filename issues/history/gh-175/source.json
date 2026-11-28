@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/175",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/175",
   "id": 5289607596,
   "node_id": "I_kwDOUFuQ4c8AAAABO0kBrA",
   "number": 175,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/172",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/172",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #174\n\n## Context\n\nThis issue builds on #174; #244 is the next sequential slice of the `operations` batch.\n\n## Task\n\nDefine root:root 0600 `/opt/semprec/shared/.env` plus apns-key.p8. Commit a values-free example for master/setup/VAPID/APNs/provider/OAuth/distinct DB+MinIO/restic/healthchecks values. Distribute through EnvironmentFile and Docker env_file. Keep external_credentials encrypted and separate; copy no secrets into releases/logs/backups.\n\n## Scope\n\n### In scope\n\n- Task deliverables, migrations, integration, tests, and necessary documentation.\n\n### Out of scope\n\n- No OpenBao/vault or rotation automation.\n\n## Acceptance criteria\n\n- Exact ownership/mode and idempotent preservation of operator values.\n- Every required key is documented without value.\n- All consumers load shared env and releases contain none.\n- Runtime credentials remain separate/encrypted.\n",
+  "body": "**Blocked by:** #174\n\n## Context\n\nThis issue builds on #174; #244 is the next sequential slice of the `operations` batch.\n\n## Task\n\nDefine root:root 0600 `/opt/alldots/shared/.env` plus apns-key.p8. Commit a values-free example for master/setup/VAPID/APNs/provider/OAuth/distinct DB+MinIO/restic/healthchecks values. Distribute through EnvironmentFile and Docker env_file. Keep external_credentials encrypted and separate; copy no secrets into releases/logs/backups.\n\n## Scope\n\n### In scope\n\n- Task deliverables, migrations, integration, tests, and necessary documentation.\n\n### Out of scope\n\n- No OpenBao/vault or rotation automation.\n\n## Acceptance criteria\n\n- Exact ownership/mode and idempotent preservation of operator values.\n- Every required key is documented without value.\n- All consumers load shared env and releases contain none.\n- Runtime credentials remain separate/encrypted.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/175/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/175/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

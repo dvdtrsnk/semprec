@@ -1,5 +1,5 @@
 import { EMAILS_MODULE_ID } from "./emailModuleKeys.js";
-import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
+import type { ModuleDatabaseDescriptor, ModuleManifest } from "@alldots/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "./systemDatabasesEditorSchemas.js";

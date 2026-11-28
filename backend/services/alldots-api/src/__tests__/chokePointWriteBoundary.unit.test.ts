@@ -1,0 +1,301 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { checkModuleBoundaries } from "@alldots/module-boundaries";
+import { ROUTE_MATRIX, type RouteMatrixEntry } from "../routeMatrix.js";
+
+const backendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+
+/**
+ * Every `surface: "api"` route in `routeMatrix.ts` mapped to its owning source file, mirroring `app.ts`'s dispatch
+ * table and the manifests' `customRoutes`. A route without an entry fails the "every route is mapped" test.
+ */
+const ROUTE_HANDLER_FILES: Record<string, string> = {
+  "project guidance read": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
+  "project guidance save": "packages/data/src/projectAgentGuidance/projectAgentGuidanceRouteHandlers.ts",
+  "project guidance drift read": "packages/data/src/guidanceDrift/guidanceDriftFindingsRouteHandlers.ts",
+  "guidance drift resolve": "packages/data/src/guidanceDrift/guidanceDriftFindingsRouteHandlers.ts",
+  "semp thread detail": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp thread create message": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp thread send message": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp thread messages": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp thread list": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp message speech": "services/alldots-api/src/sempSpeechHandler.ts",
+  "semp message retry": "services/alldots-api/src/sempThreadsHandler.ts",
+  "semp message regenerate": "services/alldots-api/src/sempThreadsHandler.ts",
+  "server identity": "services/alldots-api/src/serverInfoHandler.ts",
+  "shallow health check": "services/alldots-api/src/healthzHandler.ts",
+  login: "services/alldots-api/src/authHandler.ts",
+  "password-reset request": "services/alldots-api/src/authHandler.ts",
+  "password-reset consume": "services/alldots-api/src/authHandler.ts",
+  logout: "services/alldots-api/src/authHandler.ts",
+  "list sessions": "services/alldots-api/src/authHandler.ts",
+  "revoke session": "services/alldots-api/src/authHandler.ts",
+  "revoke other sessions": "services/alldots-api/src/authHandler.ts",
+  "set self person": "services/alldots-api/src/authHandler.ts",
+  "current session": "services/alldots-api/src/authHandler.ts",
+  "change password": "services/alldots-api/src/authHandler.ts",
+  "first-account setup (API)": "services/alldots-api/src/setupHandler.ts",
+  "accept invitation": "services/alldots-api/src/invitationHandler.ts",
+  "schema projection": "services/alldots-api/src/schemaHandler.ts",
+  "approval queue": "services/alldots-api/src/approvalRequestsHandler.ts",
+  "approval decision": "services/alldots-api/src/approvalRequestsHandler.ts",
+  "approval request detail": "services/alldots-api/src/approvalRequestsHandler.ts",
+  "approval request count": "services/alldots-api/src/approvalRequestsHandler.ts",
+  "mcp json-rpc endpoint": "services/alldots-api/src/mcp/mcpHandler.ts",
+  "list agent runs": "packages/data/src/agentRuns/agentRunsListRouteHandler.ts",
+  "agent run detail": "services/alldots-api/src/agentRunHandler.ts",
+  "agent run steps": "services/alldots-api/src/agentRunHandler.ts",
+  "mint mcp run credential": "services/alldots-api/src/agentRunHandler.ts",
+  "retry agent run": "services/alldots-api/src/agentRunHandler.ts",
+  "unread notifications": "services/alldots-api/src/notificationsHandler.ts",
+  "resolved notifications": "services/alldots-api/src/notificationsHandler.ts",
+  "visit notification": "services/alldots-api/src/notificationsHandler.ts",
+  "mark all notifications read": "services/alldots-api/src/notificationsHandler.ts",
+  "get notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
+  "patch notification preferences": "packages/data/src/notifications/notificationPreferencesRoutes.ts",
+  "trigger heartbeat": "packages/data/src/scheduler/triggerHeartbeatRoute.ts",
+  "set heartbeat enabled": "packages/data/src/scheduler/setHeartbeatEnabledRoute.ts",
+  "project heartbeats": "packages/data/src/scheduler/projectHeartbeatsRoute.ts",
+  "project agent summary": "packages/data/src/mcp/projectAgentSummaryRouteHandler.ts",
+  "project mcp grants": "services/alldots-api/src/mcpAgentPageHandler.ts",
+  "project mcp grant toggle": "services/alldots-api/src/mcpAgentPageHandler.ts",
+  "mcp tool registration reclassify": "services/alldots-api/src/mcpAgentPageHandler.ts",
+  "mcp server sync": "services/alldots-api/src/mcpAgentPageHandler.ts",
+  "project database grants": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
+  "project database grant set": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
+  "confirm proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "reject proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "reopen proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "revise proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "update proposal values": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "reset proposal overrides": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "recompute proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "list proposal options": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "inbox types": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "inbox cards": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "inbox cards count": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "change inbox item type": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "capture inbox item": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "item origin": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "badge counts": "packages/data/src/notifications/badgeCountsRoute.ts",
+  "journal period read": "packages/data/src/journal/journalRouteHandlers.ts",
+  "journal period ensure": "packages/data/src/journal/journalRouteHandlers.ts",
+  "create transcription": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcription rerun": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript list": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript delete": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript detail": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript speakers": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript summaries": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript action item state": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "register push subscription": "packages/data/src/push/pushRouteHandlers.ts",
+  "revoke push subscription": "packages/data/src/push/pushRouteHandlers.ts",
+  "ai usage report": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
+  "ai usage summary": "packages/data/src/aiGateway/aiUsageRouteHandler.ts",
+  "system health report": "packages/data/src/observability/systemHealthRouteHandler.ts",
+  "semp status": "packages/data/src/semp/sempStatusRouteHandler.ts",
+  "semp status summary": "packages/data/src/semp/sempStatusRouteHandler.ts",
+  "request account export": "services/alldots-api/src/accountHandler.ts",
+  "list account exports": "services/alldots-api/src/accountHandler.ts",
+  "account summary": "services/alldots-api/src/accountHandler.ts",
+  "download account export": "services/alldots-api/src/accountHandler.ts",
+  "delete own account": "services/alldots-api/src/accountHandler.ts",
+  "update profile": "services/alldots-api/src/accountHandler.ts",
+  "admin account list": "services/alldots-api/src/adminHandler.ts",
+  "admin operations health": "services/alldots-api/src/adminHandler.ts",
+  "admin ai budgets": "services/alldots-api/src/adminHandler.ts",
+  "admin set ai budget": "services/alldots-api/src/adminHandler.ts",
+  "admin suspend account": "services/alldots-api/src/adminHandler.ts",
+  "admin reactivate account": "services/alldots-api/src/adminHandler.ts",
+  "admin delete account": "services/alldots-api/src/adminHandler.ts",
+  "admin change account role": "services/alldots-api/src/adminHandler.ts",
+  "admin create invite": "services/alldots-api/src/adminHandler.ts",
+  "admin list invites": "services/alldots-api/src/adminHandler.ts",
+  "admin revoke invite": "services/alldots-api/src/adminHandler.ts",
+  "list databases": "services/alldots-api/src/databasesHandler.ts",
+  "create database": "services/alldots-api/src/databasesHandler.ts",
+  "database detail": "services/alldots-api/src/databasesHandler.ts",
+  "rename database": "services/alldots-api/src/databasesHandler.ts",
+  "archive database": "services/alldots-api/src/databasesHandler.ts",
+  "restore database": "services/alldots-api/src/databasesHandler.ts",
+  "property catalog": "services/alldots-api/src/databasesHandler.ts",
+  "create property": "services/alldots-api/src/databasesHandler.ts",
+  "property list": "services/alldots-api/src/propertiesHandler.ts",
+  "property detail": "services/alldots-api/src/propertiesHandler.ts",
+  "update property": "services/alldots-api/src/propertiesHandler.ts",
+  "delete property": "services/alldots-api/src/propertiesHandler.ts",
+  "add property option": "services/alldots-api/src/propertiesHandler.ts",
+  "update property option": "services/alldots-api/src/propertiesHandler.ts",
+  "remove property option": "services/alldots-api/src/propertiesHandler.ts",
+  "list views": "services/alldots-api/src/viewsHandler.ts",
+  "view detail": "services/alldots-api/src/viewsHandler.ts",
+  "create view": "services/alldots-api/src/viewsHandler.ts",
+  "patch view": "services/alldots-api/src/viewsHandler.ts",
+  "delete view": "services/alldots-api/src/viewsHandler.ts",
+  "add/reposition curated view item": "services/alldots-api/src/viewsHandler.ts",
+  "reorder curated view item": "services/alldots-api/src/viewsHandler.ts",
+  "remove curated view item": "services/alldots-api/src/viewsHandler.ts",
+  "create item": "services/alldots-api/src/itemsHandler.ts",
+  "item detail": "services/alldots-api/src/itemsHandler.ts",
+  "patch item": "services/alldots-api/src/itemsHandler.ts",
+  "delete item": "services/alldots-api/src/itemsHandler.ts",
+  "restore item": "services/alldots-api/src/itemsHandler.ts",
+  "query database": "services/alldots-api/src/itemsHandler.ts",
+  "unlink value": "services/alldots-api/src/itemsHandler.ts",
+  "relink value": "services/alldots-api/src/itemsHandler.ts",
+  "set relation": "services/alldots-api/src/itemsHandler.ts",
+  "create/replace relation": "services/alldots-api/src/itemsHandler.ts",
+  "delete relation": "services/alldots-api/src/itemsHandler.ts",
+  "list relations": "services/alldots-api/src/itemsHandler.ts",
+  "list related collections": "services/alldots-api/src/itemsHandler.ts",
+  "item delete impact": "services/alldots-api/src/itemsHandler.ts",
+  "ensure page": "services/alldots-api/src/itemsHandler.ts",
+  "get page": "services/alldots-api/src/itemsHandler.ts",
+  "read page markdown": "services/alldots-api/src/pageMarkdownHandler.ts",
+  "replace page markdown": "services/alldots-api/src/pageMarkdownHandler.ts",
+  "insert page markdown": "services/alldots-api/src/pageMarkdownHandler.ts",
+  "list page changes": "services/alldots-api/src/pageChangesHandler.ts",
+  "create subpage": "services/alldots-api/src/itemsHandler.ts",
+  "restore page version": "services/alldots-api/src/itemsHandler.ts",
+  "count items": "services/alldots-api/src/itemsHandler.ts",
+  "duplicate page": "services/alldots-api/src/itemsHandler.ts",
+  "rename page": "services/alldots-api/src/itemsHandler.ts",
+  "convert page block": "services/alldots-api/src/itemsHandler.ts",
+  "database facets": "services/alldots-api/src/itemsHandler.ts",
+  "query view": "services/alldots-api/src/viewsHandler.ts",
+  "recording upload": "services/alldots-api/src/recordingsHandler.ts",
+  "upload file": "services/alldots-api/src/filesHandler.ts",
+  "upload blob": "services/alldots-api/src/blobUploadHandler.ts",
+  "download blob": "services/alldots-api/src/blobsHandler.ts",
+  "mail autonomous send projects": "packages/data/src/mail/mailAutonomousSendRouteHandlers.ts",
+  "mail contacts": "packages/data/src/mail/mailContactsRoute.ts",
+  "mail threads": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread detail": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread read": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread task create": "packages/data/src/mail/mailThreadTaskRouteHandlers.ts",
+  "mail thread flag": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread archive": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread trash": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread restore": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail draft create": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft read": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft update": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft discard": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft send": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft attachment add": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mail draft attachment remove": "packages/data/src/mail/mailDraftRouteHandlers.ts",
+  "mailbox list": "packages/data/src/mail/mailboxRouteHandlers.ts",
+  "mailbox detail": "packages/data/src/mail/mailboxRouteHandlers.ts",
+  "mailbox password connect": "packages/data/src/mail/mailboxPasswordRouteHandlers.ts",
+  "mailbox password replace": "packages/data/src/mail/mailboxPasswordRouteHandlers.ts",
+  "mailbox removal impact": "packages/data/src/mail/mailboxRemovalImpact.ts",
+  "mailbox removal": "packages/data/src/mail/mailboxRemoval.ts",
+  "Microsoft Graph mail webhook": "services/alldots-api/src/graphWebhookHandler.ts",
+  "mail oauth start": "packages/data/src/mail/mailOauthRouteHandlers.ts",
+  "mail oauth complete": "packages/data/src/mail/mailOauthRouteHandlers.ts",
+  "mail oauth callback": "services/alldots-api/src/mailOauthCallbackHandler.ts",
+  "mail summary": "packages/data/src/mail/mailSummary.ts",
+  "mailbox folder list": "packages/data/src/mail/mailFolderList.ts",
+  "mailbox reauthorize": "packages/data/src/mail/mailOauthRouteHandlers.ts",
+  "mail thread facets": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail thread changes": "packages/data/src/mail/mailThreadRoutes.ts",
+  "mail message content": "packages/data/src/mail/mailMessageContent.ts",
+  "mail search": "packages/data/src/mail/mailRemoteSearch.ts",
+  "mail attachment save": "packages/data/src/mail/mailAttachmentSave.ts",
+  "project mail signals read": "packages/data/src/mail/projectMailSignalsRoutes.ts",
+  "project mail signals replace": "packages/data/src/mail/projectMailSignalsRoutes.ts",
+  "project mail signals preview": "packages/data/src/mail/projectMailSignalsRoutes.ts",
+  "project mail signals apply": "packages/data/src/mail/projectMailSignalsRoutes.ts",
+  "mail history claim": "packages/data/src/mail/mailHistoryUpload.ts",
+  "mail history release": "packages/data/src/mail/mailHistoryUpload.ts",
+  "mail history upload": "packages/data/src/mail/mailHistoryUpload.ts",
+  "task recurrence set": "packages/data/src/tasks/taskRecurrenceRoutes.ts",
+  "task series edit": "packages/data/src/tasks/taskSeriesRoutes.ts",
+  "task recurrence clear": "packages/data/src/tasks/taskRecurrenceRoutes.ts",
+  "calendar timeline": "packages/data/src/calendar/timelineRouteHandler.ts",
+  "calendar agenda": "packages/data/src/calendar/agendaRouteHandler.ts",
+  "calendar item duplicate": "packages/data/src/calendar/duplicateCalendarItemRouteHandler.ts",
+  "calendar cancellation impact": "packages/data/src/calendar/cancellationImpactRouteHandler.ts",
+  "calendar invitation respond": "packages/data/src/calendar/invitationRouteHandlers.ts",
+  "calendar account sync": "packages/data/src/calendar/sync/calendarAccountSyncJob.ts",
+  "Google Calendar webhook": "services/alldots-api/src/calendarWebhookHandlers.ts",
+  "Microsoft Graph calendar webhook": "services/alldots-api/src/calendarWebhookHandlers.ts",
+  "calendar reminders": "packages/data/src/calendar/remindersFeedRouteHandler.ts",
+  "event occurrence materialize": "packages/data/src/calendar/eventOccurrenceRouteHandlers.ts",
+  "task occurrence materialize": "packages/data/src/tasks/taskOccurrenceRoutes.ts",
+  "task host event put": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "task complete in event": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "task host event remove": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "task host events clear": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
+  "event people": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
+  "event people replace": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
+  "event person invite": "packages/data/src/calendar/eventParticipantsRouteHandlers.ts",
+  "event tasks": "packages/data/src/tasks/eventTasksRouteHandler.ts",
+  "transcript action item task create": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript action item task remove": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "event transcript action items": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript speaker assign": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "transcript speaker candidates": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
+  "library automation retry": "packages/data/src/library/libraryAutomationRouteHandlers.ts",
+  "library cover candidates list": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
+  "library cover candidates refresh": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
+  "library cover candidate select": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
+  "sleep nights": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "sleep night put": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "overview summary": "packages/data/src/overview/overviewRouteHandler.ts",
+  "global search": "services/alldots-api/src/searchHandler.ts",
+  "list trash items": "packages/data/src/trash/trashRouteHandlers.ts",
+  "list trash databases": "packages/data/src/trash/trashRouteHandlers.ts",
+  "restore trash": "packages/data/src/trash/trashRouteHandlers.ts",
+};
+
+const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");
+
+/**
+ * Runs dependency-cruiser's `no-core-table-write-outside-choke-point` rule against the real handler, choke-point and
+ * module-registry source, so a route handler that imports the write-capable stores directly fails here.
+ */
+describe("choke-point write boundary for route handlers (issue #154)", () => {
+  it("maps every registered api route to the handler file that owns it", () => {
+    for (const route of apiRoutes) {
+      expect(ROUTE_HANDLER_FILES[route.name], `no handler mapping for route "${route.name}"`).toBeDefined();
+    }
+    expect(Object.keys(ROUTE_HANDLER_FILES).sort()).toEqual(apiRoutes.map((route) => route.name).sort());
+  });
+
+  it("keeps every handler reachable from this service's dispatcher free of direct core-table writes", async () => {
+    const { violations, scannedFiles } = await checkModuleBoundaries(backendRoot, [
+      "services/alldots-api",
+      "packages/data",
+      "packages/module-registry",
+    ]);
+
+    // The scan must have reached each handler file, or an unmapped handler would pass vacuously.
+    for (const route of apiRoutes) {
+      const handlerFile = ROUTE_HANDLER_FILES[route.name];
+      expect(scannedFiles, `handler for route "${route.name}" (${handlerFile}) was not scanned`).toContain(handlerFile);
+    }
+
+    const writeBoundaryViolations = violations.filter((violation) =>
+      violation.rules.includes("no-core-table-write-outside-choke-point"),
+    );
+
+    for (const route of apiRoutes) {
+      const handlerFile = ROUTE_HANDLER_FILES[route.name];
+      const routeViolations = writeBoundaryViolations.filter((violation) => violation.importer === handlerFile);
+      expect(routeViolations, `route "${route.name}" (${handlerFile}) writes a core table directly`).toEqual([]);
+    }
+
+    expect(writeBoundaryViolations).toEqual([]);
+  }, 90_000);
+
+  it("does not itself flag the choke-point package's own writes to items/databases/properties", async () => {
+    const { violations } = await checkModuleBoundaries(backendRoot, ["packages/data"]);
+    const writeBoundaryViolations = violations.filter((violation) =>
+      violation.rules.includes("no-core-table-write-outside-choke-point"),
+    );
+
+    expect(writeBoundaryViolations).toEqual([]);
+  }, 90_000);
+});

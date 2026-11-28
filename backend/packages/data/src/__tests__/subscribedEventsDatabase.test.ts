@@ -2,8 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { loadModuleCatalogs } from "@semprec/module-registry";
-import { runInTenant } from "@semprec/shared";
+import { loadModuleCatalogs } from "@alldots/module-registry";
+import { runInTenant } from "@alldots/shared";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -90,7 +90,7 @@ async function propertiesOf(databaseIdValue: string) {
 describe("subscribedEvents system database (issue gh-1962)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

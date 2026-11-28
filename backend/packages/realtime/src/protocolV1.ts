@@ -1,6 +1,6 @@
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
-import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
+import type { AgentRunEventRow, NotificationRow } from "@alldots/data";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

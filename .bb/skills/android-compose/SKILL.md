@@ -1,6 +1,6 @@
 ---
 name: android-compose
-description: "How the Android app under mobile/android is written - a wiring XScreen and a stateless XScreenLayout over the shared ViewModel, StatusView for loading, empty and failure, copy from the module's strings.xml in en and cs, tags from the per-module *TestTags objects, private previews, and the lint, detekt and device checks. Load this BEFORE writing or changing a composable, a string resource, a test tag or an Android build file. Triggers on: mobile/android/, @Composable, *Screen.kt, *ScreenLayout.kt, collectAsStateWithLifecycle, CollectEffects, koinViewModel, @Preview, LazyColumn, Modifier.testTag, testTagsAsResourceId, StatusTestTags, HomeTestTags, SettingsTestTags, AppTestTags, StatusView, failureMessage, AppTheme, stringResource, R.string, values/strings.xml, values-cs/strings.xml, semprec.android.compose, semprec.android.application, androidUnitTest, lintDebug, connectedDebugAndroidTest, SmokeFlowTest. Skip only when nothing under mobile/android/ changes."
+description: "How the Android app under mobile/android is written - a wiring XScreen and a stateless XScreenLayout over the shared ViewModel, StatusView for loading, empty and failure, copy from the module's strings.xml in en and cs, tags from the per-module *TestTags objects, private previews, and the lint, detekt and device checks. Load this BEFORE writing or changing a composable, a string resource, a test tag or an Android build file. Triggers on: mobile/android/, @Composable, *Screen.kt, *ScreenLayout.kt, collectAsStateWithLifecycle, CollectEffects, koinViewModel, @Preview, LazyColumn, Modifier.testTag, testTagsAsResourceId, StatusTestTags, HomeTestTags, SettingsTestTags, AppTestTags, StatusView, failureMessage, AppTheme, stringResource, R.string, values/strings.xml, values-cs/strings.xml, alldots.android.compose, alldots.android.application, androidUnitTest, lintDebug, connectedDebugAndroidTest, SmokeFlowTest. Skip only when nothing under mobile/android/ changes."
 ---
 
 # Compose renders the shared state. It decides nothing.
@@ -15,9 +15,9 @@ This skill is the Compose side of a screen.
 
 | Gradle module | Kotlin package | Holds |
 |---|---|---|
-| `:android:core:ui` | `cz.semprec.app.core.ui` | `AppTheme`, `StatusView` with `Status`, `StatusTestTags`, `CollectEffects`, the `state_*` strings |
-| `:android:feature:home`, `:android:feature:settings` | `cz.semprec.app.feature.<name>` | the router contract and its effect mapping, `<Name>TestTags`, `presentation/screen/<dir>/`, `presentation/components/`, the feature's strings |
-| `:android:app` | `cz.semprec.app` (`.navigation`, `.components`) | `MainActivity`, `SemprecApplication`, Koin `appModule`, `AppScene`, the type-safe routes (`AppRoutes.kt`), the tab hosts, the bottom bar, `AboutSheet`, `SceneNavigation` |
+| `:android:core:ui` | `cz.alldots.app.core.ui` | `AppTheme`, `StatusView` with `Status`, `StatusTestTags`, `CollectEffects`, the `state_*` strings |
+| `:android:feature:home`, `:android:feature:settings` | `cz.alldots.app.feature.<name>` | the router contract and its effect mapping, `<Name>TestTags`, `presentation/screen/<dir>/`, `presentation/components/`, the feature's strings |
+| `:android:app` | `cz.alldots.app` (`.navigation`, `.components`) | `MainActivity`, `AlldotsApplication`, Koin `appModule`, `AppScene`, the type-safe routes (`AppRoutes.kt`), the tab hosts, the bottom bar, `AboutSheet`, `SceneNavigation` |
 
 A feature's project dependencies are `:android:core:ui` and
 `:shared:presentation`. It never depends on another feature, on Koin or on a
@@ -31,9 +31,9 @@ navigation stack or the dependency container can no longer be composed
 differently by the app (`mobile-navigation`).
 
 A library's generated `R` class is not in its Kotlin package: its namespace is
-`cz.semprec.app` plus the Gradle path, so code in `cz.semprec.app.feature.home`
-imports `cz.semprec.app.android.feature.home.R`. The app's is
-`cz.semprec.app.R`.
+`cz.alldots.app` plus the Gradle path, so code in `cz.alldots.app.feature.home`
+imports `cz.alldots.app.android.feature.home.R`. The app's is
+`cz.alldots.app.R`.
 
 ## 2. XScreen wires, XScreenLayout renders
 
@@ -100,7 +100,7 @@ keys of both platforms (`COPY-PARITY`).
 - Previews are `private` `@Preview` functions in the layout's file, wrapped in
   `AppTheme { }`, with literal state (`HomeState(HomePhase.EMPTY)`). Cover each
   phase the layout branches on that a reviewer would want to see.
-- The `semprec.android.compose` and `semprec.android.application` plugins add
+- The `alldots.android.compose` and `alldots.android.application` plugins add
   the preview tooling (`addComposePreviewTooling()` in
   `mobile/build-logic/src/main/kotlin/ComposeConfiguration.kt`), and detekt's
   `UnusedPrivateMember` ignores members annotated `@Preview`
@@ -117,9 +117,9 @@ keys of both platforms (`COPY-PARITY`).
 
 ## 5. Build configuration
 
-- Library modules apply `id("semprec.android.compose")` (Compose) or
-  `id("semprec.android.library")`; the app applies
-  `id("semprec.android.application")`. The plugins read SDK levels and identity
+- Library modules apply `id("alldots.android.compose")` (Compose) or
+  `id("alldots.android.library")`; the app applies
+  `id("alldots.android.application")`. The plugins read SDK levels and identity
   from `mobile/gradle/project.properties`. Do not set them per module.
 - `mobile/android/app/build.gradle.kts` holds what only the app has: the
   `debug` (`applicationIdSuffix = ".debug"`) and `release` (R8 with
@@ -127,7 +127,7 @@ keys of both platforms (`COPY-PARITY`).
   `lint { checkDependencies = true; warningsAsErrors = true }`. One
   `:android:app:lintDebug` therefore checks every Android module, and a missing
   Czech string or an unused resource fails it.
-- `semprec.android.application` also applies Kotlin's serialization plugin
+- `alldots.android.application` also applies Kotlin's serialization plugin
   (`org.jetbrains.kotlin.plugin.serialization`, through
   `mobile/build-logic/build.gradle.kts`), and the app depends on
   `kotlinx-serialization-core`: the type-safe navigation routes in

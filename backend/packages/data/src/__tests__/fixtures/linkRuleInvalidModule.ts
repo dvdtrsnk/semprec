@@ -1,4 +1,4 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 
 export const manifest: ModuleManifest = {
   id: "fixtureLinkRuleInvalid",

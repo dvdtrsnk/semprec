@@ -155,7 +155,7 @@ describe("heartbeat.list / heartbeat.history / heartbeat.trigger agent tools", (
         projectItemId: PROJECT_A,
         name: "Inbox tick (create)",
         rule: { kind: "onItemEvent", databaseId: watched.id, event: "create" },
-        actionId: "semprec.tick",
+        actionId: "alldots.tick",
       }),
     );
     const eventRun = await createAgentRun(pool, {

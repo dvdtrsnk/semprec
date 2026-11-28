@@ -331,7 +331,7 @@ export async function getGatewaySpend(client: Pool | PoolClient, timezone: strin
 }
 
 /**
- * All-tenant spend in UTC via `ai_global_spend()`, a `semprec_router` function that bypasses RLS
+ * All-tenant spend in UTC via `ai_global_spend()`, a `alldots_router` function that bypasses RLS
  * and exposes only these two sums.
  */
 export async function getGlobalGatewaySpend(client: Queryable): Promise<GatewaySpend> {

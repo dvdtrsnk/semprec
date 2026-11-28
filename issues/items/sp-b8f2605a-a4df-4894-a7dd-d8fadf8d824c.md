@@ -13,7 +13,7 @@ createdAt: "2026-11-27T23:25:27.971Z"
 updatedAt: "2026-11-27T23:38:02.085Z"
 closedAt: "2026-11-27T23:38:02.085Z"
 source: null
-approval: {"specSha256":"525b6497daf76a3650fc0c42c9c086b85a41286206cf22cf973e8cb770276af4","source":"repository","actor":"david","at":"2026-11-27T23:25:29.608Z"}
+approval: {"specSha256":"e1d12092b2cc8e466e30b11fa6a0a7df0e4d94e4dc072d6c92f5ff8ee4b68fc9","source":"repository","actor":"david","at":"2026-11-27T23:25:29.608Z"}
 resolution: {"pullRequests":[],"commit":"11aab97b1fe6cac6537e30c67c982b5c08617f9a","at":"2026-11-27T23:38:02.085Z"}
 ---
 **Blocked by:** none
@@ -23,7 +23,7 @@ resolution: {"pullRequests":[],"commit":"11aab97b1fe6cac6537e30c67c982b5c08617f9
 
 Model tier rationale: An intermittent CI failure in a tenant isolation suite needs its cause found in time-dependent heartbeat scheduling, without weakening the isolation assertion.
 
-`backend/services/semprec-api/src/__tests__/tenantIsolationJobs.test.ts:2710` ("system tasks … one run does each tenant's work in that tenant only") failed in the develop push CI after #2114. The bystander tenant's fingerprint gained one `heartbeat_occurrences` row while the system job under test ran. A heartbeat that falls due by wall-clock time can therefore write into a tenant the case treats as untouched.
+`backend/services/alldots-api/src/__tests__/tenantIsolationJobs.test.ts:2710` ("system tasks … one run does each tenant's work in that tenant only") failed in the develop push CI after #2114. The bystander tenant's fingerprint gained one `heartbeat_occurrences` row while the system job under test ran. A heartbeat that falls due by wall-clock time can therefore write into a tenant the case treats as untouched.
 
 ## Task
 
@@ -33,7 +33,7 @@ Model tier rationale: An intermittent CI failure in a tenant isolation suite nee
 
 ## Touches
 
-- backend/services/semprec-api/src/__tests__/tenantIsolationJobs.test.ts
+- backend/services/alldots-api/src/__tests__/tenantIsolationJobs.test.ts
 - heartbeat scheduling code, only if the cause lies there
 
 ## Scope

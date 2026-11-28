@@ -15,7 +15,7 @@ every collection one schema-driven screen configured by a `CollectionTarget`, on
 area" through the area filter template the server declares, and it lists `area` among the relation keys that
 describe where an item belongs.
 
-Areas are removed from Semprec (repository issue `sp-7ff00d8e-6c3e-49f2-b5a8-89ca1157e807`): the owner found the
+Areas are removed from Alldots (repository issue `sp-7ff00d8e-6c3e-49f2-b5a8-89ca1157e807`): the owner found the
 layer hard to understand and manage, and projects are organized by tags instead. The projects collection needs a bar
 of tag chips above its list. Turning that bar on with a check of the database key in the app would be the
 per-database code the collection engine exists to avoid.

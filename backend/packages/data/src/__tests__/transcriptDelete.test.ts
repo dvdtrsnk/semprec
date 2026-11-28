@@ -1,5 +1,5 @@
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -37,7 +37,7 @@ interface RowState {
 describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify transcript delete role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -153,13 +153,13 @@ describe("DELETE /api/transcripts/:id and its restore (issue #1642)", () => {
     const client = await admin.connect();
     let primary: { error: unknown } | undefined;
     try {
-      await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [cardId]);
+      await client.query("SELECT set_config('alldots_test.fault_item', $1, false)", [cardId]);
       await client.query(`CREATE FUNCTION fail_card_update_test() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'card owner failure'; END $$`);
       await client.query(`DO $$ BEGIN EXECUTE format(
         'CREATE TRIGGER fail_card_update_test BEFORE UPDATE ON items FOR EACH ROW '
         'WHEN (NEW.id = %L::uuid) EXECUTE FUNCTION fail_card_update_test()',
-        current_setting('semprec_test.fault_item')); END $$`);
+        current_setting('alldots_test.fault_item')); END $$`);
       await run();
     } catch (error) {
       primary = { error };

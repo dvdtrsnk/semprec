@@ -193,7 +193,7 @@ describe("agentRuns invalidations (issue #1863)", () => {
       passwordHash: "unused",
       tenantId: tenantB,
     });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const runOfA = await withTenantTransaction(runtime, tenantA, (client) =>
         createAgentRun(client, { triggeredBy: "user", task: "of A" }),

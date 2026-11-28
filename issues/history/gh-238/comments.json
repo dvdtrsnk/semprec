@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5630799535",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/238#issuecomment-5630799535",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5630799535",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/238#issuecomment-5630799535",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/238",
     "id": 5630799535,
     "node_id": "IC_kwDOUFuQ4c8AAAABT58urw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5630799535/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5630799535/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631024700",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/238#issuecomment-5631024700",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631024700",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/238#issuecomment-5631024700",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/238",
     "id": 5631024700,
     "node_id": "IC_kwDOUFuQ4c8AAAABT6KePA",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-11T07:30:58Z",
     "updated_at": "2026-09-11T07:30:58Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #376\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-238-generic-rest-01-09-establish-the-sempr-thr_5eaxjabx4q` to origin.\n\n## Summary\n\nImplements issue #238: establishes the `semprec-api` REST adapter foundation — shared authentication, request validation, item envelope, and error contract — with no concrete generic resource routes mounted yet (those come in #155-158, and route manifests/mounting in #239).\n\n**Changes:**\n- `backend/packages/data/src/errors.ts`: added four `ChokePointError` subclasses for codes the error contract needs that didn't have a dedicated class yet — `SchemaLockedError`, `PropertyLockedError`, `ApprovalRequiredError`, `HeartbeatEventTriggeredError`.\n- `backend/services/semprec-api/src/adapter/itemEnvelope.ts` (new): the `{ id, databaseId, properties, computed, updatedAt, deletedAt }` wire envelope and its projection from `ItemRow`.\n- `backend/services/semprec-api/src/adapter/errorContract.ts` (new): the closed nine-code enum, the single code→status table, and `toErrorResponseBody`/`statusForError`, including the `version_conflict` → `details.currentItem` projection.\n- `backend/services/semprec-api/src/adapter/requestValidation.ts` (new): shared path/query/header/body validators that fail with `validation_failed`.\n- `backend/services/semprec-api/src/adapter/adapterRoute.ts` (new): `createAdapterRequestListener` — wraps a route handler with the shared `authenticateRequest` auth gate (no per-route opt-out), JSON body parsing, and error/envelope serialization; documents the no-URL-versioning, additive-only contract evolution rule.\n- Contract tests: `errorContract.unit.test.ts` (all nine codes → documented status/body) and `adapterRoute.test.ts` (integration — unauthenticated rejection, validation failure, successful full-envelope write, `version_conflict`/`not_found` mapping) via fixture handlers, per the issue's \"no concrete routes yet\" scope.\n\n**Test plan:**\n- [x] `pnpm run verify` in `backend/` (lint, format, build, unit/integration/e2e tests) — 82 test files, 922 tests, all passing.\n- [x] No `web/` changes, so its pipeline doesn't apply.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #376\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-238-generic-rest-01-09-establish-the-sempr-thr_5eaxjabx4q` to origin.\n\n## Summary\n\nImplements issue #238: establishes the `alldots-api` REST adapter foundation — shared authentication, request validation, item envelope, and error contract — with no concrete generic resource routes mounted yet (those come in #155-158, and route manifests/mounting in #239).\n\n**Changes:**\n- `backend/packages/data/src/errors.ts`: added four `ChokePointError` subclasses for codes the error contract needs that didn't have a dedicated class yet — `SchemaLockedError`, `PropertyLockedError`, `ApprovalRequiredError`, `HeartbeatEventTriggeredError`.\n- `backend/services/alldots-api/src/adapter/itemEnvelope.ts` (new): the `{ id, databaseId, properties, computed, updatedAt, deletedAt }` wire envelope and its projection from `ItemRow`.\n- `backend/services/alldots-api/src/adapter/errorContract.ts` (new): the closed nine-code enum, the single code→status table, and `toErrorResponseBody`/`statusForError`, including the `version_conflict` → `details.currentItem` projection.\n- `backend/services/alldots-api/src/adapter/requestValidation.ts` (new): shared path/query/header/body validators that fail with `validation_failed`.\n- `backend/services/alldots-api/src/adapter/adapterRoute.ts` (new): `createAdapterRequestListener` — wraps a route handler with the shared `authenticateRequest` auth gate (no per-route opt-out), JSON body parsing, and error/envelope serialization; documents the no-URL-versioning, additive-only contract evolution rule.\n- Contract tests: `errorContract.unit.test.ts` (all nine codes → documented status/body) and `adapterRoute.test.ts` (integration — unauthenticated rejection, validation failure, successful full-envelope write, `version_conflict`/`not_found` mapping) via fixture handlers, per the issue's \"no concrete routes yet\" scope.\n\n**Test plan:**\n- [x] `pnpm run verify` in `backend/` (lint, format, build, unit/integration/e2e tests) — 82 test files, 922 tests, all passing.\n- [x] No `web/` changes, so its pipeline doesn't apply.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631024700/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631024700/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631376275",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/238#issuecomment-5631376275",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631376275",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/238#issuecomment-5631376275",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/238",
     "id": 5631376275,
     "node_id": "IC_kwDOUFuQ4c8AAAABT6f7kw",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631376275/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631376275/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631669134",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/238#issuecomment-5631669134",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631669134",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/238#issuecomment-5631669134",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/238",
     "id": 5631669134,
     "node_id": "IC_kwDOUFuQ4c8AAAABT6xzjg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631669134/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631669134/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631690896",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/238#issuecomment-5631690896",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631690896",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/238#issuecomment-5631690896",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/238",
     "id": 5631690896,
     "node_id": "IC_kwDOUFuQ4c8AAAABT6zIkA",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5631690896/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5631690896/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

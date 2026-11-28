@@ -1,4 +1,4 @@
-import type { ModuleCatalogs, ModuleDatabaseDescriptor } from "@semprec/module-registry";
+import type { ModuleCatalogs, ModuleDatabaseDescriptor } from "@alldots/module-registry";
 import { resolveProperty, type ManifestLocale } from "../manifest/catalogResolution.js";
 import { normalizeSearchPhone } from "./phoneNormalization.js";
 import { FILES_MODULE_ID, JOURNAL_MODULE_ID, PEOPLE_MODULE_ID } from "../seed/tenDatabaseKeys.js";

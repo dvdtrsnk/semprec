@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { RISK_CLASSES, type RiskClass } from "@alldots/shared";
 
 /**
  * The runtime a module task runs under: `'agents'` only for a handler that starts or continues an
- * agent session. Mirrors `@semprec/queue`'s `TaskAffinity`, kept local to avoid that dependency.
+ * agent session. Mirrors `@alldots/queue`'s `TaskAffinity`, kept local to avoid that dependency.
  */
 export const MODULE_TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type ModuleTaskAffinity = (typeof MODULE_TASK_AFFINITIES)[number];
@@ -150,7 +150,7 @@ export const CUSTOM_ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as
 export type CustomRouteMethod = (typeof CUSTOM_ROUTE_METHODS)[number];
 
 /**
- * A custom route a module mounts into the flat `/api` namespace through the `semprec-api` REST
+ * A custom route a module mounts into the flat `/api` namespace through the `alldots-api` REST
  * adapter (shared auth, validation, status mapping and serialization). `path` is matched exactly,
  * with `:param` segments as path parameters; `handlerExport` names an export of the module file.
  */

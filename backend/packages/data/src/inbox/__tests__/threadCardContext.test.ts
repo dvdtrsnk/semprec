@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createUser } from "../../auth/usersStore.js";
 import { ingestUploadedBlob } from "../../blobs/fileUploadStore.js";
@@ -19,7 +19,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { insertInboxAttachments } from "../inboxAttachmentsStore.js";
 import { linkSourceInboxRelation } from "../inboxCardSourceLink.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createSemprecTickAction } from "../inboxTickAction.js";
+import { createAlldotsTickAction } from "../inboxTickAction.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import {
   confirmProposalWithClient,
@@ -51,7 +51,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -143,7 +143,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
       }
       const config = { processingProposalsDatabaseId: dbs.proposals.id };
       if (options.withTick !== false) {
-        const tick = createSemprecTickAction(runtime, async () => ({ properties: { name: text } }));
+        const tick = createAlldotsTickAction(runtime, async () => ({ properties: { name: text } }));
         await tick(
           {
             inboxDatabaseId: dbs.inbox.id,
@@ -252,7 +252,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
       const source = await withTransaction(runtime, (client) =>
         createInboxItemWithClient(client, { inboxDatabaseId, date: "2026-11-06", time: "12:30", text: "" }),
       );
-      const tick = createSemprecTickAction(runtime, async () => {
+      const tick = createAlldotsTickAction(runtime, async () => {
         throw new Error("Unexpected model computation");
       });
       await tick(

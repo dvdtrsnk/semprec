@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { DEFAULT_COMPACTION_THRESHOLD, handleDocCompactionSweepTask } from "../docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "../docs/docHistory.js";
 import { logger } from "../tenancy/logger.js";
@@ -70,7 +70,7 @@ describe("doc sweeps run per tenant (issue #985)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

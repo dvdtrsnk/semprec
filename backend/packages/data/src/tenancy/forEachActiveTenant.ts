@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { logger } from "./logger.js";
 
 // Process-local; only used to rotate which tenant a call starts with.

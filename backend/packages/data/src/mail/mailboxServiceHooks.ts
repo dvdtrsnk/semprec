@@ -1,7 +1,7 @@
 // The service switches of an internet account (a Mailboxes item). Switching `mailEnabled` off pauses the account's mail
 // sync and queues the removal of its mail, switching it on resumes the sync. Switching `calendarsEnabled` on queues a
 // calendar sync pass; switching it off stops the calendar sync and queues the removal of the account's calendars.
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { lockCalendarAccountSync } from "../calendar/sync/calendarAccountSyncGuard.js";
 import { startCalendarAccountSync, stopCalendarAccountSync } from "../calendar/sync/calendarAccountSyncLifecycle.js";
 import type { ItemCreateHook, ItemUpdateHook, ItemUpdatePreLockHook } from "../chokePoint/hooks.js";
@@ -42,7 +42,7 @@ type MailLiveSyncStop = (tenantId: string, mailboxItemId: string) => Promise<voi
 let liveSyncStop: MailLiveSyncStop | undefined;
 
 /**
- * Binds the stop of the process's mail live-sync root (`mailLiveSyncControl` in `semprec-api`). In a process without
+ * Binds the stop of the process's mail live-sync root (`mailLiveSyncControl` in `alldots-api`). In a process without
  * a binding the account is unhosted by the root's next discovery pass, which skips paused accounts.
  */
 export function bindMailboxServiceLiveSyncStop(stop: MailLiveSyncStop | undefined): void {

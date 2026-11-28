@@ -1,5 +1,5 @@
 import { inTenantZero } from "../../testSupport/tenantFixtures.js";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { convergeObservedEmailFlagsWithClient } from "../../chokePoint/itemWrites.js";
 import { upsertMailMessageMeta } from "../mailMessageMetaStore.js";
 import { mailAccountSyncJobKey } from "../mailSyncJob.js";

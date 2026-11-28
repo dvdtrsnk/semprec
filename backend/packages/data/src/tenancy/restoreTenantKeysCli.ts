@@ -37,11 +37,11 @@ async function readArchive(path: string): Promise<Buffer> {
 async function main(): Promise<void> {
   const [archivePath, ...extra] = process.argv.slice(2);
   const {
-    SEMPREC_RESTORE_ADMIN_URL: adminUrl,
-    SEMPREC_RESTORE_TARGET_URL: targetUrl,
-    SEMPREC_RESTORE_CONTAINER: container,
-    SEMPREC_RESTORE_RECEIPT: receiptPath,
-    SEMPREC_RESTORE_TARGET_ROLE: targetRole,
+    ALLDOTS_RESTORE_ADMIN_URL: adminUrl,
+    ALLDOTS_RESTORE_TARGET_URL: targetUrl,
+    ALLDOTS_RESTORE_CONTAINER: container,
+    ALLDOTS_RESTORE_RECEIPT: receiptPath,
+    ALLDOTS_RESTORE_TARGET_ROLE: targetRole,
   } = process.env;
   if (
     !archivePath ||
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     !targetUrl ||
     !container ||
     !receiptPath ||
-    (targetRole !== undefined && targetRole !== "semprec_restore")
+    (targetRole !== undefined && targetRole !== "alldots_restore")
   ) {
     throw new Error("Invalid offline key restore configuration");
   }

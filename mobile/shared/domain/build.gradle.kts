@@ -1,4 +1,4 @@
-plugins { id("semprec.kmp") }
+plugins { id("alldots.kmp") }
 kotlin {
     sourceSets {
         commonMain.dependencies {

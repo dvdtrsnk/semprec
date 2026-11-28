@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { NumberFilterConfigSchema, PropertyOptionLabelSchema } from "@semprec/shared";
+import { NumberFilterConfigSchema, PropertyOptionLabelSchema } from "@alldots/shared";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import {
   ConflictError,

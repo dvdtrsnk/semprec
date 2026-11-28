@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { AiGatewayFailedError, type AiGatewayCompletionInput } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayCompletionInput } from "@alldots/shared";
 import {
   attachmentExtractionSchema,
   classifyForExtraction,

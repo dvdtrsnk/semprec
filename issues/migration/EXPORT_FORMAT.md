@@ -11,7 +11,7 @@ request authorization headers, PRs as issues or unrelated repositories.
 ```json
 {
   "schemaVersion": 1,
-  "repository": "dvdtrsnk/semprec",
+  "repository": "dvdtrsnk/alldots",
   "state": "all",
   "complete": true,
   "exportedAt": "2026-10-27T12:00:00.000Z",

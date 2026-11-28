@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { getTestPool, insertItemsWithIds, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../../testSupport/tenantFixtures.js";
@@ -28,7 +28,7 @@ let tenantB: string;
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 beforeEach(async () => {

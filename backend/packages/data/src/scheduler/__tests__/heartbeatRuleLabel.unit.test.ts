@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { toManifestLocale } from "../../manifest/catalogResolution.js";
 import { formatHeartbeatRuleLabel } from "../heartbeatRuleLabel.js";
 import { lastOccurrenceStatusOf } from "../projectHeartbeatsRoute.js";

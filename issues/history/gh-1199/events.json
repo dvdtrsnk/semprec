@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6262695555",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1199#issuecomment-6262695555",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1199",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6262695555",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1199#issuecomment-6262695555",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1199",
     "id": 6262695555,
     "node_id": "IC_kwDOUFuQ4c8AAAABdUkmgw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6262695555/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6262695555/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -141,14 +141,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJTOETA",
         "number": 1228,
         "title": "[ci-stability 02/02] Keep warn-level logs out of the integration and e2e test output (#1199)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1228",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1228",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1228",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1228",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1228.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1228.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1228",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1228",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1228.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1228.patch",
           "merged_at": "2026-10-19T16:28:55Z"
         },
         "bodySha256": "b823b33e73ca6f3bb8e57258602191475a7481e1920ccc3f6414c968db87758b"
@@ -158,7 +158,7 @@
   {
     "id": 33661414500,
     "node_id": "REFE_lADOUFuQ4c8AAAABX7Cd0M8AAAAH1mBsZA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33661414500",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33661414500",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -182,14 +182,14 @@
     },
     "event": "referenced",
     "commit_id": "f16878d5b5bc1d42ec1cdad6ed38c136aade6737",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/f16878d5b5bc1d42ec1cdad6ed38c136aade6737",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/f16878d5b5bc1d42ec1cdad6ed38c136aade6737",
     "created_at": "2026-10-19T15:58:12Z",
     "performed_via_github_app": null
   },
   {
     "id": 33663660674,
     "node_id": "CE_lADOUFuQ4c8AAAABX7Cd0M8AAAAH1oKygg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33663660674",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33663660674",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -222,7 +222,7 @@
   {
     "id": 33663660695,
     "node_id": "REFE_lADOUFuQ4c8AAAABX7Cd0M8AAAAH1oKylw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33663660695",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33663660695",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -246,7 +246,7 @@
     },
     "event": "referenced",
     "commit_id": "35d087f45bd97d064a261097684660000d653e7d",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/35d087f45bd97d064a261097684660000d653e7d",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/35d087f45bd97d064a261097684660000d653e7d",
     "created_at": "2026-10-19T16:28:57Z",
     "performed_via_github_app": null
   },
@@ -282,14 +282,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJabOLA",
         "number": 1229,
         "title": "release: prepare context-complete tenant-isolation checkpoint",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1229",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1229",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1229",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1229",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1229.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1229.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1229",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1229",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1229.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1229.patch",
           "merged_at": null
         },
         "bodySha256": "0e2a5839e7ca608532fad901381fb0d0ba92e1a3d1c69622cd737eea04cd629e"

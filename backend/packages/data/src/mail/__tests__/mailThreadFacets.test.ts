@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -231,14 +231,14 @@ async function seedScenario(tenantId: string) {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runAsSystem("verify mail thread facets test role", () =>
     runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     ),
   );
   expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-facets-"));
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-facets-"));
   storage = new LocalFsBlobStorageWriter(storageRoot);
 });
 

@@ -6,8 +6,8 @@ import {
   type Task,
   type TaskAffinity,
   type TaskList,
-} from "@semprec/queue";
-import type { ModuleRegistry } from "@semprec/module-registry";
+} from "@alldots/queue";
+import type { ModuleRegistry } from "@alldots/module-registry";
 
 export const CORE_TASK_NAME_SET: ReadonlySet<string> = new Set(Object.values(CORE_TASK_NAMES));
 

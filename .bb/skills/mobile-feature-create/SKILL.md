@@ -32,7 +32,7 @@ Keep each step compiling before you start the next. `<Name>` is the feature
 - [ ] `presentation`: `<X>State` (immutable, with a `<X>Phase` when it loads),
       `<X>Action`, `<X>Effect` (or `Nothing`), and `<X>ViewModel` with an
       `internal` constructor (`shared-viewmodel` §1). One concept per file,
-      package `cz.semprec.app.presentation`.
+      package `cz.alldots.app.presentation`.
 - [ ] Its creation method in `HomeViewModelFactory` and a method on `HomeSDK`,
       the only factory and SDK today, each returning a new ViewModel per call.
 - [ ] `commonTest` for every branch, the `close()` and store-clearing cases and
@@ -59,11 +59,11 @@ Keep each step compiling before you start the next. `<Name>` is the feature
 **Android feature (`mobile/android/feature/<name>/`)**, for a new feature module
 
 - [ ] `include(":android:feature:<name>")` in `mobile/settings.gradle.kts`.
-- [ ] `build.gradle.kts` like `feature/settings`: `id("semprec.android.compose")`,
+- [ ] `build.gradle.kts` like `feature/settings`: `id("alldots.android.compose")`,
       `implementation(project(":android:core:ui"))`,
       `implementation(project(":shared:presentation"))`, the lifecycle Compose
       library, `testImplementation(libs.junit)`.
-- [ ] In `src/main/kotlin/cz/semprec/app/feature/<name>/`: `<Name>Router.kt`
+- [ ] In `src/main/kotlin/cz/alldots/app/feature/<name>/`: `<Name>Router.kt`
       (the interface and `internal fun <Name>Router.handle(effect)`),
       `<Name>TestTags.kt`, `presentation/screen/<x>/<X>Screen.kt` and
       `<X>ScreenLayout.kt`, the feature's reusable composables in
@@ -90,7 +90,7 @@ Keep each step compiling before you start the next. `<Name>` is the feature
 **Apple feature (`mobile/apple/Modules/Features/<Name>/`)**, for a new feature module
 
 - [ ] `Project.swift` from the recipe in `apple-swiftui` §6, the project in
-      `Workspace.swift` with its test target in the `Semprec` scheme, and the
+      `Workspace.swift` with its test target in the `Alldots` scheme, and the
       framework in the dependencies of `Projects/App/Project.swift`.
 - [ ] `Sources/<Name>ScreenFactory.swift` (public), `Sources/Routing/<Name>Routing.swift`
       (the public protocol and an internal `Preview<Name>Router`),
@@ -120,7 +120,7 @@ Keep each step compiling before you start the next. `<Name>` is the feature
 - [ ] When the new flow is one a user walks, a flow in
       `UITests/SmokeFlowTests.swift`, with the feature's
       `../../Modules/Features/<Name>/Sources/<Name>Identifiers.swift` added to
-      the `sources` of `SemprecUITests` in `Project.swift` (one file, not a
+      the `sources` of `AlldotsUITests` in `Project.swift` (one file, not a
       glob), as Android's `SmokeFlowTest` walks it.
 
 **Copy and identifiers, on both platforms**
@@ -144,7 +144,7 @@ Keep each step compiling before you start the next. `<Name>` is the feature
         `<Name>FeatureTests` (the same `project`, `sources` `Tests`, `allowed`
         `<Name>Feature` and `CoreKit`), and `<Name>Feature` added to the
         `allowed` list of
-        `Semprec` (`ARCH-APPLE`);
+        `Alldots` (`ARCH-APPLE`);
       - `copy`: an entry pairing the Android module with the Apple target and
         listing its keys, or the new keys in an existing entry. An
         `androidOnly` key needs a reason (`COPY-PARITY`, `canonical-keys`).
@@ -160,7 +160,7 @@ Keep each step compiling before you start the next. `<Name>` is the feature
 the package. A feature module uses:
 
 ```
-src/main/kotlin/cz/semprec/app/feature/<name>/
+src/main/kotlin/cz/alldots/app/feature/<name>/
   <Name>Router.kt            router contract and its effect mapping
   <Name>TestTags.kt          test tag constants
   presentation/

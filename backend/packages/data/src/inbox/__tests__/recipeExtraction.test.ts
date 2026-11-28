@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getBlob } from "../../blobs/blobsStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../../db/pool.js";
@@ -28,7 +28,7 @@ import { allowLoopbackOutboundForTests } from "../../testSupport/mcpContractServ
 import { proposeRecipe, type RecipeProposalPorts } from "../recipeExtraction.js";
 import type { ProposalComputationInput } from "../inboxTickSnapshot.js";
 
-// The recipe proposal writer, on the runtime role (`semprec_data`, no BYPASSRLS) in a tenant of its own; a second
+// The recipe proposal writer, on the runtime role (`alldots_data`, no BYPASSRLS) in a tenant of its own; a second
 // tenant shows what the writer cannot reach.
 const SEEDING_HOOK_TIMEOUT_MS = 90_000;
 
@@ -50,12 +50,12 @@ let otherTenantId: string;
 beforeAll(async () => {
   adminPool = getTestPool();
   await resetDatabase(adminPool);
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );
   expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-  storageDir = await mkdtemp(join(tmpdir(), "semprec-recipe-"));
+  storageDir = await mkdtemp(join(tmpdir(), "alldots-recipe-"));
   storage = new LocalFsBlobStorageWriter(storageDir);
   tenantId = await createTestTenant(adminPool);
   otherTenantId = await createTestTenant(adminPool);

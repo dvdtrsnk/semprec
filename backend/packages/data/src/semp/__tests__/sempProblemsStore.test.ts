@@ -166,8 +166,8 @@ async function overlapRaises(firstInput: RaiseProblemInput, secondInput: RaisePr
 describe("semp problems store", () => {
   beforeAll(async () => {
     pool = getTestPool({ max: 6 });
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
     tenantZero = getTenantZeroId();
   });
 
@@ -350,7 +350,7 @@ describe("semp problems store", () => {
   });
 
   it("counts concurrent reports with the same occurrence key once", async () => {
-    const owned = await createRuntimeRolePool(pool, "semprec_data");
+    const owned = await createRuntimeRolePool(pool, "alldots_data");
     expect(
       await overlapRaises(input({ occurrenceKey: "same-job" }), input({ occurrenceKey: "same-job" }), owned),
     ).toEqual(["created", "created", "merged"]);

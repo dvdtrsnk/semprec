@@ -1,4 +1,4 @@
-import { readPageBlocks, serializeBlocks } from "@semprec/block-model";
+import { readPageBlocks, serializeBlocks } from "@alldots/block-model";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "../db/pool.js";

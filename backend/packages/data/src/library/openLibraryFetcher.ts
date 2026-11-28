@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createOutboundHttp, isOutboundAddressNotAllowed } from "../net/outboundAddressPolicy.js";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
 import { MAX_LIBRARY_COVER_BYTES, type DownloadedLibraryCover } from "./libraryCoverStorage.js";

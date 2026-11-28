@@ -11,9 +11,9 @@ import type {
   PageRenameInput,
   PageRenameOutput,
   PageRestoreOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
-import { deleteBlocks, readPageBlocks } from "@semprec/block-model";
+import { deleteBlocks, readPageBlocks } from "@alldots/block-model";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
 import * as blocks from "./blocks.js";

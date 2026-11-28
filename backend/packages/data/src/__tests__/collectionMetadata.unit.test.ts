@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import {
   compareCollections,
   createCollectionMetadataResolver,

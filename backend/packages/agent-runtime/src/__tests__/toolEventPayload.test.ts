@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
-import { createAgentRun, insertAgentRunEvent, listAgentRunEvents } from "@semprec/data";
-import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { createAgentRun, insertAgentRunEvent, listAgentRunEvents } from "@alldots/data";
+import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "@alldots/data/testSupport";
 import { runAgentTurn } from "../lifecycleAdapter.js";
 import { parseToolEventPayload, type ToolEventMetadata } from "../toolEventPayload.js";
 import type { AgentMessage } from "../types.js";

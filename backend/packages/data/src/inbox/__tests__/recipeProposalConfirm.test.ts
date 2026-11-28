@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { readPageBlocks } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { readPageBlocks } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import { CLOSED_PROPOSAL_STATUSES, getBlob } from "../../blobs/blobsStore.js";
 import { sweepUnreferencedBlobs } from "../../blobs/unreferencedBlobSweep.js";
 import { createUser } from "../../auth/usersStore.js";
@@ -31,7 +31,7 @@ import {
   type PhotoFixture,
 } from "../../testSupport/recipeInboxFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { createSemprecTickAction, type SemprecTickActionConfig } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type AlldotsTickActionConfig } from "../inboxTickAction.js";
 import {
   confirmProposalWithClient,
   readConfirmationResults,
@@ -62,17 +62,17 @@ let dataPool: Pool;
 let storageDir: string;
 let storage: LocalFsBlobStorageWriter;
 let tenantId: string;
-let tickConfig: SemprecTickActionConfig;
+let tickConfig: AlldotsTickActionConfig;
 
 beforeAll(async () => {
   adminPool = getTestPool();
   await resetDatabase(adminPool);
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );
   expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-  storageDir = await mkdtemp(join(tmpdir(), "semprec-recipe-confirm-"));
+  storageDir = await mkdtemp(join(tmpdir(), "alldots-recipe-confirm-"));
   storage = new LocalFsBlobStorageWriter(storageDir);
   tenantId = await createTestTenant(adminPool);
   // The tick writes the person's texts in the language of the tenant's user.
@@ -115,7 +115,7 @@ const cardsOf = () =>
 
 async function computeCard(itemId: string, ports: RecipeProposalPorts): Promise<ItemRow> {
   const before = new Set((await cardsOf()).map((card) => card.id));
-  const tick = createSemprecTickAction(dataPool, (input) =>
+  const tick = createAlldotsTickAction(dataPool, (input) =>
     proposeRecipe(ports, input).then((recipe) => recipe ?? { properties: { name: "from the generic computation" } }),
   );
   await runInTenant(tenantId, () => tick(tickConfig, { heartbeatId: "hb", projectItemId: randomUUID(), itemId }));

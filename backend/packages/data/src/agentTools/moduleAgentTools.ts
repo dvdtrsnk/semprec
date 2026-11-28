@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
-import { CAPABILITY_IDS, canonicalizeJson, type RiskClass } from "@semprec/shared";
+import type { ModuleRegistry } from "@alldots/module-registry";
+import { CAPABILITY_IDS, canonicalizeJson, type RiskClass } from "@alldots/shared";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";

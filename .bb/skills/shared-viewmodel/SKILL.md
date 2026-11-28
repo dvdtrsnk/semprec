@@ -23,7 +23,7 @@ for the full checklist of a new screen or feature.
 ## 1. The ScreenViewModel contract
 
 The base class is
-`mobile/shared/presentation/src/commonMain/kotlin/cz/semprec/app/presentation/ScreenViewModel.kt`.
+`mobile/shared/presentation/src/commonMain/kotlin/cz/alldots/app/presentation/ScreenViewModel.kt`.
 Keep its contract when you change it, and follow it in every subclass:
 
 - It extends the multiplatform androidx `ViewModel`. `state` is a
@@ -80,7 +80,7 @@ Keep its contract when you change it, and follow it in every subclass:
   bridge returns a stream that finishes at once.
 - Constructors are `internal`. `HomeViewModelFactory` (presentation,
   `@HiddenFromObjC`) is their only caller, and `HomeSDK`
-  (`mobile/shared/umbrella/src/commonMain/kotlin/cz/semprec/app/sdk/HomeSDK.kt`)
+  (`mobile/shared/umbrella/src/commonMain/kotlin/cz/alldots/app/sdk/HomeSDK.kt`)
   composes repository, use cases and factory. Every SDK call returns a new
   ViewModel that its caller owns. Why: one instance per screen presentation is
   what makes the closing rules below decidable.
@@ -176,7 +176,7 @@ every row that applies:
 | Android effect delivery | `mobile/android/core/ui/src/test/` (`CollectEffectsTest`) | `CollectEffects` delivers each effect emitted on the main thread once, in order, also when a stop was already queued, and effects emitted while stopped on the next start |
 | CoreKit bridge | `CoreKit/Tests/SharedMappingTests.swift` and `CoreKit/Tests/SharedScreenModelTests.swift` | `SharedMappingTests`: every branch of `state(_:)`, `action(_:)` and `effect(_:)` and of the shared values, over Kotlin values it builds. `SharedScreenModelTests`: the real Kotlin ViewModel through the bridge: content, retry making the Kotlin ViewModel load again, each effect delivered once across cancelled and repeated observation, releasing the bridge closes the Kotlin ViewModel |
 | Apple feature | `Tests/<X>ViewModelTests.swift` over `Scripted*ScreenModel` | intents forwarded, effects routed (including ones raised before observation), releasing the ViewModel releases its model (a `weak` reference) |
-| Runtime | `SmokeFlowTest` (Android, on a reserved emulator), `SmokeFlowTests` of `SemprecUITests` (Apple, on a reserved iOS simulator; no UI test runs on macOS) | open, close and reopen the screen: the second presentation renders content |
+| Runtime | `SmokeFlowTest` (Android, on a reserved emulator), `SmokeFlowTests` of `AlldotsUITests` (Apple, on a reserved iOS simulator; no UI test runs on macOS) | open, close and reopen the screen: the second presentation renders content |
 
 The shared tests run on the JVM (`sharedJvmTest`) and natively
 (`sharedAppleTest`). Load `testing` for the discipline that makes a test able

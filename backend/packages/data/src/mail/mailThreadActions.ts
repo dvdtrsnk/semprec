@@ -138,7 +138,7 @@ export interface MailThreadMoveCopy {
   providerMessageId: string | null;
   incoming: boolean;
   /**
-   * In any Drafts folder, or with an unsent Semprec draft row; the move routes leave a draft where it is. Wider than
+   * In any Drafts folder, or with an unsent Alldots draft row; the move routes leave a draft where it is. Wider than
    * the thread list's rule, so a copy in Drafts and another folder is counted but never moved: moving it out of
    * Drafts would lose the draft.
    */

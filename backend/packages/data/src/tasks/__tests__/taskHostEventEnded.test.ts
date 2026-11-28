@@ -2,8 +2,8 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -26,7 +26,7 @@ import {
 
 /**
  * The job recomputing host state when the last Event ends. Writes go through the routes or the choke point on a
- * `semprec_data` pool, so RLS applies, and the job runs via the production handler drained with `runOnce`. Only
+ * `alldots_data` pool, so RLS applies, and the job runs via the production handler drained with `runOnce`. Only
  * `Date` is faked: graphile-worker compares `run_at` with the later database clock, so jobs are always due and
  * the fake clock decides what the recomputation finds.
  */
@@ -178,7 +178,7 @@ async function hiddenTask(tenant: SeededTenant = home): Promise<{ taskId: string
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runAsSystem("test:role", () =>
     pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -182,7 +182,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await getActiveMailSyncProcessNames(client)).toEqual([`mailsync:${fx.liveMailboxB}`]);
     });
@@ -192,7 +192,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       const manifest = await generatePermissionManifest(client, fx.projectB);
       expect(manifest.capabilities.email.send.autonomous).toBe(true);
@@ -204,7 +204,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
       const fx = await seed(client);
       const { viewId, members } = await seedCuratedViewB(client, fx);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await listLiveViewItemsAfter(client, viewId, { afterPosition: null, limit: 2 })).toEqual([
         { viewId, itemId: members[0], position: 0 },
@@ -221,7 +221,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
       const fx = await seed(client);
       const imap = await seedPendingImapFlagWriteB(client, fx);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(
         await listPendingImapFlagWrites(client, {
@@ -239,7 +239,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       const manifest = await generatePermissionManifest(client, fx.projectZero);
       expect(manifest.capabilities.email.send.autonomous).toBe(false);
@@ -250,7 +250,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await deleteBlobIfUnreferenced(client, fx.referencedBlobB)).toBeNull();
       expect(await getBlob(client, fx.referencedBlobB)).not.toBeNull();
@@ -268,7 +268,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
       const blob = await createBlob(client, { mimeType: "text/plain", byteSize: 1, storageKey: "b/archived" });
       await insertItem(client, { databaseId: archived.id, properties: { file: { blobId: blob.id } } });
       await archiveDatabase(client, archived.id);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await deleteBlobIfUnreferenced(client, blob.id)).toBeNull();
       expect(await getBlob(client, blob.id)).not.toBeNull();
@@ -279,7 +279,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       // Lands a new database and referencing item between `visibleDatabaseIds` and the DELETE, as a concurrent
       // commit can under READ COMMITTED. The owner creates them: partition creation is DDL.
@@ -299,7 +299,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
               await target.query("RESET ROLE");
               const late = await createDatabase(target, { name: "B late" });
               await insertItem(target, { databaseId: late.id, properties: { file: { blobId: fx.orphanBlobB } } });
-              await target.query("SET LOCAL ROLE semprec_data");
+              await target.query("SET LOCAL ROLE alldots_data");
             }
             return result;
           };
@@ -316,7 +316,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await deleteBlobIfUnreferenced(client, fx.blobZero)).toBeNull();
 
@@ -329,7 +329,7 @@ describe("the remaining id-only item lookups stay within the scoped tenant", () 
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantEmpty);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect(await getActiveMailSyncProcessNames(client)).toEqual([]);
     });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { z } from "zod";
 import { createAgentRun, finishAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../../agentRuns/agentRunEventsStore.js";
@@ -593,7 +593,7 @@ describe("createProjectAgentSummaryRouteHandler (issue gh-1935)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool ??= await createRuntimeRolePool(pool, "alldots_data");
     tenantA = await createTestTenant(pool);
     tenantB = await createTestTenant(pool);
     for (const tenant of [tenantA, tenantB]) await runInTenant(tenant, () => seedSystem(runtimePool));

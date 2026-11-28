@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import * as credentials from "@semprec/credentials";
+import * as credentials from "@alldots/credentials";
 import {
   generateDataKey,
   openSecret,
@@ -8,7 +8,7 @@ import {
   unwrapDataKey,
   wrapDataKey,
   type EncryptedSecret,
-} from "@semprec/credentials";
+} from "@alldots/credentials";
 
 const ad = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -103,14 +103,14 @@ describe("wrapDataKey / unwrapDataKey", () => {
     const masterKey = await generateDataKey();
     const tenantId = randomUUID();
     // Sealed directly because wrapDataKey refuses a short key; same associated data as wrapDataKey.
-    const wrapped = await sealSecret(Buffer.alloc(16), masterKey, ad(`semprec:tenant-key:v1:${tenantId}`));
+    const wrapped = await sealSecret(Buffer.alloc(16), masterKey, ad(`alldots:tenant-key:v1:${tenantId}`));
     await expect(unwrapDataKey(wrapped, masterKey, tenantId)).rejects.toThrow(
       "Unwrapped data key must be 32 bytes, got 16",
     );
   });
 });
 
-describe("@semprec/credentials exports (issue #1069)", () => {
+describe("@alldots/credentials exports (issue #1069)", () => {
   it("no longer exports the retired secretbox encryptSecret/decryptSecret", () => {
     expect(Object.keys(credentials)).not.toContain("encryptSecret");
     expect(Object.keys(credentials)).not.toContain("decryptSecret");

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { CORE_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";

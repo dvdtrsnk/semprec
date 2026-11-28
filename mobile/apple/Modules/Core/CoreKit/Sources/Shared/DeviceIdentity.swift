@@ -4,7 +4,7 @@ import Foundation
 /// What this installation tells the server about itself at sign-in.
 enum DeviceIdentity {
 
-    private static let deviceIdKey = "cz.semprec.deviceId"
+    private static let deviceIdKey = "cz.alldots.deviceId"
     private static let maxNameLength = 100
 
     /// Reads the kernel's string value `name` (`sysctlbyname`); nothing here touches the network.

@@ -11,16 +11,16 @@ import {
   setNotificationReadStateHook,
   setSessionRevokedHook,
   type AgentRunRow,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { getTraceContext, runInTenant } from "@semprec/shared";
-import { publishRealtimeMessage, wireRealtimeHooks } from "@semprec/realtime";
+} from "@alldots/data/testSupport";
+import { getTraceContext, runInTenant } from "@alldots/shared";
+import { publishRealtimeMessage, wireRealtimeHooks } from "@alldots/realtime";
 import {
   AgentRunCancelledError,
   pushRunStatus,
@@ -215,8 +215,8 @@ describe("runAgentSession", () => {
     wireRealtimeHooks(pool);
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
-      await listenClient.query("LISTEN semprec_agent_stream");
+      await listenClient.query("LISTEN alldots_events");
+      await listenClient.query("LISTEN alldots_agent_stream");
       const notifications: Array<{ channel: string; payload?: string }> = [];
       listenClient.on("notification", (msg) => notifications.push(msg));
 
@@ -235,7 +235,7 @@ describe("runAgentSession", () => {
 
       const durableForRun = () =>
         notifications
-          .filter((n) => n.channel === "semprec_events")
+          .filter((n) => n.channel === "alldots_events")
           .map(
             (n) =>
               JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { type?: string; agentRunId?: string } },
@@ -243,7 +243,7 @@ describe("runAgentSession", () => {
           .filter((envelope) => envelope.message.type === "agent_run_event" && envelope.message.agentRunId === run.id);
       const deltasForRun = () =>
         notifications
-          .filter((n) => n.channel === "semprec_agent_stream")
+          .filter((n) => n.channel === "alldots_agent_stream")
           .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
           .filter((envelope) => envelope.message.agentRunId === run.id);
 
@@ -285,7 +285,7 @@ describe("runAgentSession", () => {
   });
 
   it("tags each real turn publication with its captured assistant id and leaves generic deltas untagged", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const listener = await pool.connect();
     let release!: () => void;
     let pending: Promise<unknown> | undefined;
@@ -297,7 +297,7 @@ describe("runAgentSession", () => {
       if (event.payload) messages.push(JSON.parse(event.payload) as unknown);
     };
     try {
-      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
+      await listener.query<Record<string, never>>("LISTEN alldots_agent_stream");
       listener.on("notification", onNotification);
       const run = await runInTenant(getTenantZeroId(), () =>
         createAgentRun(runtime, { triggeredBy: "user", task: "tagged" }),
@@ -403,7 +403,7 @@ describe("runAgentSession", () => {
   });
 
   it("increments the ordinal after one synthetic pre-dispatch publication failure", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const listener = await pool.connect();
     const originalDescriptor = Object.getOwnPropertyDescriptor(runtime, "query");
     const original = runtime.query.bind(runtime);
@@ -424,7 +424,7 @@ describe("runAgentSession", () => {
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       );
       expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      await listener.query<Record<string, never>>("LISTEN semprec_agent_stream");
+      await listener.query<Record<string, never>>("LISTEN alldots_agent_stream");
       listener.on("notification", (notification) => {
         if (!notification.payload) return;
         try {
@@ -445,7 +445,7 @@ describe("runAgentSession", () => {
             typeof args[0] === "string" &&
             args[0].includes("pg_notify") &&
             Array.isArray(args[1]) &&
-            args[1][0] === "semprec_agent_stream" &&
+            args[1][0] === "alldots_agent_stream" &&
             typeof args[1][1] === "string"
           ) {
             const value: unknown = JSON.parse(args[1][1]);

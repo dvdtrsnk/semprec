@@ -252,7 +252,7 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
 }
 
 /**
- * Runs as `semprec_router` behind `ops_health_counts()`. A missing row means broken grants and
+ * Runs as `alldots_router` behind `ops_health_counts()`. A missing row means broken grants and
  * throws rather than reporting zero errors.
  */
 async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorTenantAggregates> {

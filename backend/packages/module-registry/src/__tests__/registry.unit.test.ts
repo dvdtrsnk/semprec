@@ -649,7 +649,7 @@ describe("related collection order", () => {
   let directory: string;
   let ordinal = 0;
   beforeAll(async () => {
-    directory = await mkdtemp(join(tmpdir(), "semprec-related-order-"));
+    directory = await mkdtemp(join(tmpdir(), "alldots-related-order-"));
   });
   afterAll(async () => {
     await rm(directory, { recursive: true, force: true });
@@ -770,7 +770,7 @@ describe("database quick filters, default sorts and collection and picker filter
   let directory: string;
   let ordinal = 0;
   beforeAll(async () => {
-    directory = await mkdtemp(join(tmpdir(), "semprec-quick-filters-"));
+    directory = await mkdtemp(join(tmpdir(), "alldots-quick-filters-"));
   });
   afterAll(async () => {
     await rm(directory, { recursive: true, force: true });

@@ -2,8 +2,8 @@
 // queues it in the answer's own transaction, so a rolled-back answer sends nothing.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { resolveCatalogLabel } from "@semprec/module-registry";
+import { enqueueJob } from "@alldots/queue";
+import { resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";

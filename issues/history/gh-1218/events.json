@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABYFwLDw",
         "number": 1219,
         "title": "Wait for PostgreSQL session cleanup in the purge unlock regression",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1219",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1219",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "97515ce6eea0fdc96a0767ebd302cfca8686a639fcea5e9962735e93e4f1bccc"
       }
@@ -70,14 +70,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJL1uHA",
         "number": 1221,
         "title": "Wait for PostgreSQL session cleanup in the purge unlock regression (#1219)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1221",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1221",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1221",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1221",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1221.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1221.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1221",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1221",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1221.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1221.patch",
           "merged_at": "2026-10-18T17:58:01Z"
         },
         "bodySha256": "647201e117abc78a384b9137944a96e40ee548a10da3b6d0845cedd86ca30b50"
@@ -116,14 +116,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJL7FQw",
         "number": 1222,
         "title": "Fix blob uniqueness and MCP grant tenant isolation (#1218)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1222",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1222",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1222",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1222",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1222.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1222.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1222",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1222",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1222.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1222.patch",
           "merged_at": "2026-10-18T18:08:59Z"
         },
         "bodySha256": "c21328f5cf239a649310dc8e5b3c9a2fd704ef7c52f61feb48ea6149fc5b5403"
@@ -133,7 +133,7 @@
   {
     "id": 33584960918,
     "node_id": "CE_lADOUFuQ4c8AAAABYFKAH88AAAAH0dHVlg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33584960918",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33584960918",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -164,9 +164,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6253335694",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1218#issuecomment-6253335694",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6253335694",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1218#issuecomment-6253335694",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218",
     "id": 6253335694,
     "node_id": "IC_kwDOUFuQ4c8AAAABdLpUjg",
     "user": {
@@ -196,7 +196,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6253335694/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6253335694/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -305,14 +305,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABKHhINQ",
         "number": 1280,
         "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract) (#1065)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1280",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1280",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1280",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1280",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1280.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1280.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1280",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1280",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1280.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1280.patch",
           "merged_at": "2026-10-23T05:54:56Z"
         },
         "bodySha256": "01848d28cd6ec0b194ebc60fba69a2266e83239b66e8f476a7591e939304be69"
@@ -351,8 +351,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvyX6g",
         "number": 1065,
         "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1065",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1065",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "4796d6f1c4ff8538313dee6279f3bb377d5be1b607f1d3d6de500d1c6d22605e"
       }

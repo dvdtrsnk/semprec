@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const log = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() }));
-vi.mock("@semprec/shared/src/logger.js", async (importOriginal) => ({
+vi.mock("@alldots/shared/src/logger.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createLogger: () => log,
 }));
 
-import { TenantScopeMissingError, currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
+import { TenantScopeMissingError, currentTenantScope, runAsSystem, runInTenant } from "@alldots/shared";
 import {
   AGENT_TASK_NAMES,
   CORE_TASK_NAMES,
@@ -74,17 +74,17 @@ function sentEnvelope(client: ReturnType<typeof fakeClient>): Record<string, unk
 }
 
 describe("enqueueJob tenant stamping", () => {
-  const original = process.env.SEMPREC_TENANT_SCOPE;
+  const original = process.env.ALLDOTS_TENANT_SCOPE;
 
   beforeEach(() => {
     log.warn.mockClear();
-    process.env.SEMPREC_TENANT_SCOPE = "warn";
+    process.env.ALLDOTS_TENANT_SCOPE = "warn";
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    if (original === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-    else process.env.SEMPREC_TENANT_SCOPE = original;
+    if (original === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+    else process.env.ALLDOTS_TENANT_SCOPE = original;
   });
 
   it("stamps the tenant id inside runInTenant", async () => {
@@ -111,7 +111,7 @@ describe("enqueueJob tenant stamping", () => {
   });
 
   it("rejects with TenantScopeMissingError and sends no SQL with no scope in strict mode", async () => {
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
+    process.env.ALLDOTS_TENANT_SCOPE = "strict";
     const client = fakeClient();
     await expect(enqueueJob(client as never, "someTask", {})).rejects.toBeInstanceOf(TenantScopeMissingError);
     expect(client.query).not.toHaveBeenCalled();

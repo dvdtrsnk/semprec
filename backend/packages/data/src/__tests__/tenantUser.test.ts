@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser, getTenantUserId, getTenantUserLocale } from "../auth/usersStore.js";
 import {
   createRuntimeRolePool,
@@ -16,7 +16,7 @@ let pool: Pool;
 describe("getTenantUserId / getTenantUserLocale (issue #1018)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+    pool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "alldots_data"));
   });
 
   afterAll(async () => {

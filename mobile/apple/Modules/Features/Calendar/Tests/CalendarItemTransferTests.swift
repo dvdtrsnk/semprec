@@ -42,7 +42,7 @@ final class CalendarItemTransferTests: XCTestCase {
         // 11:30 in Prague in December is 10:30 UTC.
         XCTAssertTrue(all.contains("DTSTART:20261208T103000Z"))
         XCTAssertTrue(all.contains("DTEND:20261208T113000Z"))
-        XCTAssertTrue(all.contains("UID:item-1@semprec"))
+        XCTAssertTrue(all.contains("UID:item-1@alldots"))
         XCTAssertTrue(all.contains("LOCATION:Room 4"))
         XCTAssertFalse(all.contains { $0.hasPrefix("CATEGORIES:") })
     }

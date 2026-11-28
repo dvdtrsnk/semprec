@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   bindToTenantZero,
   createRuntimeRolePool,
@@ -440,7 +440,7 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
   });
 
   it("looks the MCP servers database up in the writing tenant only, through the runtime role (issue #1973)", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const withMcp = getTenantZeroId();
       const withoutMcp = await createTestTenant(pool);

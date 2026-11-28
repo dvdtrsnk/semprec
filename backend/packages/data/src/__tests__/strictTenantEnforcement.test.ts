@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant, TenantScopeMissingError } from "@semprec/shared";
+import { runAsSystem, runInTenant, TenantScopeMissingError } from "@alldots/shared";
 import { bootstrapFirstAccount } from "../auth/authActions.js";
 import { createPool } from "../db/pool.js";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../testSupport/testDb.js";
 
 /**
- * `app_tenant_default()` has no sole-tenant fallback and an unset `SEMPREC_TENANT_SCOPE` means strict.
+ * `app_tenant_default()` has no sole-tenant fallback and an unset `ALLDOTS_TENANT_SCOPE` means strict.
  * Assertions use a runtime-role pool (the superuser bypasses RLS); `tenant_observability_checks` stands in for
  * every tenant table, which all share the same default and policies.
  */
@@ -22,11 +22,11 @@ const INSERT_CHECK =
   "INSERT INTO tenant_observability_checks (check_key, status) VALUES ($1, 'ok') RETURNING tenant_id";
 
 let adminPool: Pool;
-const originalMode = process.env.SEMPREC_TENANT_SCOPE;
+const originalMode = process.env.ALLDOTS_TENANT_SCOPE;
 
 function restoreMode(): void {
-  if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-  else process.env.SEMPREC_TENANT_SCOPE = originalMode;
+  if (originalMode === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+  else process.env.ALLDOTS_TENANT_SCOPE = originalMode;
 }
 
 async function allCheckKeys(): Promise<string[]> {
@@ -59,7 +59,7 @@ describe("tenant tables with only tenant zero present (issue #1067)", () => {
   let sidePool: Pool;
 
   beforeAll(async () => {
-    sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+    sidePool = await createRuntimeRolePool(adminPool, "alldots_side");
   });
 
   afterAll(async () => {
@@ -67,7 +67,7 @@ describe("tenant tables with only tenant zero present (issue #1067)", () => {
   });
 
   it("shows no row and refuses a defaulted insert without a scope in warn mode", async () => {
-    process.env.SEMPREC_TENANT_SCOPE = "warn";
+    process.env.ALLDOTS_TENANT_SCOPE = "warn";
     const { rows } = await sidePool.query(SELECT_CHECKS);
     expect(rows).toEqual([]);
 
@@ -81,13 +81,13 @@ describe("tenant tables with only tenant zero present (issue #1067)", () => {
   });
 
   it.each([undefined, ""])(
-    "rejects both calls with TenantScopeMissingError before any statement with SEMPREC_TENANT_SCOPE=%j",
+    "rejects both calls with TenantScopeMissingError before any statement with ALLDOTS_TENANT_SCOPE=%j",
     async (mode) => {
       // A fresh pool: it has opened no connection yet, so a statement sent would show in totalCount.
-      const freshPool = await createRuntimeRolePool(adminPool, "semprec_side");
+      const freshPool = await createRuntimeRolePool(adminPool, "alldots_side");
       try {
-        if (mode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-        else process.env.SEMPREC_TENANT_SCOPE = mode;
+        if (mode === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+        else process.env.ALLDOTS_TENANT_SCOPE = mode;
         await expect(freshPool.query(SELECT_CHECKS)).rejects.toBeInstanceOf(TenantScopeMissingError);
         await expect(freshPool.query(INSERT_CHECK, ["unscoped"])).rejects.toBeInstanceOf(TenantScopeMissingError);
         expect(freshPool.totalCount).toBe(0);
@@ -100,7 +100,7 @@ describe("tenant tables with only tenant zero present (issue #1067)", () => {
   );
 
   it("reads and inserts tenant zero's rows inside runInTenant(tenant zero)", async () => {
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    delete process.env.ALLDOTS_TENANT_SCOPE;
     const tenantZero = getTenantZeroId();
     await runInTenant(tenantZero, async () => {
       const inserted = await sidePool.query<{ tenant_id: string }>(INSERT_CHECK, ["scoped"]);
@@ -114,7 +114,7 @@ describe("tenant tables with only tenant zero present (issue #1067)", () => {
   });
 
   it("shows no tenant row inside runAsSystem", async () => {
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    delete process.env.ALLDOTS_TENANT_SCOPE;
     const { rows } = await runAsSystem("strict enforcement test", () => sidePool.query(SELECT_CHECKS));
     expect(rows).toEqual([]);
   });
@@ -132,7 +132,7 @@ describe("users.tenant_id NOT NULL (issue #1067)", () => {
   });
 
   it("still lets bootstrapFirstAccount create tenant zero's admin on an empty database", async () => {
-    delete process.env.SEMPREC_TENANT_SCOPE;
+    delete process.env.ALLDOTS_TENANT_SCOPE;
     // The production pool constructor in the setup route's system scope (`setupHandler.ts`).
     const setupPool = createPool(process.env.TEST_DATABASE_URL!);
     let account: { id: string };

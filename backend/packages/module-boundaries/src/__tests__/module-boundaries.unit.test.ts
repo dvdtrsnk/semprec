@@ -90,7 +90,7 @@ describe("checkModuleBoundaries", () => {
     expect(importers).not.toContain("packages/agent-runtime/src/__tests__/usesPiAgentCore.ts");
   });
 
-  it("rejects a service other than semprec-agents importing agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
+  it("rejects a service other than alldots-agents importing agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
     const violation = violations.find(
       (v: BoundaryViolation) => v.importer === "services/svcB/src/badAgentRuntimeImport.ts",
@@ -100,11 +100,11 @@ describe("checkModuleBoundaries", () => {
     expect(violation?.rules).toContain("agent-runtime-only-in-agents");
   });
 
-  it("lets services/semprec-agents import agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
+  it("lets services/alldots-agents import agent-runtime (issue #173: agent-runtime-only-in-agents)", async () => {
     const { violations } = await checkModuleBoundaries(fixturesDir, ["services", "packages"]);
     const importers = violations.map((violation: BoundaryViolation) => violation.importer);
 
-    expect(importers).not.toContain("services/semprec-agents/src/usesAgentRuntime.ts");
+    expect(importers).not.toContain("services/alldots-agents/src/usesAgentRuntime.ts");
   });
 
   it("rejects a package reaching past another package's entry point (issue #173: no-deep-imports)", async () => {

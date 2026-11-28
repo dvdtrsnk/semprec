@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 import { recordGmailWatchRegistration, routeGmailAddress, type GmailRouteTarget } from "./mailAccountSyncStateStore.js";

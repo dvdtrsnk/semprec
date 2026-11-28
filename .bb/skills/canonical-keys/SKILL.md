@@ -31,7 +31,7 @@ keyed by the English canonical key, so a Czech key simply has no label entry.
 
 Reuse these exact keys — don't coin synonyms for concepts that already have one:
 ten core DBs `areas`, `projects`, `tasks`, `people`, `files`, `events`,
-`healthRecords`, `companies`, `transcripts`, `journal`; Semprec-module DBs
+`healthRecords`, `companies`, `transcripts`, `journal`; Alldots-module DBs
 `inbox`, `inboxItemTypes`, `processingProposals`, `mailboxes`, `emails`; common
 properties `status`, `date`, `time`, `type`, `kind`, `link`, `note`, `tags`,
 `fingerprint`, `sourceInbox`, `sourceTranscript`, `senderPeople`,

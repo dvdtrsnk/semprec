@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { RestorePostgresTools } from "./restorePostgresTools.js";
 
@@ -156,7 +156,7 @@ async function databasePresent(observer: Pool, name: string): Promise<boolean> {
 interface RestoreInput {
   adminUrl: string;
   targetUrl: string;
-  targetRole?: "semprec_restore";
+  targetRole?: "alldots_restore";
   container: string;
   archive: Buffer;
   recordStage: (name: string) => Promise<void>;
@@ -174,7 +174,7 @@ export async function restoreTenantKeys(input: RestoreInput): Promise<void> {
   });
   const asynchronousFailures: unknown[] = [];
   for (const pool of [admin, observer, target]) pool.on("error", (error: unknown) => asynchronousFailures.push(error));
-  const name = `semprec_restore_${randomUUID().replaceAll("-", "")}`;
+  const name = `alldots_restore_${randomUUID().replaceAll("-", "")}`;
   // A fixed prefix and UUID hex digits make this a closed SQL identifier.
   const identifier = `"${name}"`;
   let attemptOwned = false;

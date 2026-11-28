@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import {
   bindToTenantZero,
   createRuntimeRolePool,
@@ -254,7 +254,7 @@ describe("rollup engine", () => {
     const searchUpdate = vi.spyOn(search, "itemSearchUpdateHook");
     await import("../domainWriteHooks.js");
     const isolated = await import("../chokePoint/chokePoint.js");
-    const isolatedShared = await import("@semprec/shared");
+    const isolatedShared = await import("@alldots/shared");
     try {
       hooks.registerItemPreWriteTransform("rollupProbe", async ({ patch }) => ({ ...patch, hours: 10 }));
       const cp = isolated.createChokePoint(pool);
@@ -381,7 +381,7 @@ describe("rollup engine", () => {
     it("keeps archive and recount tenant-scoped and rolls back the queued job with the archive", async () => {
       const tenantA = getTenantZeroId();
       const tenantB = await createTestTenant(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let failure: { error: unknown } | undefined;
       try {
         const cp = createChokePoint(runtime);

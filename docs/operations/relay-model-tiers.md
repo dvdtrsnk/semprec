@@ -32,7 +32,7 @@ issues (1 low, 35 medium, 33 high), 12 epics and 3 manual tasks. The three model
 routing implementation tasks add three high assessments. Epics/manual tasks and
 existing valid metadata are unchanged; classification never adds ready labels.
 
-Fetch the current open issues with `gh issue list --repo dvdtrsnk/semprec --state
+Fetch the current open issues with `gh issue list --repo dvdtrsnk/alldots --state
 open --limit 1000 --json number,title,body,labels,url,updatedAt,createdAt` into an
 operator-owned snapshot. Preparation requires every source hash and complete
 coverage to match. Store manifests and ledgers in a durable operator directory;
@@ -61,7 +61,7 @@ operator at a time.
 
 ## Deployment and pilot
 
-Keep Semprec disabled while installing the backward-compatible Relay parser,
+Keep Alldots disabled while installing the backward-compatible Relay parser,
 worker tiers, admission gate and snapshot/broker changes. Let every accepted
 run and host command finish before reload; a project disable allows them to
 drain. Land issue authoring/validation and metadata before dynamic workflows.
@@ -72,7 +72,7 @@ Synchronize the local develop source before Relay creates new worktrees.
 Use an isolated fixture repository to prove low/medium/high, exact allow-list
 selection, held metadata errors, immutable continuation after preset changes,
 and restart recovery. Start presets with maxConcurrent=1, command cap=1 and
-project cap=2. Keep the broker concurrency unchanged. Then use a bounded Semprec
+project cap=2. Keep the broker concurrency unchanged. Then use a bounded Alldots
 pilot, monitor real verify/review/fix/merge rounds, and fix failures at their
 source. Do not arm proposed #1103 merely to obtain a low example. Inspect account
 pool health and quotas before relying on failover; provider availability alone

@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import { withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";

@@ -7,7 +7,7 @@ import {
   withTraceContext,
   type TenantScope,
   type TraceContext,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -49,7 +49,7 @@ beforeEach(async () => {
   pool ??= getTestPool();
   await resetDatabase(pool);
   await seedSystem(pool);
-  dataPool = await createRuntimeRolePool(pool, "semprec_data");
+  dataPool = await createRuntimeRolePool(pool, "alldots_data");
 });
 
 afterEach(async () => {
@@ -1246,7 +1246,7 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox", 
   let removalPool: Pool;
 
   beforeEach(async () => {
-    removalPool = await createRuntimeRolePool(pool, "semprec_data");
+    removalPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterEach(async () => {

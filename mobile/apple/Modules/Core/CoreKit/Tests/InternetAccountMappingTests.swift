@@ -117,10 +117,10 @@ final class InternetAccountMappingTests: XCTestCase {
             }
         }
         let returned = try XCTUnwrap(
-            SharedInternetAccountsScreenModel.action(.signInReturned(callbackUrl: "semprec://oauth?state=s&code=c"))
+            SharedInternetAccountsScreenModel.action(.signInReturned(callbackUrl: "alldots://oauth?state=s&code=c"))
                 as? SharedSDK.InternetAccountsActionSignInReturned
         )
-        XCTAssertEqual(returned.callbackUrl, "semprec://oauth?state=s&code=c")
+        XCTAssertEqual(returned.callbackUrl, "alldots://oauth?state=s&code=c")
         XCTAssertTrue(
             SharedInternetAccountsScreenModel.action(.signInCancelled)
                 is SharedSDK.InternetAccountsActionSignInCancelled
@@ -219,10 +219,10 @@ final class InternetAccountMappingTests: XCTestCase {
         )
         XCTAssertEqual(step.delta, -1)
         let returned = try XCTUnwrap(
-            SharedInternetAccountScreenModel.action(.signIn(.returned(callbackUrl: "semprec://oauth?state=s&error=e")))
+            SharedInternetAccountScreenModel.action(.signIn(.returned(callbackUrl: "alldots://oauth?state=s&error=e")))
                 as? SharedSDK.InternetAccountActionSignInReturned
         )
-        XCTAssertEqual(returned.callbackUrl, "semprec://oauth?state=s&error=e")
+        XCTAssertEqual(returned.callbackUrl, "alldots://oauth?state=s&error=e")
         XCTAssertEqual(
             SharedInternetAccountScreenModel.effect(SharedSDK.InternetAccountEffectRemoved.shared),
             .removed

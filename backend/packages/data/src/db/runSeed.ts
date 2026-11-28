@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { forEachMaintainedTenant, provisionTenant } from "../tenancy/provisionTenant.js";
 import { logger } from "./logger.js";
 

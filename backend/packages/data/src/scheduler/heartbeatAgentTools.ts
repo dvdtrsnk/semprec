@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@alldots/queue";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import {

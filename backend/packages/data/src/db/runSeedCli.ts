@@ -6,7 +6,7 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is not set");
 }
 
-const pool = createPool(connectionString, { role: "semprec_data" });
+const pool = createPool(connectionString, { role: "alldots_data" });
 try {
   for (const result of await runSeed(pool)) console.log(formatSeedLine(result));
 } finally {

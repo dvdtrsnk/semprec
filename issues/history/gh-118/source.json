@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/118",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/118",
   "id": 5289604584,
   "node_id": "I_kwDOUFuQ4c8AAAABO0j16A",
   "number": 118,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/116",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/116",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #229, #117\n\n## Context\n\nIssue #229 implemented delegation with a session registry, busy rejection, and a 24-hour TTL after which a delegated session is closed as done. Semp's own conversation with the user follows the same memory policy but differs in one respect: it never ends the way a completed delegated task does. This part adds that pause-and-wake behavior and the per-wake run bookkeeping. #119 builds on it to reconstruct the paused conversation's history before the first resumed turn.\n\n## Task\n\n- Manage Semp's user conversation through the registry and 24-hour in-memory TTL from #229: while the session is in memory, each user message continues the same `AgentSession`.\n- On TTL expiry, discard the in-memory object but pause rather than permanently finish the conversation: the conversation key stays resumable indefinitely; the next user message, whether a minute or a month later, resumes the same conversation.\n- Each such wake creates a new, separately budgeted `agent_runs` row through #117 with `triggered_by='user'`, `unit='session'`, and `project_item_id` pointing at Semprec itself, inheriting the conversation history from prior wake runs of the same conversation. Inheritance goes through a reconstruction port called at wake; in this part that port is a minimal stub returning no prior history, and #119 fills it with the full reconstruction and context-size check. Record enough on each wake run (the three columns above) for #119 to enumerate the prior runs of the conversation in order.\n\n## Scope\n\n### In scope\n\n- Semp wake semantics, pause on TTL, and per-wake run bookkeeping.\n\n### Out of scope\n\n- The delegation tool, registry, and busy behavior (#229).\n- Reconstruction and compaction of the paused history (#119), subprocess isolation, and an additional concurrency cap over pi's parallel calls.\n\n## Acceptance criteria\n\n- A TTL expiry removes memory according to delegated versus Semp semantics: the delegated run is closed as done (#229), while Semp's conversation remains resumable and its next message opens a new wake run.\n- Every wake run is a distinct `agent_runs` row with `triggered_by='user'`, `unit='session'`, and Semprec's own `project_item_id`.\n- Within the TTL, consecutive user messages continue the same in-memory session without opening a new run.\n",
+  "body": "**Blocked by:** #229, #117\n\n## Context\n\nIssue #229 implemented delegation with a session registry, busy rejection, and a 24-hour TTL after which a delegated session is closed as done. Semp's own conversation with the user follows the same memory policy but differs in one respect: it never ends the way a completed delegated task does. This part adds that pause-and-wake behavior and the per-wake run bookkeeping. #119 builds on it to reconstruct the paused conversation's history before the first resumed turn.\n\n## Task\n\n- Manage Semp's user conversation through the registry and 24-hour in-memory TTL from #229: while the session is in memory, each user message continues the same `AgentSession`.\n- On TTL expiry, discard the in-memory object but pause rather than permanently finish the conversation: the conversation key stays resumable indefinitely; the next user message, whether a minute or a month later, resumes the same conversation.\n- Each such wake creates a new, separately budgeted `agent_runs` row through #117 with `triggered_by='user'`, `unit='session'`, and `project_item_id` pointing at Alldots itself, inheriting the conversation history from prior wake runs of the same conversation. Inheritance goes through a reconstruction port called at wake; in this part that port is a minimal stub returning no prior history, and #119 fills it with the full reconstruction and context-size check. Record enough on each wake run (the three columns above) for #119 to enumerate the prior runs of the conversation in order.\n\n## Scope\n\n### In scope\n\n- Semp wake semantics, pause on TTL, and per-wake run bookkeeping.\n\n### Out of scope\n\n- The delegation tool, registry, and busy behavior (#229).\n- Reconstruction and compaction of the paused history (#119), subprocess isolation, and an additional concurrency cap over pi's parallel calls.\n\n## Acceptance criteria\n\n- A TTL expiry removes memory according to delegated versus Semp semantics: the delegated run is closed as done (#229), while Semp's conversation remains resumable and its next message opens a new wake run.\n- Every wake run is a distinct `agent_runs` row with `triggered_by='user'`, `unit='session'`, and Alldots's own `project_item_id`.\n- Within the TTL, consecutive user messages continue the same in-memory session without opening a new run.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/118/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/118/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

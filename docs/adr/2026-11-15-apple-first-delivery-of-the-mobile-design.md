@@ -10,7 +10,7 @@ superseded-by: null
 
 ## Context
 
-The mobile design (the canvas "Semprec iOS") exists for iOS and macOS. The architecture checks of
+The mobile design (the canvas "Alldots iOS") exists for iOS and macOS. The architecture checks of
 `mobile/scripts/architecture.mjs` assume that every screen ViewModel has an Android `*Screen` and every copy key
 exists on both platforms (`VM-BRIDGE`, `COPY-PARITY`). Building the iOS screens first would fail them for
 screens whose Android counterpart is deliberately not written yet, and loosening the rules for everyone would

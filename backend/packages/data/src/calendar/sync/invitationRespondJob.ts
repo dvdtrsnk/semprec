@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../../chokePoint/itemWrites.js";

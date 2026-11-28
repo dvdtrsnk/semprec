@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@alldots/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { pruneQueueFailedJobs } from "../observability/queueFailedJobsPrune.js";
 import { logger } from "../observability/logger.js";

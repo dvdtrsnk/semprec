@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/173",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/173",
   "id": 5289607510,
   "node_id": "I_kwDOUFuQ4c8AAAABO0kBVg",
   "number": 173,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/172",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/172",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #243, #21, #115, #121, #128, #158, #164, #168\n\n## Context\n\nIssue #243 delivered the runtime layer of the boundary matrix (the `semprec_data`/`semprec_side` roles). This slice delivers the static layer: dependency-cruiser previously only guarded `modules/X` ↛ `modules/Y`; here it is closed into a complete forbidden-dependency matrix between `packages/`, `modules/`, and `services/`. #174 builds on it; wiring the checks into a pipeline belongs to #188. This prerequisite intentionally precedes #91.\n\n## Task\n\nExtend `.dependency-cruiser.cjs` with the complete matrix — nine rules, with narrow documented entry exceptions:\n\n- `no-module-to-module` (existing; keep it).\n- `no-service-to-service`, `no-service-to-module`, `no-module-to-service` — the five processes talk only through Postgres, never by importing each other or module code across the service boundary.\n- `core-knows-nobody` — core packages import no module or service code.\n- `pi-only-in-agent-runtime` — pi-agent-core is imported only inside `packages/agent-runtime`.\n- `agent-runtime-only-in-agents` — `packages/agent-runtime` is imported only by `semprec-agents`; the API process never runs the agent loop.\n- `no-deep-imports` — packages are imported only through their entry points.\n- `items-store-private` — the privileged SQL layer (the item store) is visible only inside `packages/data`; this is the CI half of the choke-point write control whose runtime half is #243.\n\nEach rule has one failing fixture demonstrating it triggers, and the documented valid entry imports pass.\n\n## Scope\n\n### In scope\n\n- The nine rules, their fixtures, and necessary documentation.\n\n### Out of scope\n\n- Runtime database roles — delivered by #243.\n- CI execution — #188.\n- No feature behavior changes.\n\n## Acceptance criteria\n\n- Each forbidden import has a failing fixture and valid entry imports pass.\n- API cannot import the agent loop and pi-agent-core cannot escape agent-runtime.\n- Code outside `packages/data` importing the item store fails `items-store-private`.\n",
+  "body": "**Blocked by:** #243, #21, #115, #121, #128, #158, #164, #168\n\n## Context\n\nIssue #243 delivered the runtime layer of the boundary matrix (the `alldots_data`/`alldots_side` roles). This slice delivers the static layer: dependency-cruiser previously only guarded `modules/X` ↛ `modules/Y`; here it is closed into a complete forbidden-dependency matrix between `packages/`, `modules/`, and `services/`. #174 builds on it; wiring the checks into a pipeline belongs to #188. This prerequisite intentionally precedes #91.\n\n## Task\n\nExtend `.dependency-cruiser.cjs` with the complete matrix — nine rules, with narrow documented entry exceptions:\n\n- `no-module-to-module` (existing; keep it).\n- `no-service-to-service`, `no-service-to-module`, `no-module-to-service` — the five processes talk only through Postgres, never by importing each other or module code across the service boundary.\n- `core-knows-nobody` — core packages import no module or service code.\n- `pi-only-in-agent-runtime` — pi-agent-core is imported only inside `packages/agent-runtime`.\n- `agent-runtime-only-in-agents` — `packages/agent-runtime` is imported only by `alldots-agents`; the API process never runs the agent loop.\n- `no-deep-imports` — packages are imported only through their entry points.\n- `items-store-private` — the privileged SQL layer (the item store) is visible only inside `packages/data`; this is the CI half of the choke-point write control whose runtime half is #243.\n\nEach rule has one failing fixture demonstrating it triggers, and the documented valid entry imports pass.\n\n## Scope\n\n### In scope\n\n- The nine rules, their fixtures, and necessary documentation.\n\n### Out of scope\n\n- Runtime database roles — delivered by #243.\n- CI execution — #188.\n- No feature behavior changes.\n\n## Acceptance criteria\n\n- Each forbidden import has a failing fixture and valid entry imports pass.\n- API cannot import the agent loop and pi-agent-core cannot escape agent-runtime.\n- Code outside `packages/data` importing the item store fails `items-store-private`.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/173/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/173/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

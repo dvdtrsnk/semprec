@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 @MainActor
 final class PreparedTabModelsTests: XCTestCase {

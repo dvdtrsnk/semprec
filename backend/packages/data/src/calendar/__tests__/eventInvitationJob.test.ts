@@ -4,9 +4,9 @@ import { simpleParser } from "mailparser";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
@@ -278,7 +278,7 @@ describe("event invitation messages (issue #1774)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -315,7 +315,7 @@ describe("event invitation messages (issue #1774)", () => {
       const w = world(await newTenant());
       const ids = { eventId: randomUUID(), personId: randomUUID(), mailboxId: randomUUID() };
       const snapshot: EventInvitationSnapshot = {
-        uid: "u@semprec",
+        uid: "u@alldots",
         sequence: 4,
         title: "Gone",
         start: "2026-11-16",
@@ -798,7 +798,7 @@ describe("event invitation messages (issue #1774)", () => {
         const w = world(await newTenant());
         const mailboxId = await w.mailbox("me@example.com", "outlook");
         const snapshot: EventInvitationSnapshot = {
-          uid: "u@semprec",
+          uid: "u@alldots",
           sequence: 2,
           title: "Meeting",
           start: "2026-11-16T08:00:00.000Z",
@@ -1193,7 +1193,7 @@ describe("event invitation messages (issue #1774)", () => {
       const mailboxId = await w.mailbox();
       const ids = { eventId: randomUUID(), personId: randomUUID(), mailboxId };
       const snapshot: EventInvitationSnapshot = {
-        uid: "gone@semprec",
+        uid: "gone@alldots",
         sequence: 2,
         title: 'Gone, "really"',
         start: "2026-11-16",
@@ -1210,7 +1210,7 @@ describe("event invitation messages (issue #1774)", () => {
       expect(message.lines).toEqual(
         expect.arrayContaining([
           "METHOD:CANCEL",
-          "UID:gone@semprec",
+          "UID:gone@alldots",
           "SEQUENCE:3",
           "DTSTART;VALUE=DATE:20261116",
           "DTEND;VALUE=DATE:20261117",
@@ -1262,7 +1262,7 @@ describe("event invitation messages (issue #1774)", () => {
         personId: randomUUID(),
         attendeeEmail: ATTENDEE,
         snapshot: {
-          uid: "u@semprec",
+          uid: "u@alldots",
           sequence: 0,
           title: "T",
           start: "2026-11-16",
@@ -1297,7 +1297,7 @@ describe("event invitation messages (issue #1774)", () => {
     const eventRow = (properties: Record<string, unknown>) =>
       ({
         ...base,
-        properties: { icalUid: "u@semprec", icalSequence: 1, name: "T", date: "2026-11-16", ...properties },
+        properties: { icalUid: "u@alldots", icalSequence: 1, name: "T", date: "2026-11-16", ...properties },
       }) as never;
 
     it("ends a timed Event that has no end time at the midnight that ends its last day", () => {

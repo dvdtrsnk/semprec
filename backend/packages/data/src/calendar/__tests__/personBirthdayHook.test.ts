@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -35,7 +35,7 @@ const INVALID_VALUES: [string, unknown][] = [
 describe("People birthday write rule (issue #1795)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

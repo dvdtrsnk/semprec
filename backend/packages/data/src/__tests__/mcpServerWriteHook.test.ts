@@ -23,7 +23,7 @@ import {
 import { loadRelationEdgeContext } from "../chokePoint/relationEdgeContext.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -321,7 +321,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
         text: "connect a server",
       }),
     );
-    await createSemprecTickAction(pool, async () => {
+    await createAlldotsTickAction(pool, async () => {
       return { properties: {}, candidates: [] };
     })(
       {
@@ -370,7 +370,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
         text: "connect a server",
       }),
     );
-    await createSemprecTickAction(pool, async () => {
+    await createAlldotsTickAction(pool, async () => {
       return { properties: {}, candidates: [] };
     })(
       {

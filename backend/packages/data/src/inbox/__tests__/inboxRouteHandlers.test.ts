@@ -13,7 +13,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createBlob } from "../../blobs/blobsStore.js";
@@ -28,7 +28,7 @@ import * as relationsStore from "../../chokePoint/relationsStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn, type ProposalStep } from "../inboxTickAction.js";
 import {
   createCaptureInboxItemRouteHandler,
   createConfirmProposalRouteHandler,
@@ -71,7 +71,7 @@ let proposalsId: string;
 
 /**
  * The inbox custom-route handler factories, exercised directly against the functions they wrap; HTTP auth and mounting
- * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `semprec-api`.
+ * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `alldots-api`.
  */
 
 type RouteContext = Parameters<ReturnType<typeof createConfirmProposalRouteHandler>>[0];
@@ -143,7 +143,7 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
 }
 
 function createDataPool(options: { statementTimeoutMs?: number } = {}): Pool {
-  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data", ...options });
+  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data", ...options });
 }
 
 /** The runtime role neither bypasses row-level security nor is a superuser. */
@@ -151,7 +151,7 @@ async function expectRuntimeRole(runtime: Pool): Promise<void> {
   const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
     "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
   );
-  expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+  expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
 }
 
 /** Runs `fn` inside tenant zero against a fresh runtime-role pool and ends the pool, reporting a failure of either. */
@@ -218,8 +218,8 @@ function createInboxItem(typeId: string, text: string, runtime: Pool = pool): Pr
   );
 }
 
-async function runTick(itemId: string, compute: ComputeSemprecProposalFn, runtime: Pool = pool): Promise<void> {
-  await createSemprecTickAction(runtime, compute)(
+async function runTick(itemId: string, compute: ComputeAlldotsProposalFn, runtime: Pool = pool): Promise<void> {
+  await createAlldotsTickAction(runtime, compute)(
     { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
     { heartbeatId: "hb", projectItemId: "proj", itemId },
   );

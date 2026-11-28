@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@semprec/shared";
+import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@alldots/shared";
 import type {
   GuidanceHeartbeatStore,
   GuidanceReferenceStore,
   ProjectAgentGuidance,
   ProjectAgentGuidanceStore,
   TransactionRunner,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createProjectAgentGuidanceService } from "../service.js";
 import { ProjectAgentGuidanceOwnerViolationError, ProjectAgentGuidanceValidationError } from "../errors.js";
 

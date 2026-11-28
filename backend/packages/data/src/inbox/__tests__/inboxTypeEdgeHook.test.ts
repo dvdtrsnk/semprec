@@ -2,9 +2,9 @@ import "../../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce, type TaskList } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
@@ -26,11 +26,11 @@ import {
   getTestPool,
   resetDatabase,
 } from "../../testSupport/testDb.js";
-import { SEMPREC_TICK_ACTION_ID } from "../inboxTickKeys.js";
+import { ALLDOTS_TICK_ACTION_ID } from "../inboxTickKeys.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inboxTypesStore.js";
 
 /**
- * The edge-changed hook of the Inbox `type` relation. Edge writes go through the choke point on a `semprec_data` pool
+ * The edge-changed hook of the Inbox `type` relation. Edge writes go through the choke point on a `alldots_data` pool
  * inside a tenant, so row-level security applies to the hook's own reads; the side-B fixture uses raw SQL on that pool
  * because no writer can produce that definition. Queued jobs are read through the superuser pool.
  */
@@ -187,7 +187,7 @@ describe("Inbox type edge changed hook (issue #1718)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {
@@ -331,7 +331,7 @@ describe("Inbox type edge changed hook (issue #1718)", () => {
           projectItemId,
           name: "Source update",
           rule: { kind: "onItemEvent", databaseId: source.id, event: "update" },
-          actionId: SEMPREC_TICK_ACTION_ID,
+          actionId: ALLDOTS_TICK_ACTION_ID,
         }),
       );
       const caller = await cp.createItem({ databaseId: source.id });

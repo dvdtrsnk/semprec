@@ -2,7 +2,7 @@
   {
     "id": 32114899412,
     "node_id": "LE_lADOUFuQ4c8AAAABT_-y0s8AAAAHejJ51A",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32114899412",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32114899412",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -67,14 +67,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABFx-YkA",
         "number": 831,
         "title": "Keep failing test runs red and skip the inbox tick's write on a repeatable-read lock conflict",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/831",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/831",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/831",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/831",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/831.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/831.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/831",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/831",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/831.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/831.patch",
           "merged_at": "2026-09-29T23:11:00Z"
         },
         "bodySha256": "8c95c38a512ec107cc5f624dd656921c0aebdcff3f5424f0c68acfb9505e400d"
@@ -84,7 +84,7 @@
   {
     "id": 32121301191,
     "node_id": "CE_lADOUFuQ4c8AAAABT_-y0s8AAAAHepQoxw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32121301191",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32121301191",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

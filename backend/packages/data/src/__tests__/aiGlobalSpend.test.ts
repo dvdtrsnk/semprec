@@ -25,7 +25,7 @@ async function insertCall(tenantId: string, costUsd: number, at: string = "now()
 describe("ai_global_spend", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
   });
 
   afterAll(async () => {
@@ -74,15 +74,15 @@ describe("ai_global_spend", () => {
       expect(spentMonth).toBe(rows[0]?.first_of_month ? 1 : 8);
     });
 
-    it("is owned by semprec_router with no EXECUTE for PUBLIC and one for semprec_side", async () => {
+    it("is owned by alldots_router with no EXECUTE for PUBLIC and one for alldots_side", async () => {
       const { rows } = await pool.query<{ owner: string; public_execute: boolean; side: boolean }>(
         `SELECT pg_get_userbyid(proowner) AS owner,
                 has_function_privilege('public', oid, 'EXECUTE') AS public_execute,
-                has_function_privilege('semprec_side', oid, 'EXECUTE') AS side
+                has_function_privilege('alldots_side', oid, 'EXECUTE') AS side
            FROM pg_proc WHERE proname = 'ai_global_spend'`,
       );
 
-      expect(rows).toEqual([{ owner: "semprec_router", public_execute: false, side: true }]);
+      expect(rows).toEqual([{ owner: "alldots_router", public_execute: false, side: true }]);
       await expect(getGlobalGatewaySpend(sidePool)).resolves.toBeDefined();
     });
   });

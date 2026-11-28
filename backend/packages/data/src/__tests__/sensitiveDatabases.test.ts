@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
@@ -40,7 +40,7 @@ async function sensitiveState(tenantId: string): Promise<{ sensitiveKeys: string
 describe("sensitive databases (issue #1808)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

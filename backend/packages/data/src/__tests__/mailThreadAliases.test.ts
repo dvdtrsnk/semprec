@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -45,7 +45,7 @@ async function aliasRows(): Promise<{ from: string; to: string }[]> {
 describe("mail thread aliases", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -67,7 +67,7 @@ describe("mail thread aliases", () => {
     await merge(tenantA, a, b);
     await merge(tenantA, b, c);
 
-    const countingPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const countingPool = await createRuntimeRolePool(adminPool, "alldots_data");
     let resolvedAndCounted: { fromA: string | null; fromB: string | null; perCall: number[] } | undefined;
     const failures: unknown[] = [];
     try {

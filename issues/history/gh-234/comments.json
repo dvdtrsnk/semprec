@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593155260",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/234#issuecomment-5593155260",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/234",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593155260",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/234#issuecomment-5593155260",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/234",
     "id": 5593155260,
     "node_id": "IC_kwDOUFuQ4c8AAAABTWDGvA",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593155260/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593155260/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593336341",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/234#issuecomment-5593336341",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/234",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593336341",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/234#issuecomment-5593336341",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/234",
     "id": 5593336341,
     "node_id": "IC_kwDOUFuQ4c8AAAABTWOKFQ",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-08T23:30:20Z",
     "updated_at": "2026-09-08T23:30:20Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #352\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-234-auth-v1-07-08-add-the-setup-web-wizard-thr_aqybchfr48` to origin.\n\n## Summary\n\nImplements issue #234: the `/setup` wizard page in the web client, driven by the #233 bootstrap API.\n\n- **`setupOperations.ts`** (`web/src/api/setupOperations.ts`): the HTTP binding for `POST /api/setup`, sending `{email, password}` with the setup token as an `Authorization: Bearer` header (the token comes from the wizard's own `?token=` query param, not a server-side secret). A 404 response — either \"already bootstrapped\" or \"wrong token\", indistinguishable by design — classifies as `unavailable`; a 400's validation message is surfaced for inline display.\n- **`SetupWizard.tsx`** (`web/src/views/setup/SetupWizard.tsx`): form → not-found / success states. The not-found state renders with no form, per the acceptance criteria. Success links onward to `?page=login` without creating a session itself. No account-creation logic lives in this component — only the #233 API inserts users.\n- Wired into the app's existing query-param routing (`?page=setup&token=...`) in `main.tsx`/`App.tsx`, matching the codebase's router-less convention (no react-router in this repo).\n- A dev-proxy entry for `/api/setup` in `vite.config.ts` that deliberately does *not* attach the stopgap `SEMPREC_API_TOKEN` — this endpoint's bearer token is the operator's URL-provided setup token, not a shared server secret.\n- i18n strings (English + Czech) and tests for both the operations module and the component (form submit, success, not-found, validation error).\n\nThis branch also picked up `develop`'s already-merged #233 work via fast-forward, since #233 merged after this branch was created and the wizard has nothing to call without it.\n\n## Test plan\n\n- [x] `backend`: lint, format:check, build, test:unit (114/114), check:pi-import-paths, check-migration-numbering, check:boundaries, test:integration (741/741), test:e2e (5/5)\n- [x] `web`: lint, format:check, build, test (137/137, including new `setupOperations`/`SetupWizard` tests)\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #352\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-234-auth-v1-07-08-add-the-setup-web-wizard-thr_aqybchfr48` to origin.\n\n## Summary\n\nImplements issue #234: the `/setup` wizard page in the web client, driven by the #233 bootstrap API.\n\n- **`setupOperations.ts`** (`web/src/api/setupOperations.ts`): the HTTP binding for `POST /api/setup`, sending `{email, password}` with the setup token as an `Authorization: Bearer` header (the token comes from the wizard's own `?token=` query param, not a server-side secret). A 404 response — either \"already bootstrapped\" or \"wrong token\", indistinguishable by design — classifies as `unavailable`; a 400's validation message is surfaced for inline display.\n- **`SetupWizard.tsx`** (`web/src/views/setup/SetupWizard.tsx`): form → not-found / success states. The not-found state renders with no form, per the acceptance criteria. Success links onward to `?page=login` without creating a session itself. No account-creation logic lives in this component — only the #233 API inserts users.\n- Wired into the app's existing query-param routing (`?page=setup&token=...`) in `main.tsx`/`App.tsx`, matching the codebase's router-less convention (no react-router in this repo).\n- A dev-proxy entry for `/api/setup` in `vite.config.ts` that deliberately does *not* attach the stopgap `ALLDOTS_API_TOKEN` — this endpoint's bearer token is the operator's URL-provided setup token, not a shared server secret.\n- i18n strings (English + Czech) and tests for both the operations module and the component (form submit, success, not-found, validation error).\n\nThis branch also picked up `develop`'s already-merged #233 work via fast-forward, since #233 merged after this branch was created and the wizard has nothing to call without it.\n\n## Test plan\n\n- [x] `backend`: lint, format:check, build, test:unit (114/114), check:pi-import-paths, check-migration-numbering, check:boundaries, test:integration (741/741), test:e2e (5/5)\n- [x] `web`: lint, format:check, build, test (137/137, including new `setupOperations`/`SetupWizard` tests)\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593336341/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593336341/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593511962",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/234#issuecomment-5593511962",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/234",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593511962",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/234#issuecomment-5593511962",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/234",
     "id": 5593511962,
     "node_id": "IC_kwDOUFuQ4c8AAAABTWY4Gg",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593511962/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593511962/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593704037",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/234#issuecomment-5593704037",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/234",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593704037",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/234#issuecomment-5593704037",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/234",
     "id": 5593704037,
     "node_id": "IC_kwDOUFuQ4c8AAAABTWkmZQ",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5593704037/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5593704037/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

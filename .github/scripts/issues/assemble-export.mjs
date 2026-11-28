@@ -144,7 +144,7 @@ export async function assembleExport(root, destination, exportedAt) {
     files.push({ number, path: `issues/${number}.json`, sha256: digest(content), content });
   }
   const openCount = [...issues.values()].filter(issue => issue.state === "open").length;
-  const manifest = { schemaVersion: 1, repository: "dvdtrsnk/semprec", state: "all", complete: true, exportedAt,
+  const manifest = { schemaVersion: 1, repository: "dvdtrsnk/alldots", state: "all", complete: true, exportedAt,
     issueCount: issues.size, openCount, closedCount: issues.size - openCount,
     sourcePagination: progress.pages,
     issues: files.map(({ number, path, sha256 }) => ({ number, path, sha256 })) };

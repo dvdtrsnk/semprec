@@ -2,7 +2,7 @@ import CoreKit
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The banner above the tabs of a signed-in scene: what it shows for each state of the changes not on the server
 /// yet, that it follows its model while shown, and that its dismissal reaches the model.

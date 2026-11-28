@@ -1,5 +1,5 @@
 import "../../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -20,7 +20,7 @@ let foreign: string;
 describe("transcript detail", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify transcript detail role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -266,7 +266,7 @@ describe("transcript detail", () => {
           {
             databaseId: f.db("transcripts"),
             itemId: f.transcript.id,
-            propertiesPatch: { link: `semprec://items/${file.id}` },
+            propertiesPatch: { link: `alldots://items/${file.id}` },
           },
           { allowedSystemKeys: ["link"], systemOwnerProcess: "transcribe" },
         ),

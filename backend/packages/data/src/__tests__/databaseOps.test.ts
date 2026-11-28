@@ -8,7 +8,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ForbiddenError, NotFoundError } from "../errors.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -180,7 +180,7 @@ describe("choke-point databaseOps", () => {
   });
 
   it("allows the data runtime role to write both appearance columns", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await runInTenant(getTenantZeroId(), async () => {
         const runtimeChokePoint = createChokePoint(runtime);
@@ -318,7 +318,7 @@ describe("choke-point databaseOps", () => {
     });
 
     it("allows the data runtime role to write overview_hidden", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
           "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -340,7 +340,7 @@ describe("choke-point databaseOps", () => {
     it("confines overviewHidden to the caller's tenant on the runtime role", async () => {
       const tenantA = getTenantZeroId();
       const tenantB = await createTestTenant(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const runtimeChokePoint = createChokePoint(runtime);
         const create = () => runtimeChokePoint.createDatabase({ name: "Recipes", key: "recipes", system: true });
@@ -466,7 +466,7 @@ describe("choke-point databaseOps", () => {
     const property = (await chokePoint.listProperties(db.id))[0];
     if (!property) throw new Error("missing title property");
     const other = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await runInTenant(getTenantZeroId(), async () => {
         const own = await withTransaction(runtime, (client) => listPropertiesByDatabases(client, [db.id]));
@@ -497,8 +497,8 @@ describe("choke-point databaseOps", () => {
         parent.id,
       ]);
       const tenant = getTenantZeroId(),
-        createPool = await createRuntimeRolePool(pool, "semprec_data"),
-        purgePool = await createRuntimeRolePool(pool, "semprec_data");
+        createPool = await createRuntimeRolePool(pool, "alldots_data"),
+        purgePool = await createRuntimeRolePool(pool, "alldots_data");
       let release!: () => void, ready!: (pid: number) => void;
       const gate = new Promise<void>((r) => {
         release = r;

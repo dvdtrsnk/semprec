@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant, type SempMessageRef } from "@semprec/shared";
+import { runInTenant, type SempMessageRef } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -50,7 +50,7 @@ async function createTenantSetup(): Promise<TenantSetup> {
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

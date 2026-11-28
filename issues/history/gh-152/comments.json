@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611096095",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/152#issuecomment-5611096095",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/152",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611096095",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/152#issuecomment-5611096095",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/152",
     "id": 5611096095,
     "node_id": "IC_kwDOUFuQ4c8AAAABTnKIHw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611096095/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611096095/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611269689",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/152#issuecomment-5611269689",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/152",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611269689",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/152#issuecomment-5611269689",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/152",
     "id": 5611269689,
     "node_id": "IC_kwDOUFuQ4c8AAAABTnUuOQ",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-10T01:26:43Z",
     "updated_at": "2026-09-10T01:26:43Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #363\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-152-notifications-v1-05-05-broadcast-live-thr_udspe3kspi`.\n\n## Summary\n\nImplements issue #152 (notifications-v1 05/05): broadcasting live notifications and synchronizing read state across sessions.\n\n**Data layer (`@semprec/data`):**\n- `notificationsStore.ts`: `listUnreadNotificationsForUser` (deterministic unread recovery for reconnecting clients), `visitNotification` (ownership-scoped, atomic, idempotent visit-and-read), `markAllNotificationsRead`.\n- `realtimeHook.ts`: new `notifyNotificationCreated`/`notifyNotificationReadState` hooks, following the existing invalidation/doc-update hook pattern.\n- `notify.ts`: `writeNotification` now fires `notifyNotificationCreated` (deferred via `runAfterCommit`) exactly once per genuinely new notification — never on a replayed transition or a rolled-back transaction.\n\n**Realtime layer (`@semprec/realtime`):**\n- New `notification_created`/`notification_read_state` message kinds, both carrying `userId`.\n- `startRealtimeServer` now accepts an optional `resolveUserId` adapter; any message with a `userId` is delivered only to that user's own sockets, while existing broadcast traffic (`item_invalidation`, `doc_update`) is unaffected — kept as a separable adapter per the issue's note about later absorption into the full multiplexed WS protocol.\n\n**API layer (`semprec-api`):**\n- New `GET /api/notifications/unread`, `POST /api/notifications/:id/visit`, `POST /api/notifications/mark-all-read`, all authenticated and scoped to the caller's own notifications, wired into `app.ts` and documented in `routeMatrix.ts`.\n\nNote: this branch also merges in `develop`'s notifications-v1 01–04 work (schema, writer, push registrations, Web Push/APNs), since that foundation had landed upstream after this branch was originally cut but before this issue could build on it.\n\n**Verification:** full build, lint, format check, and test suite (unit + integration + e2e, 875+ tests) all pass.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #363\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-152-notifications-v1-05-05-broadcast-live-thr_udspe3kspi`.\n\n## Summary\n\nImplements issue #152 (notifications-v1 05/05): broadcasting live notifications and synchronizing read state across sessions.\n\n**Data layer (`@alldots/data`):**\n- `notificationsStore.ts`: `listUnreadNotificationsForUser` (deterministic unread recovery for reconnecting clients), `visitNotification` (ownership-scoped, atomic, idempotent visit-and-read), `markAllNotificationsRead`.\n- `realtimeHook.ts`: new `notifyNotificationCreated`/`notifyNotificationReadState` hooks, following the existing invalidation/doc-update hook pattern.\n- `notify.ts`: `writeNotification` now fires `notifyNotificationCreated` (deferred via `runAfterCommit`) exactly once per genuinely new notification — never on a replayed transition or a rolled-back transaction.\n\n**Realtime layer (`@alldots/realtime`):**\n- New `notification_created`/`notification_read_state` message kinds, both carrying `userId`.\n- `startRealtimeServer` now accepts an optional `resolveUserId` adapter; any message with a `userId` is delivered only to that user's own sockets, while existing broadcast traffic (`item_invalidation`, `doc_update`) is unaffected — kept as a separable adapter per the issue's note about later absorption into the full multiplexed WS protocol.\n\n**API layer (`alldots-api`):**\n- New `GET /api/notifications/unread`, `POST /api/notifications/:id/visit`, `POST /api/notifications/mark-all-read`, all authenticated and scoped to the caller's own notifications, wired into `app.ts` and documented in `routeMatrix.ts`.\n\nNote: this branch also merges in `develop`'s notifications-v1 01–04 work (schema, writer, push registrations, Web Push/APNs), since that foundation had landed upstream after this branch was originally cut but before this issue could build on it.\n\n**Verification:** full build, lint, format check, and test suite (unit + integration + e2e, 875+ tests) all pass.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611269689/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611269689/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611889160",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/152#issuecomment-5611889160",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/152",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611889160",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/152#issuecomment-5611889160",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/152",
     "id": 5611889160,
     "node_id": "IC_kwDOUFuQ4c8AAAABTn6iCA",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611889160/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611889160/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611889305",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/152#issuecomment-5611889305",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/152",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611889305",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/152#issuecomment-5611889305",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/152",
     "id": 5611889305,
     "node_id": "IC_kwDOUFuQ4c8AAAABTn6imQ",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611889305/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611889305/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

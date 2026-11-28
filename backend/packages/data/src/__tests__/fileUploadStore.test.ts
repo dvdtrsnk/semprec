@@ -9,7 +9,7 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -425,7 +425,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   it.each([undefined, { marker: "late" }])(
     "retains a late participant failure and consumes only the asserted participant %#",
     async (late) => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let release = () => {};
       let started = () => {};
       const gate = new Promise<void>((resolve) => {
@@ -501,7 +501,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   );
 
   it("settles ownership when the first participant has the wrong rejection", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const wrong = { marker: "wrong" };
     const expected = { marker: "expected" };
     const cleanupError = new Error("controlled cleanup failure");
@@ -555,7 +555,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   }, 20000);
 
   it("preserves an early checkout failure together with cleanup failure", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const actorError = new Error("pre-verify checkout failure");
     const cleanupError = new Error("cleanup failure");
     let release = () => {};
@@ -661,7 +661,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   it.each([false, true])(
     "settles late overlap checkout and preserves a simultaneous cleanup failure (post-release %s)",
     async (injectPostCancel) => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let deliver = () => {};
       let ready = () => {};
       const verifying = new Promise<void>((resolve) => {
@@ -847,7 +847,7 @@ describe("ingestUploadedFile (issue #670)", () => {
         maxBytes: 1024,
         storage,
       });
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let release = () => {};
       let ready = (_pid: number) => {};
       const gate = new Promise<void>((resolve) => {
@@ -1138,7 +1138,7 @@ describe("ingestUploadedFile (issue #670)", () => {
           },
         });
       };
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       runtime.on("acquire", instrument);
       const owned = ownOverlap(runtime, release);
       const first = owned.run(() =>

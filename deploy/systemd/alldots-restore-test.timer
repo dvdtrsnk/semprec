@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Alldots monthly restore test
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+Unit=alldots-restore-test.service
+
+[Install]
+WantedBy=timers.target

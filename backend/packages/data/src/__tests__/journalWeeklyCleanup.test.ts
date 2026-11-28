@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -109,13 +109,13 @@ async function cleanupHeartbeats(tenant: string): Promise<HeartbeatShape[]> {
   });
 }
 
-async function semprecProjectId(tenant: string): Promise<string> {
+async function alldotsProjectId(tenant: string): Promise<string> {
   return inTenant(tenant, async (client) => {
     const { rows } = await client.query<{ owner_project_item_id: string | null }>(
       "SELECT owner_project_item_id FROM databases WHERE owner_module_id = 'systemSettings'",
     );
     const id = rows[0]?.owner_project_item_id;
-    if (!id) throw new Error("Semprec project missing");
+    if (!id) throw new Error("Alldots project missing");
     return id;
   });
 }
@@ -229,7 +229,7 @@ async function runCleanup(tenant: string, runAgent: RunAgentFn, actionConfig?: R
 describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -273,7 +273,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
 
   describe("seeding", () => {
     it(
-      "gives a new tenant exactly one weekly Sunday 21:00 heartbeat on the Semprec project, with the Czech task while it has no user",
+      "gives a new tenant exactly one weekly Sunday 21:00 heartbeat on the Alldots project, with the Czech task while it has no user",
       async () => {
         const tenant = await seededTenant();
         const heartbeats = await cleanupHeartbeats(tenant);
@@ -282,7 +282,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
           name: "Weekly journal cleanup",
           rule: { kind: "weekly", days: ["sun"], at: "21:00" },
           action_config: { task: CS_TASK },
-          project_item_id: await semprecProjectId(tenant),
+          project_item_id: await alldotsProjectId(tenant),
         });
       },
       SEEDING_TEST_TIMEOUT_MS,
@@ -303,7 +303,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
       "creates none on a second call and says so",
       async () => {
         const tenant = await seededTenant();
-        const project = await semprecProjectId(tenant);
+        const project = await alldotsProjectId(tenant);
         const created = await inTenant(tenant, (client) => ensureJournalWeeklyCleanupHeartbeat(client, project));
         expect(created).toBe(false);
         expect(await cleanupHeartbeats(tenant)).toHaveLength(1);
@@ -393,10 +393,10 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
 
         const task = [EN_TASK, EN_HEADING, `- day ${day}`].join("\n");
         expect(agent.calls).toEqual([
-          { task, projectItemId: await semprecProjectId(tenant), agentRunId: expect.any(String) as string },
+          { task, projectItemId: await alldotsProjectId(tenant), agentRunId: expect.any(String) as string },
         ]);
         expect(await agentRuns(tenant)).toEqual([
-          { project_item_id: await semprecProjectId(tenant), task, status: "done", result: null },
+          { project_item_id: await alldotsProjectId(tenant), task, status: "done", result: null },
         ]);
         expect(await liveOf(tenant, [older, newer])).toEqual([older, newer].sort());
       },
@@ -461,7 +461,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
 
         expect(agent.calls).toEqual([]);
         expect(await agentRuns(tenant)).toEqual([
-          { project_item_id: await semprecProjectId(tenant), task: EN_TASK, status: "error", result: "internal" },
+          { project_item_id: await alldotsProjectId(tenant), task: EN_TASK, status: "error", result: "internal" },
         ]);
       },
       SEEDING_TEST_TIMEOUT_MS,
@@ -502,7 +502,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
     }
 
     it(
-      "starts one agent run on the Semprec project whose task names the day, and leaves both entries live",
+      "starts one agent run on the Alldots project whose task names the day, and leaves both entries live",
       async () => {
         const { tenant, userId } = await seededTenantWithUser("en");
         const day = nextDay();
@@ -517,7 +517,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
 
         const runs = await agentRuns(tenant);
         expect(runs).toHaveLength(1);
-        expect(runs[0]?.project_item_id).toBe(await semprecProjectId(tenant));
+        expect(runs[0]?.project_item_id).toBe(await alldotsProjectId(tenant));
         expect(runs[0]?.task).toContain(`- day ${day}`);
         expect(runs[0]?.status).toBe("done");
         expect(dispatched).toEqual([runs[0]?.task]);
@@ -545,7 +545,7 @@ describe("the weekly Journal cleanup heartbeat (issue #1883)", () => {
         expect(dispatched).toEqual([]);
         const runs = await agentRuns(tenant);
         expect(runs).toEqual([
-          { project_item_id: await semprecProjectId(tenant), task: EN_TASK, status: "error", result: "internal" },
+          { project_item_id: await alldotsProjectId(tenant), task: EN_TASK, status: "error", result: "internal" },
         ]);
         expect((await cleanupHeartbeats(tenant))[0]?.last_error).toBe("Journal database not found");
         const messages = await inTenant(tenant, async (client) => {

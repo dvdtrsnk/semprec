@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint.js";
 import { getDatabaseByModuleId } from "../databasesStore.js";
 import { createViewTypeRegistry } from "../viewTypeRegistry.js";
@@ -24,7 +24,7 @@ const SYSTEM: Actor = { type: "system" };
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
   tenant = await createTestTenant(admin);
   await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));

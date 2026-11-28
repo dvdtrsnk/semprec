@@ -9,7 +9,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
  * RLS, so each case switches role in a rolled-back transaction. A plain pool is used so "no scope" means no
  * `app.tenant_id` at all, which sees no tenant row.
  */
-const ROLES = ["semprec_data", "semprec_side"] as const;
+const ROLES = ["alldots_data", "alldots_side"] as const;
 type Role = (typeof ROLES)[number];
 
 let pool: Pool;
@@ -96,7 +96,7 @@ describe("row-level security as the runtime roles", () => {
     );
     const { rows: tables } = await pool.query<{ relname: string }>(
       `SELECT relname FROM pg_class
-        WHERE relnamespace = 'public'::regnamespace AND obj_description(oid, 'pg_class') = 'semprec:tenancy=tenant'
+        WHERE relnamespace = 'public'::regnamespace AND obj_description(oid, 'pg_class') = 'alldots:tenancy=tenant'
         ORDER BY relname`,
     );
     tenantTables = tables.map((row) => row.relname);
@@ -191,8 +191,8 @@ describe("row-level security as the runtime roles", () => {
     });
   });
 
-  it("lets semprec_data insert, update and delete choke-point rows inside tenant zero's scope", async () => {
-    await asRole("semprec_data", { scopeToTenantZero: true }, async (client) => {
+  it("lets alldots_data insert, update and delete choke-point rows inside tenant zero's scope", async () => {
+    await asRole("alldots_data", { scopeToTenantZero: true }, async (client) => {
       const { rows } = await client.query<{ id: string; tenant_id: string }>(
         "INSERT INTO databases (name) VALUES ('as runtime role') RETURNING id, tenant_id",
       );
@@ -218,7 +218,7 @@ describe("row-level security as the runtime roles", () => {
   it("sees no row after a committed transaction that set app.tenant_id locally (strict, issue #1067)", async () => {
     const client = await rolePool.connect();
     try {
-      await client.query("SET ROLE semprec_data");
+      await client.query("SET ROLE alldots_data");
       await client.query("BEGIN");
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [randomUUID()]);
       expect(await count(client, "databases")).toBe(0);

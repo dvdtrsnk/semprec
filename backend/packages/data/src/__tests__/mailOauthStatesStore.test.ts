@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { openSecret } from "@semprec/credentials";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { openSecret } from "@alldots/credentials";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
 import {
@@ -85,7 +85,7 @@ describe("mail OAuth states (issue #1483)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -259,7 +259,7 @@ describe("mail OAuth states (issue #1483)", () => {
     const keyA = await runInTenant(tenantA, () => withTransaction(pool, (c) => getOrCreateTenantDataKey(c)));
     const keyB = await runInTenant(tenantB, () => withTransaction(pool, (c) => getOrCreateTenantDataKey(c)));
     const sealed = { ciphertext: row.code_verifier_ciphertext, nonce: row.code_verifier_nonce };
-    const ad = (tenant: string, id: string) => Buffer.from(`semprec:mail-oauth-state:v1:${tenant}:${id}`, "utf8");
+    const ad = (tenant: string, id: string) => Buffer.from(`alldots:mail-oauth-state:v1:${tenant}:${id}`, "utf8");
 
     expect((await openSecret(sealed, keyA.dataKey, ad(tenantA, row.id))).toString("utf8")).toBe(consumed.codeVerifier);
     await expect(openSecret(sealed, keyB.dataKey, ad(tenantA, row.id))).rejects.toThrow();
@@ -288,7 +288,7 @@ describe("mail OAuth states (issue #1483)", () => {
     if (!stateRow) throw new Error("Missing OAuth state row");
     const consumed = await consume(tenantA, created.state, userA);
     if (!consumed) throw new Error("Expected OAuth state consumption");
-    const root = await mkdtemp(join(tmpdir(), "semprec-oauth-export-"));
+    const root = await mkdtemp(join(tmpdir(), "alldots-oauth-export-"));
     try {
       const files = new LocalFsBlobStorageWriter(join(root, "files"));
       const mailAttachments = new LocalFsBlobStorageWriter(join(root, "mail"));
@@ -362,7 +362,7 @@ describe("mail OAuth states (issue #1483)", () => {
     expect(await rowFor(states.usedRecentB!)).toBeDefined();
   });
   describe("route_mail_oauth_state and the callback's redirect", () => {
-    it("is a SECURITY DEFINER function of semprec_router with a pinned search_path, run by semprec_data only", async () => {
+    it("is a SECURITY DEFINER function of alldots_router with a pinned search_path, run by alldots_data only", async () => {
       const { rows } = await adminPool.query<{
         secdef: boolean;
         owner: string;
@@ -372,15 +372,15 @@ describe("mail OAuth states (issue #1483)", () => {
         pub: boolean;
       }>(
         `SELECT p.prosecdef AS secdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config,
-                has_function_privilege('semprec_data', 'route_mail_oauth_state(text)', 'EXECUTE') AS data,
-                has_function_privilege('semprec_side', 'route_mail_oauth_state(text)', 'EXECUTE') AS side,
+                has_function_privilege('alldots_data', 'route_mail_oauth_state(text)', 'EXECUTE') AS data,
+                has_function_privilege('alldots_side', 'route_mail_oauth_state(text)', 'EXECUTE') AS side,
                 has_function_privilege('public', 'route_mail_oauth_state(text)', 'EXECUTE') AS pub
            FROM pg_proc p WHERE p.proname = 'route_mail_oauth_state'`,
       );
       expect(rows).toEqual([
         {
           secdef: true,
-          owner: "semprec_router",
+          owner: "alldots_router",
           config: ["search_path=pg_catalog, public, pg_temp"],
           data: true,
           side: false,
@@ -389,11 +389,11 @@ describe("mail OAuth states (issue #1483)", () => {
       ]);
     });
 
-    it("limits semprec_router to SELECT on the four columns it reads", async () => {
+    it("limits alldots_router to SELECT on the four columns it reads", async () => {
       const columns = ["tenant_id", "state_hash", "used_at", "expires_at", "redirect_target", "user_id", "services"];
       const { rows } = await adminPool.query<{ table_select: boolean; columns: boolean[] }>(
-        `SELECT has_table_privilege('semprec_router', 'mail_oauth_states', 'SELECT') AS table_select,
-                array(SELECT has_column_privilege('semprec_router', 'mail_oauth_states', c, 'SELECT')
+        `SELECT has_table_privilege('alldots_router', 'mail_oauth_states', 'SELECT') AS table_select,
+                array(SELECT has_column_privilege('alldots_router', 'mail_oauth_states', c, 'SELECT')
                         FROM unnest($1::text[]) WITH ORDINALITY AS t(c, n) ORDER BY n) AS columns`,
         [columns],
       );
@@ -425,8 +425,8 @@ describe("mail OAuth states (issue #1483)", () => {
       }
 
       expect(resolved).toEqual({
-        appA: "semprec://oauth",
-        appB: "semprec://oauth",
+        appA: "alldots://oauth",
+        appB: "alldots://oauth",
         plain: null,
         used: null,
         expired: null,

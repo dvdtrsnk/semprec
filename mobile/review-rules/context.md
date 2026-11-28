@@ -1,4 +1,4 @@
-This is the `mobile/` platform of the Semprec monorepo (the repository root,
+This is the `mobile/` platform of the Alldots monorepo (the repository root,
 `backend/`, `web/`, `mobile/android/` and `mobile/apple/` are separate
 platforms with their own review-rules and are reviewed independently). The
 review bot assigns each file to the platform whose directory is the longest
@@ -20,28 +20,28 @@ of the CoreKit and app targets run. A change here therefore reaches both apps,
 whose code is reviewed by their own platforms; when a shared change needs a
 native consumer to change, read that consumer at the pull request's head under
 `mobile/android/` or `mobile/apple/Modules/Core/CoreKit/`. Every shared module
-applies `build-logic/src/main/kotlin/semprec.kmp.gradle.kts` (targets `jvm`,
+applies `build-logic/src/main/kotlin/alldots.kmp.gradle.kts` (targets `jvm`,
 `androidTarget`, `iosArm64`, `iosSimulatorArm64` and `macosArm64`, with the
 Apple minimum versions from `gradle/project.properties`); a module's tests are
 in its `src/commonTest` and run on the JVM and natively. The modules:
 
-- `:shared:core` (`cz.semprec.app.core`) — `FailureKind`, the typed expected
+- `:shared:core` (`cz.alldots.app.core`) — `FailureKind`, the typed expected
   failures. Depends on no module.
-- `:shared:domain` (`cz.semprec.app.domain`) — the `PlaceholderItem` entity,
+- `:shared:domain` (`cz.alldots.app.domain`) — the `PlaceholderItem` entity,
   the `PlaceholderRepository` port, `RepositoryResult`, and the use cases
   `LoadPlaceholderItems` and `LoadPlaceholderItem`, which make the decisions
   (identity checks, ordering). Depends on core.
-- `:shared:data` (`cz.semprec.app.data`) — `InMemoryPlaceholderRepository`, the
+- `:shared:data` (`cz.alldots.app.data`) — `InMemoryPlaceholderRepository`, the
   only implementation of the port. Its one persistence is the mail thread list
   file cache (`FileMailThreadListCache`, `CacheFiles.kt`), kept in the app's
   cache directory.
   Depends on domain.
-- `:shared:presentation` (`cz.semprec.app.presentation`) — `ScreenViewModel`,
+- `:shared:presentation` (`cz.alldots.app.presentation`) — `ScreenViewModel`,
   the screen ViewModels `HomeViewModel`, `DetailViewModel` and
   `SettingsViewModel` (internal constructors) with their state, action and
   effect types, and `HomeViewModelFactory`, which creates them and is hidden
   from Objective-C and Swift. Depends on core and domain, never on data.
-- `:shared:umbrella` (`cz.semprec.app.sdk`) — `HomeSDK`, the composition root:
+- `:shared:umbrella` (`cz.alldots.app.sdk`) — `HomeSDK`, the composition root:
   it wires repository, use cases and factory by hand, with no DI library, and
   returns a new ViewModel on every call. It builds the dynamic `SharedSDK`
   framework for `iosArm64`, `iosSimulatorArm64` and `macosArm64`, exports only

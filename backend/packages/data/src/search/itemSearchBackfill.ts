@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { indexItem } from "./itemSearchIndexer.js";

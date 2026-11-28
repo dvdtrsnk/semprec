@@ -13,7 +13,7 @@ Check for architecture and ownership violations:
 5. A module reaching into another module's internals instead of its declared
    contract/exported interface — high severity.
 6. An LLM/AI-provider call (SDK import, HTTP call to a model API) anywhere outside
-   `semprec-ai-gateway` — critical: it bypasses `ai_gateway_calls` logging and the
+   `alldots-ai-gateway` — critical: it bypasses `ai_gateway_calls` logging and the
    budget caps. Only the gateway itself may talk to providers.
 7. AI/agent code writing persisted state directly instead of producing a proposal
    that goes through the approval queue / `confirm` flow — high severity, even if the

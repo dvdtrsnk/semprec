@@ -1,4 +1,4 @@
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import type { Queryable } from "../../db/pool.js";
 
 export function calendarPushChannelsJobKey(accountItemId: string): string {

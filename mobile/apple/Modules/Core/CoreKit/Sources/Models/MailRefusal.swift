@@ -20,7 +20,7 @@ public enum MailRefusal: CaseIterable, Equatable, Sendable {
     case serverUnreachable
     case attachmentTooLarge
     case draftAlreadySent
-    /// The draft has no Semprec draft row and cannot be changed.
+    /// The draft has no Alldots draft row and cannot be changed.
     case draftNotEditable
     /// The thread has no received message to mark unread or flag.
     case noReceivedMessage

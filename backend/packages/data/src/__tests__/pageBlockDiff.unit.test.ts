@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PageBlock, TextRun } from "@semprec/block-model";
+import type { PageBlock, TextRun } from "@alldots/block-model";
 import { MAX_DIFF_CELLS, planBlockDiff, type DiffNewBlock } from "../docs/pageBlockDiff.js";
 
 const PAGE_ID = "11111111-1111-4111-8111-111111111111";

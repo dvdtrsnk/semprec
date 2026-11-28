@@ -83,7 +83,7 @@ Run in `backend/` of the integration worktree with `npx -y pnpm@9.12.0`, on the 
 | Targeted integration run, the known baseline case of `mcpConnectionFactory.test.ts` | FAIL | "gives the child exactly the inherited names, the config's env names and the credential name": the child has the additional name `__CF_USER_TEXT_ENCODING`. This is the known baseline of the macOS delivery host, with the same diff as in the full tier. It is not a result of this repair and did not hold the landing. The other 54 tests of the file passed. |
 | `install --frozen-lockfile` | NOT RUN | The merge changes neither the lockfile nor any `package.json`. |
 | `run check:pi-import-paths` | NOT RUN | Not part of the gate set for this repair. The repair changes one integration test file. |
-| `--filter @semprec/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
+| `--filter @alldots/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
 | `run test:e2e` | NOT RUN | Not part of the gate set for this repair. The repair changes no end-to-end file and no production file. |
 | Whole integration tier | NOT RUN | See "Not repaired and open". |
 

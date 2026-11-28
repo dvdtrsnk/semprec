@@ -80,7 +80,7 @@ export function buildInviteUrl(appBaseUrl: string, token: string): string {
 export interface CreateInviteInput {
   email: string;
   invitedBy: string;
-  /** Origin the invite link is built against, e.g. `https://app.semprec.example`. */
+  /** Origin the invite link is built against, e.g. `https://app.alldots.example`. */
   appBaseUrl: string;
   /** `null` when SMTP is not configured: the invite is created and the link is returned, but no mail is sent. */
   mailer: InviteMailer | null;
@@ -103,7 +103,7 @@ export async function createInvite(client: PoolClient, input: CreateInviteInput)
     throw new ValidationError("'email' must be a valid email address", { field: "email" });
   }
 
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('semprec_invite:' || $1))", [email]);
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('alldots_invite:' || $1))", [email]);
   const { rows: existingUsers } = await client.query<{ found: number }>(
     "SELECT 1 AS found FROM users WHERE email = $1",
     [email],

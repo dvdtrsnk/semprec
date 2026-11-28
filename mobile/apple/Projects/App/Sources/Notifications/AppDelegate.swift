@@ -2,7 +2,7 @@
 import CoreKit
 import SwiftUI
 
-/// The iOS application delegate, which SwiftUI creates through `UIApplicationDelegateAdaptor` in `SemprecApp`: the
+/// The iOS application delegate, which SwiftUI creates through `UIApplicationDelegateAdaptor` in `AlldotsApp`: the
 /// only way an iOS app receives its APNs device token and its silent pushes. It hands both to `AppNotifications` and
 /// decides nothing itself. The UIKit types reach it through SwiftUI; the app imports no UIKit. macOS registers for no
 /// remote notifications and has no such delegate.

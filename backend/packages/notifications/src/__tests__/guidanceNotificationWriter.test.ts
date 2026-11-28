@@ -11,9 +11,9 @@ import {
   projectAgentGuidanceStore,
   seedSystem,
   withTransaction,
-} from "@semprec/data";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import type { GuidanceDriftContradiction } from "@semprec/shared";
+} from "@alldots/data";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@alldots/data/testSupport";
+import type { GuidanceDriftContradiction } from "@alldots/shared";
 import { createGuidanceNotificationWriter } from "../guidanceNotificationWriter.js";
 
 let pool: Pool;

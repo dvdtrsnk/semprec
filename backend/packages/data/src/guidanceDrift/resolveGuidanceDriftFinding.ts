@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { parseProjectAgentGuidanceMarkdown, validateGuidanceDriftContradiction } from "@semprec/shared";
+import { parseProjectAgentGuidanceMarkdown, validateGuidanceDriftContradiction } from "@alldots/shared";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { saveGuidanceSections } from "../projectAgentGuidance/projectAgentGuidanceSections.js";

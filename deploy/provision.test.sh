@@ -19,9 +19,9 @@ cp -R "$REPOSITORY_ROOT/deploy" "$TEST_DEPLOY"
 mkdir -p "$TEST_STATE/hunspell" "$TEST_STATE/tsearch_data"
 printf 'Czech dictionary\n' > "$TEST_STATE/hunspell/cs_CZ.dic"
 printf 'Czech affix\n' > "$TEST_STATE/hunspell/cs_CZ.aff"
-sed -i "s|readonly SEMPREC_ROOT=/opt/semprec|readonly SEMPREC_ROOT=$TEST_ROOT/opt/semprec|" \
+sed -i "s|readonly ALLDOTS_ROOT=/opt/alldots|readonly ALLDOTS_ROOT=$TEST_ROOT/opt/alldots|" \
   "$TEST_DEPLOY/provision.sh"
-sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/semprec|readonly BACKUP_DIRECTORY=$TEST_ROOT/var/backups/semprec|" \
+sed -i "s|readonly BACKUP_DIRECTORY=/var/backups/alldots|readonly BACKUP_DIRECTORY=$TEST_ROOT/var/backups/alldots|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly SYSTEMD_UNIT_DIR=/etc/systemd/system|readonly SYSTEMD_UNIT_DIR=$TEST_ROOT/systemd/system|" \
   "$TEST_DEPLOY/provision.sh"
@@ -33,7 +33,7 @@ sed -i "s|readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d|rea
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly NFTABLES_CONFIG=/etc/nftables.conf|readonly NFTABLES_CONFIG=$TEST_ROOT/nftables.conf|" \
   "$TEST_DEPLOY/provision.sh"
-sed -i "s|readonly MCP_LAUNCHER_PATH=/usr/local/libexec/semprec-mcp-launch|readonly MCP_LAUNCHER_PATH=$TEST_ROOT/libexec/semprec-mcp-launch|" \
+sed -i "s|readonly MCP_LAUNCHER_PATH=/usr/local/libexec/alldots-mcp-launch|readonly MCP_LAUNCHER_PATH=$TEST_ROOT/libexec/alldots-mcp-launch|" \
   "$TEST_DEPLOY/provision.sh"
 sed -i "s|readonly APT_KEYRING_DIR=/etc/apt/keyrings|readonly APT_KEYRING_DIR=$TEST_ROOT/keyrings|" \
   "$TEST_DEPLOY/provision.sh"
@@ -98,81 +98,81 @@ run_provision() {
 }
 
 run_provision 2> "$TEST_STATE/first-run.err" || { cat "$TEST_STATE/first-run.err" >&2; exit 1; }
-test -d "$TEST_ROOT/opt/semprec/releases"
-test -d "$TEST_ROOT/opt/semprec/shared"
+test -d "$TEST_ROOT/opt/alldots/releases"
+test -d "$TEST_ROOT/opt/alldots/shared"
 for blob_dir in files mail-attachments; do
-  test -d "$TEST_ROOT/opt/semprec/data/$blob_dir"
-  test "$(stat -c %a "$TEST_ROOT/opt/semprec/data/$blob_dir")" -eq 750
-  grep -Eq "^install -d -o semprec -g semprec -m 0750 .*/opt/semprec/data/$blob_dir\$" "$TEST_STATE/commands"
+  test -d "$TEST_ROOT/opt/alldots/data/$blob_dir"
+  test "$(stat -c %a "$TEST_ROOT/opt/alldots/data/$blob_dir")" -eq 750
+  grep -Eq "^install -d -o alldots -g alldots -m 0750 .*/opt/alldots/data/$blob_dir\$" "$TEST_STATE/commands"
 done
-test -d "$TEST_ROOT/var/backups/semprec"
-test "$(stat -c %a "$TEST_ROOT/var/backups/semprec")" -eq 700
+test -d "$TEST_ROOT/var/backups/alldots"
+test "$(stat -c %a "$TEST_ROOT/var/backups/alldots")" -eq 700
 readonly -a GROUPS_UNDER_TEST=(postgres migrate data-role side-role master-key gateway-token ai-gateway api agents settings backup monitor)
-test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/env")" -eq 700
-test "$(find "$TEST_ROOT/opt/semprec/shared/env" -type f | wc -l)" -eq 12
+test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared/env")" -eq 700
+test "$(find "$TEST_ROOT/opt/alldots/shared/env" -type f | wc -l)" -eq 12
 for group in "${GROUPS_UNDER_TEST[@]}"; do
-  test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/env/$group.env")" -eq 600
-  cmp "$TEST_DEPLOY/shared/env/$group.env.example" "$TEST_ROOT/opt/semprec/shared/env/$group.env"
+  test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared/env/$group.env")" -eq 600
+  cmp "$TEST_DEPLOY/shared/env/$group.env.example" "$TEST_ROOT/opt/alldots/shared/env/$group.env"
 done
-test ! -e "$TEST_ROOT/opt/semprec/shared/.env"
-test -f "$TEST_STATE/user-semprec"
-test -f "$TEST_STATE/user-semprec-mcp"
-# The sandbox uid has its own group and no supplementary groups, so it is not in `semprec`.
-grep -qx 'useradd --system --user-group --home-dir /var/lib/semprec-mcp --no-create-home --shell /usr/sbin/nologin semprec-mcp' "$TEST_STATE/commands"
-if grep -E '^useradd .*semprec-mcp$' "$TEST_STATE/commands" | grep -Eq -- ' (-G|--groups)'; then
-  echo 'semprec-mcp was given supplementary groups' >&2
+test ! -e "$TEST_ROOT/opt/alldots/shared/.env"
+test -f "$TEST_STATE/user-alldots"
+test -f "$TEST_STATE/user-alldots-mcp"
+# The sandbox uid has its own group and no supplementary groups, so it is not in `alldots`.
+grep -qx 'useradd --system --user-group --home-dir /var/lib/alldots-mcp --no-create-home --shell /usr/sbin/nologin alldots-mcp' "$TEST_STATE/commands"
+if grep -E '^useradd .*alldots-mcp$' "$TEST_STATE/commands" | grep -Eq -- ' (-G|--groups)'; then
+  echo 'alldots-mcp was given supplementary groups' >&2
   exit 1
 fi
-mcp_useradd_line="$(grep -m 1 -n '^useradd .*semprec-mcp$' "$TEST_STATE/commands" | cut -d: -f1)"
+mcp_useradd_line="$(grep -m 1 -n '^useradd .*alldots-mcp$' "$TEST_STATE/commands" | cut -d: -f1)"
 nft_check_line="$(grep -m 1 -n '^nft -c ' "$TEST_STATE/commands" | cut -d: -f1)"
 test -n "$nft_check_line"
 test "$mcp_useradd_line" -lt "$nft_check_line"
-test -f "$TEST_ROOT/systemd/system/semprec-mcp-launch.socket"
-test -f "$TEST_ROOT/systemd/system/semprec-mcp-launch@.service"
-grep -Eq "^systemd-analyze verify .*/semprec-mcp-launch\.socket( |\$)" "$TEST_STATE/commands"
-grep -Eq "^systemd-analyze verify .*/semprec-mcp-launch@\.service( |\$)" "$TEST_STATE/commands"
-grep -qx 'systemctl enable --now semprec-mcp-launch.socket' "$TEST_STATE/commands"
-test -f "$TEST_ROOT/libexec/semprec-mcp-launch"
-test "$(stat -c %a "$TEST_ROOT/libexec/semprec-mcp-launch")" -eq 755
-cmp "$TEST_DEPLOY/bin/semprec-mcp-launch" "$TEST_ROOT/libexec/semprec-mcp-launch"
-grep -qx "install -o root -g root -m 0755 $TEST_DEPLOY/bin/semprec-mcp-launch $TEST_ROOT/libexec/semprec-mcp-launch" "$TEST_STATE/commands"
+test -f "$TEST_ROOT/systemd/system/alldots-mcp-launch.socket"
+test -f "$TEST_ROOT/systemd/system/alldots-mcp-launch@.service"
+grep -Eq "^systemd-analyze verify .*/alldots-mcp-launch\.socket( |\$)" "$TEST_STATE/commands"
+grep -Eq "^systemd-analyze verify .*/alldots-mcp-launch@\.service( |\$)" "$TEST_STATE/commands"
+grep -qx 'systemctl enable --now alldots-mcp-launch.socket' "$TEST_STATE/commands"
+test -f "$TEST_ROOT/libexec/alldots-mcp-launch"
+test "$(stat -c %a "$TEST_ROOT/libexec/alldots-mcp-launch")" -eq 755
+cmp "$TEST_DEPLOY/bin/alldots-mcp-launch" "$TEST_ROOT/libexec/alldots-mcp-launch"
+grep -qx "install -o root -g root -m 0755 $TEST_DEPLOY/bin/alldots-mcp-launch $TEST_ROOT/libexec/alldots-mcp-launch" "$TEST_STATE/commands"
 grep -Eq '^apt-get install .* jq( |$)' "$TEST_STATE/commands"
-for unit in semprec-api semprec-agents; do
-  grep -qx 'Environment=SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock' "$TEST_ROOT/systemd/system/$unit.service"
-  grep -Eqx 'Wants=.*semprec-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
-  grep -Eqx 'After=.*semprec-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
+for unit in alldots-api alldots-agents; do
+  grep -qx 'Environment=ALLDOTS_MCP_LAUNCH_SOCKET=/run/alldots-mcp-launch.sock' "$TEST_ROOT/systemd/system/$unit.service"
+  grep -Eqx 'Wants=.*alldots-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
+  grep -Eqx 'After=.*alldots-mcp-launch\.socket( .*)?' "$TEST_ROOT/systemd/system/$unit.service"
 done
-test -f "$TEST_ROOT/systemd/system/semprec-api.service"
-test -f "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-test -f "$TEST_ROOT/systemd/system/semprec-transcribe.service"
-test -f "$TEST_ROOT/systemd/system/semprec-agents.service"
-test -f "$TEST_ROOT/systemd/system/semprec-dead-man.timer"
-test -f "$TEST_ROOT/systemd/system/semprec-failping@.service"
-test -f "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
+test -f "$TEST_ROOT/systemd/system/alldots-api.service"
+test -f "$TEST_ROOT/systemd/system/alldots-ai-gateway.service"
+test -f "$TEST_ROOT/systemd/system/alldots-transcribe.service"
+test -f "$TEST_ROOT/systemd/system/alldots-agents.service"
+test -f "$TEST_ROOT/systemd/system/alldots-dead-man.timer"
+test -f "$TEST_ROOT/systemd/system/alldots-failping@.service"
+test -f "$TEST_ROOT/systemd/journald.conf.d/alldots.conf"
 test -s "$TEST_STATE/tsearch_data/cs_cz.dict"
 test -s "$TEST_STATE/tsearch_data/cs_cz.affix"
 test -r "$TEST_STATE/tsearch_data/cs_cz.dict"
 test -r "$TEST_STATE/tsearch_data/cs_cz.affix"
-grep -q "^docker compose .*--env-file $TEST_ROOT/opt/semprec/shared/env/postgres.env " "$TEST_STATE/commands"
+grep -q "^docker compose .*--env-file $TEST_ROOT/opt/alldots/shared/env/postgres.env " "$TEST_STATE/commands"
 postgres_env_install_line="$(grep -m 1 -n "^install .*shared/env/postgres\.env\$" "$TEST_STATE/commands" | cut -d: -f1)"
 compose_line="$(grep -m 1 -n "^docker compose " "$TEST_STATE/commands" | cut -d: -f1)"
 test -n "$postgres_env_install_line"
 test "$postgres_env_install_line" -lt "$compose_line"
-grep -qx 'Storage=persistent' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
-grep -qx 'SystemMaxUse=2G' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
-grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/semprec.conf"
-grep -qx 'SyslogIdentifier=semprec-api' "$TEST_ROOT/systemd/system/semprec-api.service"
-grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-api.service"
-grep -qx 'SyslogIdentifier=semprec-agents' "$TEST_ROOT/systemd/system/semprec-agents.service"
-grep -qx 'TimeoutStopSec=120' "$TEST_ROOT/systemd/system/semprec-agents.service"
-grep -qx 'SyslogIdentifier=semprec-transcribe' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
-grep -qx 'SyslogIdentifier=semprec-ai-gateway' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-agents.service"
-grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
-grep -qx 'OnFailure=semprec-failping@%n.service' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-grep -qx 'TimeoutStopSec=660' "$TEST_ROOT/systemd/system/semprec-ai-gateway.service"
-for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
-  grep -qx 'EnvironmentFile=/opt/semprec/current/release.env' "$TEST_ROOT/systemd/system/$unit.service"
+grep -qx 'Storage=persistent' "$TEST_ROOT/systemd/journald.conf.d/alldots.conf"
+grep -qx 'SystemMaxUse=2G' "$TEST_ROOT/systemd/journald.conf.d/alldots.conf"
+grep -qx 'MaxRetentionSec=90day' "$TEST_ROOT/systemd/journald.conf.d/alldots.conf"
+grep -qx 'SyslogIdentifier=alldots-api' "$TEST_ROOT/systemd/system/alldots-api.service"
+grep -qx 'OnFailure=alldots-failping@%n.service' "$TEST_ROOT/systemd/system/alldots-api.service"
+grep -qx 'SyslogIdentifier=alldots-agents' "$TEST_ROOT/systemd/system/alldots-agents.service"
+grep -qx 'TimeoutStopSec=120' "$TEST_ROOT/systemd/system/alldots-agents.service"
+grep -qx 'SyslogIdentifier=alldots-transcribe' "$TEST_ROOT/systemd/system/alldots-transcribe.service"
+grep -qx 'SyslogIdentifier=alldots-ai-gateway' "$TEST_ROOT/systemd/system/alldots-ai-gateway.service"
+grep -qx 'OnFailure=alldots-failping@%n.service' "$TEST_ROOT/systemd/system/alldots-agents.service"
+grep -qx 'OnFailure=alldots-failping@%n.service' "$TEST_ROOT/systemd/system/alldots-transcribe.service"
+grep -qx 'OnFailure=alldots-failping@%n.service' "$TEST_ROOT/systemd/system/alldots-ai-gateway.service"
+grep -qx 'TimeoutStopSec=660' "$TEST_ROOT/systemd/system/alldots-ai-gateway.service"
+for unit in alldots-api alldots-agents alldots-transcribe alldots-ai-gateway; do
+  grep -qx 'EnvironmentFile=/opt/alldots/current/release.env' "$TEST_ROOT/systemd/system/$unit.service"
 done
 
 # Each unit loads exactly its own groups, in order, with release.env last on the long-running ones.
@@ -182,30 +182,30 @@ assert_unit_env_files() {
   local expected=""
   local group
   for group in "$@"; do
-    expected+="EnvironmentFile=/opt/semprec/shared/env/$group.env"$'\n'
+    expected+="EnvironmentFile=/opt/alldots/shared/env/$group.env"$'\n'
   done
   if [[ "$unit" != *dead-man* && "$unit" != *failping* && "$unit" != *backup* && "$unit" != *restore-test* && "$unit" != *trash-purge* ]]; then
-    expected+="EnvironmentFile=/opt/semprec/current/release.env"$'\n'
+    expected+="EnvironmentFile=/opt/alldots/current/release.env"$'\n'
   fi
   test "$(grep '^EnvironmentFile=' "$TEST_ROOT/systemd/system/$unit")" = "${expected%$'\n'}"
 }
-assert_unit_env_files semprec-api.service data-role master-key gateway-token api settings
-assert_unit_env_files semprec-agents.service data-role master-key gateway-token agents settings
-assert_unit_env_files semprec-transcribe.service data-role gateway-token settings
-assert_unit_env_files semprec-ai-gateway.service side-role gateway-token ai-gateway
-assert_unit_env_files semprec-backup.service postgres settings backup
-assert_unit_env_files semprec-restore-test.service side-role settings backup
-assert_unit_env_files semprec-dead-man.service monitor
-assert_unit_env_files semprec-failping@.service monitor
-test "$(grep -c '^EnvironmentFile=' "$TEST_ROOT/systemd/system/semprec-trash-purge.service")" -eq 0
-for unit_file in "$TEST_ROOT"/systemd/system/semprec-*.service; do
-  if grep -Eq '/opt/semprec/shared/\.env|migrate\.env' "$unit_file"; then
+assert_unit_env_files alldots-api.service data-role master-key gateway-token api settings
+assert_unit_env_files alldots-agents.service data-role master-key gateway-token agents settings
+assert_unit_env_files alldots-transcribe.service data-role gateway-token settings
+assert_unit_env_files alldots-ai-gateway.service side-role gateway-token ai-gateway
+assert_unit_env_files alldots-backup.service postgres settings backup
+assert_unit_env_files alldots-restore-test.service side-role settings backup
+assert_unit_env_files alldots-dead-man.service monitor
+assert_unit_env_files alldots-failping@.service monitor
+test "$(grep -c '^EnvironmentFile=' "$TEST_ROOT/systemd/system/alldots-trash-purge.service")" -eq 0
+for unit_file in "$TEST_ROOT"/systemd/system/alldots-*.service; do
+  if grep -Eq '/opt/alldots/shared/\.env|migrate\.env' "$unit_file"; then
     echo "$unit_file loads the legacy file or the migrate group" >&2
     exit 1
   fi
 done
-test "$(grep -l 'master-key\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename | sort | tr '\n' ' ')" = 'semprec-agents.service semprec-api.service '
-test "$(grep -l 'postgres\.env' "$TEST_ROOT"/systemd/system/semprec-*.service | xargs -n 1 basename)" = 'semprec-backup.service'
+test "$(grep -l 'master-key\.env' "$TEST_ROOT"/systemd/system/alldots-*.service | xargs -n 1 basename | sort | tr '\n' ' ')" = 'alldots-agents.service alldots-api.service '
+test "$(grep -l 'postgres\.env' "$TEST_ROOT"/systemd/system/alldots-*.service | xargs -n 1 basename)" = 'alldots-backup.service'
 
 # The twelve templates partition the 64 keys: every key is declared exactly once.
 all_template_keys="$(cat "$TEST_DEPLOY"/shared/env/*.env.example | grep -oE '^[A-Z_0-9]+=' | sort)"
@@ -217,35 +217,35 @@ for key in GMAIL_PUBSUB_TOPIC= GMAIL_PUBSUB_SUBSCRIPTION= GMAIL_PUBSUB_SERVICE_A
   test "$(cat "$TEST_DEPLOY"/shared/env/*.env.example | grep -c "^$key")" -eq 1
 done
 for line in APP_BASE_URL= SMTP_HOST= SMTP_PORT=587 SMTP_SECURE=false SMTP_FROM_ADDRESS= SMTP_USER= SMTP_PASSWORD=; do
-  test "$(grep -cx "$line" "$TEST_ROOT/opt/semprec/shared/env/api.env")" -eq 1
+  test "$(grep -cx "$line" "$TEST_ROOT/opt/alldots/shared/env/api.env")" -eq 1
 done
 grep -q 'APP_BASE_URL is not set' "$TEST_STATE/first-run.err"
 grep -q 'Outbound mail is not configured' "$TEST_STATE/first-run.err"
 
-printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' >> "$TEST_ROOT/opt/semprec/shared/env/settings.env"
-settings_env_before="$(sha256sum "$TEST_ROOT/opt/semprec/shared/env/settings.env")"
-rm "$TEST_ROOT/opt/semprec/shared/env/backup.env"
-others_before="$(cd "$TEST_ROOT/opt/semprec/shared/env" && sha256sum $(ls | grep -v '^backup\.env$'))"
-mkdir "$TEST_ROOT/opt/semprec/releases/release-one"
-printf 'release payload\n' > "$TEST_ROOT/opt/semprec/releases/release-one/payload"
-printf 'stored blob\n' > "$TEST_ROOT/opt/semprec/data/files/blob-one"
-printf 'stored attachment\n' > "$TEST_ROOT/opt/semprec/data/mail-attachments/attachment-one"
+printf 'OPERATOR_CONFIGURED_SECRET=preserved\n' >> "$TEST_ROOT/opt/alldots/shared/env/settings.env"
+settings_env_before="$(sha256sum "$TEST_ROOT/opt/alldots/shared/env/settings.env")"
+rm "$TEST_ROOT/opt/alldots/shared/env/backup.env"
+others_before="$(cd "$TEST_ROOT/opt/alldots/shared/env" && sha256sum $(ls | grep -v '^backup\.env$'))"
+mkdir "$TEST_ROOT/opt/alldots/releases/release-one"
+printf 'release payload\n' > "$TEST_ROOT/opt/alldots/releases/release-one/payload"
+printf 'stored blob\n' > "$TEST_ROOT/opt/alldots/data/files/blob-one"
+printf 'stored attachment\n' > "$TEST_ROOT/opt/alldots/data/mail-attachments/attachment-one"
 first_run_commands="$(wc -l < "$TEST_STATE/commands")"
 run_provision
 tail -n +"$((first_run_commands + 1))" "$TEST_STATE/commands" > "$TEST_STATE/second-run-commands"
 
-test "$(grep -c '^useradd .* semprec$' "$TEST_STATE/commands")" -eq 1
-test "$(grep -c '^useradd .* semprec-mcp$' "$TEST_STATE/commands")" -eq 1
-grep -qx 'OPERATOR_CONFIGURED_SECRET=preserved' "$TEST_ROOT/opt/semprec/shared/env/settings.env"
-test "$(sha256sum "$TEST_ROOT/opt/semprec/shared/env/settings.env")" = "$settings_env_before"
+test "$(grep -c '^useradd .* alldots$' "$TEST_STATE/commands")" -eq 1
+test "$(grep -c '^useradd .* alldots-mcp$' "$TEST_STATE/commands")" -eq 1
+grep -qx 'OPERATOR_CONFIGURED_SECRET=preserved' "$TEST_ROOT/opt/alldots/shared/env/settings.env"
+test "$(sha256sum "$TEST_ROOT/opt/alldots/shared/env/settings.env")" = "$settings_env_before"
 # A missing group file is installed from its template without touching the others.
-cmp "$TEST_DEPLOY/shared/env/backup.env.example" "$TEST_ROOT/opt/semprec/shared/env/backup.env"
-test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/env/backup.env")" -eq 600
-test "$(cd "$TEST_ROOT/opt/semprec/shared/env" && sha256sum $(ls | grep -v '^backup\.env$'))" = "$others_before"
-grep -qx 'release payload' "$TEST_ROOT/opt/semprec/releases/release-one/payload"
-grep -qx 'stored blob' "$TEST_ROOT/opt/semprec/data/files/blob-one"
-grep -qx 'stored attachment' "$TEST_ROOT/opt/semprec/data/mail-attachments/attachment-one"
-if grep -q '/opt/semprec/data' "$TEST_STATE/second-run-commands"; then
+cmp "$TEST_DEPLOY/shared/env/backup.env.example" "$TEST_ROOT/opt/alldots/shared/env/backup.env"
+test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared/env/backup.env")" -eq 600
+test "$(cd "$TEST_ROOT/opt/alldots/shared/env" && sha256sum $(ls | grep -v '^backup\.env$'))" = "$others_before"
+grep -qx 'release payload' "$TEST_ROOT/opt/alldots/releases/release-one/payload"
+grep -qx 'stored blob' "$TEST_ROOT/opt/alldots/data/files/blob-one"
+grep -qx 'stored attachment' "$TEST_ROOT/opt/alldots/data/mail-attachments/attachment-one"
+if grep -q '/opt/alldots/data' "$TEST_STATE/second-run-commands"; then
   echo "second provision run re-created an existing data directory" >&2
   exit 1
 fi
@@ -259,51 +259,51 @@ grep -q 'nftables' "$TEST_STATE/commands"
 test "$(grep -c '^docker cp ' "$TEST_STATE/commands")" -eq 2
 
 test -f "$TEST_ROOT/caddy/Caddyfile"
-test -f "$TEST_ROOT/systemd/system/caddy.service.d/semprec.conf"
-test ! -f "$TEST_ROOT/caddy/semprec.env"
+test -f "$TEST_ROOT/systemd/system/caddy.service.d/alldots.conf"
+test ! -f "$TEST_ROOT/caddy/alldots.env"
 test "$(grep -c '^systemctl enable caddy$' "$TEST_STATE/commands")" -eq 0
 
-printf 'SEMPREC_DOMAIN=example.test\n' >> "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+printf 'ALLDOTS_DOMAIN=example.test\n' >> "$TEST_ROOT/opt/alldots/shared/env/monitor.env"
 run_provision
-grep -qx 'SEMPREC_DOMAIN=example.test' "$TEST_ROOT/caddy/semprec.env"
-test "$(wc -l < "$TEST_ROOT/caddy/semprec.env")" -eq 1
+grep -qx 'ALLDOTS_DOMAIN=example.test' "$TEST_ROOT/caddy/alldots.env"
+test "$(wc -l < "$TEST_ROOT/caddy/alldots.env")" -eq 1
 test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 1
 test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 1
 
-semprec_env_before="$(cat "$TEST_ROOT/caddy/semprec.env")"
+alldots_env_before="$(cat "$TEST_ROOT/caddy/alldots.env")"
 run_provision
-test "$(cat "$TEST_ROOT/caddy/semprec.env")" = "$semprec_env_before"
+test "$(cat "$TEST_ROOT/caddy/alldots.env")" = "$alldots_env_before"
 test "$(grep -c '^caddy validate ' "$TEST_STATE/commands")" -eq 2
 test "$(grep -c '^systemctl reload-or-restart caddy$' "$TEST_STATE/commands")" -eq 2
 
 # Apple App Site Association: empty keys render nothing and warn by key name only.
 test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
-printf 'SEMPREC_APPLE_TEAM_ID=\nSEMPREC_IOS_BUNDLE_ID=\n' >> "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+printf 'ALLDOTS_APPLE_TEAM_ID=\nALLDOTS_IOS_BUNDLE_ID=\n' >> "$TEST_ROOT/opt/alldots/shared/env/monitor.env"
 run_provision >/dev/null 2>"$TEST_STATE/aasa-empty.err"
-grep -q 'SEMPREC_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-empty.err"
-grep -q 'SEMPREC_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-empty.err"
+grep -q 'ALLDOTS_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-empty.err"
+grep -q 'ALLDOTS_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-empty.err"
 test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
 
 readonly AASA_TEAM_SENTINEL='TEAMSENT01'
 readonly AASA_BUNDLE_SENTINEL='dev.sentinel.app'
-sed -i "s|^SEMPREC_APPLE_TEAM_ID=.*|SEMPREC_APPLE_TEAM_ID=$AASA_TEAM_SENTINEL|; s|^SEMPREC_IOS_BUNDLE_ID=.*|SEMPREC_IOS_BUNDLE_ID=$AASA_BUNDLE_SENTINEL|" \
-  "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+sed -i "s|^ALLDOTS_APPLE_TEAM_ID=.*|ALLDOTS_APPLE_TEAM_ID=$AASA_TEAM_SENTINEL|; s|^ALLDOTS_IOS_BUNDLE_ID=.*|ALLDOTS_IOS_BUNDLE_ID=$AASA_BUNDLE_SENTINEL|" \
+  "$TEST_ROOT/opt/alldots/shared/env/monitor.env"
 run_provision >"$TEST_STATE/aasa-set.out" 2>"$TEST_STATE/aasa-set.err"
 printf '%s\n' '{"applinks":{"details":[{"appIDs":["TEAMSENT01.dev.sentinel.app"],"components":[{"/":"/","?":{"page":"password-reset"},"comment":"Password-reset link"}]}]}}' \
   > "$TEST_STATE/aasa-expected"
 cmp "$TEST_STATE/aasa-expected" "$TEST_ROOT/caddy/apple-app-site-association"
 test -z "$(find "$TEST_ROOT/caddy/apple-app-site-association" -perm 0644 -prune -o -print)"
-if grep -q 'SEMPREC_APPLE_TEAM_ID\|SEMPREC_IOS_BUNDLE_ID' "$TEST_STATE/aasa-set.err"; then
+if grep -q 'ALLDOTS_APPLE_TEAM_ID\|ALLDOTS_IOS_BUNDLE_ID' "$TEST_STATE/aasa-set.err"; then
   echo 'provision warned although both Apple keys are set' >&2
   exit 1
 fi
 
 # One key emptied: the earlier file is removed, only the key name is printed.
-sed -i "s|^SEMPREC_IOS_BUNDLE_ID=.*|SEMPREC_IOS_BUNDLE_ID=|" "$TEST_ROOT/opt/semprec/shared/env/monitor.env"
+sed -i "s|^ALLDOTS_IOS_BUNDLE_ID=.*|ALLDOTS_IOS_BUNDLE_ID=|" "$TEST_ROOT/opt/alldots/shared/env/monitor.env"
 run_provision >"$TEST_STATE/aasa-half.out" 2>"$TEST_STATE/aasa-half.err"
 test ! -e "$TEST_ROOT/caddy/apple-app-site-association"
-grep -q 'SEMPREC_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-half.err"
-if grep -q 'SEMPREC_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-half.err"; then
+grep -q 'ALLDOTS_IOS_BUNDLE_ID is not set' "$TEST_STATE/aasa-half.err"
+if grep -q 'ALLDOTS_APPLE_TEAM_ID is not set' "$TEST_STATE/aasa-half.err"; then
   echo 'provision named the Apple team id key although it is set' >&2
   exit 1
 fi
@@ -314,8 +314,8 @@ fi
 
 readonly SECRET_SENTINEL='smtp-password-sentinel-7f3a'
 printf 'APP_BASE_URL=https://example.test\nSMTP_HOST=smtp.example.test\nSMTP_FROM_ADDRESS=no-reply@example.test\nSMTP_PASSWORD=%s\n' \
-  "$SECRET_SENTINEL" >> "$TEST_ROOT/opt/semprec/shared/env/api.env"
-env_before="$(sha256sum "$TEST_ROOT/opt/semprec/shared/env/api.env")"
+  "$SECRET_SENTINEL" >> "$TEST_ROOT/opt/alldots/shared/env/api.env"
+env_before="$(sha256sum "$TEST_ROOT/opt/alldots/shared/env/api.env")"
 run_provision >"$TEST_STATE/consistent.out" 2>"$TEST_STATE/consistent.err"
 if grep -Eq 'APP_BASE_URL|Outbound mail' "$TEST_STATE/consistent.err"; then
   echo 'provision warned although the outbound link settings are consistent' >&2
@@ -325,9 +325,9 @@ if grep -rq "$SECRET_SENTINEL" "$TEST_STATE/consistent.out" "$TEST_STATE/consist
   echo 'provision printed SMTP_PASSWORD' >&2
   exit 1
 fi
-test "$(sha256sum "$TEST_ROOT/opt/semprec/shared/env/api.env")" = "$env_before"
+test "$(sha256sum "$TEST_ROOT/opt/alldots/shared/env/api.env")" = "$env_before"
 
-printf 'APP_BASE_URL=https://other.test\n' >> "$TEST_ROOT/opt/semprec/shared/env/api.env"
+printf 'APP_BASE_URL=https://other.test\n' >> "$TEST_ROOT/opt/alldots/shared/env/api.env"
 run_provision >/dev/null 2>"$TEST_STATE/mismatch.err"
 grep -q 'https://other.test' "$TEST_STATE/mismatch.err"
 grep -q 'example.test' "$TEST_STATE/mismatch.err"
@@ -335,41 +335,41 @@ if grep -q "$SECRET_SENTINEL" "$TEST_STATE/mismatch.err"; then
   echo 'provision printed SMTP_PASSWORD' >&2
   exit 1
 fi
-sed -i '/^APP_BASE_URL=https:\/\/other.test$/d' "$TEST_ROOT/opt/semprec/shared/env/api.env"
+sed -i '/^APP_BASE_URL=https:\/\/other.test$/d' "$TEST_ROOT/opt/alldots/shared/env/api.env"
 
 test -f "$TEST_ROOT/nftables.conf"
-grep -qx 'table inet semprec' "$TEST_ROOT/nftables.conf"
+grep -qx 'table inet alldots' "$TEST_ROOT/nftables.conf"
 if grep -q '^flush ruleset' "$TEST_ROOT/nftables.conf"; then
   echo "nftables.conf flushes the whole ruleset, which would delete Docker's own tables" >&2
   exit 1
 fi
 grep -qE '^\s*type filter hook output priority 0; policy accept;$' "$TEST_ROOT/nftables.conf"
-grep -qE '^\s*meta skuid "semprec" jump semprec_egress$' "$TEST_ROOT/nftables.conf"
+grep -qE '^\s*meta skuid "alldots" jump alldots_egress$' "$TEST_ROOT/nftables.conf"
 for element in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4 ::/128 ::1/128 ::ffff:0:0/96 64:ff9b::/96 64:ff9b:1::/48 100::/64 fc00::/7 fe80::/10 ff00::/8; do
   grep -qF -- "$element" "$TEST_ROOT/nftables.conf"
 done
-grep -qE '^\s*set semprec_blocked_v4 \{' "$TEST_ROOT/nftables.conf"
-grep -qE '^\s*set semprec_blocked_v6 \{' "$TEST_ROOT/nftables.conf"
-egress_rules="$(awk '/chain semprec_egress \{/{f=1;next} f&&/^\t\}/{exit} f&&NF' "$TEST_ROOT/nftables.conf" | sed 's/^[[:space:]]*//')"
+grep -qE '^\s*set alldots_blocked_v4 \{' "$TEST_ROOT/nftables.conf"
+grep -qE '^\s*set alldots_blocked_v6 \{' "$TEST_ROOT/nftables.conf"
+egress_rules="$(awk '/chain alldots_egress \{/{f=1;next} f&&/^\t\}/{exit} f&&NF' "$TEST_ROOT/nftables.conf" | sed 's/^[[:space:]]*//')"
 test "$(head -n 1 <<<"$egress_rules")" = 'ct state established,related accept'
 grep -qx 'tcp dport 53 accept' <<<"$egress_rules"
 grep -qx 'udp dport 53 accept' <<<"$egress_rules"
 grep -qx 'meta l4proto tcp ct original ip daddr 127.0.0.1 ct original proto-dst { 5432, 3002 } accept' <<<"$egress_rules"
-grep -qx 'ip daddr @semprec_blocked_v4 reject with icmpx type admin-prohibited' <<<"$egress_rules"
-grep -qx 'ip6 daddr @semprec_blocked_v6 reject with icmpx type admin-prohibited' <<<"$egress_rules"
-test "$(grep -c 'semprec-egress-deny ' <<<"$egress_rules")" -eq 2
-grep -qE '^\s*meta skuid "semprec-mcp" jump semprec_mcp_egress$' "$TEST_ROOT/nftables.conf"
-mcp_egress_rules="$(awk '/chain semprec_mcp_egress \{/{f=1;next} f&&/^\t\}/{exit} f&&NF' "$TEST_ROOT/nftables.conf" | sed 's/^[[:space:]]*//' | grep -v '^#')"
+grep -qx 'ip daddr @alldots_blocked_v4 reject with icmpx type admin-prohibited' <<<"$egress_rules"
+grep -qx 'ip6 daddr @alldots_blocked_v6 reject with icmpx type admin-prohibited' <<<"$egress_rules"
+test "$(grep -c 'alldots-egress-deny ' <<<"$egress_rules")" -eq 2
+grep -qE '^\s*meta skuid "alldots-mcp" jump alldots_mcp_egress$' "$TEST_ROOT/nftables.conf"
+mcp_egress_rules="$(awk '/chain alldots_mcp_egress \{/{f=1;next} f&&/^\t\}/{exit} f&&NF' "$TEST_ROOT/nftables.conf" | sed 's/^[[:space:]]*//' | grep -v '^#')"
 test "$(head -n 1 <<<"$mcp_egress_rules")" = 'ct state established,related accept'
 grep -qx 'tcp dport 53 accept' <<<"$mcp_egress_rules"
 grep -qx 'udp dport 53 accept' <<<"$mcp_egress_rules"
-grep -qx 'ip daddr @semprec_blocked_v4 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
-grep -qx 'ip6 daddr @semprec_blocked_v6 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
-test "$(grep -c 'limit rate 10/minute log prefix "semprec-mcp-egress-deny "' <<<"$mcp_egress_rules")" -eq 2
+grep -qx 'ip daddr @alldots_blocked_v4 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
+grep -qx 'ip6 daddr @alldots_blocked_v6 reject with icmpx type admin-prohibited' <<<"$mcp_egress_rules"
+test "$(grep -c 'limit rate 10/minute log prefix "alldots-mcp-egress-deny "' <<<"$mcp_egress_rules")" -eq 2
 # No loopback or port exception: every accept is either established/related or DNS.
 test "$(grep -c 'accept$' <<<"$mcp_egress_rules")" -eq 3
 if grep -Eq '127\.0\.0\.1|::1|proto-dst|5432|3002' <<<"$mcp_egress_rules"; then
-  echo 'semprec_mcp_egress has a loopback exception' >&2
+  echo 'alldots_mcp_egress has a loopback exception' >&2
   exit 1
 fi
 test "$(wc -l <<<"$mcp_egress_rules")" -eq 7
@@ -377,43 +377,43 @@ grep -q "^nft -c -f $TEST_ROOT/nftables.conf$" "$TEST_STATE/commands"
 grep -qx 'systemctl enable nftables' "$TEST_STATE/commands"
 grep -qx 'systemctl reload-or-restart nftables' "$TEST_STATE/commands"
 
-test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared")" -eq 750
-test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/bin")" -eq 750
-grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared" "$TEST_STATE/commands"
-grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared/bin" "$TEST_STATE/commands"
-grep -qx "chown root:root $TEST_ROOT/opt/semprec/shared/env" "$TEST_STATE/commands"
-grep -qx "chmod 0700 $TEST_ROOT/opt/semprec/shared/env" "$TEST_STATE/commands"
+test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared")" -eq 750
+test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared/bin")" -eq 750
+grep -qx "chown root:alldots $TEST_ROOT/opt/alldots/shared" "$TEST_STATE/commands"
+grep -qx "chown root:alldots $TEST_ROOT/opt/alldots/shared/bin" "$TEST_STATE/commands"
+grep -qx "chown root:root $TEST_ROOT/opt/alldots/shared/env" "$TEST_STATE/commands"
+grep -qx "chmod 0700 $TEST_ROOT/opt/alldots/shared/env" "$TEST_STATE/commands"
 for group in "${GROUPS_UNDER_TEST[@]}"; do
-  grep -qx "chown root:root $TEST_ROOT/opt/semprec/shared/env/$group.env" "$TEST_STATE/commands"
-  grep -qx "chmod 0600 $TEST_ROOT/opt/semprec/shared/env/$group.env" "$TEST_STATE/commands"
+  grep -qx "chown root:root $TEST_ROOT/opt/alldots/shared/env/$group.env" "$TEST_STATE/commands"
+  grep -qx "chmod 0600 $TEST_ROOT/opt/alldots/shared/env/$group.env" "$TEST_STATE/commands"
 done
 # No legacy file exists on this host, so none is healed.
 if grep -q "shared/\.env\$" "$TEST_STATE/commands"; then
   echo 'provision touched a legacy shared/.env that does not exist' >&2
   exit 1
 fi
-grep -Eq "^install -o root -g semprec -m 0750 .*/shared/bin/semprec-dead-man\.sh\$" "$TEST_STATE/commands"
+grep -Eq "^install -o root -g alldots -m 0750 .*/shared/bin/alldots-dead-man\.sh\$" "$TEST_STATE/commands"
 if grep -q 'apns-key.p8' "$TEST_STATE/commands"; then
   echo "provision recorded an apns-key.p8 command although the file does not exist" >&2
   exit 1
 fi
 
-touch "$TEST_ROOT/opt/semprec/shared/apns-key.p8"
+touch "$TEST_ROOT/opt/alldots/shared/apns-key.p8"
 run_provision
-grep -qx "chown root:semprec $TEST_ROOT/opt/semprec/shared/apns-key.p8" "$TEST_STATE/commands"
-grep -qx "chmod 0640 $TEST_ROOT/opt/semprec/shared/apns-key.p8" "$TEST_STATE/commands"
-test "$(stat -c %a "$TEST_ROOT/opt/semprec/shared/apns-key.p8")" -eq 640
+grep -qx "chown root:alldots $TEST_ROOT/opt/alldots/shared/apns-key.p8" "$TEST_STATE/commands"
+grep -qx "chmod 0640 $TEST_ROOT/opt/alldots/shared/apns-key.p8" "$TEST_STATE/commands"
+test "$(stat -c %a "$TEST_ROOT/opt/alldots/shared/apns-key.p8")" -eq 640
 
 # ---- Splitting a legacy single file into the group files. ----
-rm -rf "$TEST_ROOT/opt/semprec/shared/env"
-legacy_env="$TEST_ROOT/opt/semprec/shared/.env"
+rm -rf "$TEST_ROOT/opt/alldots/shared/env"
+legacy_env="$TEST_ROOT/opt/alldots/shared/.env"
 {
   printf 'APP_BASE_URL=stale-first-definition\n'
   while IFS= read -r key; do
     case "$key" in
       # Consistent with each other so the (value-printing) link warning stays quiet.
       APP_BASE_URL) printf 'APP_BASE_URL=https://example.test\n' ;;
-      SEMPREC_DOMAIN) printf 'SEMPREC_DOMAIN=example.test\n' ;;
+      ALLDOTS_DOMAIN) printf 'ALLDOTS_DOMAIN=example.test\n' ;;
       *) printf '%s=legacy-value-%s-4d1e\n' "$key" "$key" ;;
     esac
   done <<<"$(sed 's/=$//' <<<"$all_template_keys")"
@@ -429,7 +429,7 @@ if grep -rq 'legacy-value-\|stale-first-definition' "$TEST_STATE/legacy.out" "$T
   exit 1
 fi
 for group in "${GROUPS_UNDER_TEST[@]}"; do
-  group_file="$TEST_ROOT/opt/semprec/shared/env/$group.env"
+  group_file="$TEST_ROOT/opt/alldots/shared/env/$group.env"
   test "$(stat -c %a "$group_file")" -eq 600
   expected_keys="$(grep -oE '^[A-Z_0-9]+=' "$TEST_DEPLOY/shared/env/$group.env.example")"
   test "$(grep -oE '^[A-Z_0-9]+=' "$group_file")" = "$expected_keys"
@@ -439,7 +439,7 @@ for group in "${GROUPS_UNDER_TEST[@]}"; do
     grep -qxF "$(grep "^$key=" "$legacy_env" | tail -n 1)" "$group_file"
   done <<<"$expected_keys"
 done
-if grep -rq 'UNCLAIMED_LEGACY_KEY' "$TEST_ROOT/opt/semprec/shared/env"; then
+if grep -rq 'UNCLAIMED_LEGACY_KEY' "$TEST_ROOT/opt/alldots/shared/env"; then
   echo 'an unclaimed legacy key was copied into a group file' >&2
   exit 1
 fi
@@ -458,23 +458,23 @@ if run_provision >"$TEST_STATE/missing-asset.out" 2>&1; then
 fi
 grep -q 'Czech Hunspell asset is missing, empty, or unreadable' "$TEST_STATE/missing-asset.out"
 
-for unit in semprec-api semprec-agents semprec-transcribe semprec-ai-gateway; do
+for unit in alldots-api alldots-agents alldots-transcribe alldots-ai-gateway; do
   grep -qx 'StartLimitIntervalSec=15min' "$TEST_ROOT/systemd/system/$unit.service"
   grep -qx 'StartLimitBurst=180' "$TEST_ROOT/systemd/system/$unit.service"
 done
 
-grep -qx 'TimeoutStopSec=960' "$TEST_ROOT/systemd/system/semprec-transcribe.service"
+grep -qx 'TimeoutStopSec=960' "$TEST_ROOT/systemd/system/alldots-transcribe.service"
 
 # Service sandboxing (issue #1071): the baseline, the omitted directives and the
 # writable paths of each unit are pinned here so that dropping one fails the test.
 sandboxed_units=(
-  semprec-api.service
-  semprec-agents.service
-  semprec-transcribe.service
-  semprec-ai-gateway.service
-  semprec-dead-man.service
-  semprec-failping@.service
-  semprec-trash-purge.service
+  alldots-api.service
+  alldots-agents.service
+  alldots-transcribe.service
+  alldots-ai-gateway.service
+  alldots-dead-man.service
+  alldots-failping@.service
+  alldots-trash-purge.service
 )
 sandbox_baseline=(
   'NoNewPrivileges=yes'
@@ -511,11 +511,11 @@ for unit in "${sandboxed_units[@]}"; do
     exit 1
   fi
 done
-grep -qx 'ReadWritePaths=/opt/semprec/data/files /opt/semprec/data/mail-attachments' \
-  "$TEST_ROOT/systemd/system/semprec-api.service"
-grep -qx 'ReadWritePaths=/opt/semprec/data/files' \
-  "$TEST_ROOT/systemd/system/semprec-transcribe.service"
-for unit in semprec-agents.service semprec-ai-gateway.service semprec-dead-man.service semprec-failping@.service semprec-trash-purge.service; do
+grep -qx 'ReadWritePaths=/opt/alldots/data/files /opt/alldots/data/mail-attachments' \
+  "$TEST_ROOT/systemd/system/alldots-api.service"
+grep -qx 'ReadWritePaths=/opt/alldots/data/files' \
+  "$TEST_ROOT/systemd/system/alldots-transcribe.service"
+for unit in alldots-agents.service alldots-ai-gateway.service alldots-dead-man.service alldots-failping@.service alldots-trash-purge.service; do
   if grep -q '^ReadWritePaths=' "$TEST_ROOT/systemd/system/$unit"; then
     echo "$unit must not have ReadWritePaths" >&2
     exit 1

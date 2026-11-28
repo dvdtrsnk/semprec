@@ -630,13 +630,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kalendáře se nepodařilo synchronizovat. Semprec to zkusí znovu sám."
+            "value" : "Kalendáře se nepodařilo synchronizovat. Alldots to zkusí znovu sám."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The calendars could not be synced. Semprec tries again on its own."
+            "value" : "The calendars could not be synced. Alldots tries again on its own."
           }
         }
       }
@@ -854,13 +854,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kalendáře tohoto účtu a jejich události se ze Semprecu odstraní. Účet i přihlášení zůstanou."
+            "value" : "Kalendáře tohoto účtu a jejich události se ze Alldotsu odstraní. Účet i přihlášení zůstanou."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The calendars of this account and their events are removed from Semprec. The account and its sign-in stay."
+            "value" : "The calendars of this account and their events are removed from Alldots. The account and its sign-in stay."
           }
         }
       }
@@ -918,13 +918,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pošta tohoto účtu se ze Semprecu odstraní. Účet i přihlášení zůstanou; po zapnutí se pošta stáhne znovu."
+            "value" : "Pošta tohoto účtu se ze Alldotsu odstraní. Účet i přihlášení zůstanou; po zapnutí se pošta stáhne znovu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The mail of this account is removed from Semprec. The account and its sign-in stay; turning Mail on again downloads the mail anew."
+            "value" : "The mail of this account is removed from Alldots. The account and its sign-in stay; turning Mail on again downloads the mail anew."
           }
         }
       }
@@ -1158,13 +1158,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Vypnutí služby odstraní ze Semprecu, co synchronizovala; účet i přihlášení zůstanou."
+            "value" : "Vypnutí služby odstraní ze Alldotsu, co synchronizovala; účet i přihlášení zůstanou."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Turning a service off removes what it synced from Semprec; the account and its sign-in stay."
+            "value" : "Turning a service off removes what it synced from Alldots; the account and its sign-in stay."
           }
         }
       }
@@ -1414,13 +1414,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec nedostal přístup k vaší poště. Přihlaste se znovu a na stránce Googlu nebo Microsoftu povolte všechny volby."
+            "value" : "Alldots nedostal přístup k vaší poště. Přihlaste se znovu a na stránce Googlu nebo Microsoftu povolte všechny volby."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec did not get access to your mail. Sign in again and allow every option on Google's or Microsoft's page."
+            "value" : "Alldots did not get access to your mail. Sign in again and allow every option on Google's or Microsoft's page."
           }
         }
       }
@@ -1814,13 +1814,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pošta a kalendáře se synchronizují na serveru Semprec, ne v telefonu. Semp z pošty čte a píše koncepty; odeslat sám smí jen v projektu, který to má výslovně povolené."
+            "value" : "Pošta a kalendáře se synchronizují na serveru Alldots, ne v telefonu. Semp z pošty čte a píše koncepty; odeslat sám smí jen v projektu, který to má výslovně povolené."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mail and calendars are synced on the Semprec server, not on the phone. Semp reads the mail and writes drafts; it may send on its own only in a project that explicitly allows it."
+            "value" : "Mail and calendars are synced on the Alldots server, not on the phone. Semp reads the mail and writes drafts; it may send on its own only in a project that explicitly allows it."
           }
         }
       }
@@ -2774,13 +2774,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec · server %@"
+            "value" : "Alldots · server %@"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec · server %@"
+            "value" : "Alldots · server %@"
           }
         }
       }

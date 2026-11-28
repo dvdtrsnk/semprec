@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@semprec/queue";
+import { currentTenantScope, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, type TaskList } from "@alldots/queue";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -32,7 +32,7 @@ import { createCoreTaskList } from "../worker.js";
 
 /**
  * A change of a project's company edge queues `derivedValuesInvalidate`, which announces the
- * project's Events. Fixtures run on a `semprec_data` pool so RLS applies; announcements are recorded through
+ * project's Events. Fixtures run on a `alldots_data` pool so RLS applies; announcements are recorded through
  * `setInvalidationHook` with the tenant scope it was called in (not WebSocket delivery).
  */
 
@@ -246,7 +246,7 @@ async function createLinkedItems(
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(pool);
   fanOutTaskList = fanOutTaskListOver(pool);
 });
@@ -435,7 +435,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await link(tenantA, c.projectCompany, project, company);
 
     // A dedicated, traced pool; vitest numbers all mock calls on one counter, ordering statements and announcements.
-    const tracedPool = await createRuntimeRolePool(admin, "semprec_data");
+    const tracedPool = await createRuntimeRolePool(admin, "alldots_data");
     const querySpies: Array<{ mock: { calls: unknown[][]; invocationCallOrder: number[] }; mockRestore(): void }> = [];
     tracedPool.on("connect", (client) => querySpies.push(vi.spyOn(client, "query")));
     const onAnnouncement = vi.fn<() => void>();
@@ -488,7 +488,7 @@ describe("derived value invalidation of a project's items (issue #1710)", () => 
     await link(tenantA, c.projectCompany, project, company);
 
     // Ended by the first announcement, made only after the first batch committed, so the second batch cannot open.
-    const failingPool = await createRuntimeRolePool(admin, "semprec_data");
+    const failingPool = await createRuntimeRolePool(admin, "alldots_data");
     let ending: Promise<void> | undefined;
     let firstAttempt: Announcement[];
     try {

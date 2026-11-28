@@ -3,7 +3,7 @@ import { NotFoundError } from "../errors.js";
 import { parseAgentDatabaseAccess, type AgentDatabaseAccess } from "./agentDatabaseGrantsStore.js";
 
 // User-only writes of `agent_database_grants`. Deliberately not exported from `index.ts`: `agent-runtime` depends on
-// `@semprec/data`, so keeping them off the public surface keeps them unreachable from agent code.
+// `@alldots/data`, so keeping them off the public surface keeps them unreachable from agent code.
 
 export interface SetAgentDatabaseGrantInput {
   projectItemId: string;

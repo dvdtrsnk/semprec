@@ -277,7 +277,7 @@ describe("MCP tool classification from annotations (issue gh-1979)", () => {
     });
   });
 
-  // The function `@semprec/data` exports (and so every consumer, `agent-runtime` included, can call) has no path to the
+  // The function `@alldots/data` exports (and so every consumer, `agent-runtime` included, can call) has no path to the
   // two columns the sync owns while their source is `annotation`.
   describe("upsertMcpToolRegistration, the exported upsert", () => {
     // A caller that bypasses the type system, as an `any` or a spread of a wider object would.

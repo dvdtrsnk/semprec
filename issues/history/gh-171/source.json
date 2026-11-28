@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/171",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/171",
   "id": 5289607412,
   "node_id": "I_kwDOUFuQ4c8AAAABO0kA9A",
   "number": 171,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/165",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/165",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #170, #176\n\n## Context\n\nThis issue builds on #170 and completes the `observability` batch.\n\n## Task\n\nSet distinct SyslogIdentifier values on Semprec units and the journald Compose driver. Provision Storage=persistent, SystemMaxUse=2G, MaxRetentionSec=90day and exclude journals from backups. Add a five-minute dead-man timer that calls public HTTPS /healthz and only then HEALTHCHECKS_PING_URL. Add OnFailure=semprec-failping@%n.service after restart exhaustion, including the unit name.\n\n## Scope\n\n### In scope\n\n- Task deliverables, migrations, integration, automated tests, and necessary documentation.\n\n### Out of scope\n\n- Monitor account creation is manual.\n- No monitor hosted on the Semprec server.\n\n## Acceptance criteria\n\n- Unit/tag filters isolate process logs and Compose joins journald.\n- Retention provisioning is idempotent.\n- Health failure withholds success ping.\n- Transient recovered crashes do not /fail; restart exhaustion does.\n- External monitoring shares no Semprec notification dependency.\n",
+  "body": "**Blocked by:** #170, #176\n\n## Context\n\nThis issue builds on #170 and completes the `observability` batch.\n\n## Task\n\nSet distinct SyslogIdentifier values on Alldots units and the journald Compose driver. Provision Storage=persistent, SystemMaxUse=2G, MaxRetentionSec=90day and exclude journals from backups. Add a five-minute dead-man timer that calls public HTTPS /healthz and only then HEALTHCHECKS_PING_URL. Add OnFailure=alldots-failping@%n.service after restart exhaustion, including the unit name.\n\n## Scope\n\n### In scope\n\n- Task deliverables, migrations, integration, automated tests, and necessary documentation.\n\n### Out of scope\n\n- Monitor account creation is manual.\n- No monitor hosted on the Alldots server.\n\n## Acceptance criteria\n\n- Unit/tag filters isolate process logs and Compose joins journald.\n- Retention provisioning is idempotent.\n- Health failure withholds success ping.\n- Transient recovered crashes do not /fail; restart exhaustion does.\n- External monitoring shares no Alldots notification dependency.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/171/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/171/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

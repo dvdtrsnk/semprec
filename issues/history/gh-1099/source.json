@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1099",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1099",
   "id": 5688805462,
   "node_id": "I_kwDOUFuQ4c8AAAABUxRIVg",
   "number": 1099,
@@ -34,7 +34,7 @@
     {
       "id": 12386016412,
       "node_id": "LA_kwDOUFuQ4c8AAAAC4kOcnA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/followups:harvest",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/followups:harvest",
       "name": "followups:harvest",
       "color": "1d76db",
       "default": false,
@@ -88,7 +88,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -99,7 +99,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1099/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1099/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

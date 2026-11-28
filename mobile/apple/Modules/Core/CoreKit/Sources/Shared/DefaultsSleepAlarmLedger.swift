@@ -12,7 +12,7 @@ final class DefaultsSleepAlarmLedger: NSObject {
     private let key: String
 
     // MARK: - Init
-    init(defaults: UserDefaults = .standard, key: String = "cz.semprec.sleepAlarmLedger") {
+    init(defaults: UserDefaults = .standard, key: String = "cz.alldots.sleepAlarmLedger") {
         self.defaults = defaults
         self.key = key
     }

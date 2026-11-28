@@ -4,7 +4,7 @@
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { withTransaction, type Queryable } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";

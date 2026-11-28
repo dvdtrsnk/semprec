@@ -10,9 +10,9 @@ import {
   setSessionRevokedHook,
   setSempThreadInvalidationHook,
   setInboxCardsInvalidationHook,
-} from "@semprec/data";
+} from "@alldots/data";
 import { publishAgentRunDelta, publishRealtimeMessage } from "./pgNotifyPublisher.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { logger } from "./logger.js";
 
 /**

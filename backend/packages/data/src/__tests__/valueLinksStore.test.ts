@@ -191,7 +191,7 @@ describe("value links store (issue #1403)", () => {
 
   it("lets two tenants hold a link on the same property key, each seeing only its own", async () => {
     const adminPool = pool;
-    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const tenantA = await createTestTenant(adminPool);
       const tenantB = await createTestTenant(adminPool);
@@ -222,7 +222,7 @@ describe("value links store (issue #1403)", () => {
 
   it("moves a source item's sources to another item, merges a duplicate and touches nothing else (issue #1673)", async () => {
     const adminPool = pool;
-    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const tenantA = await createTestTenant(adminPool);
       const tenantB = await createTestTenant(adminPool);
@@ -276,7 +276,7 @@ describe("value links store (issue #1403)", () => {
 
   it("moves only the links of one rule when a rule key is given, and leaves the links of other rules on the source item (issue gh-1898)", async () => {
     const adminPool = pool;
-    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const tenantA = await createTestTenant(adminPool);
       const [from, to] = [randomUUID(), randomUUID()];
@@ -321,7 +321,7 @@ describe("value links store (issue #1403)", () => {
 
   it("lists the links of any state that name an item as a source, once each, and not those of another tenant (issue #1856)", async () => {
     const adminPool = pool;
-    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const tenantA = await createTestTenant(adminPool);
       const tenantB = await createTestTenant(adminPool);
@@ -444,7 +444,7 @@ describe("value links store (issue #1403)", () => {
     }
 
     async function detach(ruleKeyOrder?: readonly string[]) {
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const tenant = await createTestTenant(pool);
         const seeded = await seedDetach(runtimePool, tenant);
@@ -502,7 +502,7 @@ describe("value links store (issue #1403)", () => {
     });
 
     it("returns nothing for an item that no link names as a source", async () => {
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const tenant = await createTestTenant(pool);
         expect(

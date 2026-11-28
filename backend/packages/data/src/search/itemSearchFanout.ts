@@ -4,8 +4,8 @@
 // never reindexed here: mail owns their rows.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { currentTenantScope } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { currentTenantScope } from "@alldots/shared";
 import type {
   ItemCreateHook,
   ItemDeleteHook,

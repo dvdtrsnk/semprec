@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import {
@@ -36,8 +36,8 @@ describe("accountsAdminStore (issue #1037)", () => {
 
   beforeAll(async () => {
     pool = getTestPool();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
   });
 
   beforeEach(async () => {
@@ -114,7 +114,7 @@ describe("accountsAdminStore (issue #1037)", () => {
     });
   });
 
-  it("lets semprec_data INSERT but not UPDATE or DELETE", async () => {
+  it("lets alldots_data INSERT but not UPDATE or DELETE", async () => {
     await runAsSystem("adminAuditTest", async () => {
       await dataPool.query("INSERT INTO admin_audit_log (actor_user_id, action) VALUES ($1, 'inviteCreated')", [ACTOR]);
       await expect(dataPool.query("UPDATE admin_audit_log SET action = 'inviteRevoked'")).rejects.toMatchObject({
@@ -124,7 +124,7 @@ describe("accountsAdminStore (issue #1037)", () => {
     });
   });
 
-  it("refuses semprec_side both SELECT and INSERT", async () => {
+  it("refuses alldots_side both SELECT and INSERT", async () => {
     await runAsSystem("adminAuditTest", async () => {
       await expect(sidePool.query("SELECT count(*) FROM admin_audit_log")).rejects.toMatchObject({ code: "42501" });
       await expect(
@@ -141,7 +141,7 @@ describe("account mutations (issue #1041)", () => {
 
   beforeAll(async () => {
     pool = getTestPool();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   beforeEach(async () => {

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -15,8 +15,8 @@ import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import {
   assertValidProposalEnvelope,
-  createSemprecTickAction,
-  type ComputeSemprecProposalFn,
+  createAlldotsTickAction,
+  type ComputeAlldotsProposalFn,
   type ProposalComputationResult,
 } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
@@ -50,8 +50,8 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-  const handler = createSemprecTickAction(pool, computeProposal);
+async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+  const handler = createAlldotsTickAction(pool, computeProposal);
   await handler(
     { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
     { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -535,7 +535,7 @@ describe("the steps of a multi-step envelope and the option catalog (issue gh-18
 
 describe("assertValidProposalEnvelope through the runtime role (issue gh-1814)", () => {
   it("refuses an unknown tag in a tenant other than tenant zero, with row-level security in force", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

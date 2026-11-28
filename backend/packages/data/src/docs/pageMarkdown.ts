@@ -15,8 +15,8 @@ import {
   type BlockIssue,
   type NewBlockInput,
   type ParsedBlock,
-} from "@semprec/block-model";
-import type { PageInsertInput } from "@semprec/shared";
+} from "@alldots/block-model";
+import type { PageInsertInput } from "@alldots/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
@@ -101,7 +101,7 @@ function invalidMarkdown(issues: readonly BlockIssue[]): ValidationError {
 }
 
 /**
- * Ids carried by `semprec:block` comments are never used, so a body cannot choose an id the caller did not name. An id
+ * Ids carried by `alldots:block` comments are never used, so a body cannot choose an id the caller did not name. An id
  * already in the document is a `ConflictError`, decided where the document is read.
  */
 function resolveBlockIds(count: number, supplied: readonly string[] | undefined): string[] {
@@ -146,7 +146,7 @@ export type IdentifiedBlock = NewBlockInput & { id: string };
 
 /**
  * Page links are refused unless `options.allowPage` is set (the caller then validates them). `client` must be the
- * caller's tenant-scoped write client so `semprec://items/` links are checked against the tenant. Read-only.
+ * caller's tenant-scoped write client so `alldots://items/` links are checked against the tenant. Read-only.
  */
 export async function parseCheckedMarkdown(
   client: PoolClient,
@@ -274,7 +274,7 @@ async function assertAfterBlockExists(client: PoolClient, itemId: string, afterB
 }
 
 /** Must match how `parseMarkdown` recognizes a page link line (applied to the trimmed line). */
-const PAGE_LINK_LINE = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/[^)\s]+\)$/;
+const PAGE_LINK_LINE = /^\[(?:\\.|[^\]\\])*\]\(alldots:\/\/page\/[^)\s]+\)$/;
 
 export class PageVersionConflictError extends ConflictError {
   /** Sent back by the REST route as the `ETag` header. */
@@ -326,7 +326,7 @@ function captionsOf(markdown: string): string[] {
     .map((raw) => {
       const line = raw.replace(/\r$/, "").trim();
       return PAGE_LINK_LINE.test(line)
-        ? line.replace(/\(semprec:\/\/page\/[^)\s]+\)$/, "(https://example.invalid)")
+        ? line.replace(/\(alldots:\/\/page\/[^)\s]+\)$/, "(https://example.invalid)")
         : raw;
     })
     .join("\n");

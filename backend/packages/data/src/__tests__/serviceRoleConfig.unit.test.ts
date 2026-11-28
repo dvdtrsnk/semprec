@@ -4,12 +4,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * No service outside packages/data may be configured with the `semprec_data` connection string except the
- * choke-point hosts `semprec-api`, `semprec-transcribe` and `semprec-agents` (in-process choke point for agent
- * tools); the others document `semprec_side`. See docs/operations/database-roles.md.
+ * No service outside packages/data may be configured with the `alldots_data` connection string except the
+ * choke-point hosts `alldots-api`, `alldots-transcribe` and `alldots-agents` (in-process choke point for agent
+ * tools); the others document `alldots_side`. See docs/operations/database-roles.md.
  */
 const SERVICES_DIR = path.join(fileURLToPath(import.meta.url), "../../../../../services");
-const CHOKE_POINT_HOSTING_SERVICES = new Set(["semprec-api", "semprec-transcribe", "semprec-agents"]);
+const CHOKE_POINT_HOSTING_SERVICES = new Set(["alldots-api", "alldots-transcribe", "alldots-agents"]);
 
 async function listServiceEnvExamples(): Promise<Array<{ service: string; contents: string }>> {
   const entries = await readdir(SERVICES_DIR, { withFileTypes: true });
@@ -31,7 +31,7 @@ async function listServiceEnvExamples(): Promise<Array<{ service: string; conten
 }
 
 describe("service .env.example database role configuration", () => {
-  it("only choke-point-hosting services document the semprec_data connection string", async () => {
+  it("only choke-point-hosting services document the alldots_data connection string", async () => {
     const envExamples = await listServiceEnvExamples();
     expect(envExamples.length).toBeGreaterThan(0);
     for (const service of CHOKE_POINT_HOSTING_SERVICES) {
@@ -40,19 +40,19 @@ describe("service .env.example database role configuration", () => {
 
     for (const { service, contents } of envExamples) {
       if (CHOKE_POINT_HOSTING_SERVICES.has(service)) {
-        expect(contents).toContain("semprec_data");
+        expect(contents).toContain("alldots_data");
       } else {
-        expect(contents).not.toContain("semprec_data");
-        expect(contents).toContain("semprec_side");
+        expect(contents).not.toContain("alldots_data");
+        expect(contents).toContain("alldots_side");
       }
     }
   });
 
-  it("every choke-point-hosting service reads the semprec_data key and never the semprec_side key", async () => {
+  it("every choke-point-hosting service reads the alldots_data key and never the alldots_side key", async () => {
     for (const service of CHOKE_POINT_HOSTING_SERVICES) {
       const serve = await readFile(path.join(SERVICES_DIR, service, "src", "serve.ts"), "utf8");
-      expect(serve).toContain("SEMPREC_API_DATABASE_URL");
-      expect(serve).not.toContain("SEMPREC_SIDE_DATABASE_URL");
+      expect(serve).toContain("ALLDOTS_API_DATABASE_URL");
+      expect(serve).not.toContain("ALLDOTS_SIDE_DATABASE_URL");
     }
   });
 });

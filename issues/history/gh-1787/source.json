@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1787",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1787",
   "id": 6022766968,
   "node_id": "I_kwDOUFuQ4c8AAAABZvwheA",
   "number": 1787,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1305",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1305",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1728, #1766\n**Model tier:** medium\n\n## Context\n\nModel tier rationale: A small change in two producers that must stay in step, but the link depends on the recorded source of the request and the exact destination names are shared with clients, so a wrong branch silently sends a person to the wrong place.\n\nBoth producers of the approval notification, `preflightDestructiveApproval` (`backend/packages/application/src/genericOperationGateway.ts`) and `createApprovalGatedMcpInvokeTool` (`backend/packages/agent-runtime/src/mcpInvokeTool.ts`), write the same `linkHref`: `?page=approvals&user=<userId>`. It does not point to the request and it ignores where the request came from. Requests now record their source (#1766: a chat, an automatic task tick, or an MCP client). A request raised in a Semp chat belongs in that chat; one raised by an automatic task or an MCP client belongs in the Inbox.\n\nThis issue makes the notification link depend on the source and carry the request id. It builds on #1766 and on #1728, which touches the same creation sites.\n\nDecision: link destinations are `?page=semp-chats&tab=semp&approvalRequestId=<id>` for a chat request and `?page=inbox&approvalRequestId=<id>` for a tick or MCP request; the `user=<userId>` parameter is dropped. The page names must be confirmed with the clients before release. Decision: the `link` field of `ApprovalRequiredError` returned to the agent (`?page=approvals&id=...`) is not changed here.\n\n## Task\n\nLoad `state-writes` and `testing`.\n\n1. Add one function `approvalNotificationLinkHref(source, approvalRequestId)` in `backend/packages/data/src/notifications/` that returns the destination above, using the source recorded on the request by #1766; an unknown or missing source falls back to the Inbox link.\n2. Use it in both producers, in the same change, so the two never disagree; the notification keeps its `sourceTable` and `sourceId`.\n3. Update the producers' existing tests and add a test for each source.\n\n## Touches\n\n- backend/packages/data/src/notifications/approvalNotificationLink.ts (new)\n- backend/packages/data/src/index.ts (barrel export)\n- backend/packages/application/src/genericOperationGateway.ts (preflightDestructiveApproval, notification call)\n- backend/packages/agent-runtime/src/mcpInvokeTool.ts (createApprovalGatedMcpInvokeTool, notification call)\n- backend/packages/data/src/__tests__ (link function and producer tests)\n\n## Scope\n\n### In scope\n\n- Source-dependent notification link with the request id for both producers.\n\n### Out of scope\n\n- The push body and title: #1773; APNs category: #1831.\n- The recorded source itself: #1766.\n- Rewriting links of notifications that already exist.\n- The `ApprovalRequiredError` link returned to agents.\n\n## Acceptance criteria\n\n- A request raised in a Semp chat produces a notification whose `link_href` is `?page=semp-chats&tab=semp&approvalRequestId=<id>`.\n- A request raised by an automatic task tick or by an MCP client produces `?page=inbox&approvalRequestId=<id>`.\n- Neither link contains the user id.\n- A request with no recorded source links to the Inbox.\n- Generic-operation and MCP requests from the same source produce identical links.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1787/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1787/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

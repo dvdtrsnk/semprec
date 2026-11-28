@@ -64,7 +64,7 @@ final class SharedCollectionMappingTests: XCTestCase {
         let mapped = SharedCollectionScreenModel.state(fullState())
         let row = CollectionRow(
             id: "p1",
-            title: "Semprec",
+            title: "Alldots",
             group: FieldOption(key: "inProgress", label: "In progress", color: "#007AFF"),
             date: "2027-01-31",
             subtitle: [.text("t")],
@@ -144,7 +144,7 @@ private extension SharedCollectionMappingTests {
         let option = SharedSDK.OptionView(key: "inProgress", label: "In progress", color: "#007AFF")
         let row = SharedSDK.CollectionRow(
             id: "p1",
-            title: "Semprec",
+            title: "Alldots",
             group: option,
             date: "2027-01-31",
             subtitle: [SharedSDK.FieldContentText(text: "t")],

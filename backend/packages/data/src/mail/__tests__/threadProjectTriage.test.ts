@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import {
   AiGatewayFailedError,
   runInTenant,
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import * as relationOps from "../../chokePoint/relationOps.js";
@@ -285,7 +285,7 @@ async function triageJobs() {
 describe("the thread project triage task (issue gh-1872)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(data);
   });
   beforeEach(async () => {

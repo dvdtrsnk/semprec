@@ -1,11 +1,11 @@
 import type { Pool, PoolClient } from "pg";
-import { GuidanceReferenceNotFoundError } from "@semprec/shared";
+import { GuidanceReferenceNotFoundError } from "@alldots/shared";
 import type {
   GuidanceReferenceStore,
   ProjectAgentGuidance,
   ProjectAgentGuidanceStore,
   TransactionRunner,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { requireSingleRow, withTransaction } from "./db/pool.js";
 import { NotFoundError } from "./errors.js";
 import { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";

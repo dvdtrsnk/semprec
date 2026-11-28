@@ -528,7 +528,7 @@ Link rules declared in the `systemDatabases` manifest (engine: [data-model-and-w
 - People rules use `valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "selfPerson" } }`. Copies lock
   the System settings row `FOR SHARE`; `setSelfPersonId` (`selfPerson.ts`) and other writers of the relation lock it
   `FOR UPDATE` and queue recomputation.
-- Rules run in whichever process writes the via edge (`semprec-transcribe`, `semprec-api`, `semprec-agents`); later
+- Rules run in whichever process writes the via edge (`alldots-transcribe`, `alldots-api`, `alldots-agents`); later
   source changes go through `valueLinksPropagate` (`api` affinity). Only live sources are copied.
 - Removing the via edge detaches that Event from the target's links in any state (`tasks/taskSourceEventLinkDetach.ts`,
   `transcription/transcriptCompanyLinkRelease.ts`); removing a transcript's Event also deletes its `company` link.
@@ -590,15 +590,15 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 ### Process placement
 
-- `services/semprec-transcribe` runs the media pipeline. It is the only process that runs `ffmpeg`/`ffprobe`, only from
+- `services/alldots-transcribe` runs the media pipeline. It is the only process that runs `ffmpeg`/`ffprobe`, only from
   `src/mediaNormalization.ts` (system packages, fixed argv, no shell, SIGKILL timeout, zod-validated output). Others
   hand media work to it as a task with `queueAffinity: 'transcribe'`.
-- `services/semprec-transcribe/src/queueRuntime.ts` runs one-slot runners: the pipeline (`transcriptionJob`), fast row
+- `services/alldots-transcribe/src/queueRuntime.ts` runs one-slot runners: the pipeline (`transcriptionJob`), fast row
   creation (`transcriptionCreate`), short model tasks (`transcriptCardRecompute`, `transcriptSpeakerSuggestion`, voice
   notes) and Inbox attachment metadata.
 - Graceful shutdown: the task polls `helpers.abortSignal` only between committed checkpoints
   (`throwIfShutdownRequested`), throws `TranscriptionInterruptedError`, re-enqueues by `fileItemId` and returns
-  normally. `TimeoutStopSec` (960 s, `deploy/systemd/semprec-transcribe.service`) is sized to one ASR chunk.
+  normally. `TimeoutStopSec` (960 s, `deploy/systemd/alldots-transcribe.service`) is sized to one ASR chunk.
 - The worker writes through the choke point only. Its write surface: Transcripts items and their system properties
   and checkpoints; the requested `project` and upload `event` edges at create; the match's `event` edge (and release of
   an edge to a trashed Event); `transcript` cards and their `sourceTranscript` edge; card rewrites of its own cards;
@@ -608,12 +608,12 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 - The outer handler converts every escaping failure into a typed error with a fixed message and stable code, no cause
   or provider text. Diagnostics are stored first; a failure while storing them never replaces the original.
-- The streaming STT adapter (`services/semprec-ai-gateway/src/audioProviders/openAiStreamingTranscriptionProvider.ts`)
+- The streaming STT adapter (`services/alldots-ai-gateway/src/audioProviders/openAiStreamingTranscriptionProvider.ts`)
   refuses a frame when `bufferedAmount + frameBytes > 256 KiB` and fails the session with a content-free diagnostic.
 
 ### Pipeline locking
 
-- **Lock order** in `services/semprec-transcribe/src/transcriptionTask.ts`: source Files item `FOR UPDATE`, transcript
+- **Lock order** in `services/alldots-transcribe/src/transcriptionTask.ts`: source Files item `FOR UPDATE`, transcript
   item `FOR UPDATE`, then `item_automation` `FOR UPDATE`, for every guard, checkpoint write, attempt start and failure
   record. No lock is held across gateway, storage or media work.
 - A deleted source or transcript observed under these locks ends the job as a deleted stop (automation marked, items
@@ -658,7 +658,7 @@ never locked by an Event trash (it must not wait for an open transcription match
 - Diarization keys stay in `computed.segments`; who a key is lives on the user-owned `speakers` edge with metadata
   exactly `{ speaker }`. `assertSpeakerEdgeWritable` (choke point) enforces a real key and one person per key, locking
   the transcript.
-- Only `semprec-transcribe` creates `transcript` cards: the match step and the suggestion step
+- Only `alldots-transcribe` creates `transcript` cards: the match step and the suggestion step
   (`transcription/transcriptSpeakerSuggestion.ts`). Only a human confirm writes a `speakers` edge.
 - Confirm adds missing Event participants with `createRelationIfAbsentWithClient` (insert-only, no metadata
   replacement, records `addedRelations` in history).
@@ -673,7 +673,7 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 - A user instruction on a card enqueues `transcriptCardRecompute` (key
   `transcript-card-recompute:<proposalId>:<instructionEntryId>`) in the revise transaction.
-- `semprec-transcribe` rewrites only its own `transcript` cards: snapshot, gateway call outside transactions, then a
+- `alldots-transcribe` rewrites only its own `transcript` cards: snapshot, gateway call outside transactions, then a
   locked write that fails if `aiVersion` moved. The model may only choose among existing candidates or edit the
   current new-item proposal; user-edited keys are preserved. Each instruction is answered by exactly one
   `threadRevision` entry. Logs carry ids and codes only.
@@ -740,8 +740,8 @@ never locked by an Event trash (it must not wait for an open transcription match
 Rules recorded with these domains that apply more broadly:
 
 - **Queue affinity:** every queue task declares `queueAffinity` (`TASK_AFFINITIES = ["api", "agents", "transcribe"]`
-  in `@semprec/queue`; module tasks in their manifest). `resolveTaskAffinitySets` (`moduleTasks.ts`) is the single
-  resolver; `@semprec/module-registry` keeps its own literal tuple and must not import `@semprec/queue`.
+  in `@alldots/queue`; module tasks in their manifest). `resolveTaskAffinitySets` (`moduleTasks.ts`) is the single
+  resolver; `@alldots/module-registry` keeps its own literal tuple and must not import `@alldots/queue`.
 - **Module task dependencies:** a module task needing composition-root objects exports `set<Name>Delivery(next | null)`;
   the runtime of its affinity binds before starting and unbinds on stop; an unbound handler throws (queue retries).
 - **Queue task as agent without a run:** a queue task may write one reversible user-owned relation edge as an agent

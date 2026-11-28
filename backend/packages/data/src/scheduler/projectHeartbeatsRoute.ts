@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import type { Pool, PoolClient } from "pg";
 import type { AgentRunDisplayStatus } from "../agentRuns/agentRunDisplayStatus.js";
 import { getAgentRunDetail, getAgentRunReplyOutcome } from "../agentRuns/agentRunDetail.js";

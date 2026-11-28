@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestModuleItem,
@@ -23,7 +23,7 @@ let pool: Pool;
 let runtimePool: Pool;
 
 /**
- * One tenant and user via the admin pool. Tenant rows are seeded through the `semprec_data` pool inside
+ * One tenant and user via the admin pool. Tenant rows are seeded through the `alldots_data` pool inside
  * `runInTenant`; global tables and the queue through the admin pool.
  */
 async function seedTenant(): Promise<{ tenantId: string; userId: string }> {
@@ -53,7 +53,7 @@ async function createMailbox(tenantId: string): Promise<string> {
 describe("getSystemHealthReport (issue #170, per-tenant since #1052)", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   beforeEach(async () => {

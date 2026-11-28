@@ -1,6 +1,6 @@
 Check that the change builds and behaves correctly on both Apple platforms:
 every target builds natively for iOS, iPadOS and macOS (not Mac Catalyst) from
-the same sources, the iOS-only XCUITest bundle `SemprecUITests` aside, and no
+the same sources, the iOS-only XCUITest bundle `AlldotsUITests` aside, and no
 CI job builds either of them. A platform conditional
 used where shared code would do is item 2 of `tasks/architecture.md`, not a
 finding of this task.
@@ -17,12 +17,12 @@ finding of this task.
    presentation — a destination, an action or a piece of state that exists on
    one platform only — without the linked issue's Task calling for it — high.
 3. A target or setting that stops building the app natively for one of the
-   platforms: a destination dropped from `SemprecProject.destinations`, Mac
+   platforms: a destination dropped from `AlldotsProject.destinations`, Mac
    Catalyst enabled, a deployment target or `ARCHS` value set apart from
    `Tuist/ProjectDescriptionHelpers/` (where `ProjectConfiguration` holds the
-   minimums and `architectures`, which `SemprecProject` and
+   minimums and `architectures`, which `AlldotsProject` and
    `Tuist/Package.swift` read) — high. The iOS-only XCUITest bundle
-   `SemprecUITests` builds no app and is not this item
+   `AlldotsUITests` builds no app and is not this item
    (`tasks/architecture.md` item 6).
 4. A setting, Info.plist key or entitlement meant for one platform that the
    change applies to the other: the macOS entitlements file no longer limited

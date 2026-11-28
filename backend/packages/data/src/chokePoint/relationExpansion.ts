@@ -5,7 +5,7 @@ import type {
   HiddenRelationTarget,
   ItemRelationTarget,
   ReducedRelationTarget,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import type { CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import type { ItemRow, PropertyRow } from "../types.js";
 import { ValidationError } from "../errors.js";

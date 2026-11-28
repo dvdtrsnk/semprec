@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant, type ItemReadInclude } from "@semprec/shared";
+import { runInTenant, type ItemReadInclude } from "@alldots/shared";
 import {
   createChokePoint,
   createUser,
@@ -15,8 +15,8 @@ import {
   setInvalidationHook,
   withTransaction,
   type InvalidationEvent,
-} from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+} from "@alldots/data";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@alldots/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
 let admin: Pool;
@@ -27,8 +27,8 @@ let tenant: string;
 describe("derived item reads in the generic application service", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    writer = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    writer = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -344,7 +344,7 @@ describe("select option operations in the generic application service (issue #16
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

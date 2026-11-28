@@ -1,4 +1,4 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";

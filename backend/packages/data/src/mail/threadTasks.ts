@@ -3,7 +3,7 @@
 // confirmed proposal calls `createThreadTask` directly.
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayClientPort } from "@alldots/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry, type ModuleCatalogs } from "@semprec/module-registry";
+import { ModuleRegistry, type ModuleCatalogs } from "@alldots/module-registry";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { ensurePagesDatabase } from "../docs/pagesDatabase.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";

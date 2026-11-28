@@ -6,9 +6,9 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { createAgentRun, createUser, insertAgentRunEvent, withTransaction } from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { createAgentRun, createUser, insertAgentRunEvent, withTransaction } from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import { repairInterruptedRuns } from "../startupRepair.js";
 
 let adminPool: Pool;
@@ -59,7 +59,7 @@ describe("repairInterruptedRuns across tenants", () => {
   beforeEach(async () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
-    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
   });

@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import type { ManifestLocale } from "../manifest/catalogResolution.js";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;

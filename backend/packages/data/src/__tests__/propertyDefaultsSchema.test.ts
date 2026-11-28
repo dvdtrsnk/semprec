@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { markPropertyMigrationDroppedValues, settlePropertyMigrationStatus } from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";

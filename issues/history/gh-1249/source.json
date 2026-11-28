@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1249",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1249",
   "id": 5977975862,
   "node_id": "I_kwDOUFuQ4c8AAAABZFCsNg",
   "number": 1249,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -45,7 +45,7 @@
     {
       "id": 12386016783,
       "node_id": "LA_kwDOUFuQ4c8AAAAC4kOeDw",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/followups:issue",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/followups:issue",
       "name": "followups:issue",
       "color": "bfd4f2",
       "default": false,
@@ -70,14 +70,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1245",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1245",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #1060, #1069\n**Model tier:** low\n\n## Context\n\nModel tier rationale: This aligns one test-local helper with an existing production byte encoding and adds one focused fixture regression.\n\nBoth #1060 and #1069 edit this test file while changing credential scheme coverage. Apply the fixture correction after those overlapping edits; their titles and touch sets do not establish that they already include this normalization fix.\n\n- PR #1117, finding `9e4a92169d`, `backend/packages/data/src/__tests__/externalCredentialsStore.test.ts:24`: The direct-seal fixture interpolates UUID text unchanged, while production credentialAssociatedData lowercases both identifiers.\n\n## Task\n\nMake the test-local `associatedData` helper lowercase both the tenant and item UUID before constructing `semprec:external-credential:v1:<tenant>:<item>` bytes. Keep the production helper private and unchanged. Add a focused integration case that passes uppercase UUID text containing letters to the direct-seal fixture and then reads the credential through the real store using the canonical identifiers in the proper tenant scope. Retain the lowercase round-trip and binding tests that survive the blockers; do not restore any retired master-only tests.\n\n## Touches\n\n- backend/packages/data/src/__tests__/externalCredentialsStore.test.ts (associatedData/insertTenantRow fixture and its normalization regression only)\n\n## Scope\n\n### In scope\n\nFixture associated-data normalization and its real-store decryption regression.\n\n### Out of scope\n\nProduction encryption or credential-store behavior, scheme cutovers, migrations and unrelated fixture cleanup.\n\n## Acceptance criteria\n\n- For finding `9e4a92169d`, direct-seal fixtures given uppercase tenant and item UUID text produce the same associated-data bytes as lowercase input and decrypt through getDecryptedCredential under the canonical tenant/item identifiers; existing binding rejection tests remain effective.\n\n\n<!-- crb-followup:v1 pr=1117 key=9e4a92169d -->",
+  "body": "**Blocked by:** #1060, #1069\n**Model tier:** low\n\n## Context\n\nModel tier rationale: This aligns one test-local helper with an existing production byte encoding and adds one focused fixture regression.\n\nBoth #1060 and #1069 edit this test file while changing credential scheme coverage. Apply the fixture correction after those overlapping edits; their titles and touch sets do not establish that they already include this normalization fix.\n\n- PR #1117, finding `9e4a92169d`, `backend/packages/data/src/__tests__/externalCredentialsStore.test.ts:24`: The direct-seal fixture interpolates UUID text unchanged, while production credentialAssociatedData lowercases both identifiers.\n\n## Task\n\nMake the test-local `associatedData` helper lowercase both the tenant and item UUID before constructing `alldots:external-credential:v1:<tenant>:<item>` bytes. Keep the production helper private and unchanged. Add a focused integration case that passes uppercase UUID text containing letters to the direct-seal fixture and then reads the credential through the real store using the canonical identifiers in the proper tenant scope. Retain the lowercase round-trip and binding tests that survive the blockers; do not restore any retired master-only tests.\n\n## Touches\n\n- backend/packages/data/src/__tests__/externalCredentialsStore.test.ts (associatedData/insertTenantRow fixture and its normalization regression only)\n\n## Scope\n\n### In scope\n\nFixture associated-data normalization and its real-store decryption regression.\n\n### Out of scope\n\nProduction encryption or credential-store behavior, scheme cutovers, migrations and unrelated fixture cleanup.\n\n## Acceptance criteria\n\n- For finding `9e4a92169d`, direct-seal fixtures given uppercase tenant and item UUID text produce the same associated-data bytes as lowercase input and decrypt through getDecryptedCredential under the canonical tenant/item identifiers; existing binding rejection tests remain effective.\n\n\n<!-- crb-followup:v1 pr=1117 key=9e4a92169d -->",
   "closed_by": {
     "login": "dvdtrsnk",
     "id": 122625462,
@@ -100,7 +100,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -111,7 +111,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

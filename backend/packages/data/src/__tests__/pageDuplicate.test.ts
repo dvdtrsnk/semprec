@@ -9,8 +9,8 @@ import {
   writeBlock,
   type NewBlockInput,
   type PageBlock,
-} from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { lockItemById, lockItemByIdNowait, softDeleteItem } from "../chokePoint/itemsStore.js";
@@ -37,7 +37,7 @@ import {
   resetDatabase,
   writePageTextBlocks,
 } from "../testSupport/testDb.js";
-import type { PageDuplicateOutput } from "@semprec/shared";
+import type { PageDuplicateOutput } from "@alldots/shared";
 
 let admin: Pool;
 let runtime: Pool;
@@ -45,7 +45,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);

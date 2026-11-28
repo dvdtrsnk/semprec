@@ -2,8 +2,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { enqueueJob, runOnce, type TaskList } from "@semprec/queue";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { enqueueJob, runOnce, type TaskList } from "@alldots/queue";
 import {
   createChokePoint,
   createModuleRegistryDriftCheckAction,
@@ -11,8 +11,8 @@ import {
   ORPHANED_OWNER_PROCESS_FINDING_KIND,
   runMigrations,
   type ChokePoint,
-} from "@semprec/data";
-import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+} from "@alldots/data";
+import { getTestPool, inTenantZero, resetDatabase } from "@alldots/data/testSupport";
 
 const FIXTURES_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(FIXTURES_DIR, "fixtures/migrations");

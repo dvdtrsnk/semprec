@@ -6,7 +6,7 @@ import {
   runInTenant,
   type GuidanceDriftContradiction,
   type GuidanceDriftSubject,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
@@ -107,7 +107,7 @@ async function saveGuidance(tenant: string, projectItemId: string, userId: strin
 describe("GET /api/projects/:id/agent-guidance/drift (issue #1630)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

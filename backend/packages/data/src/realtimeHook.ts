@@ -3,7 +3,7 @@ import { runAfterCommit } from "./db/pool.js";
 import type { CreatedBy } from "./types.js";
 
 /**
- * Realtime invalidation, published over Postgres NOTIFY by `@semprec/realtime` (`wireRealtimeHooks`).
+ * Realtime invalidation, published over Postgres NOTIFY by `@alldots/realtime` (`wireRealtimeHooks`).
  *
  * Always thin, never a full row: the event says "something changed" and the client refetches over REST.
  * `scope: "item"` carries `updatedAt` so a client can skip a stale echo; `scope: "schema"` names only the
@@ -100,7 +100,7 @@ export function notifyDocUpdate(event: DocUpdateEvent): void {
 
 /**
  * Fired once per newly written `notifications` row, never for a deduped replay. Delivered only to
- * `userId`'s sockets. `@semprec/realtime` fetches the full row and broadcasts it, because
+ * `userId`'s sockets. `@alldots/realtime` fetches the full row and broadcasts it, because
  * `notifications.title` is pre-rendered text with no second enforcement layer.
  */
 export interface NotificationCreatedEvent {
@@ -158,7 +158,7 @@ export function notifySessionRevoked(event: SessionRevokedEvent): void {
   sessionRevokedHook(event);
 }
 
-/** Fired for a committed agent-run event; `@semprec/realtime` fetches the row before delivering it to an authorized watcher. */
+/** Fired for a committed agent-run event; `@alldots/realtime` fetches the row before delivering it to an authorized watcher. */
 export interface AgentRunEventNotification {
   agentRunId: string;
   eventId: string;
@@ -178,7 +178,7 @@ export function notifyAgentRunEvent(event: AgentRunEventNotification): void {
 
 /**
  * Ephemeral typing update of an agent run, delivered as the `delta` of an `agent:delta` frame; never stored or
- * replayed. Payload types live in `@semprec/realtime` (`protocolV1.ts`).
+ * replayed. Payload types live in `@alldots/realtime` (`protocolV1.ts`).
  */
 export interface AgentRunDeltaEvent {
   agentRunId: string;

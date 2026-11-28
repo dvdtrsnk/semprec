@@ -1,4 +1,4 @@
-import { collectItemLinks, type ParsedBlock } from "@semprec/block-model";
+import { collectItemLinks, type ParsedBlock } from "@alldots/block-model";
 import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 

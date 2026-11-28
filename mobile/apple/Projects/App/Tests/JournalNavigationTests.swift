@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The Journal router opens Podrobnosti over the Journal stack and pushes subpages and the Inbox onto it.
 final class JournalNavigationTests: XCTestCase {
