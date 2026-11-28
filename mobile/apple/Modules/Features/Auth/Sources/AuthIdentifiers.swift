@@ -8,4 +8,13 @@ enum AuthIdentifiers {
     static let signIn = "login.signIn"
     static let forgot = "login.forgot"
     static let message = "login.message"
+
+    static let passwordResetScreen = "passwordReset.screen"
+    static let passwordResetNewPassword = "passwordReset.newPassword"
+    static let passwordResetRepeat = "passwordReset.repeat"
+    static let passwordResetSubmit = "passwordReset.submit"
+    static let passwordResetCancel = "passwordReset.cancel"
+    static let passwordResetMessage = "passwordReset.message"
+    static let passwordResetDone = "passwordReset.done"
+    static let passwordResetSignIn = "passwordReset.signIn"
 }

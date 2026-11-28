@@ -79,6 +79,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         SharedLoginScreenModel(sdk.loginViewModel())
     }
 
+    public func makePasswordReset(serverUrl: String, token: String) -> any PasswordResetScreenModel {
+        SharedPasswordResetScreenModel(sdk.passwordReset.viewModel(serverUrl: serverUrl, token: token))
+    }
+
     public func makeOverview() -> any OverviewScreenModel {
         SharedOverviewScreenModel(sdk.overviewViewModel())
     }

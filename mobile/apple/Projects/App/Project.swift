@@ -27,7 +27,7 @@ let project = Project(
                 "CFBundlePackageType": "$(PRODUCT_BUNDLE_PACKAGE_TYPE)",
                 "CFBundleShortVersionString": "$(MARKETING_VERSION)",
                 // The scheme a browser sign-in returns to (`alldots://oauth`), caught by the sign-in's own session;
-                // the app reads no URL it is opened with.
+                // the only URL the scene reads is a password-reset link of alldots.app (`PasswordResetLink`).
                 "CFBundleURLTypes": [
                     [
                         "CFBundleURLName": "$(PRODUCT_BUNDLE_IDENTIFIER).oauth",
