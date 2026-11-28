@@ -42,7 +42,8 @@ private const val FACETS = """{"total":9,
 
 private const val PROJECTS = """{"items":[
     {"id":"pr1","databaseId":"$PROJECTS_DB","properties":{"name":"Web","color":"#FF9500"}},
-    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}}]}"""
+    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}},
+    {"id":"quiet","databaseId":"$PROJECTS_DB","properties":{"name":"Zahrada"}}]}"""
 
 private const val DATABASES = """{"databases":[{"id":"$PROJECTS_DB","key":"projects","name":"Projects"}]}"""
 
@@ -224,19 +225,15 @@ class HttpMailRepositoryTest {
     }
 
     @Test
-    fun theFacetsGetTheirNamesFromTheItemsAndDropWhatHasNone() = runTest {
+    fun theFacetsAskWithoutParametersAndGetTheirNamesFromTheItemsDroppingWhatHasNone() = runTest {
         val server = server(::routes)
 
-        val answer = server.mail().facets("pr1")
+        val answer = server.mail().facets()
         val facets = assertIs<RepositoryResult.Content<MailFacets>>(answer).value
 
         val sent = server.requests.first { it.url.encodedPath == "/api/mail/threads/facets" }
-        assertEquals(listOf("projectId"), sent.url.parameters.names().toList())
-        assertEquals("pr1", sent.query("projectId"))
-        assertEquals(9, facets.total)
-        assertEquals(7, facets.projectsTotal)
-        assertEquals(listOf(MailFacetOption("pr1", "Web", "#FF9500", 3)), facets.projects)
-        assertEquals("Web", facets.selectedProjectName)
+        assertTrue(sent.url.parameters.isEmpty())
+        assertEquals(MailFacets(9, 7, listOf(MailFacetOption("pr1", "Web", "#FF9500", 3))), facets)
         assertEquals(
             listOf("/api/mail/threads/facets", "/api/databases", "/api/databases/$PROJECTS_DB/query"),
             server.requests.map { it.url.encodedPath },
@@ -244,15 +241,17 @@ class HttpMailRepositoryTest {
     }
 
     @Test
-    fun theFacetsWithoutAProjectAskForEverythingAndNameNoSelection() = runTest {
-        val server = server(::routes)
+    fun aProjectIsNamedFromTheProjectsWithoutAskingTheFacets() = runTest {
+        val expected = mapOf("pr1" to "Web", "quiet" to "Zahrada", "nameless" to null, "gone" to null)
+        for ((projectId, name) in expected) {
+            val server = server(::routes)
 
-        val facets = assertIs<RepositoryResult.Content<MailFacets>>(server.mail().facets(null)).value
-
-        val sent = server.requests.first { it.url.encodedPath == "/api/mail/threads/facets" }
-        assertTrue(sent.url.parameters.isEmpty())
-        assertEquals(listOf("Web"), facets.projects.map { it.name })
-        assertNull(facets.selectedProjectName)
+            assertEquals(RepositoryResult.Content(name), server.mail().projectName(projectId), projectId)
+            assertEquals(
+                listOf("/api/databases", "/api/databases/$PROJECTS_DB/query"),
+                server.requests.map { it.url.encodedPath },
+            )
+        }
     }
 
     @Test
