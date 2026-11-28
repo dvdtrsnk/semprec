@@ -2,7 +2,7 @@
 // agent sees speaker names, not an anonymous `SPEAKER_00`, where the people are known.
 import type { Pool } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { sensitiveSourceDatabaseIds } from "../agentGrants/inheritedSensitivity.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";

@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The sleep sheets of the app: they are presented over a tab's stack and not pushed, and the scene provides the
 /// sheet's screen.

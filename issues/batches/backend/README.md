@@ -181,18 +181,18 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 3 | [[backend-delivery 03/74] Implement architecture changes](../../items/sp-de4e31d4-fe70-40d1-9529-f2e486077657.md) | 11 | 57214 |
 | 4 | [[backend-delivery 04/74] Implement data/inbox, data/chokePoint, data/tenancy changes](../../items/sp-6d23d3a0-de0d-4daf-afa5-0a6851a77b70.md) | 11 | 57513 |
 | 5 | [[backend-delivery 05/74] Implement data/mail, data/tenancy, queue changes](../../items/sp-498bed5d-cf6d-440e-afe9-d926a167232a.md) | 10 | 57620 |
-| 6 | [[backend-delivery 06/74] Implement agent-runtime, semprec-agents, data/agentRuns changes](../../items/sp-cf3300f1-216a-4f23-b35a-32ed074552d0.md) | 9 | 57781 |
+| 6 | [[backend-delivery 06/74] Implement agent-runtime, alldots-agents, data/agentRuns changes](../../items/sp-cf3300f1-216a-4f23-b35a-32ed074552d0.md) | 9 | 57781 |
 | 7 | [[backend-delivery 07/74] Implement data/blobs, data/chokePoint, application changes](../../items/sp-fa7d01cf-279f-41e6-a0ab-f63701f998e3.md) | 8 | 57539 |
 | 8 | [[backend-delivery 08/74] Implement data/mcp, data/notifications, data/push changes](../../items/sp-f1ddb03e-a6ec-486e-818d-56c7101ab2a0.md) | 11 | 56612 |
-| 9 | [[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477.md) | 11 | 59446 |
-| 10 | [[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes](../../items/sp-ea66e986-936d-4135-ac13-d49d81e64540.md) | 10 | 59877 |
+| 9 | [[backend-delivery 09/74] Implement data/inbox, data/transcription, alldots-transcribe changes](../../items/sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477.md) | 11 | 59446 |
+| 10 | [[backend-delivery 10/74] Implement ai-gateway-client, alldots-ai-gateway, shared changes](../../items/sp-ea66e986-936d-4135-ac13-d49d81e64540.md) | 10 | 59877 |
 | 11 | [[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes](../../items/sp-aeb88605-77ac-4921-a8b1-3f259c52ecf4.md) | 7 | 59979 |
 | 12 | [[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes](../../items/sp-44a1d0e0-66ca-4dbe-947a-6602d9e44b5a.md) | 11 | 57567 |
-| 13 | [[backend-delivery 13/74] Implement data/mail, semprec-api/adapter changes](../../items/sp-de8ab38c-761c-4ec7-b5f5-e7a7f4207af7.md) | 12 | 56211 |
+| 13 | [[backend-delivery 13/74] Implement data/mail, alldots-api/adapter changes](../../items/sp-de8ab38c-761c-4ec7-b5f5-e7a7f4207af7.md) | 12 | 56211 |
 | 14 | [[backend-delivery 14/74] Implement data/views, data/chokePoint, shared/genericOperations changes](../../items/sp-bbaffb18-fc40-4d14-a793-18f5554b7171.md) | 12 | 57910 |
-| 15 | [[backend-delivery 15/74] Implement agent-runtime, semprec-agents, application changes](../../items/sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7.md) | 10 | 56100 |
+| 15 | [[backend-delivery 15/74] Implement agent-runtime, alldots-agents, application changes](../../items/sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7.md) | 10 | 56100 |
 | 16 | [[backend-delivery 16/74] Implement architecture, data/auth, realtime changes](../../items/sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91.md) | 10 | 57430 |
-| 17 | [[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes](../../items/sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098.md) | 11 | 55538 |
+| 17 | [[backend-delivery 17/74] Implement data/mail, data/inbox, alldots-api/adapter changes](../../items/sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098.md) | 11 | 55538 |
 | 18 | [[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes](../../items/sp-a0bbb89b-34c7-4d8e-8758-3552b91c85a5.md) | 9 | 46516 |
 | 19 | [[backend-delivery 19/74] Accept local security repairs and retain the production release gate](../../items/sp-f1a0629b-0137-4cd3-a7b7-9421ec0dc438.md) | 5 | 33722 |
 | 20 | [[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes](../../items/sp-823fc8d3-3186-4b22-9c0b-3e360048d9d3.md) | 7 | 55757 |
@@ -203,11 +203,11 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 25 | [[backend-delivery 25/74] Implement data/journal, data/mail, data/docs changes](../../items/sp-c057efef-e07e-4a64-86c8-303526adcf3e.md) | 10 | 59983 |
 | 26 | [[backend-delivery 26/74] Implement data/tasks, application/projectAgentGuidance, data/guidanceDrift changes](../../items/sp-55495258-ecea-4313-a8ff-863910f68f23.md) | 7 | 59898 |
 | 27 | [[backend-delivery 27/74] Implement data/chokePoint, data/derived, data/mail changes](../../items/sp-71e6d1cf-1d2d-44f9-aa27-fa5e9557cc57.md) | 9 | 59944 |
-| 28 | [[backend-delivery 28/74] Implement data/mail, data/transcription, semprec-transcribe changes](../../items/sp-4d935482-f3ce-4604-aeed-b447d1fed82c.md) | 8 | 59996 |
-| 29 | [[backend-delivery 29/74] Implement data/library, semprec-transcribe, queue changes](../../items/sp-77c2a124-6206-4790-ae09-a222243339dc.md) | 9 | 59924 |
+| 28 | [[backend-delivery 28/74] Implement data/mail, data/transcription, alldots-transcribe changes](../../items/sp-4d935482-f3ce-4604-aeed-b447d1fed82c.md) | 8 | 59996 |
+| 29 | [[backend-delivery 29/74] Implement data/library, alldots-transcribe, queue changes](../../items/sp-77c2a124-6206-4790-ae09-a222243339dc.md) | 9 | 59924 |
 | 30 | [[backend-delivery 30/74] Implement application, shared/genericOperations, data/chokePoint changes](../../items/sp-c7d74d78-a59f-4453-b2d6-3c9c31f8b235.md) | 8 | 59891 |
-| 31 | [[backend-delivery 31/74] Implement semprec-agents, data/semp, queue changes](../../items/sp-7cce8a1c-44bb-4290-9d85-64dfbac693a0.md) | 9 | 59832 |
-| 32 | [[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes](../../items/sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd.md) | 11 | 59819 |
+| 31 | [[backend-delivery 31/74] Implement alldots-agents, data/semp, queue changes](../../items/sp-7cce8a1c-44bb-4290-9d85-64dfbac693a0.md) | 9 | 59832 |
+| 32 | [[backend-delivery 32/74] Implement data/inbox, data/semp, alldots-agents changes](../../items/sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd.md) | 11 | 59819 |
 | 33 | [[backend-delivery 33/74] Implement data/calendar, data/chokePoint, data/views changes](../../items/sp-1385289a-c057-4dcf-a42f-b2aaded63f7b.md) | 8 | 57306 |
 | 34 | [[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes](../../items/sp-cc9b4e18-de0c-4fbd-aab3-85d5b5be52c8.md) | 10 | 56551 |
 | 35 | [[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes](../../items/sp-9f67b277-1c75-4496-8571-5686097ff725.md) | 10 | 58247 |
@@ -228,17 +228,17 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 50 | [[backend-delivery 50/74] Implement application, shared/genericOperations, data/agentGrants changes](../../items/sp-9ea90977-e3d2-48ae-bdb1-fa0c1decd6f7.md) | 10 | 57255 |
 | 51 | [[backend-delivery 51/74] Implement data/calendar, data/tasks changes](../../items/sp-75c1b975-fd26-4662-a40a-f40d02177d8a.md) | 9 | 56143 |
 | 52 | [[backend-delivery 52/74] Implement agent-runtime, data/agentRuns, agent-runtime/tools changes](../../items/sp-8ef85048-a887-4f5b-bfca-a524601d48ad.md) | 10 | 56580 |
-| 53 | [[backend-delivery 53/74] Implement data/transcription, semprec-transcribe, data/inbox changes](../../items/sp-404ad782-8ff8-4a64-80b4-a29fdf333e36.md) | 7 | 53845 |
+| 53 | [[backend-delivery 53/74] Implement data/transcription, alldots-transcribe, data/inbox changes](../../items/sp-404ad782-8ff8-4a64-80b4-a29fdf333e36.md) | 7 | 53845 |
 | 54 | [[backend-delivery 54/74] Implement realtime, realtime-client, ai-gateway changes](../../items/sp-16d8729d-031f-4384-91f0-9fb7eaa8326b.md) | 9 | 54873 |
 | 55 | [[backend-delivery 55/74] Implement data/agentRuns, data/mcp, data/semp changes](../../items/sp-f1428e6a-2200-476f-8115-7cc16ec8104f.md) | 8 | 57805 |
-| 56 | [[backend-delivery 56/74] Implement data/semp, semprec-agents, application/projectAgentGuidance changes](../../items/sp-9f4aa1e3-40d6-4408-bc51-577c8bbbef38.md) | 8 | 54477 |
+| 56 | [[backend-delivery 56/74] Implement data/semp, alldots-agents, application/projectAgentGuidance changes](../../items/sp-9f4aa1e3-40d6-4408-bc51-577c8bbbef38.md) | 8 | 54477 |
 | 57 | [[backend-delivery 57/74] Implement data/mcp, realtime, realtime-client changes](../../items/sp-8822ea9b-25c6-44b8-8504-5d5af7654c0e.md) | 10 | 57344 |
 | 58 | [[backend-delivery 58/74] Implement data/sleep, data/chokePoint, application changes](../../items/sp-e851d02d-f9e9-4d46-8d74-399d757d4b2d.md) | 7 | 53327 |
 | 59 | [[backend-delivery 59/74] Implement data/calendar, data/chokePoint, data/search changes](../../items/sp-b01c7b1d-a5d0-4404-935f-b0455ab2aed1.md) | 9 | 55960 |
 | 60 | [[backend-delivery 60/74] Implement data/chokePoint, data/inbox, data/transcription changes](../../items/sp-c085d86f-fed6-4d7c-b983-a73c72d95223.md) | 9 | 57495 |
 | 61 | [[backend-delivery 61/74] Implement data/mail, data/search, shared/genericOperations changes](../../items/sp-2f2ffdd3-af61-4d7f-b072-a54ddd4dab8a.md) | 10 | 55657 |
 | 62 | [[backend-delivery 62/74] Implement data/chokePoint, data/calendar, data/trash changes](../../items/sp-b5e18c99-27b0-4479-8882-bdaf0fbe9a72.md) | 9 | 57775 |
-| 63 | [[backend-delivery 63/74] Implement data/mail, data/inbox, semprec-api/adapter changes](../../items/sp-559d3b2a-9178-4247-b9e1-67ece8a18fa4.md) | 11 | 57790 |
+| 63 | [[backend-delivery 63/74] Implement data/mail, data/inbox, alldots-api/adapter changes](../../items/sp-559d3b2a-9178-4247-b9e1-67ece8a18fa4.md) | 11 | 57790 |
 | 64 | [[backend-delivery 64/74] Implement data/inbox, data/calendar, data/manifest changes](../../items/sp-cc56c645-b2de-4ad5-82fb-c907011425d6.md) | 8 | 55053 |
 | 65 | [[backend-delivery 65/74] Implement data/chokePoint, data/agentRuns, data/scheduler changes](../../items/sp-f8cc252b-49f1-4b64-a6a2-4c65839ea3b3.md) | 8 | 57900 |
 | 66 | [[backend-delivery 66/74] Implement data/mail, data/inbox, data/semp changes](../../items/sp-e039076f-0c82-4f3e-90ca-37a813ebcd28.md) | 11 | 55316 |
@@ -246,7 +246,7 @@ reported by the ordinary validator; they are not silently repaired by batching.
 | 68 | [[backend-delivery 68/74] Implement data/calendar, data/inbox, data/notifications changes](../../items/sp-4c05dd52-f9eb-4474-92d0-feaf5c252da2.md) | 7 | 54226 |
 | 69 | [[backend-delivery 69/74] Implement data/calendar, queue, data/chokePoint changes](../../items/sp-d2796d07-70a9-4c60-b951-e0062c704e5d.md) | 7 | 54419 |
 | 70 | [[backend-delivery 70/74] Implement data/inbox, data/blobs, data/docs changes](../../items/sp-e1a8e572-15ed-4568-b9be-33e76f66d8af.md) | 9 | 55996 |
-| 71 | [[backend-delivery 71/74] Implement data/inbox, data/transcription, semprec-transcribe changes](../../items/sp-9c059097-487d-4e51-950d-2ea975f0ed08.md) | 7 | 55908 |
+| 71 | [[backend-delivery 71/74] Implement data/inbox, data/transcription, alldots-transcribe changes](../../items/sp-9c059097-487d-4e51-950d-2ea975f0ed08.md) | 7 | 55908 |
 | 72 | [[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes](../../items/sp-3ccbdb63-4e68-4015-aa44-4dff162d1e91.md) | 9 | 58514 |
 | 73 | [[backend-delivery 73/74] Implement data/inbox, data/mcp, queue changes](../../items/sp-56893bf7-2d28-48ba-bc63-2129e44d82bd.md) | 9 | 57226 |
 | 74 | [[backend-delivery 74/74] Implement data/inbox, data/mcp, data/recipes changes](../../items/sp-c4a4aa37-b11e-47da-8b15-4931b712b71d.md) | 9 | 52239 |

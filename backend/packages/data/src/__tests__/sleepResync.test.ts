@@ -3,8 +3,8 @@ import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { mergeModuleTaskListForAffinity } from "../moduleTasks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -150,7 +150,7 @@ const jobEnvelope = z.object({ tenantId: z.string(), payload: z.object({ tenantI
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 afterAll(async () => {

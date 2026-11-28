@@ -1,7 +1,7 @@
 ---
 schemaVersion: 1
 id: "sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098"
-title: "[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes"
+title: "[backend-delivery 17/74] Implement data/mail, data/inbox, alldots-api/adapter changes"
 kind: "implementation"
 state: "closed"
 stateReason: "completed"
@@ -13,7 +13,7 @@ createdAt: "2026-10-31T17:31:01.915Z"
 updatedAt: "2026-11-03T08:02:08.270Z"
 closedAt: "2026-11-03T08:02:08.270Z"
 source: null
-approval: {"specSha256":"2a65785f46ee5be794cab51068240444124dadbdbf5887dde8eed418c6ab874a","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: isolated compiled CLI evidence; native packaging remains unresolved","at":"2026-11-03T06:29:37.414Z"}
+approval: {"specSha256":"89f75e638284a3bc87b91b7892227d158e733681bf48bc4ddd63acc1e9175d2f","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: isolated compiled CLI evidence; native packaging remains unresolved","at":"2026-11-03T06:29:37.414Z"}
 resolution: {"pullRequests":[],"commit":"7f862f56f45ff51f85f85944b0ff45ecbddef8ec","at":"2026-11-03T08:02:08.270Z"}
 ---
 **Blocked by:** sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91
@@ -122,9 +122,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/__tests__/inboxCreateHook.test.ts (new)
 - backend/packages/data/src/__tests__/inboxTick.test.ts (callers of the helper, as needed)
 - backend/packages/data/src/__tests__/journalInboxCompute.test.ts (callers of the helper, as needed)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual Inbox capture create validation, journal-day link and Idempotency-Key replay)
+- backend/services/alldots-api/src/__tests__/itemsHandler.test.ts (only actual Inbox capture create validation, journal-day link and Idempotency-Key replay)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Inbox create hook evidence)
-- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox create hook evidence)
+- backend/services/alldots-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox create hook evidence)
 
 #### Scope
 
@@ -178,9 +178,9 @@ Load `state-writes`, `error-handling`, `canonical-keys` and `testing`.
 - backend/packages/data/src/domainWriteHooks.ts (register the hooks)
 - backend/packages/data/src/__tests__/inboxTypeWriteHook.test.ts (new)
 - backend/packages/data/src/__tests__/inboxPipeline.test.ts (existing helper tests, as needed)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual REST Inbox-type create/update validation and preserved legacy name-only update)
+- backend/services/alldots-api/src/__tests__/itemsHandler.test.ts (only actual REST Inbox-type create/update validation and preserved legacy name-only update)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Inbox-type write validation)
-- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox-type write validation)
+- backend/services/alldots-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Inbox-type write validation)
 
 #### Scope
 
@@ -229,7 +229,7 @@ Load `canonical-keys` and `testing`.
 - backend/packages/data/src/inbox/inboxTypesStore.ts (`InboxTypeSummary`, `listActiveInboxTypes`)
 - backend/packages/data/src/inbox/inboxRouteHandlers.ts (`createInboxTypesRouteHandler`)
 - backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (only authenticated GET /api/inbox-types additive cs/en, target fallback and archived exclusion contract)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (only authenticated GET /api/inbox-types additive cs/en, target fallback and archived exclusion contract)
 
 #### Scope
 
@@ -255,7 +255,7 @@ Load `canonical-keys` and `testing`.
 
 Model tier rationale: A cross-cutting read-side security projection that must cover every generic read path (REST, MCP, agent tools, write responses and conflict details), where one missed path leaks unsanitized HTML, so it is an isolation-style contract.
 
-`Emails.body` holds the raw HTML of a received message. `sanitizeMailHtml` (`backend/packages/data/src/mail/htmlSanitize.ts`) exists and strips scripts, `on*` attributes and remote images, but nothing calls it. Every generic read returns the raw HTML: `item.get` (`GET /api/items/:id`), `database.query` (`POST /api/databases/:id/query`), `view.query` (`POST /api/views/:id/query`, including the default `mailbox-client` view), the MCP `semprec.*` tools and the agent's generic tools, the responses of `item.create` and `item.patch`, and `details.currentItem` of a `version_conflict` error (`backend/services/semprec-api/src/adapter/errorContract.ts`).
+`Emails.body` holds the raw HTML of a received message. `sanitizeMailHtml` (`backend/packages/data/src/mail/htmlSanitize.ts`) exists and strips scripts, `on*` attributes and remote images, but nothing calls it. Every generic read returns the raw HTML: `item.get` (`GET /api/items/:id`), `database.query` (`POST /api/databases/:id/query`), `view.query` (`POST /api/views/:id/query`, including the default `mailbox-client` view), the MCP `alldots.*` tools and the agent's generic tools, the responses of `item.create` and `item.patch`, and `details.currentItem` of a `version_conflict` error (`backend/services/alldots-api/src/adapter/errorContract.ts`).
 
 The choke point has hooks only for create, update and relation-edge writes (`chokePoint/hooks.ts`), registered per process from `backend/packages/data/src/domainWriteHooks.ts` (`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`). It has no read hook. The common read layer is `chokePoint/itemReads.ts` and `chokePoint/viewQueryOps.ts`, from which REST, MCP and the agent tools all read.
 
@@ -280,12 +280,12 @@ Load `state-writes`, `canonical-keys` and `testing`.
 - backend/packages/data/src/chokePoint/itemReads.ts
 - backend/packages/data/src/chokePoint/viewQueryOps.ts
 - backend/packages/data/src/chokePoint/itemWrites.ts (public `createItem` and `updateItem` wrappers only)
-- backend/services/semprec-api/src/adapter/errorContract.ts
+- backend/services/alldots-api/src/adapter/errorContract.ts
 - backend/packages/data/src/index.ts (export line)
 - backend/packages/data/src/__tests__/emailsBodyReadProjection.test.ts (new)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual REST item/database/view reads, write response and version-conflict currentItem body sanitization)
+- backend/services/alldots-api/src/__tests__/itemsHandler.test.ts (only actual REST item/database/view reads, write response and version-conflict currentItem body sanitization)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent Emails body read projection)
-- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Emails body read projection)
+- backend/services/alldots-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only authenticated MCP Emails body read projection)
 
 #### Scope
 
@@ -360,10 +360,10 @@ Load `canonical-keys` and `testing`.
 - backend/packages/data/src/index.ts (export line)
 - backend/packages/data/src/__tests__/publicSurface.test.ts
 - backend/packages/data/src/__tests__/systemI18nCatalogCoverage.test.ts
-- backend/services/semprec-api/src/adapter/databaseEnvelope.ts
-- backend/services/semprec-api/src/databasesHandler.ts (resolvedDatabaseBody)
-- backend/services/semprec-api/src/__tests__/databasesHandler.test.ts
-- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
+- backend/services/alldots-api/src/adapter/databaseEnvelope.ts
+- backend/services/alldots-api/src/databasesHandler.ts (resolvedDatabaseBody)
+- backend/services/alldots-api/src/__tests__/databasesHandler.test.ts
+- backend/services/alldots-api/src/__tests__/schemaHandler.test.ts
 
 #### Scope
 
@@ -404,7 +404,7 @@ Shared-file ordering: this issue also waits for #1490 because both edit the same
 
 Load `state-writes` and `testing`.
 
-1. In `mailMessageFlagsItemUpdateHook`, after `recordDesiredMailMessageFlags` records at least one `read`/`flagged` value, read the message's `mail_message_meta.mailbox_item_id` and call `enqueueMailAccountSync(client, mailboxItemId)` on the same client. Do nothing when the item has no meta row (a Semprec draft) or no mailbox.
+1. In `mailMessageFlagsItemUpdateHook`, after `recordDesiredMailMessageFlags` records at least one `read`/`flagged` value, read the message's `mail_message_meta.mailbox_item_id` and call `enqueueMailAccountSync(client, mailboxItemId)` on the same client. Do nothing when the item has no meta row (a Alldots draft) or no mailbox.
 2. Avoid an import cycle between `mailMessageFlagSyncStore.ts` and `mailSyncJob.ts` (for example by moving the enqueue helper and job key function into a small module both import).
 3. Add tests: a generic `PATCH` of `read` enqueues one account sync with the mailbox job key; two patches of different messages in one mailbox leave one queued job; the agent's `item.patch` does the same; a write with `skipMailDesiredStateRecording` enqueues nothing; a draft without meta enqueues nothing; a rolled-back patch enqueues nothing.
 
@@ -415,7 +415,7 @@ Load `state-writes` and `testing`.
 - backend/packages/data/src/domainWriteHooks.ts (only if the hook registration changes)
 - backend/packages/data/src/mail/__tests__/mailMessageFlagsHook.test.ts
 - backend/packages/data/src/mail/mailSyncEnqueue.ts (existing extracted helper/job-key module from Task 2; no new queue behavior)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (only actual generic flag PATCH transactional mailbox enqueue)
+- backend/services/alldots-api/src/__tests__/itemsHandler.test.ts (only actual generic flag PATCH transactional mailbox enqueue)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only actual agent flag patch transactional mailbox enqueue)
 - backend/packages/data/src/testSupport/testDb.ts (only test-support re-export of the existing upsertMailMessageMeta owner helper for the named REST/agent flag-enqueue fixtures; no production barrel/API)
 
@@ -489,7 +489,7 @@ Load `error-handling` and `testing`.
 
 Model tier rationale: A per-tenant background rewrite of `thread_id` across all stored mail that merges and deletes thread rows, so it needs careful batching, idempotency and tenant scoping to avoid wide data damage.
 
-Before #1474 and #1384, two kinds of stored mail were threaded wrongly: messages sent from Semprec have `mail_message_meta.thread_id = NULL`, and copies of one message delivered to several mailboxes sit in separate threads. Those two issues fix new traffic only. This issue repairs the data that already exists.
+Before #1474 and #1384, two kinds of stored mail were threaded wrongly: messages sent from Alldots have `mail_message_meta.thread_id = NULL`, and copies of one message delivered to several mailboxes sit in separate threads. Those two issues fix new traffic only. This issue repairs the data that already exists.
 
 Today `reassignThread` (`backend/packages/data/src/mail/mailMessageMetaStore.ts`) moves every message of one thread into another and deletes the emptied `mail_threads` row, and `resolveThreadId` (`mail/threading.ts`) computes a thread from `In-Reply-To`, `References` and message id. Jobs are registered in `CORE_TASK_NAMES` (`backend/packages/queue/src/index.ts`) and handled in `backend/packages/data/src/worker.ts`; per-tenant sweeps use `forEachActiveTenant`, and large sweeps follow `docs/adr/2026-09-28-chunked-transactions-for-large-background-sweeps.md` (keyset pages, one transaction per page, resumable).
 

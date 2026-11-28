@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558003340",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/104#issuecomment-5558003340",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/104",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558003340",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/104#issuecomment-5558003340",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/104",
     "id": 5558003340,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0hmjA",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558003340/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558003340/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558081564",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/104#issuecomment-5558081564",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/104",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558081564",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/104#issuecomment-5558081564",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/104",
     "id": 5558081564,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0mYHA",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-06T08:38:19Z",
     "updated_at": "2026-09-06T08:38:19Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #286\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-104-inbox-pipeline-05-07-transition-propos-thr_iind55yckf` has been pushed to origin.\n\n## Summary\n\nImplements issue #104: extends `semprec.tick` (from #223) to close the remaining gaps so every Inbox source ends in an explicit state.\n\n- **Missing/deleted type → `needsClarification`**: a source with no `type`, or one whose `type` references a deleted Inbox item type, now goes through the same single code path into `needsClarification` with no pre-filled `proposal`, creating the row if none exists or revising an unlocked one.\n- **Deleted source → `invalid`**: when the tick's source item no longer exists, its unlocked proposal transitions to `invalid`; a locked (`confirmed`/`rejected`) proposal is left untouched.\n- **History log**: every create, revise, or status change now appends one `{ author: 'ai', message, at }` entry to `history`, replacing the `[]` stub from #223.\n- **Envelope validation**: a computed `{ entityKind, target, properties }` envelope is validated against its destination's actual requirements before being stored as `proposed` (existing non-archived target database and only known, writable, non-relation/rollup/system properties for `database`; an existing target item and a `flavour` block field for `pageContent`). A failing envelope is stored as `needsClarification` instead, and validation never writes to the destination.\n- Both new needsClarification/invalid transitions are locked-card-aware and idempotent, so repeated ticks against an unresolvable item don't spam history or re-invoke the injected AI compute function.\n\nExisting `#223` tests were updated where they asserted the now-superseded stub behavior (`history: []`, \"no type creates no proposal\"), and a new test group covers deleted-type parity with no-type, deleted-source invalidation (locked vs. unlocked vs. absent), and envelope-validation rejections.\n\nVerified: `pnpm run build` (clean across all 7 backend packages), `tsc --noEmit`, and the full backend test suite (`vitest run`, 23 files / 292 tests) all pass.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #286\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-104-inbox-pipeline-05-07-transition-propos-thr_iind55yckf` has been pushed to origin.\n\n## Summary\n\nImplements issue #104: extends `alldots.tick` (from #223) to close the remaining gaps so every Inbox source ends in an explicit state.\n\n- **Missing/deleted type → `needsClarification`**: a source with no `type`, or one whose `type` references a deleted Inbox item type, now goes through the same single code path into `needsClarification` with no pre-filled `proposal`, creating the row if none exists or revising an unlocked one.\n- **Deleted source → `invalid`**: when the tick's source item no longer exists, its unlocked proposal transitions to `invalid`; a locked (`confirmed`/`rejected`) proposal is left untouched.\n- **History log**: every create, revise, or status change now appends one `{ author: 'ai', message, at }` entry to `history`, replacing the `[]` stub from #223.\n- **Envelope validation**: a computed `{ entityKind, target, properties }` envelope is validated against its destination's actual requirements before being stored as `proposed` (existing non-archived target database and only known, writable, non-relation/rollup/system properties for `database`; an existing target item and a `flavour` block field for `pageContent`). A failing envelope is stored as `needsClarification` instead, and validation never writes to the destination.\n- Both new needsClarification/invalid transitions are locked-card-aware and idempotent, so repeated ticks against an unresolvable item don't spam history or re-invoke the injected AI compute function.\n\nExisting `#223` tests were updated where they asserted the now-superseded stub behavior (`history: []`, \"no type creates no proposal\"), and a new test group covers deleted-type parity with no-type, deleted-source invalidation (locked vs. unlocked vs. absent), and envelope-validation rejections.\n\nVerified: `pnpm run build` (clean across all 7 backend packages), `tsc --noEmit`, and the full backend test suite (`vitest run`, 23 files / 292 tests) all pass.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558081564/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558081564/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558145229",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/104#issuecomment-5558145229",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/104",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558145229",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/104#issuecomment-5558145229",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/104",
     "id": 5558145229,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0qQzQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-06T08:51:10Z",
     "updated_at": "2026-09-06T08:51:10Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #286\n\nTokens: 0 · Cost: $0.0000\n\nPushed to the existing branch `bb/relay-104-inbox-pipeline-05-07-transition-propos-thr_iind55yckf`.\n\n## Summary\n\nThis push adds the code-review fixes on top of the original implementation:\n\n- **[inbox-pipeline 05/07] Transition proposal status for deleted sources and validate envelopes** (`bc005d1`): implements `needsClarification`/`invalid` transitions, per-transition history logging, and destination-aware envelope validation in `semprec.tick`, per issue #104.\n- **Address code review** (`52b1340`): adds two test-coverage cases flagged as medium-severity findings on PR #286 — a `rejected`-status sibling to the existing \"confirmed proposal survives source deletion\" test, and a `needsClarification → proposed` round-trip test for an item that later gains a recognized type.\n\nVerified before pushing: `pnpm run build` (clean across all 7 backend workspace packages) and the full backend test suite (`vitest run`) — 23 test files, 294 tests, all passing.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #286\n\nTokens: 0 · Cost: $0.0000\n\nPushed to the existing branch `bb/relay-104-inbox-pipeline-05-07-transition-propos-thr_iind55yckf`.\n\n## Summary\n\nThis push adds the code-review fixes on top of the original implementation:\n\n- **[inbox-pipeline 05/07] Transition proposal status for deleted sources and validate envelopes** (`bc005d1`): implements `needsClarification`/`invalid` transitions, per-transition history logging, and destination-aware envelope validation in `alldots.tick`, per issue #104.\n- **Address code review** (`52b1340`): adds two test-coverage cases flagged as medium-severity findings on PR #286 — a `rejected`-status sibling to the existing \"confirmed proposal survives source deletion\" test, and a `needsClarification → proposed` round-trip test for an item that later gains a recognized type.\n\nVerified before pushing: `pnpm run build` (clean across all 7 backend workspace packages) and the full backend test suite (`vitest run`) — 23 test files, 294 tests, all passing.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558145229/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558145229/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558208240",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/104#issuecomment-5558208240",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/104",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558208240",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/104#issuecomment-5558208240",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/104",
     "id": 5558208240,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0uG8A",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558208240/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558208240/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558253159",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/104#issuecomment-5558253159",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/104",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558253159",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/104#issuecomment-5558253159",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/104",
     "id": 5558253159,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0w2Zw",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558253159/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558253159/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { SearchGroupType, SearchItemGroupType, SearchMailResult, SearchThreadResult } from "@semprec/shared";
+import type { SearchGroupType, SearchItemGroupType, SearchMailResult, SearchThreadResult } from "@alldots/shared";
 import type { ThreadSearchQueryBuilder } from "./sempThreadSearch.js";
 
 // Per-process registry of global search groups, filled by the composition root. Not in `chokePoint/hooks.ts`

@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575384562",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/120#issuecomment-5575384562",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/120",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575384562",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/120#issuecomment-5575384562",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/120",
     "id": 5575384562,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFGd8g",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575384562/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575384562/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575551648",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/120#issuecomment-5575551648",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/120",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575551648",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/120#issuecomment-5575551648",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/120",
     "id": 5575551648,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFQqoA",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-07T20:54:54Z",
     "updated_at": "2026-09-07T20:54:54Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #326\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b` on origin.\n\n## Summary\n\nImplements issue #120: enforces the daily/monthly AI budget caps and adds the pi-provider routing seam.\n\n- **Settings**: `dailyBudgetUsd` (default 50) and nullable `monthlyBudgetUsd` (default unlimited) added as System settings — seeded for fresh installs (`seedSystem.ts`) and backfilled idempotently for existing installs via a new migration (`0019_settings_ai_budgets.sql`). An explicit `null` is honored as \"uncapped\" and distinguished from a missing/unseeded property.\n- **Budget check**: before every `complete`/`embed`/`transcribe`/`diarize` gateway call, the calendar-day and calendar-month spend is computed from `ai_gateway_calls` in one query and the call is rejected with `BudgetExceededError` once either non-null cap is already reached; a null cap never blocks, and the two caps are enforced independently.\n- **Failure propagation**: the rejection is a plain thrown `Error`, so it flows through the existing `agent_run` → `status='error'` handling with no new plumbing; calls made outside a run never touch `agent_runs`.\n- **Pi routing**: added `registerPiProviders` in `agent-runtime`, a seam to register the gateway's `baseUrl` for pi's `anthropic`/`openai` providers exactly once at startup. Since the `services/semprec-agents` composition root doesn't exist yet in this codebase (confirmed by inspection — it's a future issue's deliverable, same situation as `startupRepair.ts`'s `repairInterruptedRuns`), this ships as a documented, tested seam awaiting that real caller.\n\nVerified with the full backend check suite this turn: build, typecheck (all packages), unit tests (83), integration tests (485, including new budget/migration/pi-provider tests), e2e tests (5), and the dependency-boundary check — all green.\n\nBranch: `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b`\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #326\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b` on origin.\n\n## Summary\n\nImplements issue #120: enforces the daily/monthly AI budget caps and adds the pi-provider routing seam.\n\n- **Settings**: `dailyBudgetUsd` (default 50) and nullable `monthlyBudgetUsd` (default unlimited) added as System settings — seeded for fresh installs (`seedSystem.ts`) and backfilled idempotently for existing installs via a new migration (`0019_settings_ai_budgets.sql`). An explicit `null` is honored as \"uncapped\" and distinguished from a missing/unseeded property.\n- **Budget check**: before every `complete`/`embed`/`transcribe`/`diarize` gateway call, the calendar-day and calendar-month spend is computed from `ai_gateway_calls` in one query and the call is rejected with `BudgetExceededError` once either non-null cap is already reached; a null cap never blocks, and the two caps are enforced independently.\n- **Failure propagation**: the rejection is a plain thrown `Error`, so it flows through the existing `agent_run` → `status='error'` handling with no new plumbing; calls made outside a run never touch `agent_runs`.\n- **Pi routing**: added `registerPiProviders` in `agent-runtime`, a seam to register the gateway's `baseUrl` for pi's `anthropic`/`openai` providers exactly once at startup. Since the `services/alldots-agents` composition root doesn't exist yet in this codebase (confirmed by inspection — it's a future issue's deliverable, same situation as `startupRepair.ts`'s `repairInterruptedRuns`), this ships as a documented, tested seam awaiting that real caller.\n\nVerified with the full backend check suite this turn: build, typecheck (all packages), unit tests (83), integration tests (485, including new budget/migration/pi-provider tests), e2e tests (5), and the dependency-boundary check — all green.\n\nBranch: `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b`\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575551648/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575551648/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575732653",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/120#issuecomment-5575732653",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/120",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575732653",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/120#issuecomment-5575732653",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/120",
     "id": 5575732653,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFbtrQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-07T21:20:10Z",
     "updated_at": "2026-09-07T21:20:10Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #326\n\nTokens: 0 · Cost: $0.0000\n\nPushed the review-feedback commit (`8f93821`) to the existing branch `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b`, which already backs open PR #326.\n\n## Summary\n\nImplements #120: enforces daily and monthly AI budgets before every gateway provider call, and adds the seam for routing pi through the gateway.\n\n- Registers the AI gateway as pi's provider `baseUrl` for `anthropic`/`openai` via `registerPiProviders()` (agent-runtime), intended to be called once at process startup by the future `services/semprec-agents` composition root (which doesn't exist in this repo yet).\n- Adds `dailyBudgetUsd` (default 50) and nullable `monthlyBudgetUsd` (default uncapped) to System Settings, seeded fresh via `seedSystem.ts` and backfilled onto existing installs via migration `0019_settings_ai_budgets.sql`.\n- `assertWithinBudget` in the AI gateway checks calendar-day and calendar-month spend from `ai_gateway_calls` in one query before each provider call, computed against the system's configured timezone (not UTC), and rejects the call with `BudgetExceededError` if either non-null cap is already reached — driving the originating `agent_run` to `status='error'` when called within a run, or rejecting cleanly with no `agent_runs` mutation otherwise.\n- Check-then-act with no locking, per the issue's accepted imprecision.\n\nAddressed CI code-review feedback from this PR's earlier round: fixed the blocking timezone-correctness issue in the spend query, and both non-blocking suggestions (independent per-key migration backfill guards, simplified test helper).\n\n## Test plan\n- [x] Full build (`pnpm run build`) — all packages compile\n- [x] Unit tests — 83/83 passed\n- [x] Integration tests — 484/485 passed; the one failure (`propertyTypeMigration.test.ts` concurrency case, unrelated module) passed in isolation, confirming pre-existing flakiness\n- [x] E2E tests — 5/5 passed\n- [x] Dependency-cruiser boundary check — no violations\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #326\n\nTokens: 0 · Cost: $0.0000\n\nPushed the review-feedback commit (`8f93821`) to the existing branch `bb/relay-120-agent-runtime-07-08-enforce-daily-and-thr_rinjgbeb3b`, which already backs open PR #326.\n\n## Summary\n\nImplements #120: enforces daily and monthly AI budgets before every gateway provider call, and adds the seam for routing pi through the gateway.\n\n- Registers the AI gateway as pi's provider `baseUrl` for `anthropic`/`openai` via `registerPiProviders()` (agent-runtime), intended to be called once at process startup by the future `services/alldots-agents` composition root (which doesn't exist in this repo yet).\n- Adds `dailyBudgetUsd` (default 50) and nullable `monthlyBudgetUsd` (default uncapped) to System Settings, seeded fresh via `seedSystem.ts` and backfilled onto existing installs via migration `0019_settings_ai_budgets.sql`.\n- `assertWithinBudget` in the AI gateway checks calendar-day and calendar-month spend from `ai_gateway_calls` in one query before each provider call, computed against the system's configured timezone (not UTC), and rejects the call with `BudgetExceededError` if either non-null cap is already reached — driving the originating `agent_run` to `status='error'` when called within a run, or rejecting cleanly with no `agent_runs` mutation otherwise.\n- Check-then-act with no locking, per the issue's accepted imprecision.\n\nAddressed CI code-review feedback from this PR's earlier round: fixed the blocking timezone-correctness issue in the spend query, and both non-blocking suggestions (independent per-key migration backfill guards, simplified test helper).\n\n## Test plan\n- [x] Full build (`pnpm run build`) — all packages compile\n- [x] Unit tests — 83/83 passed\n- [x] Integration tests — 484/485 passed; the one failure (`propertyTypeMigration.test.ts` concurrency case, unrelated module) passed in isolation, confirming pre-existing flakiness\n- [x] E2E tests — 5/5 passed\n- [x] Dependency-cruiser boundary check — no violations\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575732653/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575732653/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575851198",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/120#issuecomment-5575851198",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/120",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575851198",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/120#issuecomment-5575851198",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/120",
     "id": 5575851198,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFi8vg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575851198/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575851198/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575851325",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/120#issuecomment-5575851325",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/120",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575851325",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/120#issuecomment-5575851325",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/120",
     "id": 5575851325,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFi9PQ",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575851325/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575851325/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

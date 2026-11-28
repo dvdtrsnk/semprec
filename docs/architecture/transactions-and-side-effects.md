@@ -53,7 +53,7 @@ concurrent writers are ordered. What may be written, and by whom, is in
 - An effect that announces a write (`NOTIFY`, realtime invalidation via `notifyInvalidation`, push,
   any delivery to the outside) is registered with `runAfterCommit(client, callback)` and runs only
   after `COMMIT` succeeded. On rollback it is discarded.
-- `runAfterCommit` is internal to `@semprec/data`; it is not exported from the package root.
+- `runAfterCommit` is internal to `@alldots/data`; it is not exported from the package root.
 - A callback is synchronous. One that throws is logged and the rest still run; the committed caller
   never sees the failure. An effect whose delivery matters must report its own failure, or be a
   queue job instead.

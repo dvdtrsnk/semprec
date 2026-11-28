@@ -44,7 +44,7 @@ Drag, second round: the drag gesture moved from each item to the day view, so a 
 | A14 | PASS | pair-s25: chain cascades, nested 14-18 block with 2 columns and indent, as Apple probe |
 | A15 | NOT RUN |  |
 | A16 | NOT RUN |  |
-| A17 | DIFF | p-d2: Apple orders equal-start blocks Q|R+30|P, Semprec Q|P|R+30 (tie order only) |
+| A17 | DIFF | p-d2: Apple orders equal-start blocks Q|R+30|P, Alldots Q|P|R+30 (tie order only) |
 | A18 | PASS | pair-s25: three back-to-back blocks full width, no overlap |
 | A19 | PASS | pair-s26n: 22:00-23:59 reaches the bottom; 00:00 block not clipped by header |
 | A20 | PASS | pair-s26n: 22:00-23:59 reaches the bottom; 00:00 block not clipped by header |
@@ -80,7 +80,7 @@ Drag, second round: the drag gesture moved from each item to the day view, so a 
 | A50 | NOT RUN |  |
 | A51 | NOT RUN |  |
 | A52 | NOT RUN |  |
-| A53 | DIFF | the system Calendar keeps the vertical scroll position when changing day; Semprec opens another day at 07:00 (s-swipeday3-s). Not yet checked in the system Calendar, see Run 2 |
+| A53 | DIFF | the system Calendar keeps the vertical scroll position when changing day; Alldots opens another day at 07:00 (s-swipeday3-s). Not yet checked in the system Calendar, see Run 2 |
 | A54 | NOT RUN |  |
 | A55 | NOT RUN |  |
 | A56 | NOT RUN |  |
@@ -274,7 +274,7 @@ Drag, second round: the drag gesture moved from each item to the day view, so a 
 | H45 | NOT RUN |  |
 | I01 | NOT RUN |  |
 | I02 | PASS | decision of the owner: the month keeps one line per day, made of the colours of the day's events with a length that follows how long they last (not the titled chips of the system Calendar); the chips were tried and taken back (s-m4-s) |
-| I03 | PASS | s-m4-s: today is gold in the month (design: gold in Semprec, red in the system Calendar) |
+| I03 | PASS | s-m4-s: today is gold in the month (design: gold in Alldots, red in the system Calendar) |
 | I04 | NOT RUN |  |
 | I05 | NOT RUN |  |
 | I06 | NOT RUN |  |
@@ -347,7 +347,7 @@ Drag, second round: the drag gesture moved from each item to the day view, so a 
 | N12 | PASS | g-k: month, year and agenda are readable in dark mode |
 | O01 | NOT RUN |  |
 | O02 | FIXED | FAIL: g-o showed "2:00PM" style but the hour labels read 14:00; now 2 PM and the now capsule fits (g-o3) |
-| O03 | DIFF | in an en_US region the system Calendar starts weeks on Sunday; Semprec starts on Monday (g-o). The week start is fixed in the shared layer, so it is a decision, not fixed |
+| O03 | DIFF | in an en_US region the system Calendar starts weeks on Sunday; Alldots starts on Monday (g-o). The week start is fixed in the shared layer, so it is a decision, not fixed |
 | O04 | NOT RUN |  |
 | O05 | NOT RUN |  |
 | O06 | NOT RUN |  |

@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
@@ -40,7 +40,7 @@ function countedConnections(account: FakeImapAccount) {
 describe("IMAP move write-back connections", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

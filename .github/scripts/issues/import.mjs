@@ -3,7 +3,7 @@ import { resolve, relative, isAbsolute } from "node:path";
 import { object, string, integer, record, digest, specDigest, serializeRecord, diagnoseCatalog, readBounded } from "./records.mjs";
 import { writeImportedFile } from "./store.mjs";
 
-const REPOSITORY = "dvdtrsnk/semprec";
+const REPOSITORY = "dvdtrsnk/alldots";
 
 function array(value, label, max = 100000) {
   if (!Array.isArray(value) || value.length > max) throw new Error(`${label}: expected bounded array`);
@@ -76,7 +76,7 @@ export async function prepareImport(exportRoot) {
   const manifestText = await readBounded(resolve(exportRoot, "manifest.json"), 20_000_000);
   const manifest = object(JSON.parse(manifestText), "export manifest");
   if (manifest.schemaVersion !== 1 || manifest.repository !== REPOSITORY || manifest.state !== "all" || manifest.complete !== true)
-    throw new Error("Expected complete all-state Semprec export");
+    throw new Error("Expected complete all-state Alldots export");
   iso(manifest.exportedAt, "exportedAt");
   const files = array(manifest.issues, "export issues");
   if (!Number.isSafeInteger(manifest.issueCount) || manifest.issueCount !== files.length || files.length === 0) throw new Error("Export issue count mismatch or empty export");

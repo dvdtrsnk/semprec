@@ -11,7 +11,7 @@ superseded-by: null
 ## Context
 
 [[2026-09-10-single-shared-swift-codebase-for-ios-macos]] planned one Swift codebase for the iOS
-and the macOS app, with its data layer, networking and screen logic in Swift. Semprec now needs
+and the macOS app, with its data layer, networking and screen logic in Swift. Alldots now needs
 an Android app as well, and that plan would implement the same logic a second time in Kotlin:
 every validation, ordering rule, loading/empty/error state machine and cancellation rule written
 twice and drifting apart.
@@ -50,17 +50,17 @@ the shared code decided. Copy, theme and presentation stay native
 Shared code lives in `commonMain` and imports no platform API: nothing from `android.*`,
 `java.*`, `javax.*`, `platform.*` (where Kotlin/Native puts UIKit, AppKit and Foundation) or
 `kotlinx.cinterop.*`, and from `androidx.*` only `ViewModel` and `viewModelScope` of the
-multiplatform `androidx.lifecycle:lifecycle-viewmodel`, the base of `ScreenViewModel`. The `semprec.kmp`
+multiplatform `androidx.lifecycle:lifecycle-viewmodel`, the base of `ScreenViewModel`. The `alldots.kmp`
 convention plugin compiles every shared module for `jvm` (fast tests), `androidTarget`, `iosArm64`,
 `iosSimulatorArm64` and `macosArm64`.
 
 ### Native UI
 
 - Android: Jetpack Compose with Material 3.
-- Apple: one SwiftUI codebase. Every first-party Tuist target uses `SemprecProject.destinations`
-  (`[.iPhone, .iPad, .mac]`) and `SemprecProject.deploymentTargets` (iOS 26.0 and macOS 26.0), so
+- Apple: one SwiftUI codebase. Every first-party Tuist target uses `AlldotsProject.destinations`
+  (`[.iPhone, .iPad, .mac]`) and `AlldotsProject.deploymentTargets` (iOS 26.0 and macOS 26.0), so
   one set of targets builds the iOS/iPadOS app and a native macOS app, not a Catalyst app. The one
-  exception is the XCUITest bundle `SemprecUITests`, which builds for iPhone and iPad only, because
+  exception is the XCUITest bundle `AlldotsUITests`, which builds for iPhone and iPad only, because
   macOS XCUITest needs the Accessibility permission, which build machines do not grant; it ships
   in no app. Code branches on the platform only where iOS and macOS genuinely differ. In the
   modules and the app that is two small modifiers in DesignSystem today: `inlineNavigationTitle()`
@@ -95,7 +95,7 @@ Tuist (`mobile/apple/`):
 | `DesignSystem` | nothing |
 | `Dependencies` | `CoreKit`, FactoryKit |
 | `HomeFeature`, `SettingsFeature` | `CoreKit`, `DesignSystem` |
-| `Semprec` (the app, `Projects/App`) | `CoreKit`, `Dependencies`, both features, NavigatorUI |
+| `Alldots` (the app, `Projects/App`) | `CoreKit`, `Dependencies`, both features, NavigatorUI |
 
 Features never depend on each other or on the app. Only the apps compose: the Android app module
 and the Apple app target are the only places that see every feature.
@@ -148,10 +148,10 @@ settings of every Tuist project and of the Swift packages take `ARCHS` from
 
 | Tool | Version | Why |
 | --- | --- | --- |
-| Gradle wrapper, included build `mobile/build-logic/` | 8.13 | The convention plugins `semprec.kmp`, `semprec.android.library`, `semprec.android.compose` and `semprec.android.application` give every shared module the same targets, and every module the same Android SDK levels and Java 17 bytecode; identity and SDK levels are read from `mobile/gradle/project.properties`. |
+| Gradle wrapper, included build `mobile/build-logic/` | 8.13 | The convention plugins `alldots.kmp`, `alldots.android.library`, `alldots.android.compose` and `alldots.android.application` give every shared module the same targets, and every module the same Android SDK levels and Java 17 bytecode; identity and SDK levels are read from `mobile/gradle/project.properties`. |
 | SKIE | 0.10.9 | Swift sees `StateFlow`/`Flow` as async sequences with a synchronous `value` for `StateFlow`, sealed interfaces as exhaustive `onEnum(of:)` switches, and Kotlin enums as Swift enums. The plain Objective-C header that Kotlin/Native generates has no async iteration of flows, no exhaustive switch over a sealed interface, and exports enums as classes. |
 | Koin (`koin-androidx-compose`) | 4.1.1 | `koinViewModel()` keeps each shared ViewModel in its navigation entry's `ViewModelStore`. Hilt was rejected: it creates ViewModels from `@HiltViewModel` classes with `@Inject` constructors, which `commonMain` classes cannot carry, and the shared constructors are internal. The shared code itself uses no DI library; `HomeSDK` composes by hand. |
-| Tuist | 4.213.0 (`mobile/apple/.tuist-version`) | Projects and the workspace are generated from Swift manifests and not committed (`mobile/.gitignore`); `Tuist/ProjectDescriptionHelpers/SemprecProject.swift` gives every target the same destinations and project settings (the iOS-only XCUITest bundle excepted), and every unit test bundle the same hosting in the app. |
+| Tuist | 4.213.0 (`mobile/apple/.tuist-version`) | Projects and the workspace are generated from Swift manifests and not committed (`mobile/.gitignore`); `Tuist/ProjectDescriptionHelpers/AlldotsProject.swift` gives every target the same destinations and project settings (the iOS-only XCUITest bundle excepted), and every unit test bundle the same hosting in the app. |
 | Factory (`FactoryKit`) | 2.5.1 | A container per window (`SceneContainer`, a `ManagedContainer` without a process-wide instance) for the app composition. Today it registers one dependency, the screen model factory. |
 | NavigatorUI | 1.4.6 | One managed navigation stack per tab, with every destination's view provided in one place by the app. |
 | detekt with detekt-formatting and the `io.nlopez.compose.rules` Compose rules | 1.23.8 / 1.23.8 / 0.4.28 | `detektAll` checks every `.kt` file under `android/`, `shared/` and `build-logic/src` against `mobile/config/detekt/detekt.yml`; `maxIssues: 0` and no baseline. |
@@ -180,12 +180,12 @@ Swift packages are pinned exactly in `mobile/apple/Tuist/Package.swift` and
   the iOS simulator of an Apple silicon Mac, and Apple silicon Macs. `mobile/scripts/verify`
   builds it in Debug and Release for the iOS Simulator, for an iPhone (`generic/platform=iOS`,
   which links the `iosArm64` framework, unsigned) and for macOS.
-- The Apple UI tests are one XCUITest bundle, `SemprecUITests`, in a scheme of its own that runs
-  on an iOS simulator only, so the `Semprec` scheme's unit tests keep running on macOS without
+- The Apple UI tests are one XCUITest bundle, `AlldotsUITests`, in a scheme of its own that runs
+  on an iOS simulator only, so the `Alldots` scheme's unit tests keep running on macOS without
   the Accessibility permission. It drives the app from outside and imports none of its modules:
   it compiles the identifier files of the app and the features one by one, and the policy names
   the app as its `appUnderTest`, which it may depend on but not import (`ARCH-APPLE`). On macOS
-  the shown scene is tested only in process (`AppSceneNavigationTests` in `SemprecTests`).
+  the shown scene is tested only in process (`AppSceneNavigationTests` in `AlldotsTests`).
 - One Apple codebase means a feature is written once for iOS and macOS, and a platform branch
   needs a real difference between the two platforms, not a missing shared abstraction.
 - Every tool in the table above is pinned; raising a version is a deliberate change to the catalog,

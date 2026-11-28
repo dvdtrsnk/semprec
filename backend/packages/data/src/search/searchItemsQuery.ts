@@ -8,7 +8,7 @@ import {
   type SearchItemResult,
   type SearchJournalResult,
   type SearchOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";

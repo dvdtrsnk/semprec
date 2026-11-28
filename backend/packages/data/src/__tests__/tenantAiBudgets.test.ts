@@ -10,8 +10,8 @@ let dataPool: Pool;
 describe("tenant_ai_budgets", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -60,7 +60,7 @@ describe("tenant_ai_budgets", () => {
       const { rows } = await pool.query<{ comment: string }>(
         `SELECT obj_description('tenant_ai_budgets'::regclass, 'pg_class') AS comment`,
       );
-      expect(rows).toEqual([{ comment: "semprec:tenancy=global" }]);
+      expect(rows).toEqual([{ comment: "alldots:tenancy=global" }]);
     });
   });
 
@@ -69,7 +69,7 @@ describe("tenant_ai_budgets", () => {
       await pool.query(`INSERT INTO tenant_ai_budgets (tenant_id, daily_cap_usd) VALUES ($1, 1)`, [getTenantZeroId()]);
     });
 
-    it("lets semprec_side read but not write", async () => {
+    it("lets alldots_side read but not write", async () => {
       await expect(sidePool.query(`SELECT * FROM tenant_ai_budgets`)).resolves.toBeDefined();
       await expect(
         sidePool.query(`INSERT INTO tenant_ai_budgets (tenant_id) VALUES (gen_random_uuid())`),
@@ -80,7 +80,7 @@ describe("tenant_ai_budgets", () => {
       await expect(sidePool.query(`DELETE FROM tenant_ai_budgets`)).rejects.toThrow(/permission denied/);
     });
 
-    it("lets semprec_data insert and update but not delete", async () => {
+    it("lets alldots_data insert and update but not delete", async () => {
       await expect(dataPool.query(`UPDATE tenant_ai_budgets SET daily_cap_usd = 2`)).resolves.toBeDefined();
       await expect(dataPool.query(`DELETE FROM tenant_ai_budgets`)).rejects.toThrow(/permission denied/);
 

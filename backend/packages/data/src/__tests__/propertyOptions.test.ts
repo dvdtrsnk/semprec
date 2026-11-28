@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { z } from "zod";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -169,7 +169,7 @@ async function runBlockedTogether<T>(
 describe("select options on schema-locked databases (issue #1699)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

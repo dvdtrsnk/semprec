@@ -18,7 +18,7 @@ run. See also [data-model-and-writes.md](data-model-and-writes.md), [transaction
 - The writer of a choke-point write is a `WriterIdentity` (`backend/packages/data/src/chokePoint/writerKind.ts`).
   `agentProjectItemId` and `externalClient` are never set together. No input schema accepts any of these markers;
   only the composition roots set them (`restActor` for REST, `resolveActor` in
-  `backend/services/semprec-api/src/mcp/mcpHandler.ts`, the AgentTool composition root).
+  `backend/services/alldots-api/src/mcp/mcpHandler.ts`, the AgentTool composition root).
 - Every choke-point call that records or checks `ai_agent` ownership first calls `assertAuthenticatedAgentIdentity`
   (`backend/packages/data/src/chokePoint/authorization.ts`): an agent actor without `agentProjectItemId`, or whose id
   is not a live Projects item, is refused `403 owner_violation`. Any future column storing an agent identity is
@@ -40,7 +40,7 @@ run. See also [data-model-and-writes.md](data-model-and-writes.md), [transaction
   approval request; a person's confirm or approval performs the write in its own transaction. An agent calling a
   write endpoint or the data layer outside the paths below is a high-severity review finding.
 - The only door for agent writes is `createGenericOperationGateway` (`backend/packages/application/src/genericOperationGateway.ts`)
-  plus the module agent tools below. `semprec-agents` connects as `semprec_data` for that reason; direct SQL writes to
+  plus the module agent tools below. `alldots-agents` connects as `alldots_data` for that reason; direct SQL writes to
   choke-point tables are prohibited everywhere.
 - Cancelling an agent turn never decides an approval request; a pending request stays pending.
 
@@ -218,7 +218,7 @@ The project set on a mail thread never takes part in a send decision.
   Human REST is unchanged.
 - Per-turn read allowance: items the user attached to a Semp message (`item`, `block`, `transcriptSegment` refs, read
   from the persisted refs) are inserted into `agent_run_read_allowances` at turn start and deleted when the turn
-  settles (`backend/services/semprec-agents/src/sempTurnReadAllowances.ts`). The check honours it for a `read` of that
+  settles (`backend/services/alldots-agents/src/sempTurnReadAllowances.ts`). The check honours it for a `read` of that
   item only, after the project's access refused; never for writes, lists or related items.
 - Heartbeat read scope (`resolveHeartbeatReadScope`): a run on a Semp `chat` thread reads every project's heartbeats,
   minus those of a project holding a sensitive grant the caller lacks (`SENSITIVE_PROJECT_HEARTBEAT_EXCLUSION`); other
@@ -244,9 +244,9 @@ The project set on a mail thread never takes part in a send decision.
 
 ## MCP
 
-- `POST /mcp` is a hand-rolled JSON-RPC 2.0 transport (`backend/services/semprec-api/src/mcp/mcpHandler.ts`) over the
+- `POST /mcp` is a hand-rolled JSON-RPC 2.0 transport (`backend/services/alldots-api/src/mcp/mcpHandler.ts`) over the
   same `GenericOperationGateway` as REST and AgentTools; it owns framing and error mapping only. Tools are
-  `semprec.<name>`. RPC failures are HTTP 200 with `-32601` unknown/hidden tool, `-32602` bad input, `-32001` approval
+  `alldots.<name>`. RPC failures are HTTP 200 with `-32601` unknown/hidden tool, `-32602` bad input, `-32001` approval
   required, `-32000` other `ChokePointError` (with `data.code`); only transport failures use non-200.
 - Restricted run credentials (`agent_run_mcp_credentials`, `backend/packages/data/src/mcp/mcpRunCredentialAction.ts`):
   minted behind an authenticated session by `POST /api/agent-runs/mcp-credentials`, one per run, hash-only storage,
@@ -290,9 +290,9 @@ The project set on a mail thread never takes part in a send decision.
 
 ### Computation and grounding
 
-- The model sees bounded ids and names; workspace context is read as the Semprec project through the per-database
+- The model sees bounded ids and names; workspace context is read as the Alldots project through the per-database
   grants. The target catalog (`buildTargetCatalog`) carries select options always, and up to 20 short text values of
-  the first five text properties only when the Semprec project may read the target database; delimiters are escaped.
+  the first five text properties only when the Alldots project may read the target database; delimiters are escaped.
 - A computed recognition stays bound to the selected type, processing method and target database; the post-model
   transaction reserves those rows `FOR SHARE NOWAIT` and writes `needsClarification` on drift, never promoting another
   candidate.
@@ -338,9 +338,9 @@ The project set on a mail thread never takes part in a send decision.
 
 ### Monopoly
 
-- Only `semprec-ai-gateway` (`backend/services/semprec-ai-gateway`, logic in `backend/packages/ai-gateway`) talks to
+- Only `alldots-ai-gateway` (`backend/services/alldots-ai-gateway`, logic in `backend/packages/ai-gateway`) talks to
   model providers or holds their keys. Callers use `backend/packages/ai-gateway-client` or, for agents, the pi
-  `pi-messages` API pointed at the gateway (`backend/services/semprec-agents/src/modelComposition.ts`). A provider SDK
+  `pi-messages` API pointed at the gateway (`backend/services/alldots-agents/src/modelComposition.ts`). A provider SDK
   import, key or HTTP call elsewhere is a critical finding; a new provider or model is an adapter behind the gateway.
 - Every call carries an operation/purpose and its attribution (`agentRunId`, `sempMessageId`, `projectItemId`);
   attribution the caller's tenant cannot see is `attribution_refused`.
@@ -374,35 +374,35 @@ The project set on a mail thread never takes part in a send decision.
   under accounting.
 - Speech-to-text is reserved in 30-second chunks; text-to-speech capacity refusal is HTTP 503 `tts_capacity_exhausted`
   (`SpeechSynthesisCapacityError` in the client). Voice rows attribute to the Semp assistant message of the turn (TTS
-  via `x-semprec-agent-run-id`/`x-semprec-semp-message-id` headers, STT via an `attribute` stream message).
-- Agent images are resized ephemerally (`backend/services/semprec-agents/src/refImage.ts`: ≤16 MiB source, ≤32 Mpx,
+  via `x-alldots-agent-run-id`/`x-alldots-semp-message-id` headers, STT via an `attribute` stream message).
+- Agent images are resized ephemerally (`backend/services/alldots-agents/src/refImage.ts`: ≤16 MiB source, ≤32 Mpx,
   ≤1600 px JPEG ≤256 KiB); at `onPayload` the exact JSON body must stay below 4 MiB, oldest images become placeholders
   first, else the call is refused before network. Only refs persist. Agent query tool schemas use local definitions.
 
 ### Process lifecycle
 
-- Gateway shutdown (`backend/services/semprec-ai-gateway/src/shutdown.ts`): stop accepting, poll
+- Gateway shutdown (`backend/services/alldots-ai-gateway/src/shutdown.ts`): stop accepting, poll
   `closeIdleConnections` until drained or 60 s, `closeAllConnections` on timeout, close streams, stop the process
   heartbeat, `pool.end()` bounded to 5 s. Idempotent, never rejects, signals registered with `on`.
 - API shutdown: close the sync server and voice channel first (close 1012), then HTTP drain, then queue runtime stop,
   then `pool.end()`. Any new long-lived upgraded protocol is closed before the HTTP drain.
-- `semprec-agents` assumes one owning instance per database with its predecessor quiesced before startup repair
-  (`TimeoutStopSec=120` in `deploy/systemd/semprec-agents.service`; Semp turn grace 90 s, 30 s cleanup margin). Startup
+- `alldots-agents` assumes one owning instance per database with its predecessor quiesced before startup repair
+  (`TimeoutStopSec=120` in `deploy/systemd/alldots-agents.service`; Semp turn grace 90 s, 30 s cleanup margin). Startup
   never force-unlocks graphile-worker locks or infers worker death; a dead chat owner holds its lane until Graphile's
   own expiry.
 
 ## Agent runtime and Semp chat
 
 - Agent runs (`agent_runs`, `agent_run_events`) are driven by `backend/packages/agent-runtime` and composed in
-  `backend/services/semprec-agents`. Semp thread turns run on a per-tenant chat lane (`sempMessageTask.ts`).
+  `backend/services/alldots-agents`. Semp thread turns run on a per-tenant chat lane (`sempMessageTask.ts`).
 - Failure close of a driven run (`runAgentSessionForRun`, `SempConversation.failRun`): one transaction locks the run,
   confirms it is running, pairs dangling tool uses with synthetic results, closes with
   `finishAgentRunWithErrorNotification` and appends the terminal status; the original error is rethrown (with an
   `AggregateError` if recovery also failed).
 - Run watching (`createAgentRunWatchRegistry`, `backend/packages/realtime/src/agentRunWatch.ts`): authorize, register a
   replaying watcher, replay durable `agent_run_events` after the cursor, drain received ids, then go live. Durable
-  events travel as thin `{ agentRunId, eventId }` references on `semprec_events`; `message_update` deltas only on
-  `semprec_agent_stream`, never persisted. Voice uses a callback subscription on the same owner.
+  events travel as thin `{ agentRunId, eventId }` references on `alldots_events`; `message_update` deltas only on
+  `alldots_agent_stream`, never persisted. Voice uses a callback subscription on the same owner.
 - Message order: all Semp message inserters use one allocator that reserves the thread row and picks
   `max(clock_timestamp(), latest + 1µs)` (`semp/sempMessageOrder.ts`). A cached session is reused only when the thread's
   latest stored message is the reply it completed; otherwise the history is reconstructed.
@@ -424,7 +424,7 @@ The project set on a mail thread never takes part in a send decision.
 
 ## Voice and speech
 
-- One authenticated WebSocket to `semprec-api` (`backend/services/semprec-api/src/voiceChannel.ts`), one voice-owning
+- One authenticated WebSocket to `alldots-api` (`backend/services/alldots-api/src/voiceChannel.ts`), one voice-owning
   API process, one session per user. Binary frames `0x01` mic PCM 16 kHz / `0x02` speech PCM 24 kHz; text frames
   `start`, `stop`, `end` / `ready`, `transcript`, `speaking`, `error`, `end`; 16 KiB binary and 4 KiB text limits,
   30 min session, 60 s idle. Transport oversize closes with 1009 without an application frame. Audio is never stored
@@ -441,7 +441,7 @@ The project set on a mail thread never takes part in a send decision.
   request (≤4000 UTF-16 units per sentence/request, ≤32 queued); streamed prefixes are deduplicated by SHA-256 and
   length.
 - Dictation runs on the device; the backend has no dictation path. Read-aloud
-  (`backend/services/semprec-api/src/sempSpeechHandler.ts`, `semp/messageSpeechStore.ts`) caches audio per message and
+  (`backend/services/alldots-api/src/sempSpeechHandler.ts`, `semp/messageSpeechStore.ts`) caches audio per message and
   voice; voices are the pinned list `alloy` (default), `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`,
   `sage`, `shimmer`, `verse`. A fill is single-flighted by a session advisory lock held outside transactions on a
   bounded guard connection; provider and storage I/O happen outside transactions and the final transaction rechecks

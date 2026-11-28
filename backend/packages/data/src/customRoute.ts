@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ValidationError } from "./errors.js";
 
-// The parts of `semprec-api`'s custom-route request a handler in this package can read, typed structurally so the
+// The parts of `alldots-api`'s custom-route request a handler in this package can read, typed structurally so the
 // package imports no HTTP types. A handler's context intersects exactly the parts it reads, e.g.
 // `RouteParams & RouteBody & RouteUser`.
 

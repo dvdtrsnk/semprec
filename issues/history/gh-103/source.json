@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/103",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/103",
   "id": 5289603799,
   "node_id": "I_kwDOUFuQ4c8AAAABO0jy1w",
   "number": 103,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/100",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/100",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #102\n\n## Context\n\nProcessing must react to one changed item without periodically scanning the entire Inbox.\n\n## Task\n\nRegister the Inbox database for `onItemEvent` create, update, and delete. Enqueue the existing heartbeat event task with `{ heartbeatId, itemId }`, action `semprec.tick`, and key `heartbeat-fire:${heartbeatId}:${itemId}` using replacement semantics for pending work. Rapid edits must collapse into one tick that reads current authoritative state. Keep event jobs distinct from scheduled occurrences and manual heartbeat triggers. Route the action to the queue affinity registered for its handler.\n\n## Scope\n\n### In scope\n\n- Transactional event emission, per-item job identity, current-state processing, and registration.\n\n### Out of scope\n\n- Scheduler occurrences, periodic sweep, and the proposal computation itself.\n\n## Acceptance criteria\n\n- Create/update/delete enqueue the correct item context transactionally.\n- Rapid pending updates collapse without losing the newest state.\n- Different Inbox items never deduplicate each other.\n- A rolled-back item mutation emits no job.\n",
+  "body": "**Blocked by:** #102\n\n## Context\n\nProcessing must react to one changed item without periodically scanning the entire Inbox.\n\n## Task\n\nRegister the Inbox database for `onItemEvent` create, update, and delete. Enqueue the existing heartbeat event task with `{ heartbeatId, itemId }`, action `alldots.tick`, and key `heartbeat-fire:${heartbeatId}:${itemId}` using replacement semantics for pending work. Rapid edits must collapse into one tick that reads current authoritative state. Keep event jobs distinct from scheduled occurrences and manual heartbeat triggers. Route the action to the queue affinity registered for its handler.\n\n## Scope\n\n### In scope\n\n- Transactional event emission, per-item job identity, current-state processing, and registration.\n\n### Out of scope\n\n- Scheduler occurrences, periodic sweep, and the proposal computation itself.\n\n## Acceptance criteria\n\n- Create/update/delete enqueue the correct item context transactionally.\n- Rapid pending updates collapse without losing the newest state.\n- Different Inbox items never deduplicate each other.\n- A rolled-back item mutation emits no job.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/103/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/103/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

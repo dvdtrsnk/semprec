@@ -1,4 +1,4 @@
-# Semprec web frontend
+# Alldots web frontend
 
 React + TypeScript, built with Vite; unit tests run on Vitest with Testing Library
 and jsdom. Package manager is pnpm, pinned the same way as `backend/`.

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1923",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1923",
   "id": 6022953360,
   "node_id": "I_kwDOUFuQ4c8AAAABZv75kA",
   "number": 1923,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1343",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1343",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1916, #2033\n**Model tier:** high\n\n## Context\n\nModel tier rationale: A write hook that enqueues a job in the writer's transaction plus a job that edits values other users may have changed by hand creates concurrency and ownership questions on a data path used by mail ingest.\n\nThe people of a task made from a thread follow the conversation: when a new person joins the thread (copied in, or the sender of a later message), the task gets them too, unless the people of that task were changed by hand. Senders and recipients are linked to people by the heartbeat action `mail.linkPeopleByEmail` after ingest (asynchronously) and for sent mail by #1480, so edges `Emails.senderPeople` and `Emails.recipientsPeople` appear at different times. The edge-changed hook after a write is #1530. Tasks created from a thread already carry their people as inherited values (#1900); a manual change ends following (#1516).\n\nDecisions: only additions are propagated; removing an edge never removes a person from a task. A person who belongs to the tenant's own mailbox addresses is never added.\n\nShared-file ordering: this issue also waits for #1916, #2033 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.\n\n## Task\n\nLoad `state-writes`, `testing` and `canonical-keys`.\n\n1. Register a relation edge changed hook (the registration function added by #1530) in `domainWriteHooks.ts` for the properties `Emails.senderPeople` and `Emails.recipientsPeople`. On an added edge it enqueues, in the same transaction, a single-flight job `mailSyncThreadTaskPeople` keyed by the message's thread, with payload `{ threadItemId, personId }`. A hook for another property does nothing.\n2. Declare the job as a module task in `mail/mailModuleManifest.ts` (`taskNames`). The job resolves the thread's tasks through Threads.tasks and, for each task whose `Tasks.people` link is still unbroken (state on, not `inheritedBroken`), adds the person as an inherited value from the thread unless already present. A task whose link is broken is left alone.\n3. Row-lock each task before changing its people so the job and a concurrent manual edit serialize, and re-check the link state under the lock.\n4. Publish the usual item invalidation for each task changed.\n\n## Touches\n\n- backend/packages/data/src/mail/threadTaskPeople.ts (new; hook and job)\n- backend/packages/data/src/domainWriteHooks.ts (registration line)\n- backend/packages/data/src/mail/mailModuleManifest.ts (`taskNames`)\n- backend/packages/data/src/mail/__tests__/ (new tests)\n\n## Scope\n\n### In scope\n\n- The hook, the job and the propagation of added participants to tasks with unbroken people.\n\n### Out of scope\n\n- Creating tasks and their first people (#1900).\n- Removing people when a participant disappears.\n- Showing the tasks in the thread detail (#1692).\n\n## Acceptance criteria\n\n- When a new person is linked to a message of a thread, a task of that thread with inherited people gets that person.\n- When the task's people were changed by hand, the person is not added.\n- A person for the tenant's own address is not added.\n- Running the job twice for the same person leaves the task's people unchanged.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1923/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1923/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

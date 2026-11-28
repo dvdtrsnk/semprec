@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579642451",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5579642451",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579642451",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5579642451",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5579642451,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJKWUw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579642451/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579642451/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579837104",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5579837104",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579837104",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5579837104",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5579837104,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJWOsA",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-08T05:36:07Z",
     "updated_at": "2026-09-08T05:36:07Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #333\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-127-mcp-integration-06-07-manage-project-m-thr_dggg25qrdi` to origin.\n\n## Summary\n\nImplements issue #127: management of project-level MCP tool grants (the \"Tools block\").\n\n- **Backend** (`@semprec/data`): `mcpAgentPageGrants.ts` adds the read model (`listMcpToolGrantsForProject`, joining registrations with server identity and this project's grant, default unchecked) and write wrappers (`setProjectMcpGrantForAgentPage`, `reclassifyMcpTool`). These wrappers live inside the package so the admin-only mutations in `mcpGrantsAdminStore.ts` stay unreachable from `agent-runtime`'s public import surface — an existing security boundary in this codebase.\n- **HTTP API** (`semprec-api`): `mcpAgentPageHandler.ts`, bearer-token authenticated, exposing GET/PATCH for project grants and PATCH for tool reclassification, routed alongside the existing AI-usage handler.\n- **Frontend**: `mcpAgentPageOperations.ts` (zod-validated client) and `ToolsBlock.tsx`, a self-contained component grouping tools by server with a checkbox bound to the project's grant, plus risk-class/requires-approval controls. Covers loading, empty, error, transport-offline, mutation-error, and concurrent-refresh states with i18n labels in both catalogs (`en`/`cs`).\n\nNote: no standalone \"AGENT page\" with guidance/heartbeats blocks exists yet in `web/src`, so this lands as a tested, drop-in component ready to be composed into that page once it's built, rather than fabricating the rest of that page's scope.\n\nVerified in this run: backend build (all packages), dependency-boundary check, backend unit+integration tests (591 tests) and e2e tests (5 tests), web build, and web test suite (93 tests) — all passing.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #333\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-127-mcp-integration-06-07-manage-project-m-thr_dggg25qrdi` to origin.\n\n## Summary\n\nImplements issue #127: management of project-level MCP tool grants (the \"Tools block\").\n\n- **Backend** (`@alldots/data`): `mcpAgentPageGrants.ts` adds the read model (`listMcpToolGrantsForProject`, joining registrations with server identity and this project's grant, default unchecked) and write wrappers (`setProjectMcpGrantForAgentPage`, `reclassifyMcpTool`). These wrappers live inside the package so the admin-only mutations in `mcpGrantsAdminStore.ts` stay unreachable from `agent-runtime`'s public import surface — an existing security boundary in this codebase.\n- **HTTP API** (`alldots-api`): `mcpAgentPageHandler.ts`, bearer-token authenticated, exposing GET/PATCH for project grants and PATCH for tool reclassification, routed alongside the existing AI-usage handler.\n- **Frontend**: `mcpAgentPageOperations.ts` (zod-validated client) and `ToolsBlock.tsx`, a self-contained component grouping tools by server with a checkbox bound to the project's grant, plus risk-class/requires-approval controls. Covers loading, empty, error, transport-offline, mutation-error, and concurrent-refresh states with i18n labels in both catalogs (`en`/`cs`).\n\nNote: no standalone \"AGENT page\" with guidance/heartbeats blocks exists yet in `web/src`, so this lands as a tested, drop-in component ready to be composed into that page once it's built, rather than fabricating the rest of that page's scope.\n\nVerified in this run: backend build (all packages), dependency-boundary check, backend unit+integration tests (591 tests) and e2e tests (5 tests), web build, and web test suite (93 tests) — all passing.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579837104/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579837104/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580126222",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5580126222",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580126222",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5580126222",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5580126222,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJn4Dg",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580126222/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580126222/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580430690",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5580430690",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580430690",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5580430690",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5580430690,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJ6dYg",
     "user": {
@@ -292,11 +292,11 @@
     },
     "created_at": "2026-09-08T06:36:39Z",
     "updated_at": "2026-09-08T06:36:39Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #333\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-127-mcp-integration-06-07-manage-project-m-thr_dggg25qrdi` (`df1430c..26f0d64`).\n\nThis push addresses the latest code-review round on PR #333:\n- **AC #1 (was ❌ Unmet — \"ToolsBlock.tsx is created but never imported or rendered in any AGENT page component\")**: added `web/src/views/agentPage/AgentPage.tsx`, a project AGENT page that renders a Guidance section (from the project item's `agents` property), a Heartbeats placeholder (a real list-by-project heartbeats read needs a module registry that `semprec-api` doesn't currently have access to — confirmed via grep — so that's out of scope here), and mounts `ToolsBlock` below both. Wired in via a new `?page=agent&project=<id>&database=<id>` composition-root route in `main.tsx`/`App.tsx`, mirroring the existing `?page=ai-usage` pattern. Covered by 7 new tests in `AgentPage.test.tsx`.\n- **Remaining open medium finding** (missing test coverage for `reclassifyMcpTool`): added riskClass-select, requiresApproval-checkbox, and per-row-error tests to `ToolsBlock.test.tsx`.\n\nAll checks passed this turn: web typecheck/tests/build, backend `check:boundaries`/build, and the full backend test suite (unit 83/83, integration 593-594/594 with one confirmed-flaky, unrelated Postgres-deadlock test that passes in isolation, e2e 5/5).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #333\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-127-mcp-integration-06-07-manage-project-m-thr_dggg25qrdi` (`df1430c..26f0d64`).\n\nThis push addresses the latest code-review round on PR #333:\n- **AC #1 (was ❌ Unmet — \"ToolsBlock.tsx is created but never imported or rendered in any AGENT page component\")**: added `web/src/views/agentPage/AgentPage.tsx`, a project AGENT page that renders a Guidance section (from the project item's `agents` property), a Heartbeats placeholder (a real list-by-project heartbeats read needs a module registry that `alldots-api` doesn't currently have access to — confirmed via grep — so that's out of scope here), and mounts `ToolsBlock` below both. Wired in via a new `?page=agent&project=<id>&database=<id>` composition-root route in `main.tsx`/`App.tsx`, mirroring the existing `?page=ai-usage` pattern. Covered by 7 new tests in `AgentPage.test.tsx`.\n- **Remaining open medium finding** (missing test coverage for `reclassifyMcpTool`): added riskClass-select, requiresApproval-checkbox, and per-row-error tests to `ToolsBlock.test.tsx`.\n\nAll checks passed this turn: web typecheck/tests/build, backend `check:boundaries`/build, and the full backend test suite (unit 83/83, integration 593-594/594 with one confirmed-flaky, unrelated Postgres-deadlock test that passes in isolation, e2e 5/5).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580430690/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580430690/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580650278",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5580650278",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580650278",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5580650278",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5580650278,
     "node_id": "IC_kwDOUFuQ4c8AAAABTKH3Jg",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580650278/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580650278/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -440,9 +440,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580819524",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5580819524",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580819524",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5580819524",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5580819524,
     "node_id": "IC_kwDOUFuQ4c8AAAABTKSMRA",
     "user": {
@@ -472,7 +472,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5580819524/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5580819524/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -528,9 +528,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5581413209",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/127#issuecomment-5581413209",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/127",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5581413209",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/127#issuecomment-5581413209",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/127",
     "id": 5581413209,
     "node_id": "IC_kwDOUFuQ4c8AAAABTK2bWQ",
     "user": {
@@ -560,7 +560,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5581413209/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5581413209/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

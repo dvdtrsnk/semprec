@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTestPool, insertItemsWithIds, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { withTransaction } from "../../db/pool.js";
@@ -36,7 +36,7 @@ describe("mcp_server_connection_state (issue #1450)", () => {
   beforeEach(async () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
-    dataPool ??= await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool ??= await createRuntimeRolePool(adminPool, "alldots_data");
     serverId = randomUUID();
     await seedServer(serverId);
   });

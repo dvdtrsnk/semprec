@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import { login, verifySessionToken } from "../auth/authActions.js";
@@ -255,7 +255,7 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 describe("password change (issue #1701)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

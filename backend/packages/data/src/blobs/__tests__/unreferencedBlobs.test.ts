@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import "../../domainWriteHooks.js";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -361,7 +361,7 @@ describe("standalone blobs (issue #1401)", () => {
       const foreign = await withTenantTransaction(pool, foreignTenant, (client) =>
         createBlob(client, { mimeType: "image/png", byteSize: 1, storageKey: `${foreignTenant}/blobs/foreign` }),
       );
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const cp = createChokePoint(runtime);
         const invalid = ["not-a-uuid", randomUUID(), foreign.id];
@@ -425,8 +425,8 @@ describe("standalone blobs (issue #1401)", () => {
       const storage = new FakeStorage();
       const blob = (await upload(storage, "concurrent image")).blob;
       await ageBlob(blob.id, 25);
-      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
-      const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      const writerPool = await createRuntimeRolePool(pool, "alldots_data");
+      const sweepPool = await createRuntimeRolePool(pool, "alldots_data");
       const competing = observeStatementPid(sweepPool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
@@ -493,8 +493,8 @@ describe("standalone blobs (issue #1401)", () => {
       const database = await recipesDatabaseWithImageProperty();
       const storage = new FakeStorage();
       const blob = (await upload(storage, "deleted image")).blob;
-      const deletePool = await createRuntimeRolePool(pool, "semprec_data");
-      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const deletePool = await createRuntimeRolePool(pool, "alldots_data");
+      const writerPool = await createRuntimeRolePool(pool, "alldots_data");
       const competing = observeStatementPid(writerPool, /FROM blobs\b[\s\S]*FOR KEY SHARE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
@@ -572,8 +572,8 @@ describe("standalone blobs (issue #1401)", () => {
       });
       const blob = (await upload(storage, "concurrent image")).blob;
       await ageBlob(blob.id, 25);
-      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
-      const sweepPool = await createRuntimeRolePool(pool, "semprec_data");
+      const writerPool = await createRuntimeRolePool(pool, "alldots_data");
+      const sweepPool = await createRuntimeRolePool(pool, "alldots_data");
       const competing = observeStatementPid(sweepPool, /FROM blobs\b[\s\S]*FOR UPDATE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
@@ -649,8 +649,8 @@ describe("standalone blobs (issue #1401)", () => {
         properties: { photo: { blobId: prior.id } },
       });
       const blob = (await upload(storage, "deleted image")).blob;
-      const deletePool = await createRuntimeRolePool(pool, "semprec_data");
-      const writerPool = await createRuntimeRolePool(pool, "semprec_data");
+      const deletePool = await createRuntimeRolePool(pool, "alldots_data");
+      const writerPool = await createRuntimeRolePool(pool, "alldots_data");
       const competing = observeStatementPid(writerPool, /FROM blobs\b[\s\S]*FOR KEY SHARE/i);
       let release!: () => void;
       let ready!: (pid: number) => void;
@@ -726,9 +726,9 @@ describe("standalone blobs (issue #1401)", () => {
 
   describe("sweepUnreferencedBlobs", () => {
     it("cascades one deleted message's speech row while preserving shared and foreign bytes", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "semprec-speech-message-cascade-"));
+      const dir = await mkdtemp(join(tmpdir(), "alldots-speech-message-cascade-"));
       const storage = new LocalFsBlobStorageWriter(dir);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const tenant = getTenantZeroId();
       const foreign = await createTestTenant(pool);
       let failure: unknown;
@@ -917,9 +917,9 @@ describe("standalone blobs (issue #1401)", () => {
     });
 
     it("keeps speech and shared item bytes until their last reference is removed", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "semprec-speech-collection-"));
+      const dir = await mkdtemp(join(tmpdir(), "alldots-speech-collection-"));
       const storage = new LocalFsBlobStorageWriter(dir);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const tenant = getTenantZeroId();
       let failure: unknown;
       let failed = false;
@@ -1060,7 +1060,7 @@ describe("standalone blobs (issue #1401)", () => {
       await ageBlob(own.id, 48);
 
       // The admin pool bypasses row-level security, so the sweep runs on the runtime role.
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         expect(await runInTenant(getTenantZeroId(), () => sweepUnreferencedBlobs(runtimePool, storage))).toBe(1);
       } finally {
@@ -1082,7 +1082,7 @@ describe("standalone blobs (issue #1401)", () => {
       const foreignId = rows[0]?.id ?? "";
       await ageBlob(foreignId, 48);
 
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         await handleBlobsUnreferencedSweepTask(runtimePool, storage);
       } finally {
@@ -1102,10 +1102,10 @@ describe("standalone blobs (issue #1401)", () => {
     return { promise, release };
   }
   async function setup() {
-    const dir = await mkdtemp(join(tmpdir(), "semprec-standalone-race-"));
+    const dir = await mkdtemp(join(tmpdir(), "alldots-standalone-race-"));
     const storage = new LocalFsBlobStorageWriter(dir);
-    const one = await createRuntimeRolePool(pool, "semprec_data");
-    const two = await createRuntimeRolePool(pool, "semprec_data");
+    const one = await createRuntimeRolePool(pool, "alldots_data");
+    const two = await createRuntimeRolePool(pool, "alldots_data");
     const tenant = getTenantZeroId();
     const upload = (pool: Pool) =>
       runInTenant(tenant, () =>

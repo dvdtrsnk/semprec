@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
@@ -223,7 +223,7 @@ function patchEvent(eventItemId: string, patch: Record<string, unknown>, writer 
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 
 afterAll(async () => {

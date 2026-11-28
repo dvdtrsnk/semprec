@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
@@ -19,7 +19,7 @@ import {
   MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
-import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
+import { ALLDOTS_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 
 /**
  * Each retrofit manifest (library, mail sync/mailbox, Inbox pipeline) loads through
@@ -157,7 +157,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     ]);
     const workers = await registry.getWorkers();
     expect(workers).toEqual([
-      { moduleId: "mailSync", name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" },
+      { moduleId: "mailSync", name: "alldots-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" },
     ]);
     expect(await registry.getMigrations()).toEqual([]);
   });
@@ -176,7 +176,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
     expect(catalogs?.cs["property.threads.company.name"]).toBe("Firma");
   });
 
-  it("loads the Inbox pipeline manifest with Inbox/Inbox item types/Processing proposals, semprec.tick, and journal-inbox", async () => {
+  it("loads the Inbox pipeline manifest with Inbox/Inbox item types/Processing proposals, alldots.tick, and journal-inbox", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(INBOX_PATH);
 
@@ -186,7 +186,7 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       [INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID].sort(),
     );
     expect(await registry.getViewTypes()).toEqual([JOURNAL_INBOX_VIEW_TYPE]);
-    expect(await registry.getHeartbeatActions()).toEqual([SEMPREC_TICK_ACTION_ID]);
+    expect(await registry.getHeartbeatActions()).toEqual([ALLDOTS_TICK_ACTION_ID]);
     expect(await registry.getTasks()).toEqual([]);
     expect(await registry.getMigrations()).toEqual([]);
   });

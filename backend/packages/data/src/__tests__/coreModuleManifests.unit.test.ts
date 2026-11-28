@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ModuleRegistry, type ModuleDatabaseProjection } from "@semprec/module-registry";
+import { ModuleRegistry, type ModuleDatabaseProjection } from "@alldots/module-registry";
 import { filterNodeSchema } from "../views/filterTree.js";
 import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";

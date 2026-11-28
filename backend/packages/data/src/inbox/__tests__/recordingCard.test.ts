@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -38,9 +38,9 @@ import type { InboxAttachmentMetadata } from "../inboxAttachmentMetadata.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import {
   assertValidProposalEnvelope,
-  createSemprecTickAction,
+  createAlldotsTickAction,
   parseStoredProposalEnvelope,
-  type ComputeSemprecProposalFn,
+  type ComputeAlldotsProposalFn,
   type ProposalEnvelope,
 } from "../inboxTickAction.js";
 import { listInboxCards } from "../inboxCardsStore.js";
@@ -66,7 +66,7 @@ let eventsId: string;
 let projectsId: string;
 let filesId: string;
 
-const modelIsNeverCalled: ComputeSemprecProposalFn = vi.fn(async () => {
+const modelIsNeverCalled: ComputeAlldotsProposalFn = vi.fn(async () => {
   throw new Error("The model must not be called for a recording card");
 });
 
@@ -125,8 +125,8 @@ async function itemWithAudio(
   });
 }
 
-async function runTick(itemId: string, compute: ComputeSemprecProposalFn = modelIsNeverCalled): Promise<void> {
-  const tick = createSemprecTickAction(pool, compute);
+async function runTick(itemId: string, compute: ComputeAlldotsProposalFn = modelIsNeverCalled): Promise<void> {
+  const tick = createAlldotsTickAction(pool, compute);
   await runInTenant(getTenantZeroId(), () =>
     tick(databaseIds, { heartbeatId: "hb", projectItemId: randomUUID(), itemId }),
   );
@@ -450,7 +450,7 @@ describe("the recording card the Inbox tick produces for shared audio", () => {
         text: "Buy milk",
       }),
     );
-    const compute: ComputeSemprecProposalFn = vi.fn(async () => ({ properties: {}, candidates: [] }));
+    const compute: ComputeAlldotsProposalFn = vi.fn(async () => ({ properties: {}, candidates: [] }));
 
     await runTick(item.id, compute);
 
@@ -1235,7 +1235,7 @@ describe("rejecting the recording card", () => {
 
 describe("tenant isolation of the recording card (runtime role pool)", () => {
   it("does not see another tenant's Event, project or attachment, and refuses a confirm that names them", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const tenantA = await createTestTenant(pool);
       const tenantB = await createTestTenant(pool);
@@ -1311,7 +1311,7 @@ describe("tenant isolation of the recording card (runtime role pool)", () => {
       });
 
       // A card of tenant A that names tenant B's Event is refused on confirm and writes nothing.
-      const tick = createSemprecTickAction(runtime, modelIsNeverCalled);
+      const tick = createAlldotsTickAction(runtime, modelIsNeverCalled);
       await runInTenant(tenantA, () =>
         tick(a.databaseIds, { heartbeatId: "hb", projectItemId: randomUUID(), itemId: a.itemId }),
       );

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
@@ -196,7 +196,7 @@ async function guidanceRows(tenantId: string) {
 describe("Recipes system module (issue #1707)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

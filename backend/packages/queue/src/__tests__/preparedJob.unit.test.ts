@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant, withTraceContext } from "@semprec/shared";
+import { runAsSystem, runInTenant, withTraceContext } from "@alldots/shared";
 import {
   addPreparedJob,
   assertSearchTaskIdentifiersRegistered,

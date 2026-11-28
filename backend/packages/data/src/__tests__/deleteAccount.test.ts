@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { sealSecret } from "@semprec/credentials";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { sealSecret } from "@alldots/credentials";
 import { createRuntimeRolePool, getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
@@ -113,7 +113,7 @@ async function seedTenantCredential(tenantId: string): Promise<string> {
       const sealed = await sealSecret(
         "secret",
         dataKey,
-        Buffer.from(`semprec:external-credential:v1:${tenantId}:${itemId}`, "utf8"),
+        Buffer.from(`alldots:external-credential:v1:${tenantId}:${itemId}`, "utf8"),
       );
       await client.query(
         `INSERT INTO external_credentials (item_id, credential_type, ciphertext, nonce, scheme)
@@ -166,7 +166,7 @@ async function settle(): Promise<void> {
 describe("account deletion (issue #1049)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

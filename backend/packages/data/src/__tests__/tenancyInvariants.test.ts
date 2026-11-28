@@ -55,7 +55,7 @@ describe("findTenancyViolations", () => {
     it("classification: a table without a tenancy comment", async () => {
       const table = probeName("tenancy_invariants_probe");
       expect(await violationsAfter([`CREATE TABLE ${table} (id int)`])).toEqual([
-        { invariant: "classification", object: table, detail: "has no semprec:tenancy=tenant|global comment" },
+        { invariant: "classification", object: table, detail: "has no alldots:tenancy=tenant|global comment" },
       ]);
     });
 
@@ -80,9 +80,9 @@ describe("findTenancyViolations", () => {
       ).toEqual([{ invariant: "strictDefault", object: "app_tenant_default()", detail: "references app_sole_tenant" }]);
     });
 
-    it("runtimeRole: semprec_data given BYPASSRLS", async () => {
-      expect(await violationsAfter(["ALTER ROLE semprec_data BYPASSRLS"])).toEqual([
-        { invariant: "runtimeRole", object: "semprec_data", detail: "has BYPASSRLS" },
+    it("runtimeRole: alldots_data given BYPASSRLS", async () => {
+      expect(await violationsAfter(["ALTER ROLE alldots_data BYPASSRLS"])).toEqual([
+        { invariant: "runtimeRole", object: "alldots_data", detail: "has BYPASSRLS" },
       ]);
     });
 
@@ -91,7 +91,7 @@ describe("findTenancyViolations", () => {
       expect(
         await violationsAfter([
           `CREATE TABLE ${table} (item_id uuid REFERENCES items (id))`,
-          `COMMENT ON TABLE ${table} IS 'semprec:tenancy=global'`,
+          `COMMENT ON TABLE ${table} IS 'alldots:tenancy=global'`,
         ]),
       ).toEqual([
         {
@@ -109,7 +109,7 @@ describe("findTenancyViolations", () => {
           await violationsAfter([
             `CREATE TABLE ${table} (item_id uuid, tenant_id uuid, FOREIGN KEY (item_id, tenant_id) REFERENCES items (id, tenant_id))`,
             `CREATE UNIQUE INDEX ${table}_probe_uq ON items (id, tenant_id)`,
-            `COMMENT ON TABLE ${table} IS 'semprec:tenancy=global'`,
+            `COMMENT ON TABLE ${table} IS 'alldots:tenancy=global'`,
           ]),
           "itemForeignKey",
         ),
@@ -155,13 +155,13 @@ describe("findTenancyViolations", () => {
       expect(
         await violationsAfter([
           `CREATE TABLE ${table} (id int)`,
-          `COMMENT ON TABLE ${table} IS 'semprec:tenancy=tenant '`,
+          `COMMENT ON TABLE ${table} IS 'alldots:tenancy=tenant '`,
         ]),
       ).toEqual([
         {
           invariant: "classification",
           object: table,
-          detail: "its comment is not exactly semprec:tenancy=tenant or semprec:tenancy=global",
+          detail: "its comment is not exactly alldots:tenancy=tenant or alldots:tenancy=global",
         },
       ]);
     });
@@ -171,9 +171,9 @@ describe("findTenancyViolations", () => {
       const textual = probeName("tenancy_invariants_text");
       const violations = await violationsAfter([
         `CREATE TABLE ${missing} (id int)`,
-        `COMMENT ON TABLE ${missing} IS 'semprec:tenancy=tenant'`,
+        `COMMENT ON TABLE ${missing} IS 'alldots:tenancy=tenant'`,
         `CREATE TABLE ${textual} (tenant_id text NOT NULL DEFAULT app_tenant_default())`,
-        `COMMENT ON TABLE ${textual} IS 'semprec:tenancy=tenant'`,
+        `COMMENT ON TABLE ${textual} IS 'alldots:tenancy=tenant'`,
         "ALTER TABLE views ALTER COLUMN tenant_id DROP NOT NULL",
       ]);
       expect(only(violations, "tenantColumn")).toEqual(
@@ -223,25 +223,25 @@ describe("findTenancyViolations", () => {
 
     it("runtimeRole: a missing runtime role", async () => {
       const renamed = probeName("tenancy_invariants_side");
-      expect(await violationsAfter([`ALTER ROLE semprec_side RENAME TO ${renamed}`])).toEqual([
-        { invariant: "runtimeRole", object: "semprec_side", detail: "does not exist" },
+      expect(await violationsAfter([`ALTER ROLE alldots_side RENAME TO ${renamed}`])).toEqual([
+        { invariant: "runtimeRole", object: "alldots_side", detail: "does not exist" },
       ]);
     });
 
     it("runtimeRole: a superuser runtime role", async () => {
       // A superuser is a member of every role, so the membership checks fire as well.
-      const violations = await violationsAfter(["ALTER ROLE semprec_side SUPERUSER"]);
-      const side = only(violations, "runtimeRole").find((violation) => violation.object === "semprec_side");
+      const violations = await violationsAfter(["ALTER ROLE alldots_side SUPERUSER"]);
+      const side = only(violations, "runtimeRole").find((violation) => violation.object === "alldots_side");
       expect(side?.detail.split("; ")[0]).toBe("is a superuser");
     });
 
     it("runtimeRole: membership in a BYPASSRLS role", async () => {
       const role = probeName("tenancy_invariants_bypass");
-      expect(await violationsAfter([`CREATE ROLE ${role} NOLOGIN BYPASSRLS`, `GRANT ${role} TO semprec_data`])).toEqual(
+      expect(await violationsAfter([`CREATE ROLE ${role} NOLOGIN BYPASSRLS`, `GRANT ${role} TO alldots_data`])).toEqual(
         [
           {
             invariant: "runtimeRole",
-            object: "semprec_data",
+            object: "alldots_data",
             detail: `is a member of superuser or BYPASSRLS role(s) ${role}`,
           },
         ],
@@ -251,11 +251,11 @@ describe("findTenancyViolations", () => {
     it("runtimeRole: membership in a superuser role that lacks BYPASSRLS", async () => {
       const role = probeName("tenancy_invariants_super");
       expect(
-        await violationsAfter([`CREATE ROLE ${role} NOLOGIN SUPERUSER NOBYPASSRLS`, `GRANT ${role} TO semprec_data`]),
+        await violationsAfter([`CREATE ROLE ${role} NOLOGIN SUPERUSER NOBYPASSRLS`, `GRANT ${role} TO alldots_data`]),
       ).toEqual([
         {
           invariant: "runtimeRole",
-          object: "semprec_data",
+          object: "alldots_data",
           detail: `is a member of superuser or BYPASSRLS role(s) ${role}`,
         },
       ]);
@@ -269,24 +269,24 @@ describe("findTenancyViolations", () => {
         await violationsAfter([
           `CREATE ROLE ${owner} NOLOGIN`,
           `CREATE TABLE ${table} (id int)`,
-          `COMMENT ON TABLE ${table} IS 'semprec:tenancy=global'`,
+          `COMMENT ON TABLE ${table} IS 'alldots:tenancy=global'`,
           `ALTER TABLE ${table} OWNER TO ${owner}`,
-          `GRANT ${owner} TO semprec_data`,
+          `GRANT ${owner} TO alldots_data`,
           `CREATE TABLE ${ownedBySide} (id int)`,
-          `COMMENT ON TABLE ${ownedBySide} IS 'semprec:tenancy=global'`,
-          `ALTER TABLE ${ownedBySide} OWNER TO semprec_side`,
+          `COMMENT ON TABLE ${ownedBySide} IS 'alldots:tenancy=global'`,
+          `ALTER TABLE ${ownedBySide} OWNER TO alldots_side`,
         ]),
       ).toEqual([
-        // semprec_data inherits semprec_side (granted by the schema), so it is flagged for both owners.
+        // alldots_data inherits alldots_side (granted by the schema), so it is flagged for both owners.
         {
           invariant: "runtimeRole",
-          object: "semprec_data",
-          detail: `is or is a member of ${[owner, "semprec_side"].sort().join(", ")}, owning relations in public`,
+          object: "alldots_data",
+          detail: `is or is a member of ${[owner, "alldots_side"].sort().join(", ")}, owning relations in public`,
         },
         {
           invariant: "runtimeRole",
-          object: "semprec_side",
-          detail: "is or is a member of semprec_side, owning relations in public",
+          object: "alldots_side",
+          detail: "is or is a member of alldots_side, owning relations in public",
         },
       ]);
     });
@@ -308,7 +308,7 @@ describe("findTenancyViolations", () => {
       );
     });
 
-    it("definerFunction: an owner that is neither semprec_router nor the owner of items", async () => {
+    it("definerFunction: an owner that is neither alldots_router nor the owner of items", async () => {
       const owner = probeName("tenancy_invariants_fn_owner");
       const fn = probeName("tenancy_invariants_owned_fn");
       expect(
@@ -322,18 +322,18 @@ describe("findTenancyViolations", () => {
         {
           invariant: "definerFunction",
           object: `${fn}()`,
-          detail: "is owned by neither semprec_router nor the owner of items",
+          detail: "is owned by neither alldots_router nor the owner of items",
         },
       ]);
     });
 
-    it("definerFunction: accepts a pinned, revoked function owned by semprec_router", async () => {
+    it("definerFunction: accepts a pinned, revoked function owned by alldots_router", async () => {
       const fn = probeName("tenancy_invariants_router_fn");
       expect(
         await violationsAfter([
           `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'`,
           `REVOKE EXECUTE ON FUNCTION ${fn}() FROM PUBLIC`,
-          `ALTER FUNCTION ${fn}() OWNER TO semprec_router`,
+          `ALTER FUNCTION ${fn}() OWNER TO alldots_router`,
         ]),
       ).toEqual([]);
     });
@@ -419,7 +419,7 @@ describe("findTenancyViolations", () => {
         ]);
       });
 
-      it.each(["semprec_data", "semprec_side", "PUBLIC"])(
+      it.each(["alldots_data", "alldots_side", "PUBLIC"])(
         "a schema in which %s may create objects",
         async (grantee) => {
           const fn = probeName("tenancy_invariants_writable_path");
@@ -440,7 +440,7 @@ describe("findTenancyViolations", () => {
         },
       );
 
-      it.each(["semprec_data", "semprec_side", "PUBLIC"])(
+      it.each(["alldots_data", "alldots_side", "PUBLIC"])(
         "pg_catalog when %s may create objects in it",
         async (grantee) => {
           const fn = probeName("tenancy_invariants_catalog_path");
@@ -468,7 +468,7 @@ describe("findTenancyViolations", () => {
         expect(
           await violationsAfter([
             `CREATE SCHEMA ${schema}`,
-            `GRANT USAGE ON SCHEMA ${schema} TO semprec_data, semprec_side`,
+            `GRANT USAGE ON SCHEMA ${schema} TO alldots_data, alldots_side`,
             ...definerFunction(fn, `pg_catalog, ${schema}, public, pg_temp`),
           ]),
         ).toEqual([]);
@@ -481,7 +481,7 @@ describe("findTenancyViolations", () => {
         expect(
           await violationsAfter([
             `CREATE SCHEMA ${writable}`,
-            `GRANT CREATE ON SCHEMA ${writable} TO semprec_data`,
+            `GRANT CREATE ON SCHEMA ${writable} TO alldots_data`,
             ...definerFunction(fn, `${writable}, ${missing}, pg_temp`),
           ]),
         ).toEqual([
@@ -584,8 +584,8 @@ describe("verifyTenancy", () => {
       const output = recordingOutput();
       expect(await verifyTenancy(verifyPool, output.sink)).toBe(1);
       expect(output.error).toEqual([
-        `tenancy violation [classification] ${a}: has no semprec:tenancy=tenant|global comment`,
-        `tenancy violation [classification] ${b}: has no semprec:tenancy=tenant|global comment`,
+        `tenancy violation [classification] ${a}: has no alldots:tenancy=tenant|global comment`,
+        `tenancy violation [classification] ${b}: has no alldots:tenancy=tenant|global comment`,
       ]);
       expect(output.info).toEqual([]);
     } finally {

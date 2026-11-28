@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5821774949",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/495#issuecomment-5821774949",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/495",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5821774949",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/495#issuecomment-5821774949",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/495",
     "id": 5821774949,
     "node_id": "IC_kwDOUFuQ4c8AAAABWwE8ZQ",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-09-24T20:32:07Z",
     "updated_at": "2026-09-25T00:02:30Z",
-    "body": "<!-- relay-run-log -->\n**Relay run log** — issue #495\n\n- 2026-09-24 20:32Z — Relay picked up this issue for a BB worker run.\n- 2026-09-24 21:26Z — Relay run failed. Reason: push failed: GitHub kept failing the request — To https://github.com/dvdtrsnk/semprec.git ! [remote rejected] HEAD -> bb/relay-495-choke-point-split-01-36-freeze-the-pub-thr_a4finva5x7 (refusing to allow a GitHub App to create or update workflow `.github/workflows/code-review.yml` without `workflows` permission) error: failed to push some refs to 'https://github.com/dvdtrsnk/semprec.git'\n- 2026-09-24 21:27Z — Relay picked up this issue for a BB worker run.\n- 2026-09-24 21:55Z — Relay picked up this issue for a BB worker run.\n- 2026-09-25 00:02Z — Resolved by #533, merged into develop.",
+    "body": "<!-- relay-run-log -->\n**Relay run log** — issue #495\n\n- 2026-09-24 20:32Z — Relay picked up this issue for a BB worker run.\n- 2026-09-24 21:26Z — Relay run failed. Reason: push failed: GitHub kept failing the request — To https://github.com/dvdtrsnk/alldots.git ! [remote rejected] HEAD -> bb/relay-495-choke-point-split-01-36-freeze-the-pub-thr_a4finva5x7 (refusing to allow a GitHub App to create or update workflow `.github/workflows/code-review.yml` without `workflows` permission) error: failed to push some refs to 'https://github.com/dvdtrsnk/alldots.git'\n- 2026-09-24 21:27Z — Relay picked up this issue for a BB worker run.\n- 2026-09-24 21:55Z — Relay picked up this issue for a BB worker run.\n- 2026-09-25 00:02Z — Resolved by #533, merged into develop.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5821774949/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5821774949/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

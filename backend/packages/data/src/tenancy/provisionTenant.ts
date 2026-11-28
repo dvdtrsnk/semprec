@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows, withTransaction, type Queryable } from "../db/pool.js";
@@ -21,7 +21,7 @@ export async function assertRowSecurityActive(queryable: Queryable): Promise<voi
   );
   if (rows[0]?.active !== true) {
     throw new Error(
-      "Tenant provisioning must run as a role row-level security applies to (for example semprec_data), not as a superuser or table owner",
+      "Tenant provisioning must run as a role row-level security applies to (for example alldots_data), not as a superuser or table owner",
     );
   }
 }

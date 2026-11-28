@@ -611,7 +611,7 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
   };
 }
 
-/** Same wording as `moduleToolPendingApprovalText` in semprec-agents, so the model sees one phrasing. */
+/** Same wording as `moduleToolPendingApprovalText` in alldots-agents, so the model sees one phrasing. */
 function pendingApprovalText(toolName: string, approvalRequestId: string): string {
   return `Tool '${toolName}' requires human approval before it can run. Approval request ${approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`;
 }

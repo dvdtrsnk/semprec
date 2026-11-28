@@ -4,9 +4,9 @@ import { simpleParser } from "mailparser";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { SYSTEM_WRITER } from "../../chokePoint/writerKind.js";
 import { withTransaction } from "../../db/pool.js";
 import { MailRecipientRejectedError, MailTransportUnavailableError } from "../../mail/providerTypes.js";
@@ -161,7 +161,7 @@ function reasonsOf(spy: { mock: { calls: unknown[][] } }): unknown[] {
 describe("the reply to an answered invitation (issue gh-1953)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     mail = createInvitationMail(runtime);
   });
 

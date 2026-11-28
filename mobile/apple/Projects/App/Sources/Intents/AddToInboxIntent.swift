@@ -3,7 +3,7 @@ import CoreKit
 import Foundation
 
 /// Writes a text into the Inbox, or hands a scan to `ScanIntoInboxIntent`, as the Action button runs it through
-/// `SemprecShortcuts`. It asks for the type when it is not set, from a list that starts with "Scan" where the device
+/// `AlldotsShortcuts`. It asks for the type when it is not set, from a list that starts with "Scan" where the device
 /// can scan. A type or "No type" asks for the text and keeps it without opening the app, on the device with the day
 /// and the current time of this device; it gets a few seconds to reach the server, waits in the device's outbox until
 /// it does, also without a connection, and while it waits the background tasks that send it are scheduled

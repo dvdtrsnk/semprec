@@ -8,7 +8,7 @@ import { normalizeWallClockTime } from "../timezone.js";
 /** A change of these keys is a new revision of the invitation. */
 const SEQUENCE_KEYS = ["date", "endDate", "timeFrom", "timeTo", "place"] as const;
 
-export const ICAL_UID_DOMAIN = "semprec";
+export const ICAL_UID_DOMAIN = "alldots";
 
 /** Trimmed text with empty, `null` and absent the same, and times normalized to `HH:MM`. */
 function effective(key: (typeof SEQUENCE_KEYS)[number], value: unknown): unknown {
@@ -25,7 +25,7 @@ function effective(key: (typeof SEQUENCE_KEYS)[number], value: unknown): unknown
 }
 
 /**
- * On create, `icalUid` is `<newUid()>@semprec` and `icalSequence` 0, overriding the patch; without `newUid`
+ * On create, `icalUid` is `<newUid()>@alldots` and `icalSequence` 0, overriding the patch; without `newUid`
  * (read-only preparation) the UID is left out. On update both are never taken from the patch, and the sequence
  * is incremented exactly when an effective `SEQUENCE_KEYS` value changes. Runs after the Events time transform,
  * so times are already normalized.

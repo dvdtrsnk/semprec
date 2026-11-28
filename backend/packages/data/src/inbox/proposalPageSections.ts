@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { readPageBlocks } from "@semprec/block-model";
+import { readPageBlocks } from "@alldots/block-model";
 import { lockLiveItem } from "../docs/lockLiveItem.js";
 import { insertPlannedBlocks, type IdentifiedBlock } from "../docs/pageMarkdown.js";
 import { proposalEnvelopeSchema, type ProposalEnvelope, type ProposalPageSection } from "./proposalEnvelope.js";

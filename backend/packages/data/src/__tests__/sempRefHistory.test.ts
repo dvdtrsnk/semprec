@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant, type SempMessageRef } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant, type SempMessageRef } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import {
   createAgentRun,
@@ -76,7 +76,7 @@ describe("Semp history reference resolution", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 
 /** Acquires the tenant's mail-thread mutation guard in the caller's READ COMMITTED transaction. */
 export async function lockMailThreadMutation(client: PoolClient): Promise<void> {

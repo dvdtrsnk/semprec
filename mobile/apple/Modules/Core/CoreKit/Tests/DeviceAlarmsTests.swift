@@ -28,7 +28,7 @@ final class DeviceAlarmsTests: XCTestCase {
     @MainActor
     func testAnEntryThatIsNotATextIsLeftOutOfTheLedger() throws {
         let defaults = try Self.isolatedDefaults()
-        defaults.set(["sleep:a": "id-1", "sleep:b": 7], forKey: "cz.semprec.sleepAlarmLedger")
+        defaults.set(["sleep:a": "id-1", "sleep:b": 7], forKey: "cz.alldots.sleepAlarmLedger")
         XCTAssertEqual(DefaultsSleepAlarmLedger(defaults: defaults).load(), ["sleep:a": "id-1"])
     }
 
@@ -142,7 +142,7 @@ final class DeviceAlarmsTests: XCTestCase {
 private extension DeviceAlarmsTests {
 
     static func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "cz.semprec.tests.\(UUID().uuidString)"))
+        try XCTUnwrap(UserDefaults(suiteName: "cz.alldots.tests.\(UUID().uuidString)"))
     }
 }
 

@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import {
   finishAgentRun,
   finishAgentRunWithErrorNotification,
@@ -11,7 +11,7 @@ import {
   withTransaction,
   type AgentRunEventRow,
   type AgentRunRow,
-} from "@semprec/data";
+} from "@alldots/data";
 import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";
 
 const INTERRUPTED_REASON = "interrupted_by_restart";

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -40,8 +40,8 @@ interface AttachmentInput {
 describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-detail-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-detail-"));
     const role = await runAsSystem("verify mail detail test role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

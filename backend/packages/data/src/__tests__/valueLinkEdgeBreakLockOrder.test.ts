@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
   clearHooksForTests,
@@ -38,7 +38,7 @@ import { linkRuleEdgeLockHook } from "../valueLinks/linkRuleEdgeHook.js";
 // The lock order of a relation edge write on a link rule's via relation: it locks the rule's target item row right
 // after the edge row and before any value link row (`linkRuleEdgeLockHook`, before-link-break registry of
 // `chokePoint/hooks.ts`), as the propagation job and the engine's edge hook do. Every schedule runs production calls
-// on `semprec_data` pools.
+// on `alldots_data` pools.
 
 const USER: WriterIdentity = { writerKind: "user" };
 const AGENT: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: "00000000-0000-4000-8000-000000000003" };
@@ -60,7 +60,7 @@ let setter: Participant;
 let trasher: Participant;
 
 async function participant(name: string): Promise<Participant> {
-  const pool = await createRuntimeRolePool(admin, "semprec_data");
+  const pool = await createRuntimeRolePool(admin, "alldots_data");
   // Set before the pool's first connection, so every backend of this participant carries the name.
   pool.options.application_name = name;
   return { name, pool, cp: createChokePoint(pool) };

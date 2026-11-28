@@ -11,7 +11,7 @@ import {
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
@@ -327,8 +327,8 @@ async function setThreadProject(t: MailTenant, thread: ThreadRef, projectItemId:
 describe("the answer-expected gate and the run project of core.agentRun (issue gh-1941)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-answer-expected-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-answer-expected-"));
   });
 
   afterAll(async () => {

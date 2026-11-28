@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/ai-gateway-client",
+  "name": "@alldots/ai-gateway-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/shared": "workspace:*",
+    "@alldots/shared": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

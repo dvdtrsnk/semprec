@@ -39,7 +39,7 @@ nothing for shared Kotlin sources; the other tasks cover them.
    `apple/Tuist/ProjectDescriptionHelpers/ProjectConfiguration.swift` following
    — medium.
 6. A change in `build-logic/` that alters every module at once — the Kotlin
-   targets of `semprec.kmp`, the JVM target, the Kotlin/Native minimum OS
+   targets of `alldots.kmp`, the JVM target, the Kotlin/Native minimum OS
    override, the Android SDK levels — without the Task calling for it, or that
    drops a target an app needs (`androidTarget` for Android; `iosArm64`,
    `iosSimulatorArm64` and `macosArm64` for the Apple app) — high.
@@ -56,9 +56,9 @@ nothing for shared Kotlin sources; the other tasks cover them.
    Release and the embed folder check, so a change to the mapping comes with a
    case there (medium without one). The `apple` step of `scripts/verify`
    builds for `generic/platform=iOS` so that the `iphoneos` branch runs at all,
-   and builds the `SemprecUITests` target for the iOS Simulator so that a UI
+   and builds the `AlldotsUITests` target for the iOS Simulator so that a UI
    test that no longer compiles fails without a device; a verify that stops
-   running either build, or the `SemprecUITests` run with `--ios-simulator`, and
+   running either build, or the `AlldotsUITests` run with `--ios-simulator`, and
    still passes is item 1.
 9. A machine-specific path (a JDK, SDK or home directory) committed in a build
    file or script — medium: the build must work from a clean checkout with

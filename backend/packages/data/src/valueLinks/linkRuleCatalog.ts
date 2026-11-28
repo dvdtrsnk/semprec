@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { ModuleLinkRuleEndpoint, ModuleLinkRuleProjection } from "@semprec/module-registry";
+import type { ModuleLinkRuleEndpoint, ModuleLinkRuleProjection } from "@alldots/module-registry";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { lockAllItemsInDatabaseForShare } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";

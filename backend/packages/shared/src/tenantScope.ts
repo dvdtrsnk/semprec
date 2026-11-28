@@ -16,7 +16,7 @@ export class TenantScopeConflictError extends Error {
   }
 }
 
-/** A database access ran outside any scope while `SEMPREC_TENANT_SCOPE` is not `warn`. */
+/** A database access ran outside any scope while `ALLDOTS_TENANT_SCOPE` is not `warn`. */
 export class TenantScopeMissingError extends Error {
   constructor(message: string) {
     super(message);
@@ -87,7 +87,7 @@ export function runDetachedAsSystem<T>(reason: string, fn: () => T): T {
 }
 
 /**
- * Called by every database access site. Without an active scope, `SEMPREC_TENANT_SCOPE` (read per call) decides: unset,
+ * Called by every database access site. Without an active scope, `ALLDOTS_TENANT_SCOPE` (read per call) decides: unset,
  * empty or `strict` throws `TenantScopeMissingError`; `warn` logs `tenant_scope_missing` once per distinct stack and
  * returns `undefined`; anything else throws. `warn` is an operator escape hatch production must not set.
  */
@@ -95,12 +95,12 @@ export function enforceTenantScope(site: string): TenantScope | undefined {
   const scope = tenantScopeStorage.getStore();
   if (scope) return scope;
 
-  const mode = process.env.SEMPREC_TENANT_SCOPE;
+  const mode = process.env.ALLDOTS_TENANT_SCOPE;
   if (mode === undefined || mode === "" || mode === "strict") {
     throw new TenantScopeMissingError(`No tenant scope is active at ${site}`);
   }
   if (mode !== "warn") {
-    throw new Error(`Unknown SEMPREC_TENANT_SCOPE value "${mode}"; expected "warn" or "strict"`);
+    throw new Error(`Unknown ALLDOTS_TENANT_SCOPE value "${mode}"; expected "warn" or "strict"`);
   }
 
   const stack = new Error().stack ?? "";

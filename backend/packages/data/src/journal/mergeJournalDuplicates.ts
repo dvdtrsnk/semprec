@@ -1,4 +1,4 @@
-import { parseMarkdown, serializeBlocks, serializeInline } from "@semprec/block-model";
+import { parseMarkdown, serializeBlocks, serializeInline } from "@alldots/block-model";
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";

@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { openSecret, sealSecret } from "@semprec/credentials";
+import { openSecret, sealSecret } from "@alldots/credentials";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "../credentials/tenantKeysStore.js";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { MAIL_ACCOUNT_SERVICES, type MailAccountService } from "./oauthServiceScopes.js";
@@ -19,7 +19,7 @@ export const MAIL_OAUTH_REDIRECT_TARGETS = ["app"] as const;
 export type MailOauthRedirectTarget = (typeof MAIL_OAUTH_REDIRECT_TARGETS)[number];
 
 /** The app's registered URL scheme, opened by the system browser sheet the sign-in runs in. */
-const REDIRECT_TARGET_URLS: Record<MailOauthRedirectTarget, string> = { app: "semprec://oauth" };
+const REDIRECT_TARGET_URLS: Record<MailOauthRedirectTarget, string> = { app: "alldots://oauth" };
 
 const RANDOM_BYTES = 32;
 
@@ -29,7 +29,7 @@ function hashState(state: string): string {
 
 /** Binds the sealed verifier to its tenant and row so the ciphertext cannot be copied elsewhere. */
 function verifierAssociatedData(tenantId: string, rowId: string): Buffer {
-  return Buffer.from(`semprec:mail-oauth-state:v1:${tenantId.toLowerCase()}:${rowId.toLowerCase()}`, "utf8");
+  return Buffer.from(`alldots:mail-oauth-state:v1:${tenantId.toLowerCase()}:${rowId.toLowerCase()}`, "utf8");
 }
 
 export interface CreateMailOauthStateInput {

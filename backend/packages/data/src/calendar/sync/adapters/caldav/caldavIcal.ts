@@ -8,7 +8,7 @@ import { ruleText } from "../../../icalRecurrenceRuleText.js";
 import type { RemoteEvent, RemoteEventFields, RemoteParticipant } from "../../adapter.js";
 
 const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
-const PRODUCT_ID = "-//Semprec//Calendar sync//EN";
+const PRODUCT_ID = "-//Alldots//Calendar sync//EN";
 /** The sync payload's bounds (`calendarSyncApply.ts`); an Event over them is left out rather than failing the pass. */
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_ID_LENGTH = 2048;

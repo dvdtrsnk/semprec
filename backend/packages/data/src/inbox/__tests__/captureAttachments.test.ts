@@ -2,8 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { z } from "zod";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../../testSupport/tenantFixtures.js";
@@ -32,7 +32,7 @@ const BODY = { text: "Receipt", date: "2026-11-02", time: "10:15", captureChanne
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 beforeEach(async () => {

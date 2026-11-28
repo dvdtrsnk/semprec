@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
-import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce, type TaskList } from "@alldots/queue";
+import { currentTenantScope, runAsSystem, runInTenant } from "@alldots/shared";
 import { createSempStatusRouteHandler } from "../../semp/sempStatusRouteHandler.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createActionRegistry } from "../../scheduler/actions.js";
@@ -17,7 +17,7 @@ import { createCoreTaskList } from "../../worker.js";
 import { recordTokenGatewayCall } from "../aiGatewayCallsStore.js";
 import { aiBudgetResetJobKey, enqueueAiBudgetReset, handleAiBudgetResetTask } from "../aiBudgetResetJob.js";
 
-/** Tenant-side calls run on a `semprec_data` pool so RLS applies; the job runs through `createCoreTaskList`. */
+/** Tenant-side calls run on a `alldots_data` pool so RLS applies; the job runs through `createCoreTaskList`. */
 
 interface QueuedJob {
   key: string | null;
@@ -81,7 +81,7 @@ async function statusProblemIds(tenantId: string): Promise<string[]> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const handler = createCoreTaskList(runtime, createActionRegistry())[CORE_TASK_NAMES.AI_BUDGET_RESET];
   if (!handler) throw new Error("createCoreTaskList has no aiBudgetReset handler");
   taskList = { [CORE_TASK_NAMES.AI_BUDGET_RESET]: handler };

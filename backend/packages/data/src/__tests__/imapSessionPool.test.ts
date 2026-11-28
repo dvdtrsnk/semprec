@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createImapConnectionLimiter, type ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import { createImapSessionPool, type ImapSessionPool } from "../mail/imapSessionPool.js";
@@ -59,7 +59,7 @@ async function lastFailureKind(mailboxId: string): Promise<string | null | undef
 describe("IMAP sync sessions kept between passes", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

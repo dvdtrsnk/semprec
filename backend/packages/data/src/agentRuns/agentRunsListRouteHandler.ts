@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { resolveCatalogLabel } from "@semprec/module-registry";
+import { resolveCatalogLabel } from "@alldots/module-registry";
 import { getAgentRunCosts, getSempMessageCosts } from "../aiGateway/aiGatewayCallsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";

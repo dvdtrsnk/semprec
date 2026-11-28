@@ -1,7 +1,7 @@
 import CoreKit
 import Foundation
 
-@testable import Semprec
+@testable import Alldots
 
 /// The waiting Inbox captures of a test: `send()` answers `sendAnswer`, or with `holdsSend` waits until its task is
 /// cancelled and answers false; `capturesWait()` answers `waits`. It counts the calls.

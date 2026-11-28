@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -127,7 +127,7 @@ function transactionProbe(): { check: () => Promise<void>; openAtCalls: number[]
     async check() {
       const { rows } = await admin.query<{ open: number }>(
         `SELECT count(*)::int AS open FROM pg_stat_activity
-          WHERE datname = current_database() AND usename = 'semprec_data' AND xact_start IS NOT NULL`,
+          WHERE datname = current_database() AND usename = 'alldots_data' AND xact_start IS NOT NULL`,
       );
       openAtCalls.push(rows[0]?.open ?? -1);
     },
@@ -178,7 +178,7 @@ function windowStartSeconds(connectedAt: string | null): number {
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
 });
 
 beforeEach(async () => {

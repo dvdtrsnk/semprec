@@ -38,7 +38,7 @@ async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>
 async function scopeTo(client: PoolClient, tenantId: string): Promise<void> {
   await client.query("RESET ROLE");
   await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
-  await client.query("SET LOCAL ROLE semprec_data");
+  await client.query("SET LOCAL ROLE alldots_data");
 }
 
 async function countDocs(client: PoolClient, itemId: string): Promise<number> {

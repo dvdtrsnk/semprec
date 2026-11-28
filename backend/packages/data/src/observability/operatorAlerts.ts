@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { listAdminRecipients } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { writeNotification } from "../notifications/notify.js";

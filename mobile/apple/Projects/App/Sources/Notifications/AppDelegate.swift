@@ -2,7 +2,7 @@
 import CoreKit
 import SwiftUI
 
-/// The iOS application delegate, which SwiftUI creates through `UIApplicationDelegateAdaptor` in `SemprecApp`: the
+/// The iOS application delegate, which SwiftUI creates through `UIApplicationDelegateAdaptor` in `AlldotsApp`: the
 /// only way an iOS app receives its APNs device token and its silent pushes. It hands both to `AppNotifications` and
 /// decides nothing itself. It is also where the background tasks of the Inbox captures are registered, because the
 /// system requires that before the app finishes launching. The UIKit types reach it through SwiftUI; the app imports

@@ -10,7 +10,7 @@ superseded-by: 2026-10-24-kotlin-multiplatform-below-native-mobile-ui
 
 ## Context
 
-The Semprec Apple client needs to exist on both iOS and macOS. The
+The Alldots Apple client needs to exist on both iOS and macOS. The
 alternative to a single codebase is two separate Xcode projects/targets
 that each reimplement the same data layer, networking, and most UI logic
 against the same backend.

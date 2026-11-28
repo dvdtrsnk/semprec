@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -749,7 +749,7 @@ describe("listApprovalRequestsQueue", () => {
       // A tick run below a chat run: its kind is `tick` only when its thread is read, and `chat` by its root run.
       const chatRun = await userRun({ threadId: await chatThread() });
       const { run: runOfA } = await tickRun("Sunday planning", chatRun.id);
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const kindIn = (tenantId: string, runId: string) =>
           runInTenant(tenantId, () => getApprovalRequestSourceKind(runtimePool, runId));

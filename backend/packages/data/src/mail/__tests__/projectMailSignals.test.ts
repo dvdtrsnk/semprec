@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -282,7 +282,7 @@ function fieldOf(error: unknown): unknown {
 describe("project mail signals", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
   });
 

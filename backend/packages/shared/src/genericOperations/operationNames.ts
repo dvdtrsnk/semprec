@@ -1,7 +1,7 @@
 /**
  * The closed generic-operation catalog. Every other file in `genericOperations` is keyed off this list; compile-time
  * exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts` and `bindings.ts` point at anything missing or
- * extra. The names are used verbatim as AgentTool names and prefixed `semprec.` as MCP names, except
+ * extra. The names are used verbatim as AgentTool names and prefixed `alldots.` as MCP names, except
  * `REST_ONLY_OPERATION_NAMES`.
  */
 export const GENERIC_OPERATION_NAMES = [

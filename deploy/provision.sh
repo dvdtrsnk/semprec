@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Provision a Debian or Ubuntu host for the first Semprec deployment.
+# Provision a Debian or Ubuntu host for the first Alldots deployment.
 set -euo pipefail
 
-readonly SEMPREC_ROOT=/opt/semprec
-readonly BACKUP_DIRECTORY=/var/backups/semprec
+readonly ALLDOTS_ROOT=/opt/alldots
+readonly BACKUP_DIRECTORY=/var/backups/alldots
 readonly SYSTEMD_UNIT_DIR=/etc/systemd/system
 readonly JOURNALD_CONFIG_DIR=/etc/systemd/journald.conf.d
 readonly CADDY_CONFIG_DIR=/etc/caddy
 readonly CADDY_UNIT_DROPIN_DIR=/etc/systemd/system/caddy.service.d
 readonly NFTABLES_CONFIG=/etc/nftables.conf
-readonly MCP_LAUNCHER_PATH=/usr/local/libexec/semprec-mcp-launch
-readonly MCP_SANDBOX_USER=semprec-mcp
-readonly MCP_SANDBOX_HOME=/var/lib/semprec-mcp
+readonly MCP_LAUNCHER_PATH=/usr/local/libexec/alldots-mcp-launch
+readonly MCP_SANDBOX_USER=alldots-mcp
+readonly MCP_SANDBOX_HOME=/var/lib/alldots-mcp
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
@@ -39,34 +39,34 @@ readonly -a SECRET_GROUPS=(
 )
 
 readonly -a SERVICE_UNITS=(
-  semprec-api.service
-  semprec-agents.service
-  semprec-transcribe.service
-  semprec-ai-gateway.service
+  alldots-api.service
+  alldots-agents.service
+  alldots-transcribe.service
+  alldots-ai-gateway.service
 )
 
 readonly -a TIMER_UNITS=(
-  semprec-dead-man.timer
-  semprec-backup.timer
-  semprec-restore-test.timer
-  semprec-trash-purge.timer
+  alldots-dead-man.timer
+  alldots-backup.timer
+  alldots-restore-test.timer
+  alldots-trash-purge.timer
 )
 
 readonly -a TIMER_SERVICES=(
-  semprec-dead-man.service
-  semprec-backup.service
-  semprec-restore-test.service
-  semprec-trash-purge.service
+  alldots-dead-man.service
+  alldots-backup.service
+  alldots-restore-test.service
+  alldots-trash-purge.service
 )
 
 readonly -a FAILURE_SERVICE_UNITS=(
-  semprec-failping@.service
+  alldots-failping@.service
 )
 
 # The stdio MCP sandbox (docs/architecture/delivery-and-operations.md).
 readonly -a MCP_SANDBOX_UNITS=(
-  semprec-mcp-launch.socket
-  semprec-mcp-launch@.service
+  alldots-mcp-launch.socket
+  alldots-mcp-launch@.service
 )
 
 require_root() {
@@ -175,7 +175,7 @@ install_postgresql_hunspell_assets() {
   require_readable_hunspell_asset "$HUNSPELL_AFFIX_SOURCE"
 
   local postgres_container
-  if ! postgres_container="$(docker compose --env-file "$SEMPREC_ROOT/shared/env/postgres.env" -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
+  if ! postgres_container="$(docker compose --env-file "$ALLDOTS_ROOT/shared/env/postgres.env" -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet postgres)" || [[ -z "$postgres_container" ]]; then
     echo "Cannot install Czech Hunspell assets: the PostgreSQL container is not active" >&2
     exit 1
   fi
@@ -197,12 +197,12 @@ install_postgresql_hunspell_assets() {
 }
 
 ensure_service_user() {
-  if ! getent passwd semprec >/dev/null; then
-    useradd --system --user-group --home-dir "$SEMPREC_ROOT" --shell /usr/sbin/nologin semprec
+  if ! getent passwd alldots >/dev/null; then
+    useradd --system --user-group --home-dir "$ALLDOTS_ROOT" --shell /usr/sbin/nologin alldots
   fi
 }
 
-# The uid stdio MCP servers run as: its own group only, never a member of `semprec`, so it reads
+# The uid stdio MCP servers run as: its own group only, never a member of `alldots`, so it reads
 # nothing the services' group can. systemd creates its home as the launcher unit's StateDirectory.
 # It must exist before apply_nftables, whose ruleset names it.
 ensure_mcp_sandbox_user() {
@@ -227,17 +227,17 @@ ensure_directory() {
 }
 
 ensure_release_tree() {
-  ensure_directory "$SEMPREC_ROOT" 0755
-  ensure_directory "$SEMPREC_ROOT/releases" 0755
-  ensure_directory "$SEMPREC_ROOT/shared" 0700
-  ensure_directory "$SEMPREC_ROOT/shared/bin" 0750
-  # Blob bytes live beside `shared` (0700 root:root, not traversable by the `semprec` services),
+  ensure_directory "$ALLDOTS_ROOT" 0755
+  ensure_directory "$ALLDOTS_ROOT/releases" 0755
+  ensure_directory "$ALLDOTS_ROOT/shared" 0700
+  ensure_directory "$ALLDOTS_ROOT/shared/bin" 0750
+  # Blob bytes live beside `shared` (0700 root:root, not traversable by the `alldots` services),
   # never under /tmp, which is cleaned on reboot while the `blobs` rows referencing them survive.
-  ensure_directory "$SEMPREC_ROOT/data" 0755
-  ensure_directory "$SEMPREC_ROOT/data/files" 0750 semprec
-  ensure_directory "$SEMPREC_ROOT/data/mail-attachments" 0750 semprec
+  ensure_directory "$ALLDOTS_ROOT/data" 0755
+  ensure_directory "$ALLDOTS_ROOT/data/files" 0750 alldots
+  ensure_directory "$ALLDOTS_ROOT/data/mail-attachments" 0750 alldots
 
-  ensure_directory "$SEMPREC_ROOT/shared/env" 0700
+  ensure_directory "$ALLDOTS_ROOT/shared/env" 0700
   install_secret_groups
 }
 
@@ -293,7 +293,7 @@ report_unclaimed_legacy_keys() {
     }
   ' <(cat "${templates[@]}") "$legacy_env")"
 
-  echo "$legacy_env is no longer read by any unit or script; the values now live in $SEMPREC_ROOT/shared/env/*.env. Verify them, then delete it by hand." >&2
+  echo "$legacy_env is no longer read by any unit or script; the values now live in $ALLDOTS_ROOT/shared/env/*.env. Verify them, then delete it by hand." >&2
   if [[ -n "$unclaimed" ]]; then
     echo "Legacy keys that no group claims (not copied): $(tr '\n' ' ' <<<"$unclaimed")" >&2
   fi
@@ -303,7 +303,7 @@ report_unclaimed_legacy_keys() {
 # file is an operator's and is never overwritten. When the legacy single file is present its
 # values seed the new files; it is never modified or removed. Never prints a value.
 install_secret_groups() {
-  local legacy_env="$SEMPREC_ROOT/shared/.env"
+  local legacy_env="$ALLDOTS_ROOT/shared/.env"
   local has_legacy=0
   if [[ -e "$legacy_env" ]]; then
     has_legacy=1
@@ -312,7 +312,7 @@ install_secret_groups() {
   local group template destination tmp_group
   for group in "${SECRET_GROUPS[@]}"; do
     template="$SCRIPT_DIR/shared/env/$group.env.example"
-    destination="$SEMPREC_ROOT/shared/env/$group.env"
+    destination="$ALLDOTS_ROOT/shared/env/$group.env"
     if [[ -e "$destination" || -L "$destination" ]]; then
       continue
     fi
@@ -343,22 +343,22 @@ install_systemd_units() {
 
   install -d -o root -g root -m 0755 "$JOURNALD_CONFIG_DIR"
   install -o root -g root -m 0644 \
-    "$SCRIPT_DIR/systemd/journald-semprec.conf" \
-    "$JOURNALD_CONFIG_DIR/semprec.conf"
+    "$SCRIPT_DIR/systemd/journald-alldots.conf" \
+    "$JOURNALD_CONFIG_DIR/alldots.conf"
 }
 
 install_timer_scripts() {
   local script
   for script in dead-man failping backup restore-test trash-purge; do
-    install -o root -g semprec -m 0750 \
-      "$SCRIPT_DIR/systemd/scripts/semprec-$script.sh" \
-      "$SEMPREC_ROOT/shared/bin/semprec-$script.sh"
+    install -o root -g alldots -m 0750 \
+      "$SCRIPT_DIR/systemd/scripts/alldots-$script.sh" \
+      "$ALLDOTS_ROOT/shared/bin/alldots-$script.sh"
   done
 }
 
 install_mcp_launcher() {
   install -d -o root -g root -m 0755 "$(dirname -- "$MCP_LAUNCHER_PATH")"
-  install -o root -g root -m 0755 "$SCRIPT_DIR/bin/semprec-mcp-launch" "$MCP_LAUNCHER_PATH"
+  install -o root -g root -m 0755 "$SCRIPT_DIR/bin/alldots-mcp-launch" "$MCP_LAUNCHER_PATH"
 }
 
 verify_systemd_units() {
@@ -371,7 +371,7 @@ verify_systemd_units() {
 }
 
 enable_mcp_launch_socket() {
-  systemctl enable --now semprec-mcp-launch.socket
+  systemctl enable --now alldots-mcp-launch.socket
 }
 
 enable_timers() {
@@ -385,25 +385,25 @@ install_caddy_config() {
   install -o root -g root -m 0644 "$SCRIPT_DIR/Caddyfile" "$CADDY_CONFIG_DIR/Caddyfile"
   install -d -o root -g root -m 0755 "$CADDY_UNIT_DROPIN_DIR"
   install -o root -g root -m 0644 \
-    "$SCRIPT_DIR/systemd/caddy-semprec.conf" \
-    "$CADDY_UNIT_DROPIN_DIR/semprec.conf"
+    "$SCRIPT_DIR/systemd/caddy-alldots.conf" \
+    "$CADDY_UNIT_DROPIN_DIR/alldots.conf"
 }
 
 # Renders the Apple App Site Association file Caddy serves at
 # /.well-known/apple-app-site-association. Only the key names are ever printed, never a value.
 render_apple_app_site_association() {
-  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
+  local monitor_env="$ALLDOTS_ROOT/shared/env/monitor.env"
   local target="$CADDY_CONFIG_DIR/apple-app-site-association"
   local team_id bundle_id missing=0
-  team_id="$(sed -n 's/^SEMPREC_APPLE_TEAM_ID=//p' "$monitor_env" | tail -n 1)"
-  bundle_id="$(sed -n 's/^SEMPREC_IOS_BUNDLE_ID=//p' "$monitor_env" | tail -n 1)"
+  team_id="$(sed -n 's/^ALLDOTS_APPLE_TEAM_ID=//p' "$monitor_env" | tail -n 1)"
+  bundle_id="$(sed -n 's/^ALLDOTS_IOS_BUNDLE_ID=//p' "$monitor_env" | tail -n 1)"
 
   if [[ -z "$team_id" ]]; then
-    echo "SEMPREC_APPLE_TEAM_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
+    echo "ALLDOTS_APPLE_TEAM_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
     missing=1
   fi
   if [[ -z "$bundle_id" ]]; then
-    echo "SEMPREC_IOS_BUNDLE_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
+    echo "ALLDOTS_IOS_BUNDLE_ID is not set in $monitor_env; the Apple App Site Association file is not served" >&2
     missing=1
   fi
   if [[ "$missing" -eq 1 ]]; then
@@ -421,23 +421,23 @@ render_apple_app_site_association() {
 
 render_caddy_environment() {
   local domain
-  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
-  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$monitor_env" | tail -n 1)"
+  local monitor_env="$ALLDOTS_ROOT/shared/env/monitor.env"
+  domain="$(sed -n 's/^ALLDOTS_DOMAIN=//p' "$monitor_env" | tail -n 1)"
 
   if [[ -z "$domain" ]]; then
-    echo "SEMPREC_DOMAIN is not set in $monitor_env; Caddy stays unconfigured until it is set and provision.sh is rerun" >&2
+    echo "ALLDOTS_DOMAIN is not set in $monitor_env; Caddy stays unconfigured until it is set and provision.sh is rerun" >&2
     return 0
   fi
 
   local tmp_env
   tmp_env="$(mktemp)"
-  printf 'SEMPREC_DOMAIN=%s\n' "$domain" > "$tmp_env"
-  install -o root -g root -m 0600 "$tmp_env" "$CADDY_CONFIG_DIR/semprec.env"
+  printf 'ALLDOTS_DOMAIN=%s\n' "$domain" > "$tmp_env"
+  install -o root -g root -m 0600 "$tmp_env" "$CADDY_CONFIG_DIR/alldots.env"
   rm -f "$tmp_env"
 
   systemctl daemon-reload
   systemctl enable caddy
-  SEMPREC_DOMAIN="$domain" caddy validate --config "$CADDY_CONFIG_DIR/Caddyfile"
+  ALLDOTS_DOMAIN="$domain" caddy validate --config "$CADDY_CONFIG_DIR/Caddyfile"
   systemctl reload-or-restart caddy
 }
 
@@ -451,19 +451,19 @@ apply_nftables() {
   systemctl reload-or-restart nftables
 }
 
-# The `semprec` services and timer scripts need to read `shared/` and `shared/bin`, but
+# The `alldots` services and timer scripts need to read `shared/` and `shared/bin`, but
 # ensure_directory only sets the mode when it creates a directory, so an already-provisioned
 # host needs its existing mode corrected on every run instead.
 ensure_shared_permissions() {
-  local shared_dir="$SEMPREC_ROOT/shared"
+  local shared_dir="$ALLDOTS_ROOT/shared"
   local bin_dir="$shared_dir/bin"
   local env_dir="$shared_dir/env"
   local legacy_env="$shared_dir/.env"
   local apns_key="$shared_dir/apns-key.p8"
 
-  chown root:semprec "$shared_dir"
+  chown root:alldots "$shared_dir"
   chmod 0750 "$shared_dir"
-  chown root:semprec "$bin_dir"
+  chown root:alldots "$bin_dir"
   chmod 0750 "$bin_dir"
 
   # systemd reads EnvironmentFile= as root before dropping privileges, so no service user
@@ -483,26 +483,26 @@ ensure_shared_permissions() {
   fi
 
   if [[ -e "$apns_key" ]]; then
-    chown root:semprec "$apns_key"
+    chown root:alldots "$apns_key"
     chmod 0640 "$apns_key"
   fi
 }
 
 # Warns, never fails: an operator's group files are never edited, and the settings below are only
-# consequential once semprec-api sends mail. Prints key names and the two non-secret URL values only.
+# consequential once alldots-api sends mail. Prints key names and the two non-secret URL values only.
 check_outbound_link_settings() {
-  local env_file="$SEMPREC_ROOT/shared/env/api.env"
-  local monitor_env="$SEMPREC_ROOT/shared/env/monitor.env"
+  local env_file="$ALLDOTS_ROOT/shared/env/api.env"
+  local monitor_env="$ALLDOTS_ROOT/shared/env/monitor.env"
   local app_base_url domain smtp_host smtp_from
   app_base_url="$(sed -n 's/^APP_BASE_URL=//p' "$env_file" | tail -n 1)"
-  domain="$(sed -n 's/^SEMPREC_DOMAIN=//p' "$monitor_env" | tail -n 1)"
+  domain="$(sed -n 's/^ALLDOTS_DOMAIN=//p' "$monitor_env" | tail -n 1)"
   smtp_host="$(sed -n 's/^SMTP_HOST=//p' "$env_file" | tail -n 1)"
   smtp_from="$(sed -n 's/^SMTP_FROM_ADDRESS=//p' "$env_file" | tail -n 1)"
 
   if [[ -z "$app_base_url" ]]; then
-    echo "APP_BASE_URL is not set in $env_file; every emailed link will point at http://localhost:3000 until it is set to https://<SEMPREC_DOMAIN> and semprec-api is restarted" >&2
+    echo "APP_BASE_URL is not set in $env_file; every emailed link will point at http://localhost:3000 until it is set to https://<ALLDOTS_DOMAIN> and alldots-api is restarted" >&2
   elif [[ -n "$domain" && "${app_base_url%/}" != "https://$domain" ]]; then
-    echo "APP_BASE_URL is $app_base_url but SEMPREC_DOMAIN is $domain; emailed links expect APP_BASE_URL=https://$domain" >&2
+    echo "APP_BASE_URL is $app_base_url but ALLDOTS_DOMAIN is $domain; emailed links expect APP_BASE_URL=https://$domain" >&2
   fi
 
   if [[ -z "$smtp_host" || -z "$smtp_from" ]]; then

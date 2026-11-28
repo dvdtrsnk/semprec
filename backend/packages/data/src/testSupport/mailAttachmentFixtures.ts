@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";

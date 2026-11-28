@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import {
   createRuntimeRolePool,
@@ -227,7 +227,7 @@ describe("mail drafts store (issue #1504)", () => {
 
   it("isolates draft reads and writes through the runtime role while allowing the same thread in each tenant", async () => {
     const other = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const threadId = randomUUID();
     const first = await draftInput({ threadId });
     const second = await draftInput({ threadId }, other);

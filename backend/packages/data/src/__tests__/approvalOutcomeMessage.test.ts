@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -29,7 +29,7 @@ const tenant = () => getTenantZeroId();
 describe("approval outcome messages", () => {
   beforeEach(async () => {
     admin ??= getTestPool();
-    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    runtime ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
     userId = (await createTenantZeroUser(admin)).id;
   });

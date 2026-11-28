@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { allowItemsForTurn, clearForRun, isItemAllowed } from "../agentGrants/agentRunReadAllowancesStore.js";
@@ -109,7 +109,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 describe("per-turn read allowances of an agent run (issue #1849)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     main = await createFixture();
     other = await createFixture();

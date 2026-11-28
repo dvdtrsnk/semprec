@@ -2,7 +2,7 @@ import CoreKit
 import Foundation
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What `AddToInboxIntent` offers as the type of a capture, and which pick answers with the scan intent.
 @MainActor

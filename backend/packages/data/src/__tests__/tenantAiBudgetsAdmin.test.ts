@@ -49,8 +49,8 @@ async function newAccount(tenantId: string): Promise<string> {
 describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
   });
 
   afterAll(async () => {
@@ -137,13 +137,13 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
     expect(byId.get(accountC)).toMatchObject({ hasBudget: false, spentTodayUsd: 0, spentMonthUsd: 0 });
   });
 
-  it("keeps ai_tenant_spend() callable by semprec_data only, as a SECURITY DEFINER function owned by semprec_router", async () => {
+  it("keeps ai_tenant_spend() callable by alldots_data only, as a SECURITY DEFINER function owned by alldots_router", async () => {
     const { rows } = await pool.query<{ owner: string; prosecdef: boolean; proconfig: string[] | null }>(
       `SELECT p.proowner::regrole::text AS owner, p.prosecdef, p.proconfig
          FROM pg_proc p WHERE p.proname = 'ai_tenant_spend'`,
     );
     expect(rows).toEqual([
-      { owner: "semprec_router", prosecdef: true, proconfig: ["search_path=pg_catalog, public, pg_temp"] },
+      { owner: "alldots_router", prosecdef: true, proconfig: ["search_path=pg_catalog, public, pg_temp"] },
     ]);
 
     await expect(sidePool.query("SELECT * FROM ai_tenant_spend()")).rejects.toThrow(/permission denied/);

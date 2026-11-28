@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
@@ -45,8 +45,8 @@ const CLIENT_ADDRESS = "klient@example.test";
 describe("POST /api/mail/threads/:threadId/flag (issue gh-1893)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-flag-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-flag-"));
   });
 
   beforeEach(async () => {

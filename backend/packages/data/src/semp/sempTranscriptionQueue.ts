@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 
 const countsSchema = z.object({ queued: z.coerce.number().int(), running: z.coerce.number().int() });
 

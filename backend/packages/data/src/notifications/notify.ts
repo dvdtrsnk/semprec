@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getUserById } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { markManagedTransactionRollbackOnly, requireManagedTransaction, runAfterCommit } from "../db/pool.js";

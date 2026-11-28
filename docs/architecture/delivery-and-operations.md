@@ -76,7 +76,7 @@ Procedure: [docs/operations/releases.md](../operations/releases.md).
 `deploy/deploy.sh <tag>`, run as root on the host, is the only way code reaches production:
 
 1. **Immutable release per tag.** The tagged commit is exported with `git archive` into a hidden
-   staging directory under `/opt/semprec/releases/`, installed with `pnpm install --frozen-lockfile`
+   staging directory under `/opt/alldots/releases/`, installed with `pnpm install --frozen-lockfile`
    (copied packages) and built there. An existing `releases/<tag>` is never rebuilt or overwritten.
 2. **Native entrypoint check.** Every compiled entry the units start is run as plain `node`
    with no configuration (`backend/scripts/check-native-entrypoints.mjs`) and must reach its own
@@ -96,7 +96,7 @@ Rules that follow:
 - Any failure before activation removes the staging directory and changes nothing but the
   database.
 - A failure after the swap exits non-zero but does not roll itself back.
-- Mail live-sync runs inside `semprec-api` and restarts, reports and shuts down with it; it is
+- Mail live-sync runs inside `alldots-api` and restarts, reports and shuts down with it; it is
   not a separately deployed service. A separate process would be a new decision.
 - Old releases stay on disk as complete directories.
 
@@ -122,7 +122,7 @@ Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `dep
 ### Secret groups
 
 - Every production key lives in exactly one group: a values-free template
-  `deploy/shared/env/<group>.env.example`, installed as `/opt/semprec/shared/env/<group>.env`
+  `deploy/shared/env/<group>.env.example`, installed as `/opt/alldots/shared/env/<group>.env`
   (`root:root 0600`, directory `0700`).
 - A unit's `EnvironmentFile=` lines are its allowlist; it loads only the groups it needs, with
   `current/release.env` last on long-running units.
@@ -139,13 +139,13 @@ Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `dep
 application's outbound address checks
 ([edges-io-and-errors.md](edges-io-and-errors.md)):
 
-- The `output` chain (`policy accept`) jumps to `semprec_egress` for `meta skuid "semprec"` and to
-  `semprec_mcp_egress` for `semprec-mcp`. Root, Caddy, Docker and apt are untouched.
+- The `output` chain (`policy accept`) jumps to `alldots_egress` for `meta skuid "alldots"` and to
+  `alldots_mcp_egress` for `alldots-mcp`. Root, Caddy, Docker and apt are untouched.
 - The chains are deny-lists (tenants choose IMAP, SMTP and MCP ports): established/related
   accept, DNS to any address, then reject (`icmpx admin-prohibited`, rate-limited log as a
-  separate rule) for the `semprec_blocked_v4` / `semprec_blocked_v6` sets (loopback, RFC 1918,
+  separate rule) for the `alldots_blocked_v4` / `alldots_blocked_v6` sets (loopback, RFC 1918,
   link-local and metadata, CGNAT, ULA, NAT64, multicast and similar).
-- Only `semprec_egress` has a loopback exception, for Postgres `5432` and the gateway `3002`,
+- Only `alldots_egress` has a loopback exception, for Postgres `5432` and the gateway `3002`,
   matched on the conntrack original destination. `AI_GATEWAY_PORT` therefore stays `3002`.
 - Consequence: an SMTP, IMAP or MCP server on a private or loopback address is unreachable.
 
@@ -153,10 +153,10 @@ application's outbound address checks
 
 A `stdio` MCP server never runs as a child of the service that uses it:
 
-- It runs as system user `semprec-mcp` (own group, not in `semprec`), started per connection by
-  `semprec-mcp-launch.socket` (`/run/semprec-mcp-launch.sock`, `root:semprec 0660`, `Accept=yes`,
-  at most 16 connections) → `semprec-mcp-launch@.service`.
-- The launcher `deploy/bin/semprec-mcp-launch` reads exactly one JSON header line
+- It runs as system user `alldots-mcp` (own group, not in `alldots`), started per connection by
+  `alldots-mcp-launch.socket` (`/run/alldots-mcp-launch.sock`, `root:alldots 0660`, `Accept=yes`,
+  at most 16 connections) → `alldots-mcp-launch@.service`.
+- The launcher `deploy/bin/alldots-mcp-launch` reads exactly one JSON header line
   (`{"command", "args", "env"}`, at most 65536 bytes, strict validation) and refuses anything else
   with exit 64, running nothing and never echoing the header. Otherwise it `exec`s the command
   with only `PATH`, `HOME`, `LANG`, `USER`, `LOGNAME` plus the header's `env`.
@@ -167,7 +167,7 @@ A `stdio` MCP server never runs as a child of the service that uses it:
 - Client side, `SandboxedStdioClientTransport`
   (`backend/packages/data/src/mcp/sandboxedStdioTransport.ts`) writes the header (config `env` plus
   the decrypted credential, nothing from the service's environment). `mcpConnectionFactory.ts`
-  uses it when `SEMPREC_MCP_LAUNCH_SOCKET` is set, spawns in-process only under `NODE_ENV=test`,
+  uses it when `ALLDOTS_MCP_LAUNCH_SOCKET` is set, spawns in-process only under `NODE_ENV=test`,
   and otherwise refuses with `stdio_sandbox_unavailable` before decrypting the credential.
 - All `stdio` servers share one uid, which is acceptable only because `stdio` configs are
   confined to admin tenants
@@ -178,11 +178,11 @@ Procedure: `deploy/README.md` ("stdio MCP sandbox", "Host firewall").
 ### Host scripts that record results
 
 A host script that must record an outcome in Postgres runs a small Node entrypoint compiled into
-`@semprec/data`'s `dist/` in the current release, which calls data-layer functions (for example
+`@alldots/data`'s `dist/` in the current release, which calls data-layer functions (for example
 `backend/packages/data/src/observability/restoreTestResultCli.ts` for the monthly restore test).
 The script passes only non-secret, validated arguments within a closed contract; it never writes
 SQL itself and no HTTP endpoint is added for it. The entrypoint connects as the role its tables
-need (`semprec_side` for side tables) and is the single writer of its rows.
+need (`alldots_side` for side tables) and is the single writer of its rows.
 
 ## Issues
 

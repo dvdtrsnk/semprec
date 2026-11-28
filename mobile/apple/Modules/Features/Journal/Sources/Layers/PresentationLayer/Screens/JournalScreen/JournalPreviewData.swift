@@ -80,7 +80,7 @@ extension JournalState {
         events: [
             JournalEvent(
                 id: "e1", title: "Standup", startMinutes: 540, endMinutes: 570,
-                projectName: "Semprec iOS", projectColor: "#007AFF"
+                projectName: "Alldots iOS", projectColor: "#007AFF"
             ),
             JournalEvent(
                 id: "e2", title: "Schůzka s klientem", startMinutes: 600, endMinutes: 690, place: "Kancelář, Karlín",

@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { enqueueJob, CORE_TASK_NAMES } from "@semprec/queue";
+import { enqueueJob, CORE_TASK_NAMES } from "@alldots/queue";
 import {
   decideApprovalRequest,
   getApprovalRequestForOwner,

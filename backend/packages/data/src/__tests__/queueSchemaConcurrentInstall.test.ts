@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import pg, { type Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createPool } from "../db/pool.js";
 import { installQueueSchema } from "../db/queueSchema.js";
 
-/** Queue runtimes that start together on one fresh database, as semprec-api, -agents and -transcribe do. */
+/** Queue runtimes that start together on one fresh database, as alldots-api, -agents and -transcribe do. */
 const PROCESSES = 6;
 /** Fresh databases tried; without the grant lock, every one of them has seen at least one refused grant. */
 const ROUNDS = 5;
@@ -73,7 +73,7 @@ async function withProcessPools(url: string, fn: (pools: Pool[]) => Promise<void
 
 describe("installQueueSchema", () => {
   it(
-    "succeeds in every process that runs it at once on a fresh database, and leaves semprec_side its grants and policies",
+    "succeeds in every process that runs it at once on a fresh database, and leaves alldots_side its grants and policies",
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         await withEmptyDatabase((url) =>
@@ -85,11 +85,11 @@ describe("installQueueSchema", () => {
             if (!pool) throw new Error("no process pool");
             const state = await runAsSystem("queue schema check", () =>
               pool.query<{ usage: boolean; jobsInsert: boolean; executeAddJob: boolean; policies: string[] }>(
-                `SELECT has_schema_privilege('semprec_side', 'graphile_worker', 'USAGE') AS usage,
-                        has_table_privilege('semprec_side', 'graphile_worker._private_jobs', 'INSERT') AS "jobsInsert",
-                        has_function_privilege('semprec_side', 'graphile_worker.add_job(text, json, text, timestamptz, integer, text, integer, text[], text)', 'EXECUTE') AS "executeAddJob",
+                `SELECT has_schema_privilege('alldots_side', 'graphile_worker', 'USAGE') AS usage,
+                        has_table_privilege('alldots_side', 'graphile_worker._private_jobs', 'INSERT') AS "jobsInsert",
+                        has_function_privilege('alldots_side', 'graphile_worker.add_job(text, json, text, timestamptz, integer, text, integer, text[], text)', 'EXECUTE') AS "executeAddJob",
                         ARRAY(SELECT tablename::text FROM pg_policies
-                              WHERE schemaname = 'graphile_worker' AND policyname = 'semprec_side_all'
+                              WHERE schemaname = 'graphile_worker' AND policyname = 'alldots_side_all'
                               ORDER BY tablename) AS policies`,
               ),
             );

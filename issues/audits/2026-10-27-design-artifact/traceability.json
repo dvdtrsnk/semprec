@@ -1,8 +1,8 @@
 {
   "source": {
     "threadId": "thr_qswg4sdx4m",
-    "sourceArchive": "semprec-source-raw.zip",
-    "exportArchive": "semprec-opendesign-export.zip",
+    "sourceArchive": "alldots-source-raw.zip",
+    "exportArchive": "alldots-opendesign-export.zip",
     "canvasSha256": "0bd3cddd9431b21f969b2c5ea3c2d6898bacce95143b54c00d188a9127688e81",
     "baseCommit": "639b68195e63e6edc67b1fed649628be04c9f884",
     "boardCount": 95,

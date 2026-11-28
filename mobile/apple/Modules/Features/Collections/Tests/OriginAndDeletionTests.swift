@@ -64,11 +64,11 @@ final class OriginAndDeletionTests: XCTestCase {
             related: [ImpactEntry(databaseKey: "files", count: 3), ImpactEntry(databaseKey: nil, count: 1)],
             nestedItems: 2, nestedPages: 0, takenOverValues: 4, seriesInstances: 0, attachments: 5, hostEvents: 0
         )
-        let message = DeletionSummary(title: "Semprec", impact: impact, names: ["files": "Files"]).message
+        let message = DeletionSummary(title: "Alldots", impact: impact, names: ["files": "Files"]).message
         XCTAssertEqual(
             message.components(separatedBy: "\n"),
             [
-                "“Semprec” moves to Recently deleted, where it stays for 30 days. The deletion reaches:",
+                "“Alldots” moves to Recently deleted, where it stays for 30 days. The deletion reaches:",
                 "Files: 3",
                 ": 1",
                 "Items inside it: 2",

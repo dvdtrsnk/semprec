@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@semprec/shared";
+import { deriveApprovalRiskLevel, type ApprovalRiskLevel, type RiskClass } from "@alldots/shared";
 import type { Queryable } from "../db/pool.js";
 import { getAgentRun, getAgentRunsByIds, getRootAgentRuns, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";

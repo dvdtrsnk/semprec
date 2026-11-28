@@ -7,7 +7,7 @@ import Foundation
 /// while captures wait, it schedules the background tasks of `CaptureBackgroundTasks`. macOS has no `BGTaskScheduler`
 /// for apps, so there only becoming active sends.
 ///
-/// It is one per process, as the outbox is: the app delegate registers its tasks at launch, `SemprecApp` reports the
+/// It is one per process, as the outbox is: the app delegate registers its tasks at launch, `AlldotsApp` reports the
 /// app's phase, and the intent, the scanner and the diary report a capture they added. Every call goes through the one
 /// bridge of the process (`InboxShortcutCapture.shared`), so no call creates another Kotlin SDK or HTTP client.
 @MainActor

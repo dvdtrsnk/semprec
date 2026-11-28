@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 final class InboxRoutingTests: XCTestCase {
 

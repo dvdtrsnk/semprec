@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@semprec/queue";
-import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
+import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@alldots/queue";
+import { currentTenantScope, runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createTenantZeroUser,
   createTestTenant,
@@ -24,7 +24,7 @@ import {
   sweepDueHeartbeats,
 } from "../scheduler/schedulerStore.js";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
-import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
+import { ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 
 const TENANT_A = "11111111-1111-4111-8111-111111111111";
 const TENANT_B = "22222222-2222-4222-8222-222222222222";
@@ -90,7 +90,7 @@ describe("resolveAgentRunLane", () => {
   });
 
   it("leaves non-agent heartbeat actions on their existing queue name", () => {
-    expect(runInTenant(TENANT_A, () => resolveAgentRunLane(SEMPREC_TICK_ACTION_ID))).toBeUndefined();
+    expect(runInTenant(TENANT_A, () => resolveAgentRunLane(ALLDOTS_TICK_ACTION_ID))).toBeUndefined();
   });
 
   it("returns undefined outside a tenant scope, so the job keeps a NULL queue_name", () => {
@@ -141,10 +141,10 @@ describe("agent heartbeat fires enqueue onto the tenant's agent-run lane (issue 
     );
   });
 
-  it("onItemEvent: a core.agentRun fire gets agent-run:<T>, semprec.tick keeps its semprec-tick:<T> lane", async () => {
+  it("onItemEvent: a core.agentRun fire gets agent-run:<T>, alldots.tick keeps its alldots-tick:<T> lane", async () => {
     const database = await withTransaction(pool, (client) => createDatabase(client, { name: "Lane Watched" }));
     const heartbeatIds: Record<string, string> = {};
-    for (const actionId of ["core.agentRun", SEMPREC_TICK_ACTION_ID]) {
+    for (const actionId of ["core.agentRun", ALLDOTS_TICK_ACTION_ID]) {
       const heartbeat = await withTransaction(pool, (client) =>
         createHeartbeat(client, {
           projectItemId: PROJECT,
@@ -170,8 +170,8 @@ describe("agent heartbeat fires enqueue onto the tenant's agent-run lane (issue 
     });
     expect(jobs.find((j) => j.task === "heartbeatFireCore")).toEqual({
       task: "heartbeatFireCore",
-      key: heartbeatFireJobKey(heartbeatIds[SEMPREC_TICK_ACTION_ID]!, item.id),
-      queue_name: `${SEMPREC_TICK_QUEUE_NAME}:${tenant}`,
+      key: heartbeatFireJobKey(heartbeatIds[ALLDOTS_TICK_ACTION_ID]!, item.id),
+      queue_name: `${ALLDOTS_TICK_QUEUE_NAME}:${tenant}`,
       max_attempts: 3,
     });
   });

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -28,7 +28,7 @@ vi.mock("../push/apnsAdapter.js", async (importOriginal) => {
 });
 
 /**
- * The badge on visible pushes and the debounced badge-only refresh, on a `semprec_data` pool so RLS applies.
+ * The badge on visible pushes and the debounced badge-only refresh, on a `alldots_data` pool so RLS applies.
  * Only `Date` is faked in the queue tests, so jobs are due when drained (graphile-worker compares `run_at`
  * with the database clock).
  */
@@ -202,7 +202,7 @@ async function revoked(tenant: BadgeTenant): Promise<Record<string, boolean>> {
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

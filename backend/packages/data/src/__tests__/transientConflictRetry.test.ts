@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
@@ -11,10 +11,10 @@ let chokePoint: ChokePoint;
 
 /** Raises a real PostgreSQL error with the given SQLSTATE condition name. */
 async function raise(client: PoolClient, condition: "deadlock_detected" | "serialization_failure"): Promise<never> {
-  await client.query("SELECT set_config('semprec_test.condition', $1, true)", [condition]);
+  await client.query("SELECT set_config('alldots_test.condition', $1, true)", [condition]);
   await client.query(`DO $$
     BEGIN
-      IF current_setting('semprec_test.condition') = 'deadlock_detected' THEN
+      IF current_setting('alldots_test.condition') = 'deadlock_detected' THEN
         RAISE EXCEPTION 'injected' USING ERRCODE = 'deadlock_detected';
       END IF;
       RAISE EXCEPTION 'injected' USING ERRCODE = 'serialization_failure';

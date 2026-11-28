@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_TENANCY, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_TENANCY, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import "../domainWriteHooks.js";
 import {
   createRuntimeRolePool,
@@ -141,7 +141,7 @@ async function overlapBackfill(
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 });
 beforeEach(async () => {

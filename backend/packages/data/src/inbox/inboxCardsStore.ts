@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getDatabase, getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";

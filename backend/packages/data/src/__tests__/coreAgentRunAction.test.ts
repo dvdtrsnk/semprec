@@ -66,7 +66,7 @@ describe("coreAgentRunAction", () => {
     expect(runs.map((run) => run.task).sort()).toEqual([`Review\nTriggering item id: ${itemId}`, "Timed"].sort());
   });
 
-  async function getSemprecProjectId(): Promise<string> {
+  async function getAlldotsProjectId(): Promise<string> {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
     const database = rows[0];
     if (!database) throw new Error("Missing projects database");
@@ -79,7 +79,7 @@ describe("coreAgentRunAction", () => {
   }
 
   async function createTestHeartbeat(): Promise<{ heartbeatId: string; projectItemId: string }> {
-    const projectItemId = await getSemprecProjectId();
+    const projectItemId = await getAlldotsProjectId();
     const heartbeat = await withTransaction(pool, (client) =>
       createHeartbeat(client, {
         projectItemId,

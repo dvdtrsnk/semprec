@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -53,7 +53,7 @@ function peopleOf(result: { status: number; body: unknown }) {
 describe("GET /api/events/:id/people (issue #1757)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify event people role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

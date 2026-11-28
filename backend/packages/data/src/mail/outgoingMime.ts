@@ -10,7 +10,7 @@ import type { MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 
 function domainOf(address: string): string {
   const at = address.lastIndexOf("@");
-  return at === -1 ? "semprec.local" : address.slice(at + 1);
+  return at === -1 ? "alldots.local" : address.slice(at + 1);
 }
 
 /** Generated only at send time: a draft has no Message-ID until it is submitted. */

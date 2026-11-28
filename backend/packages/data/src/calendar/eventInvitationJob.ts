@@ -3,8 +3,8 @@
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { enqueueJob } from "@alldots/queue";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";

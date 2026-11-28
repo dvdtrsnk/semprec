@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
@@ -18,7 +18,7 @@ import { createLinkEmailToPeopleAction } from "../personLinkingActions.js";
 import { reindexPersonEmails } from "../personEmailIndexStore.js";
 
 let adminPool: Pool;
-/** Runtime role (semprec_data) pool: every production write in this file goes through it, so row-level security applies. */
+/** Runtime role (alldots_data) pool: every production write in this file goes through it, so row-level security applies. */
 let dataPool: Pool;
 let chokePoint: ChokePoint;
 
@@ -175,7 +175,7 @@ async function senderCardinality(tenantId: string): Promise<string | null> {
 describe("Emails.senderPeople allows many emails per person (issue #1457)", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
     chokePoint = createChokePoint(dataPool);
   });
 

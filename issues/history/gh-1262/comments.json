@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6346774278",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1262#issuecomment-6346774278",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1262",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6346774278",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1262#issuecomment-6346774278",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1262",
     "id": 6346774278,
     "node_id": "IC_kwDOUFuQ4c8AAAABekwXBg",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-10-22T17:16:53Z",
     "updated_at": "2026-10-22T17:16:53Z",
-    "body": "Implementation prepared ahead of its gate on branch [`mt/1262-remove-sole-tenant-fallback`](https://github.com/dvdtrsnk/semprec/tree/mt/1262-remove-sole-tenant-fallback) (head `075ea30fe`), stacked on the prepared `mt/1088-invitation-acceptance-page` branch (and so on #1067 and #1087).\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through two independent reviews; their findings (test fixtures still reading `app_sole_tenant()`) are fixed by moving them to `getTenantZeroId()`. `git grep app_sole_tenant -- backend ':!*.sql'` now matches only `getSoleTenantId` (`tenantsStore.ts`), `globalSetup.ts`, `tenancyInvariants.ts`, and three tests that test the function or its invariant on purpose: `tenantEntity.test.ts`, `tenancyCatalog.test.ts` and `tenancyInvariants.test.ts`. Open the pull request after #1087 has landed, and list those three tests in it.",
+    "body": "Implementation prepared ahead of its gate on branch [`mt/1262-remove-sole-tenant-fallback`](https://github.com/dvdtrsnk/alldots/tree/mt/1262-remove-sole-tenant-fallback) (head `075ea30fe`), stacked on the prepared `mt/1088-invitation-acceptance-page` branch (and so on #1067 and #1087).\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through two independent reviews; their findings (test fixtures still reading `app_sole_tenant()`) are fixed by moving them to `getTenantZeroId()`. `git grep app_sole_tenant -- backend ':!*.sql'` now matches only `getSoleTenantId` (`tenantsStore.ts`), `globalSetup.ts`, `tenancyInvariants.ts`, and three tests that test the function or its invariant on purpose: `tenantEntity.test.ts`, `tenancyCatalog.test.ts` and `tenancyInvariants.test.ts`. Open the pull request after #1087 has landed, and list those three tests in it.",
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6346774278/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6346774278/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

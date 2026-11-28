@@ -2,9 +2,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
@@ -77,7 +77,7 @@ const queryText = z.union([z.string(), z.object({ text: z.string() }).transform(
 async function observedPool(
   before?: (sql: string, values: readonly unknown[]) => Promise<void>,
 ): Promise<{ pool: Pool; pids: Set<number> }> {
-  const observed = await createRuntimeRolePool(admin, "semprec_data");
+  const observed = await createRuntimeRolePool(admin, "alldots_data");
   const pids = new Set<number>();
   const restore = new Map<object, PropertyDescriptor | undefined>();
   observed.on("acquire", (client) => {
@@ -175,7 +175,7 @@ async function notificationCount(tenantId: string): Promise<number> {
 describe("recurring task series (issues #1605, #1670)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

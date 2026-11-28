@@ -12,7 +12,7 @@ superseded-by: null
 
 Semp should have a live voice mode: the user speaks, sees their words appear and
 hears Semp answer, inside a Semp thread. Today the backend only transcribes
-recordings in batch: `semprec-transcribe` calls the gateway routes
+recordings in batch: `alldots-transcribe` calls the gateway routes
 `/internal/transcribe` (Whisper) and `/internal/diarize` (pyannote). There is no
 streaming speech-to-text and no text-to-speech. The realtime protocol has no
 audio frames; its binary frames are Yjs documents with a 16-byte prefix.
@@ -86,9 +86,9 @@ Czech is the primary language; English is secondary.
     speech-to-text.
 - Dictation is out of this pipeline (#1372).
 
-### 3. Transport: one authenticated WebSocket to `semprec-api`
+### 3. Transport: one authenticated WebSocket to `alldots-api`
 
-The client opens a WebSocket to `semprec-api`; the tenant and user come from the
+The client opens a WebSocket to `alldots-api`; the tenant and user come from the
 session at upgrade, as for the realtime socket. The API forwards audio to the
 gateway over its internal, token-protected routes and relays results back. The
 client never reaches the gateway or a provider.
@@ -111,7 +111,7 @@ Microphone audio is raw PCM, signed 16-bit little-endian, mono, 16000 Hz, in
 frames of 20 ms to 100 ms of audio. Speech audio is raw PCM, signed 16-bit
 little-endian, mono, 24000 Hz, in frames of at most 100 ms. Raw PCM is chosen
 over Opus because every platform captures and plays it with no codec dependency,
-and [[2026-09-22-ffmpeg-confined-to-semprec-transcribe]] keeps ffmpeg out of the
+and [[2026-09-22-ffmpeg-confined-to-alldots-transcribe]] keeps ffmpeg out of the
 API. The cost is bandwidth (about 32 KB/s up, 48 KB/s down), accepted for a
 foreground interactive mode.
 

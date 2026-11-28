@@ -16,8 +16,8 @@ import { createItemWithClient, updateItemWithClient } from "../../chokePoint/ite
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { insertValueLink, listValueLinksByItemIds } from "../../chokePoint/valueLinksStore.js";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../../errors.js";
@@ -104,7 +104,7 @@ interface RuntimeOperations {
 const fixtureCancellations = new Set<Set<() => void>>();
 
 async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
-  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  const runtime = await createRuntimeRolePool(pool, "alldots_data");
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();

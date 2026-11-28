@@ -4,7 +4,7 @@ import {
   type ModuleCatalogs,
   type ModuleDatabaseProjection,
   type ModuleRegistry,
-} from "@semprec/module-registry";
+} from "@alldots/module-registry";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";

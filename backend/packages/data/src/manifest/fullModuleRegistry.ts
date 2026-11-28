@@ -1,4 +1,4 @@
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { RESERVED_TASK_NAMES } from "../moduleTasks.js";
 
 /**

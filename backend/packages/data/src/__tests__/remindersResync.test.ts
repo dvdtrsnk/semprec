@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -165,7 +165,7 @@ async function systemSettingsItemId(t: ResyncTenant): Promise<string> {
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 afterAll(async () => {

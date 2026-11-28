@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 
 /**
  * Startup check that a long-running service connects as a runtime role. Row-level security does not
@@ -16,7 +16,7 @@ export class RuntimeRoleAssertionError extends Error {
 
   constructor(role: string, violations: readonly RuntimeRoleViolation[]) {
     super(
-      `Refusing to start: database role "${role}" violates ${violations.join(", ")}; runtime services must connect as semprec_data or semprec_side`,
+      `Refusing to start: database role "${role}" violates ${violations.join(", ")}; runtime services must connect as alldots_data or alldots_side`,
     );
     this.name = "RuntimeRoleAssertionError";
     this.role = role;

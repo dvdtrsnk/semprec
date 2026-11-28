@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import * as data from "@semprec/data";
+import * as data from "@alldots/data";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun, createUser, hashPassword, withTransaction } from "@semprec/data";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@alldots/data/testSupport";
+import { createAgentRun, createUser, hashPassword, withTransaction } from "@alldots/data";
 import { AgentRunCancelledError, closeFailedAgentRun, runAgentSession } from "../lifecycleAdapter.js";
 import { repairInterruptedRuns } from "../startupRepair.js";
 import { reconstructConversationHistory } from "../conversationReconstruction.js";

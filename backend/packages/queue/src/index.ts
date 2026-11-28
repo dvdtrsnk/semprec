@@ -11,7 +11,7 @@ import {
   runInTenant,
   TenantScopeMissingError,
   withTraceContext,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { logger } from "./logger.js";
 
 export type { TaskList, Task, Runner } from "graphile-worker";
@@ -362,9 +362,9 @@ export async function assertSearchTaskIdentifiersRegistered(client: Queryable): 
 const QUEUE_SCHEMA_GRANT_LOCK_CLASS = 2335;
 
 /**
- * Grants `semprec_side` access to the `graphile_worker` schema, which `ensureQueueSchema` creates
+ * Grants `alldots_side` access to the `graphile_worker` schema, which `ensureQueueSchema` creates
  * after the data baseline migration has run. Call it inside a transaction (`installQueueSchema` in
- * `@semprec/data`) right after `ensureQueueSchema`, as the role that owns the schema; its
+ * `@alldots/data`) right after `ensureQueueSchema`, as the role that owns the schema; its
  * `ALTER DEFAULT PRIVILEGES` covers tables a later graphile-worker adds.
  *
  * Every queue runtime runs it at start, so several processes run it at once on a fresh database.
@@ -374,7 +374,7 @@ const QUEUE_SCHEMA_GRANT_LOCK_CLASS = 2335;
  *
  * graphile-worker enables RLS on its private tables without policies, and `add_job`/`add_jobs` are
  * not `SECURITY DEFINER`, so a GRANT alone is not enough: a permissive policy per table, scoped to
- * `semprec_side` (not a role-wide `BYPASSRLS`), is added. Re-add it here if a graphile-worker
+ * `alldots_side` (not a role-wide `BYPASSRLS`), is added. Re-add it here if a graphile-worker
  * version renames or adds an RLS-enabled table.
  */
 export async function grantQueueSchemaPrivileges(client: PoolClient): Promise<void> {
@@ -383,16 +383,16 @@ export async function grantQueueSchemaPrivileges(client: PoolClient): Promise<vo
 }
 
 const GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL = `
-    GRANT USAGE ON SCHEMA graphile_worker TO semprec_side;
-    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO semprec_side;
-    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA graphile_worker TO semprec_side;
-    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO semprec_side;
+    GRANT USAGE ON SCHEMA graphile_worker TO alldots_side;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO alldots_side;
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA graphile_worker TO alldots_side;
+    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO alldots_side;
     ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
-      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO semprec_side;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO alldots_side;
     ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
-      GRANT USAGE, SELECT ON SEQUENCES TO semprec_side;
+      GRANT USAGE, SELECT ON SEQUENCES TO alldots_side;
     ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA graphile_worker
-      GRANT EXECUTE ON FUNCTIONS TO semprec_side;
+      GRANT EXECUTE ON FUNCTIONS TO alldots_side;
 
     DO $$
     DECLARE
@@ -404,10 +404,10 @@ const GRANT_QUEUE_SCHEMA_PRIVILEGES_SQL = `
       LOOP
         IF NOT EXISTS (
           SELECT 1 FROM pg_policies
-          WHERE schemaname = 'graphile_worker' AND tablename = rls_table AND policyname = 'semprec_side_all'
+          WHERE schemaname = 'graphile_worker' AND tablename = rls_table AND policyname = 'alldots_side_all'
         ) THEN
           EXECUTE format(
-            'CREATE POLICY semprec_side_all ON graphile_worker.%I FOR ALL TO semprec_side USING (true) WITH CHECK (true)',
+            'CREATE POLICY alldots_side_all ON graphile_worker.%I FOR ALL TO alldots_side USING (true) WITH CHECK (true)',
             rls_table
           );
         END IF;

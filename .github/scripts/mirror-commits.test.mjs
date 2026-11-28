@@ -115,7 +115,7 @@ test("a replay of the plan reproduces every blob, tree and commit SHA", (t) => {
     plan.steps.map((step) => step.kind),
     ["blob", "blob", "tree", "commit", "commit", "blob", "tree", "commit"],
   );
-  assert.equal(plan.steps[0].endpoint, "repos/dvdtrsnk/semprec/git/blobs");
+  assert.equal(plan.steps[0].endpoint, "repos/dvdtrsnk/alldots/git/blobs");
   assert.deepEqual(replay(dir, plan), plan.steps.map((step) => step.expect));
 });
 

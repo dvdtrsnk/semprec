@@ -22,7 +22,7 @@ import { listRelatedWithClient, type RelatedResolver } from "./relatedOps.js";
 import { withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
 import { runAutomationBatchReader } from "./hooks.js";
-import type { ItemAutomationReadPort } from "@semprec/shared";
+import type { ItemAutomationReadPort } from "@alldots/shared";
 import { getItemsByIds } from "./itemsStore.js";
 import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 

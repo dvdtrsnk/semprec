@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -20,7 +20,7 @@ import {
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 // The system-owned `Inbox.transcribedText` property of a fresh seed, and who may write it. The job that
-// fills it is tested in `semprec-transcribe`.
+// fills it is tested in `alldots-transcribe`.
 
 let adminPool: Pool;
 let dataPool: Pool;
@@ -48,7 +48,7 @@ const SHAPE: InboxPropertyRow = {
 
 beforeAll(() => {
   adminPool = getTestPool();
-  dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   chokePoint = createChokePoint(dataPool, undefined, createViewTypeRegistry());
 });
 

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1498",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1498",
   "id": 6022384986,
   "node_id": "I_kwDOUFuQ4c8AAAABZvZNWg",
   "number": 1498,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1336",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1336",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1494\n**Model tier:** low\n\n## Context\n\nModel tier rationale: A single validation hook following an existing create and update hook pattern, in one module, with unit-level tests.\n\n`Mailboxes.connectionLimit` (user-owned number, `seedEmailModule.ts`) caps simultaneous IMAP connections for an account (`imapConnectionLimitForProvider` in `backend/packages/data/src/mail/imapConnectionLimiter.ts`). It can currently be set through the generic item create and update with any number: a value of 0 or 100 is accepted by the choke point and silently ignored or abused later. The app offers 1 to 15.\n\nDomain write hooks are composed per process in `backend/packages/data/src/domainWriteHooks.ts`; `mcpServerItemCreateHook` and `mcpServerItemUpdateHook` in `backend/packages/data/src/mcp/mcpServerWriteHook.ts` are the pattern.\n\nDecision: an unset or null value is accepted (it means \"use the provider default\"); a non-null value must be an integer from 1 to 15 inclusive.\n\nShared-file ordering: this issue also waits for #1494 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.\n\n## Task\n\nLoad `error-handling` and `testing`.\n\n1. Add `mailboxConnectionLimitCreateHook` and `mailboxConnectionLimitUpdateHook` in the mail module that, for items of the Mailboxes database only and only when `connectionLimit` is present in the written properties or the patch, throw `ValidationError` (field `connectionLimit`) unless the value is null or an integer from 1 to 15.\n2. Register both in `domainWriteHooks.ts`.\n\n## Touches\n\n- backend/packages/data/src/mail/mailboxConnectionLimitHook.ts (new)\n- backend/packages/data/src/domainWriteHooks.ts\n- backend/packages/data/src/__tests__/mailboxConnectionLimitHook.test.ts (new)\n\n## Scope\n\n### In scope\n\n- The range check on create and update of Mailboxes items.\n\n### Out of scope\n\n- Existing out-of-range stored values (not migrated; the limiter keeps its own tolerance).\n- Showing whether the limit applies (#1572).\n\n## Acceptance criteria\n\n- When a mailbox is created or updated with `connectionLimit` 0, 16, 2.5 or a string, then the request fails with 400 `validation_failed`.\n- When the value is 1, 15 or null, then it is accepted.\n- When another property is patched and `connectionLimit` is absent from the patch, then the hook does nothing.\n- Items of other databases are unaffected.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1498/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1498/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

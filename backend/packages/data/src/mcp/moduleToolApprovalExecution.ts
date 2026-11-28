@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { resolveModuleAgentToolsForRun, type ResolvedModuleAgentTool } from "../agentTools/moduleAgentTools.js";

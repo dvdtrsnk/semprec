@@ -2,7 +2,7 @@
   {
     "id": 32074888405,
     "node_id": "LE_lADOUFuQ4c8AAAABT5Cwb88AAAAHd8_01Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32074888405",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32074888405",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -38,7 +38,7 @@
   {
     "id": 32074888671,
     "node_id": "LE_lADOUFuQ4c8AAAABT5Cwb88AAAAHd8_13w",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32074888671",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32074888671",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -72,9 +72,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5891503543",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/800#issuecomment-5891503543",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/800",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5891503543",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/800#issuecomment-5891503543",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/800",
     "id": 5891503543,
     "node_id": "IC_kwDOUFuQ4c8AAAABXyk1tw",
     "user": {
@@ -104,7 +104,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5891503543/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5891503543/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -213,17 +213,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABT68IUQ",
         "number": 801,
         "title": "[followups-800] Review follow-ups from harvest #800 — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/801",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/801",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "e122f773e155476a0a43c74a4dcca8c1ae8c674da0d37235653d8ab8413d7184"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5891918479",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/800#issuecomment-5891918479",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/800",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5891918479",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/800#issuecomment-5891918479",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/800",
     "id": 5891918479,
     "node_id": "IC_kwDOUFuQ4c8AAAABXy-Kjw",
     "user": {
@@ -253,7 +253,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5891918479/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5891918479/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -333,7 +333,7 @@
   {
     "id": 32085942344,
     "node_id": "UNLE_lADOUFuQ4c8AAAABT5Cwb88AAAAHeHigSA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32085942344",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32085942344",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -369,7 +369,7 @@
   {
     "id": 32085943853,
     "node_id": "CE_lADOUFuQ4c8AAAABT5Cwb88AAAAHeHimLQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32085943853",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32085943853",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -431,14 +431,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGQ-W1Q",
         "number": 933,
         "title": "Grant the harvest pull-requests: write and bound its labelling per run",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/933",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/933",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/933",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/933",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/933.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/933.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/933",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/933",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/933.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/933.patch",
           "merged_at": "2026-10-02T11:01:37Z"
         },
         "bodySha256": "54f5490c6aa348d229f2c447c8a303ba31698846992cd893cffa2a322dd7607d"

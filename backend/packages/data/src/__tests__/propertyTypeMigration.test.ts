@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runOnce } from "@semprec/queue";
+import { runOnce } from "@alldots/queue";
 import { bindToTenantZero, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createCoreTaskList } from "../worker.js";

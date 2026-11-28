@@ -2,7 +2,7 @@
 // them. This hook only queues `derivedValuesInvalidate` inside the edge write's transaction, so the job commits or
 // rolls back with the edge.
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import type { RelationEdgeChangedHook } from "../chokePoint/hooks.js";
 import type { Queryable } from "../db/pool.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";

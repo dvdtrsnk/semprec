@@ -1,4 +1,4 @@
 {
-  "enabled": true,
-  "reason": "Owner restored automated review: the review provider account has quota again."
+  "enabled": false,
+  "reason": "Owner paused automated review for the mechanical Semprec to Alldots rename (10k files); restore after the merge."
 }

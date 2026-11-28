@@ -1,4 +1,4 @@
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import { htmlToPlainText } from "../mail/mailPlainText.js";
 import type { OutboundHttp } from "../net/outboundAddressPolicy.js";
 

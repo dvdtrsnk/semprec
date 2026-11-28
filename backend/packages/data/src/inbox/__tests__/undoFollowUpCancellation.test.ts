@@ -2,8 +2,8 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -38,7 +38,7 @@ import {
 import type { ItemRow } from "../../types.js";
 import { listInboxAttachments, recordInboxAttachmentMetadata } from "../inboxAttachmentsStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createSemprecTickAction } from "../inboxTickAction.js";
+import { createAlldotsTickAction } from "../inboxTickAction.js";
 import { confirmProposalWithClient, readConfirmationResults, reopenProposalWithClient } from "../proposalActions.js";
 
 // The undo of a confirmed card cancels the follow-up jobs the confirmation queued (a transcription for a recording
@@ -150,7 +150,7 @@ async function recordingCard(sharedBlobId?: string): Promise<string> {
     });
     return item.id;
   });
-  const tick = createSemprecTickAction(pool, async () => {
+  const tick = createAlldotsTickAction(pool, async () => {
     throw new Error("The model must not be called for a recording card");
   });
   await runInTenant(getTenantZeroId(), () =>
@@ -201,7 +201,7 @@ async function confirmedRecording(): Promise<{ cardId: string; fileItemId: strin
 
 /**
  * What a transcription job that ran leaves: a Transcripts item bound to the Files item through its link, and the
- * `create` checkpoint on the Files item. Written with the calls the create step of `semprec-transcribe` makes. The
+ * `create` checkpoint on the Files item. Written with the calls the create step of `alldots-transcribe` makes. The
  * worker deletes a job when it completes it, so both jobs of the file are removed too.
  */
 async function finishTranscription(fileItemId: string, linkedFileItemId = fileItemId): Promise<string> {
@@ -609,7 +609,7 @@ describe("a sync handler that runs after the undo", () => {
 
 describe("tenant isolation of the follow-up cancellation (runtime role pool)", () => {
   it("removes only the jobs of the undoing tenant, with the runtime role that holds the queue grants", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const tenantA = await createTestTenant(pool);
       const tenantB = await createTestTenant(pool);

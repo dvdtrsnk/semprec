@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { findOrCreateBlob, getBlob } from "../blobs/blobsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
@@ -16,12 +16,12 @@ describe("tenant isolation for blob deduplication and MCP grants", () => {
   let pool: Pool;
   let tenantA: string;
   let tenantB: string;
-  const previousScope = process.env.SEMPREC_TENANT_SCOPE;
+  const previousScope = process.env.ALLDOTS_TENANT_SCOPE;
 
   beforeAll(async () => {
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
+    process.env.ALLDOTS_TENANT_SCOPE = "strict";
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -31,8 +31,8 @@ describe("tenant isolation for blob deduplication and MCP grants", () => {
   });
 
   afterAll(async () => {
-    if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-    else process.env.SEMPREC_TENANT_SCOPE = previousScope;
+    if (previousScope === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+    else process.env.ALLDOTS_TENANT_SCOPE = previousScope;
     await pool?.end();
     await adminPool?.end();
   });

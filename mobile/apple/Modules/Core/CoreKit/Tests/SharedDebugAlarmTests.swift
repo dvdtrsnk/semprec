@@ -182,7 +182,7 @@ final class SharedDebugAlarmTests: XCTestCase {
 private extension SharedDebugAlarmTests {
 
     static func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "cz.semprec.tests.\(UUID().uuidString)"))
+        try XCTUnwrap(UserDefaults(suiteName: "cz.alldots.tests.\(UUID().uuidString)"))
     }
 
     /// The bridge of a Kotlin ViewModel over `device` and the wake storage in `defaults`.

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGmailPubSubTransport } from "../mail/gmailPubSubClient.js";
 
-const SUBSCRIPTION = "projects/semprec-test/subscriptions/gmail-push-pull";
+const SUBSCRIPTION = "projects/alldots-test/subscriptions/gmail-push-pull";
 
 function received(ackId: string, payload: unknown) {
   return { ackId, message: { data: Buffer.from(JSON.stringify(payload), "utf8").toString("base64") } };
@@ -16,7 +16,7 @@ function transportPulling(receivedMessages: unknown[]) {
   const transport = createGmailPubSubTransport({
     getGmailAccessToken: async () => "gmail-token",
     getPubSubAccessToken: async () => "pubsub-token",
-    topicName: "projects/semprec-test/topics/gmail-push",
+    topicName: "projects/alldots-test/topics/gmail-push",
     subscriptionName: SUBSCRIPTION,
     onMalformedNotification: (raw) => malformed.push(raw),
   });

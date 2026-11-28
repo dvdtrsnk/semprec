@@ -180,7 +180,7 @@ while [ $# -gt 1 ]; do
     shift
 done
 passed=1
-[ "$scheme" = SemprecUITests ] && passed=$UI_TESTS_PASSED
+[ "$scheme" = AlldotsUITests ] && passed=$UI_TESTS_PASSED
 mkdir -p "$bundle" && printf '{"passedTests":%s,"failedTests":0}' "$passed" >"$bundle/summary.json"
 `,
       true,
@@ -222,18 +222,18 @@ exit 1
   };
 
   const BUILDS = ["Debug", "Release"].flatMap((configuration) =>
-    ["iOS Simulator", "iOS", "macOS"].map((platform) => `build Semprec ${configuration} generic/platform=${platform} unsigned`),
+    ["iOS Simulator", "iOS", "macOS"].map((platform) => `build Alldots ${configuration} generic/platform=${platform} unsigned`),
   );
 
-  /** The UI test target is iOS only and outside the Semprec scheme, so verify builds it without a device. */
-  const UI_TEST_BUILD = "build-for-testing SemprecUITests - generic/platform=iOS Simulator unsigned";
+  /** The UI test target is iOS only and outside the Alldots scheme, so verify builds it without a device. */
+  const UI_TEST_BUILD = "build-for-testing AlldotsUITests - generic/platform=iOS Simulator unsigned";
 
   it("builds Debug and Release for the iOS Simulator, an iOS device and macOS, then the UI tests, then tests on macOS", () => {
     const { status, output, root, xcodebuild } = verifyApple();
     assert.equal(status, 0, output);
-    assert.deepEqual(xcodebuild.map(shown), [...BUILDS, UI_TEST_BUILD, "test Semprec - platform=macOS,arch=arm64"], output);
+    assert.deepEqual(xcodebuild.map(shown), [...BUILDS, UI_TEST_BUILD, "test Alldots - platform=macOS,arch=arm64"], output);
     for (const call of xcodebuild) {
-      assert.equal(call[call.indexOf("-workspace") + 1], "Semprec.xcworkspace", call.join(" "));
+      assert.equal(call[call.indexOf("-workspace") + 1], "Alldots.xcworkspace", call.join(" "));
       assert.equal(call[call.indexOf("-derivedDataPath") + 1], path.join(root, "apple/build/DerivedData"), call.join(" "));
     }
     for (const configuration of ["Debug", "Release"]) {
@@ -244,15 +244,15 @@ exit 1
   it("lists the tests and the UI tests on an iOS simulator as NOT RUN without --ios-simulator, naming the flag", () => {
     const { output } = verifyApple();
     assert.match(output, /^  NOT RUN +test on an iOS simulator +pass --ios-simulator <UDID> to run it$/m, output);
-    assert.match(output, /^  NOT RUN +UI tests on an iOS simulator +pass --ios-simulator <UDID> to run it; SemprecUITests runs on iOS only$/m, output);
+    assert.match(output, /^  NOT RUN +UI tests on an iOS simulator +pass --ios-simulator <UDID> to run it; AlldotsUITests runs on iOS only$/m, output);
   });
 
-  it("runs the Semprec tests and then the SemprecUITests scheme on the simulator --ios-simulator names", () => {
+  it("runs the Alldots tests and then the AlldotsUITests scheme on the simulator --ios-simulator names", () => {
     const { status, output, xcodebuild } = verifyApple(["--ios-simulator", UDID]);
     assert.equal(status, 0, output);
     assert.deepEqual(
       xcodebuild.map(shown),
-      [...BUILDS, UI_TEST_BUILD, "test Semprec - platform=macOS,arch=arm64", `test Semprec - id=${UDID}`, `test SemprecUITests - id=${UDID}`],
+      [...BUILDS, UI_TEST_BUILD, "test Alldots - platform=macOS,arch=arm64", `test Alldots - id=${UDID}`, `test AlldotsUITests - id=${UDID}`],
       output,
     );
     assert.match(output, new RegExp(`^  PASS +UI tests on iOS simulator ${UDID} +\\d+s +1 tests passed$`, "m"), output);
@@ -285,9 +285,9 @@ describe("kmp-framework: the SDK and the configuration", { skip: !onMac && "kmp-
   };
   const lines = (output) => output.trim().split("\n");
   const SDKS = [
-    { sdk: "iphoneos27.1", target: "IosArm64", core: "CoreKit.framework/Frameworks", app: "Semprec.app/Frameworks" },
-    { sdk: "iphonesimulator27.1", target: "IosSimulatorArm64", core: "CoreKit.framework/Frameworks", app: "Semprec.app/Frameworks" },
-    { sdk: "macosx27.0", target: "MacosArm64", core: "CoreKit.framework/Versions/A/Frameworks", app: "Semprec.app/Contents/Frameworks" },
+    { sdk: "iphoneos27.1", target: "IosArm64", core: "CoreKit.framework/Frameworks", app: "Alldots.app/Frameworks" },
+    { sdk: "iphonesimulator27.1", target: "IosSimulatorArm64", core: "CoreKit.framework/Frameworks", app: "Alldots.app/Frameworks" },
+    { sdk: "macosx27.0", target: "MacosArm64", core: "CoreKit.framework/Versions/A/Frameworks", app: "Alldots.app/Contents/Frameworks" },
   ];
 
   for (const { sdk, target, core } of SDKS) {
@@ -322,11 +322,11 @@ describe("kmp-framework: the SDK and the configuration", { skip: !onMac && "kmp-
 
   it("--embed refuses the other platform's frameworks folder and a target that is no app, without running Gradle", () => {
     const refused = [
-      { SDK_NAME: "iphoneos27.1", FRAMEWORKS_FOLDER_PATH: "Semprec.app/Contents/Frameworks", WRAPPER_EXTENSION: "app" },
-      { SDK_NAME: "iphonesimulator27.1", FRAMEWORKS_FOLDER_PATH: "Semprec.app/Contents/Frameworks", WRAPPER_EXTENSION: "app" },
-      { SDK_NAME: "macosx27.0", FRAMEWORKS_FOLDER_PATH: "Semprec.app/Frameworks", WRAPPER_EXTENSION: "app" },
+      { SDK_NAME: "iphoneos27.1", FRAMEWORKS_FOLDER_PATH: "Alldots.app/Contents/Frameworks", WRAPPER_EXTENSION: "app" },
+      { SDK_NAME: "iphonesimulator27.1", FRAMEWORKS_FOLDER_PATH: "Alldots.app/Contents/Frameworks", WRAPPER_EXTENSION: "app" },
+      { SDK_NAME: "macosx27.0", FRAMEWORKS_FOLDER_PATH: "Alldots.app/Frameworks", WRAPPER_EXTENSION: "app" },
       { SDK_NAME: "iphoneos27.1", FRAMEWORKS_FOLDER_PATH: "CoreKit.framework/Frameworks", WRAPPER_EXTENSION: "framework" },
-      { SDK_NAME: "macosx27.0", FRAMEWORKS_FOLDER_PATH: "Semprec.app/Contents/Frameworks" },
+      { SDK_NAME: "macosx27.0", FRAMEWORKS_FOLDER_PATH: "Alldots.app/Contents/Frameworks" },
     ];
     for (const env of refused) {
       const { status, output } = phase("--embed", env);

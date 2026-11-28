@@ -22,7 +22,7 @@ final class OverviewRowsTests: XCTestCase {
     // MARK: - Projects, collections
     func testProjectRowsOpenTheirProjectAndNameItsStatus() {
         let content = OverviewContent(projects: [
-            OverviewProject(id: "p1", name: "Semprec", color: "#007AFF", status: "inProgress"),
+            OverviewProject(id: "p1", name: "Alldots", color: "#007AFF", status: "inProgress"),
             OverviewProject(id: "p2", name: "Loose", color: nil, status: nil),
             OverviewProject(id: "p3", name: "Odd", color: nil, status: "unheard")
         ])

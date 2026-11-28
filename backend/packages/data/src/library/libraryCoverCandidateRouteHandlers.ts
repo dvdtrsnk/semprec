@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import { findOrCreateBlob, lockBlobById } from "../blobs/blobsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";

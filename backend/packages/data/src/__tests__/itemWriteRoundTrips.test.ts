@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -38,7 +38,7 @@ const SETTINGS_DATABASE = /FROM databases WHERE owner_module_id = \$1 AND system
 describe("round trips of one item write", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
   });
 

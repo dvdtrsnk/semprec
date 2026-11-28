@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -43,7 +43,7 @@ describe("the calendar timeline of one week", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-15T10:00:00Z"));
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await createUser(adminPool, {

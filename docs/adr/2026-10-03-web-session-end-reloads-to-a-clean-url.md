@@ -10,7 +10,7 @@ superseded-by: null
 
 ## Context
 
-Semprec is multi-user: more than one person can sign in on the same browser tab,
+Alldots is multi-user: more than one person can sign in on the same browser tab,
 one after the other. The web client builds its whole in-memory app once at
 composition time (route props carrying ids, session-bound adapters, React state
 above the session gate) and reads the URL (`?view=`, `?page=`, `?project=`) only

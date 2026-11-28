@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { z } from "zod";
 import { getAiUsageSummary } from "../aiGateway/aiUsageSummary.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";

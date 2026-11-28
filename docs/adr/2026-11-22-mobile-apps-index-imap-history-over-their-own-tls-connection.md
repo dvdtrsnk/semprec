@@ -17,7 +17,7 @@ one IP that providers may block. The server accepts that history from a native c
 fetches the raw IMAP responses itself and uploads them. A phone or Mac that just connected the account has the
 password the person typed in memory and reaches the provider from the person's own network.
 [[2026-11-15-mobile-http-client-is-ktor-and-the-session-lives-in-the-keychain]] makes `ApiClient` the only class
-that opens a connection; this adds a second one, to a server that is not Semprec's, with a credential.
+that opens a connection; this adds a second one, to a server that is not Alldots's, with a credential.
 
 ## Decision
 

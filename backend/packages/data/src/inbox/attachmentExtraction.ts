@@ -1,13 +1,13 @@
 import type { Readable } from "node:stream";
 import { z } from "zod";
-import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@semprec/shared";
+import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@alldots/shared";
 
 // The `inbox_attachments.extraction` shape and the gateway call that fills it. The caller stores the result through
 // `recordInboxAttachmentExtraction`.
 
 const logger = createLogger("inbox-attachment-extraction");
 
-// Needs the Semprec project item for attribution.
+// Needs the Alldots project item for attribution.
 const INBOX_ATTACHMENT_EXTRACTION_OPERATION = "inbox_attachment_extraction";
 
 export const MAX_EXTRACTED_ATTACHMENTS = 4;

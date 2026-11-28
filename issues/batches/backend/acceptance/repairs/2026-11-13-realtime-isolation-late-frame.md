@@ -9,7 +9,7 @@ A repair of the integration tip, as the section "Repairs of the integration tip"
 - Fix commit and candidate: `a6923e5f530149e44aea21b06a6e2d38c6d204c2` ("Set aside the own-tenant doc invalidation in the realtime isolation drains"), the only commit of the branch, with the trailer `Repair-Of: gh-1811 (69d0a19dd)`.
 - Merge commit: `1f223562995a758c19c40faf10f0682bf24e0509` ("Merge repair realtime-isolation-late-frame", `--no-ff`, parents `382d1faee` and `a6923e5f5`). The receipt is committed on top of it as "Record the repair realtime-isolation-late-frame".
 - Conflicts: none. The merge was automatic.
-- Files changed: one test file under `backend/` (`git diff --name-only 382d1faee a6923e5f5` lists exactly `backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts`; 40 insertions, 2 deletions). No production file, nothing under `issues/`.
+- Files changed: one test file under `backend/` (`git diff --name-only 382d1faee a6923e5f5` lists exactly `backend/services/alldots-api/src/__tests__/tenantIsolationRealtime.test.ts`; 40 insertions, 2 deletions). No production file, nothing under `issues/`.
 
 ## Failing test as the full tier reported it
 
@@ -17,7 +17,7 @@ The full integration tier ran on tip `382d1faee6d6e13cb430d78fa06dc144b3259a0f`;
 
 | File (under `backend/`) | Test as reported | Failure as reported |
 | --- | --- | --- |
-| `services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts` | realtime isolation across two tenants (issue #1054) > outbound frames > invalidate: produced by its mapped case (the case: inboxCards scope, from the tick creating B card, which reaches B1 only; line ~1089) | On the hosted CI runner, in two different integration shards of the same pull request, `a1` and `a2` (the two sockets of tenant A) received one extra frame `{ kind: text, type: invalidate, body: { scope: doc, databaseId, docId, itemId, lastEditedAt } }` before the sentinel of this case, where the case expects `[]`. Six local runs of the file pass. |
+| `services/alldots-api/src/__tests__/tenantIsolationRealtime.test.ts` | realtime isolation across two tenants (issue #1054) > outbound frames > invalidate: produced by its mapped case (the case: inboxCards scope, from the tick creating B card, which reaches B1 only; line ~1089) | On the hosted CI runner, in two different integration shards of the same pull request, `a1` and `a2` (the two sockets of tenant A) received one extra frame `{ kind: text, type: invalidate, body: { scope: doc, databaseId, docId, itemId, lastEditedAt } }` before the sentinel of this case, where the case expects `[]`. Six local runs of the file pass. |
 
 ## Causing source
 
@@ -61,11 +61,11 @@ Run on the merged tree (`git merge --no-ff --no-commit`, before the merge commit
 | `-r run build` | PASS (exit 0) |
 | `run lint` | PASS (exit 0) |
 | `run format:check` | PASS (exit 0, all matched files use Prettier code style) |
-| `run test:unit` | PASS (exit 0; 207 files passed in the backend unit config, 4 files passed in `@semprec/block-model`) |
+| `run test:unit` | PASS (exit 0; 207 files passed in the backend unit config, 4 files passed in `@alldots/block-model`) |
 | `run check:write-safety` | PASS (exit 0, 112 unsafe writes and 13 leaked connects, all in the baseline) |
 | `run test:repo-scripts` | PASS (exit 0, 637 of 637) |
 | `run check:boundaries` | PASS (exit 0, no violations, 6327 modules) |
-| `exec vitest run --config vitest.integration.config.ts services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts` (the repaired file, which is also the only file of the failure list) | PASS (exit 0; 1 file, 70 tests passed, 5.9 s). Run once. |
+| `exec vitest run --config vitest.integration.config.ts services/alldots-api/src/__tests__/tenantIsolationRealtime.test.ts` (the repaired file, which is also the only file of the failure list) | PASS (exit 0; 1 file, 70 tests passed, 5.9 s). Run once. |
 | `node .github/scripts/issues.mjs validate` (after writing this receipt) | PASS (exit 0, `errors: 0`, 1462 records counted, 472 historical) |
 | `node issues/batches/backend/verify.mjs` (after writing this receipt) | PASS (exit 0; 675 sources, 74 main batches, 2 held batches) |
 

@@ -65,7 +65,7 @@ Load `canonical-keys` and `testing`.
 - backend/packages/shared/src/genericOperations/schemas.ts (`search` output: `journal` field)
 - backend/packages/shared/src/genericOperations/port.ts (output type, if the output type is declared there)
 - backend/packages/data/src/search/searchItemsQuery.ts (journal group result mapping)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (only if the search route entry needs the new field)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (only if the search route entry needs the new field)
 
 #### Scope
 
@@ -138,7 +138,7 @@ Load `testing` and `io-hardening`.
 #### Acceptance criteria
 
 - Given a Journal day 2026-10-16 whose Inbox entry text contains "Standup v pohodě, klient schválil rozsah druhé fáze", when searching "klient schválil", then the day's result in the `journal` group has a `snippet` containing "klient schválil" of at most 160 characters.
-- Given a project "Semprec iOS" whose page contains "rozpočet schválený", when searching "rozpocet", then the project's result in the `project` group carries a `snippet` containing "rozpočet", and no other group contains the page.
+- Given a project "Alldots iOS" whose page contains "rozpočet schválený", when searching "rozpocet", then the project's result in the `project` group carries a `snippet` containing "rozpočet", and no other group contains the page.
 - Given a task "Odeslat fakturu" without a page, when searching "faktur", then its result has `snippet` `null`.
 - Given a project whose title matches the query but whose page text does not, then its result has `snippet` `null`.
 - The `snippet` contains no highlight markup.
@@ -174,8 +174,8 @@ Load `state-writes` and `testing`.
 - backend/packages/data/src/mail/mailThreadRoutes.ts (read handler)
 - backend/packages/data/src/mail/mailModuleManifest.ts (customRoutes entry and handler export)
 - backend/packages/data/src/index.ts (export line)
-- backend/services/semprec-api/src/routeMatrix.ts
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts
+- backend/services/alldots-api/src/routeMatrix.ts
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts
 - backend/packages/data/src/__tests__/mailThreadRead.test.ts (new)
 
 #### Scope
@@ -231,9 +231,9 @@ Load `state-writes`, `error-handling`, `io-hardening`, `canonical-keys` and `tes
 - backend/packages/data/src/mail/draft.ts (update and discard operations)
 - backend/packages/data/src/mail/mailModuleManifest.ts (`customRoutes`)
 - backend/packages/data/src/index.ts (barrel export)
-- backend/services/semprec-api/src/routeMatrix.ts
-- backend/services/semprec-api/src/adapter/errorContract.ts (`mail_draft_already_sent`, `mail_draft_not_editable`)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts
+- backend/services/alldots-api/src/routeMatrix.ts
+- backend/services/alldots-api/src/adapter/errorContract.ts (`mail_draft_already_sent`, `mail_draft_not_editable`)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts
 - backend/packages/data/src/__tests__/mailDraftRoutes.test.ts (new)
 
 #### Scope
@@ -437,7 +437,7 @@ Load `state-writes`, `error-handling`, `io-hardening` and `testing`.
 
 1. Change `ReviseProposalInput` and `reviseProposalWithClient` in `proposalActions.ts` to accept an optional envelope (all of `entityKind`, `target`, `properties` or none), an optional `message` and an optional `ifVersion`. With an envelope the behavior is unchanged (validation through `assertValidEnvelopeForCard`, status `proposed`, history entry); with a `message` only (transcript cards only) append the user history entry and change nothing else. Pass `ifVersion` to the card update so the existing version check applies. Existing callers and tests that pass the full input keep working.
 2. Add `createReviseProposalRouteHandler(pool)` to `inboxRouteHandlers.ts`: parse the body strictly (reject unknown keys, wrong types, a partial envelope, an empty body) with the same `ValidationError` conventions as `parseConfirmCredential`, run the revise in one transaction and answer `200` with the updated card.
-3. Register the route in `inboxModuleManifest.ts` (`customRoutes`: name `reviseProposal`, `POST /api/proposals/:id/revise`, `handlerExport: "createReviseProposalRouteHandler"`, justification `transactional-semantics`: the envelope validation against live destination state, the lock and the status transition commit together) and re-export the handler on the manifest's export line; add the entry to `backend/services/semprec-api/src/routeMatrix.ts` the case to `backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts` (case table and request list) and the handler mapping to `backend/services/semprec-api/src/__tests__/chokePointWriteBoundary.unit.test.ts`. Place the manifest entry after the reject route's, as the ordering of the Inbox routes requires.
+3. Register the route in `inboxModuleManifest.ts` (`customRoutes`: name `reviseProposal`, `POST /api/proposals/:id/revise`, `handlerExport: "createReviseProposalRouteHandler"`, justification `transactional-semantics`: the envelope validation against live destination state, the lock and the status transition commit together) and re-export the handler on the manifest's export line; add the entry to `backend/services/alldots-api/src/routeMatrix.ts` the case to `backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts` (case table and request list) and the handler mapping to `backend/services/alldots-api/src/__tests__/chokePointWriteBoundary.unit.test.ts`. Place the manifest entry after the reject route's, as the ordering of the Inbox routes requires.
 4. Tests in `backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts` and `proposalActions.test.ts`: revise a transcript Event card to another Event (relation envelope) without a message; revise with a message only on a transcript card (history entry added, envelope and status unchanged) and on an `inbox` card (400); a partial envelope and an empty body (400); a locked card (400, field `status`); a stale `ifVersion` (409 `version_conflict` with the current card, nothing written); a speaker card revised to an Event envelope (400, role switch); an unknown and a foreign card id answer identically (404).
 
 #### Touches
@@ -445,9 +445,9 @@ Load `state-writes`, `error-handling`, `io-hardening` and `testing`.
 - backend/packages/data/src/inbox/proposalActions.ts (`ReviseProposalInput`, `reviseProposalWithClient`)
 - backend/packages/data/src/inbox/inboxRouteHandlers.ts
 - backend/packages/data/src/inbox/inboxModuleManifest.ts (`customRoutes` entry, export line)
-- backend/services/semprec-api/src/routeMatrix.ts (one entry)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
-- backend/services/semprec-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
+- backend/services/alldots-api/src/routeMatrix.ts (one entry)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
+- backend/services/alldots-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
 - backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts
 - backend/packages/data/src/__tests__/proposalActions.test.ts
 
@@ -501,9 +501,9 @@ Load `io-hardening`, `error-handling` and `testing`.
 - backend/packages/data/src/trash/trashRouteHandlers.ts (second handler)
 - backend/packages/data/src/trash/__tests__/trashRouteHandlers.test.ts
 - backend/packages/data/src/chokePoint/schemaCoreModuleManifest.ts (`customRoutes` entry, handler re-export)
-- backend/services/semprec-api/src/routeMatrix.ts (one entry)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
-- backend/services/semprec-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
+- backend/services/alldots-api/src/routeMatrix.ts (one entry)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
+- backend/services/alldots-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
 
 #### Scope
 
@@ -559,9 +559,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/shared/src/genericOperations/capabilities.ts (hotspot)
 - backend/packages/application/src/genericApplicationService.ts (convertPageToBlock; hotspot)
 - backend/packages/application/src/genericOperationGateway.ts (only if its exhaustive mapping needs the name; hotspot)
-- backend/services/semprec-api/src/itemsHandler.ts (new route)
-- backend/services/semprec-api/src/routeMatrix.ts (route entry; hotspot)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (route case; hotspot)
+- backend/services/alldots-api/src/itemsHandler.ts (new route)
+- backend/services/alldots-api/src/routeMatrix.ts (route entry; hotspot)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (route case; hotspot)
 - backend/packages/data/src/__tests__/ (conversion tests)
 
 #### Scope
@@ -591,7 +591,7 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/shared/src/genericOperations/schemas.ts (`search` output: `journal` field)
 - backend/packages/shared/src/genericOperations/port.ts (output type, if the output type is declared there)
 - backend/packages/data/src/search/searchItemsQuery.ts (journal group result mapping)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (only if the search route entry needs the new field)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (only if the search route entry needs the new field)
 - backend/packages/data/src/search/searchSnippet.ts (new)
 - backend/packages/data/src/search/searchItemsQuery.ts (excerpt selection and `snippet` mapping)
 - backend/packages/data/src/search/__tests__/searchSnippet.test.ts (new)
@@ -599,14 +599,14 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/mail/mailThreadRoutes.ts (read handler)
 - backend/packages/data/src/mail/mailModuleManifest.ts (customRoutes entry and handler export)
 - backend/packages/data/src/index.ts (export line)
-- backend/services/semprec-api/src/routeMatrix.ts
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts
+- backend/services/alldots-api/src/routeMatrix.ts
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts
 - backend/packages/data/src/__tests__/mailThreadRead.test.ts (new)
 - backend/packages/data/src/mail/mailDraftRouteHandlers.ts (new)
 - backend/packages/data/src/mail/draft.ts (update and discard operations)
 - backend/packages/data/src/mail/mailModuleManifest.ts (`customRoutes`)
 - backend/packages/data/src/index.ts (barrel export)
-- backend/services/semprec-api/src/adapter/errorContract.ts (`mail_draft_already_sent`, `mail_draft_not_editable`)
+- backend/services/alldots-api/src/adapter/errorContract.ts (`mail_draft_already_sent`, `mail_draft_not_editable`)
 - backend/packages/data/src/__tests__/mailDraftRoutes.test.ts (new)
 - backend/packages/data/src/mail/mailModuleManifest.ts (linkRules)
 - backend/packages/data/src/mail/threadLinkRules.ts (new; resolver, freemail list)
@@ -624,9 +624,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/inbox/proposalActions.ts (`ReviseProposalInput`, `reviseProposalWithClient`)
 - backend/packages/data/src/inbox/inboxRouteHandlers.ts
 - backend/packages/data/src/inbox/inboxModuleManifest.ts (`customRoutes` entry, export line)
-- backend/services/semprec-api/src/routeMatrix.ts (one entry)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
-- backend/services/semprec-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
+- backend/services/alldots-api/src/routeMatrix.ts (one entry)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (one case)
+- backend/services/alldots-api/src/__tests__/chokePointWriteBoundary.unit.test.ts (route to handler file mapping)
 - backend/packages/data/src/inbox/__tests__/inboxRouteHandlers.test.ts
 - backend/packages/data/src/__tests__/proposalActions.test.ts
 - backend/packages/data/src/trash/trashRouteHandlers.ts (second handler)
@@ -640,9 +640,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/shared/src/genericOperations/capabilities.ts (hotspot)
 - backend/packages/application/src/genericApplicationService.ts (convertPageToBlock; hotspot)
 - backend/packages/application/src/genericOperationGateway.ts (only if its exhaustive mapping needs the name; hotspot)
-- backend/services/semprec-api/src/itemsHandler.ts (new route)
-- backend/services/semprec-api/src/routeMatrix.ts (route entry; hotspot)
-- backend/services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts (route case; hotspot)
+- backend/services/alldots-api/src/itemsHandler.ts (new route)
+- backend/services/alldots-api/src/routeMatrix.ts (route entry; hotspot)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts (route case; hotspot)
 - backend/packages/data/src/__tests__/ (conversion tests)
 
 ## Scope

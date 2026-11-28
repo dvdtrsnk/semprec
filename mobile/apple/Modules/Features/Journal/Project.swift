@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "JournalFeature",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "JournalFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
@@ -15,7 +15,7 @@ let project = Project(
             ],
             resources: ["Resources/**"]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "JournalFeatureTests",
             for: "JournalFeature",
             dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")]

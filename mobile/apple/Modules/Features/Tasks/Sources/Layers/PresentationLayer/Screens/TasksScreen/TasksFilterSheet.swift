@@ -117,7 +117,7 @@ private extension TasksFilterSheet {
             phase: .content,
             projectId: "ios",
             projectOptions: [
-                TaskFilterOption(id: "ios", title: "Semprec iOS", color: "#007AFF", count: 2),
+                TaskFilterOption(id: "ios", title: "Alldots iOS", color: "#007AFF", count: 2),
                 TaskFilterOption(id: "bath", title: "Koupelna", color: "#AF52DE", count: 3)
             ],
             projectAllCount: 5

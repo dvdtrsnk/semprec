@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
@@ -13,13 +13,13 @@ import { withTransaction } from "../../db/pool.js";
 import { ForbiddenError } from "../../errors.js";
 import { createInboxItemWithClient } from "../../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../../inbox/inboxTypesStore.js";
-import { createSemprecTickAction } from "../../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../../inbox/proposalActions.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import type { ItemRow } from "../../types.js";
 
-const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@semprec$/;
+const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@alldots$/;
 const USER = { writerKind: "user" } as const;
 
 let pool: Pool;
@@ -62,7 +62,7 @@ describe("Events iCalendar UID and sequence (issue #1599)", () => {
     );
   }
 
-  it("gives a created Event a distinct <uuid>@semprec UID and sequence 0", async () => {
+  it("gives a created Event a distinct <uuid>@alldots UID and sequence 0", async () => {
     const first = await createEvent();
     const second = await createEvent();
     expect(first.properties.icalUid).toMatch(UID_PATTERN);
@@ -194,7 +194,7 @@ describe("Events iCalendar UID and sequence (issue #1599)", () => {
         type: type.id,
       }),
     );
-    const tick = createSemprecTickAction(pool, async () => ({
+    const tick = createAlldotsTickAction(pool, async () => ({
       properties: { name: "Client meeting", date: "2026-10-16", timeFrom: "9:00" },
     }));
     await tick(
@@ -234,7 +234,7 @@ describe("Events iCalendar identity definitions (issue #1599)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

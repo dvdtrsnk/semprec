@@ -4,8 +4,8 @@ import {
   getAiWindowResetInstant,
   getSystemTimezone,
   publishSempStatusInvalidationAndWait,
-} from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import { AnnouncementLedger } from "./announcementLedger.js";
 import { logger } from "./logger.js";
 

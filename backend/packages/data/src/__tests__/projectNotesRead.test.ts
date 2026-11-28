@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { writeBlock } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { writeBlock } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { getOrCreateDoc } from "../docs/docsStore.js";
@@ -21,7 +21,7 @@ let runtime: Pool;
 let tenant: string;
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);
@@ -50,8 +50,8 @@ describe("project notes read", () => {
       { id: pageId, title: "First title" },
       { id: pageId, title: "Second title" },
     ]);
-    expect(notes?.markdown).toContain(`[First title](semprec://page/${pageId})`);
-    expect(notes?.markdown).toContain(`[Second title](semprec://page/${pageId})`);
+    expect(notes?.markdown).toContain(`[First title](alldots://page/${pageId})`);
+    expect(notes?.markdown).toContain(`[Second title](alldots://page/${pageId})`);
   });
   it("does not create missing pages and treats a canvas as no notes under tenant scope", async () => {
     const project = await runInTenant(tenant, () => createTestProjectItem(runtime));

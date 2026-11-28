@@ -1,4 +1,4 @@
-import type { RiskClass } from "@semprec/shared";
+import type { RiskClass } from "@alldots/shared";
 
 /** The three boolean hints of an MCP tool's `annotations` that choose a default classification. */
 export interface McpToolAnnotationHints {

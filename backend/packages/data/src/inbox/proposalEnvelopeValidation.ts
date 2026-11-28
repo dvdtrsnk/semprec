@@ -2,14 +2,14 @@ import { isDeepStrictEqual } from "node:util";
 import { CardinalityViolationError, ForbiddenError } from "../errors.js";
 import type { ProposalStep } from "./proposalEnvelope.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { ALLDOTS_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { effectiveStepRelations, stepError } from "./proposalStepGraph.js";
 import type { PoolClient } from "pg";
 import type { PropertyRow } from "../types.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
 import { ValidationError } from "../errors.js";
 import { assertRelationTargetLinkableWithClient } from "../chokePoint/relationOps.js";
-import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { BlockInputError, parseMarkdown } from "@alldots/block-model";
 import { readPageSummary } from "../docs/pageSummary.js";
 import { parseJournalPeriodKey } from "../journal/journalPeriods.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -204,7 +204,7 @@ export function assertStepDatabaseWritable(
   field: string,
 ): DatabaseRow {
   if (!database || database.archivedAt) throw stepError(step, "its database does not exist or is archived", field);
-  if (database.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(database.ownerModuleId)) {
+  if (database.ownerModuleId && ALLDOTS_READ_ONLY_MODULE_IDS.includes(database.ownerModuleId)) {
     throw stepError(step, "its database is not a writable target database", field);
   }
   return database;

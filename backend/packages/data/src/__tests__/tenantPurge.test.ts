@@ -7,9 +7,9 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DatabaseError, escapeIdentifier, type Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { enqueueJob } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { enqueueJob } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 import { recordLoginAttempt } from "../auth/loginAttemptsStore.js";
@@ -280,7 +280,7 @@ async function tenantTables(): Promise<string[]> {
   const { rows } = await adminPool.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY 1`,
   );
   return rows.map((row) => row.relname);
@@ -341,7 +341,7 @@ const CATALOG_FOREIGN_KEYS = "SELECT child.relname AS table_name";
 
 /** Runs `after` once the `nth` statement containing `sqlFragment` returned: a writer already running when deletion began. */
 async function poolRunningAfter(sqlFragment: string, nth: number, after: () => Promise<void>): Promise<Pool> {
-  const hooked = await createRuntimeRolePool(adminPool, "semprec_data");
+  const hooked = await createRuntimeRolePool(adminPool, "alldots_data");
   const realQuery = hooked.query.bind(hooked) as (...args: unknown[]) => Promise<unknown>;
   let seen = 0;
   (hooked as unknown as { query: unknown }).query = async (...args: unknown[]) => {
@@ -445,7 +445,7 @@ async function purgeLockIsFree(tenantId: string): Promise<boolean> {
   const client = await adminPool.connect();
   try {
     const { rows } = await client.query<{ locked: boolean }>(
-      "SELECT pg_try_advisory_lock(hashtextextended('semprec_tenant_purge:' || $1::text, 0)) AS locked",
+      "SELECT pg_try_advisory_lock(hashtextextended('alldots_tenant_purge:' || $1::text, 0)) AS locked",
       [tenantId],
     );
     if (rows[0]?.locked) await client.query("SELECT pg_advisory_unlock_all()");
@@ -458,7 +458,7 @@ async function purgeLockIsFree(tenantId: string): Promise<boolean> {
 describe("tenant purge (issue #1055)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -470,7 +470,7 @@ describe("tenant purge (issue #1055)", () => {
     await resetDatabase(adminPool);
     tenantA = getTenantZeroId();
     await runInTenant(tenantA, () => seedSystem(adminPool));
-    const root = join(tmpdir(), `semprec-test-purge-${randomUUID()}`);
+    const root = join(tmpdir(), `alldots-test-purge-${randomUUID()}`);
     dirs = { files: join(root, "files"), mailAttachments: join(root, "mail") };
     filesStorage = new LocalFsBlobStorageWriter(dirs.files);
     mailStorage = new LocalFsBlobStorageWriter(dirs.mailAttachments);
@@ -850,7 +850,7 @@ describe("tenant purge (issue #1055)", () => {
     const rowsBefore = await rowCounts(tenantB);
     const holder = await adminPool.connect();
     try {
-      await holder.query("SELECT pg_advisory_lock(hashtextextended('semprec_tenant_purge:' || $1::text, 0))", [
+      await holder.query("SELECT pg_advisory_lock(hashtextextended('alldots_tenant_purge:' || $1::text, 0))", [
         tenantB,
       ]);
 
@@ -874,7 +874,7 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     const b = await seedTenant(tenantB);
     await beginDeletion(tenantB);
-    const secondPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const secondPool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       await Promise.all([purge(), purge({}, secondPool)]);
     } finally {
@@ -891,7 +891,7 @@ describe("tenant purge (issue #1055)", () => {
     const tenantB = await provisionedTenant();
     await seedTenant(tenantB);
     await beginDeletion(tenantB);
-    const racing = await createRuntimeRolePool(adminPool, "semprec_data");
+    const racing = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const realQuery = racing.query.bind(racing) as (...args: unknown[]) => Promise<unknown>;
       let finishedElsewhere = false;
@@ -1027,7 +1027,7 @@ describe("tenant purge (issue #1055)", () => {
     await seedTenant(tenantB);
     await beginDeletion(tenantB);
     const errorSpy = vi.spyOn(logger, "error");
-    const flaky = await createRuntimeRolePool(adminPool, "semprec_data");
+    const flaky = await createRuntimeRolePool(adminPool, "alldots_data");
     let releasedWith: unknown = "never released";
     try {
       const realConnect = flaky.connect.bind(flaky) as () => Promise<PoolClient>;
@@ -1064,13 +1064,13 @@ describe("tenant purge (issue #1055)", () => {
   });
 
   describe("tenant_deletions", () => {
-    it("is classified global and refuses UPDATE and DELETE to semprec_data", async () => {
+    it("is classified global and refuses UPDATE and DELETE to alldots_data", async () => {
       const id = randomUUID();
       await adminPool.query("INSERT INTO tenant_deletions (tenant_id, requested_at) VALUES ($1, now())", [id]);
       const { rows } = await adminPool.query<{ comment: string }>(
         "SELECT obj_description('tenant_deletions'::regclass) AS comment",
       );
-      expect(rows[0]?.comment).toBe("semprec:tenancy=global");
+      expect(rows[0]?.comment).toBe("alldots:tenancy=global");
 
       await expect(
         pool.query("UPDATE tenant_deletions SET requested_at = now() WHERE tenant_id = $1", [id]),

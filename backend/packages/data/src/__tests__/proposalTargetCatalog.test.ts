@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -95,7 +95,7 @@ function optionsOf(catalog: TargetCatalog, propertyKey: string) {
 describe("buildTargetCatalog (issue gh-1990)", () => {
   beforeEach(async () => {
     admin ??= getTestPool();
-    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    runtime ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
   });
   afterAll(async () => {

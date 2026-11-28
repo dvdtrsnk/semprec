@@ -2,7 +2,7 @@ import * as Y from "yjs";
 
 /**
  * Legacy flat-map block API: free-form `sys:flavour` and `sys:children`, no document order and no validation. New
- * code uses `@semprec/block-model`; this remains for the page-content proposal path.
+ * code uses `@alldots/block-model`; this remains for the page-content proposal path.
  */
 
 const BLOCKS_MAP_NAME = "blocks";

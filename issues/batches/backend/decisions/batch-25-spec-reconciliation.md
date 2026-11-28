@@ -120,7 +120,7 @@ The aggregate-only introductory execution prose is shortened without removing me
 
 ## Thread route catalog and transport oversize
 
-Gh-1543 may add only semp thread detail and semp thread messages -> services/semprec-api/src/sempThreadsHandler.ts in the existing API ROUTE_HANDLER_FILES table. Preserve exhaustive key equality, scanned-handler and write-boundary checks and run the whole existing unit file; prior missing-mapping development failure remains recorded.
+Gh-1543 may add only semp thread detail and semp thread messages -> services/alldots-api/src/sempThreadsHandler.ts in the existing API ROUTE_HANDLER_FILES table. Preserve exhaustive key equality, scanned-handler and write-boundary checks and run the whole existing unit file; prior missing-mapping development failure remains recorded.
 
 Gh-1546 follows [[2026-11-05-voice-transport-oversize-closes-before-application-errors]]: retain ws maxPayload16KiB and transport close1009 without requiring an application error frame when the library rejects the oversized message before delivery. Never raise the bound merely to send JSON. Delivered invalid/unknown controls and text exceeding4KiB within the transport bound retain sanitized error-before-close when writable. Real transport oversize and application-invalid cases remain separate evidence; rejected frames never reach the handler port. All other accepted voice limits/ownership remain, and earlier accepted ADR bodies stay byte-identical.
 

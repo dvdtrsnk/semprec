@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";

@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { generatePermissionManifest } from "../../manifest/permissionManifest.js";
@@ -58,7 +58,7 @@ const listMailboxes = () => createMailboxListRouteHandler(runtime)();
 describe("GET /api/mail/autonomous-send-projects (issue #1635)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify autonomous send role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

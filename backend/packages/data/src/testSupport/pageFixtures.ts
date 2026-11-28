@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { writeBlock } from "@semprec/block-model";
+import { writeBlock } from "@alldots/block-model";
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { mutateDoc } from "../docs/docPersistence.js";

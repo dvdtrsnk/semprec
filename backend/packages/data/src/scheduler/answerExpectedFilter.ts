@@ -2,7 +2,7 @@
 // before the run is created, so a message that gets no draft leaves no run and no error row.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayClientPort } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { findOpenAgentDraftOfThread, hasDraftOfSourceMessage } from "../mail/mailDraftsStore.js";
 import { getMailMessageMetaByItemId, resolveMergedThreadId } from "../mail/mailMessageMetaStore.js";

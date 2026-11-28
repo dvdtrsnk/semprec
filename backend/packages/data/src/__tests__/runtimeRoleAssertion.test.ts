@@ -77,15 +77,15 @@ describe("assertRuntimeRole", () => {
     if (password && password !== error.role) expect(error.message).not.toContain(password);
   });
 
-  it("resolves for a pool logged in as semprec_data", async () => {
-    const pool = await createRuntimeRolePool(adminPool, "semprec_data");
+  it("resolves for a pool logged in as alldots_data", async () => {
+    const pool = await createRuntimeRolePool(adminPool, "alldots_data");
     openedPools.push(pool);
 
     await expect(assertRuntimeRole(pool)).resolves.toBeUndefined();
   });
 
-  it("resolves for a pool logged in as semprec_side", async () => {
-    const pool = await createRuntimeRolePool(adminPool, "semprec_side");
+  it("resolves for a pool logged in as alldots_side", async () => {
+    const pool = await createRuntimeRolePool(adminPool, "alldots_side");
     openedPools.push(pool);
 
     await expect(assertRuntimeRole(pool)).resolves.toBeUndefined();
@@ -170,19 +170,19 @@ describe("assertRuntimeRole", () => {
   });
 
   describe("tenant scope", () => {
-    const originalMode = process.env.SEMPREC_TENANT_SCOPE;
+    const originalMode = process.env.ALLDOTS_TENANT_SCOPE;
 
     afterEach(() => {
-      if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-      else process.env.SEMPREC_TENANT_SCOPE = originalMode;
+      if (originalMode === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+      else process.env.ALLDOTS_TENANT_SCOPE = originalMode;
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
 
     it("resolves under strict scope with no surrounding scope", async () => {
-      const pool = await createRuntimeRolePool(adminPool, "semprec_data");
+      const pool = await createRuntimeRolePool(adminPool, "alldots_data");
       openedPools.push(pool);
-      process.env.SEMPREC_TENANT_SCOPE = "strict";
+      process.env.ALLDOTS_TENANT_SCOPE = "strict";
 
       await expect(assertRuntimeRole(pool)).resolves.toBeUndefined();
     });
@@ -194,9 +194,9 @@ describe("assertRuntimeRole", () => {
       vi.resetModules();
       const freshTestDb = await import("../testSupport/testDb.js");
       const freshAssertion = await import("../db/runtimeRoleAssertion.js");
-      const pool = await freshTestDb.createRuntimeRolePool(adminPool, "semprec_data");
+      const pool = await freshTestDb.createRuntimeRolePool(adminPool, "alldots_data");
       openedPools.push(pool);
-      process.env.SEMPREC_TENANT_SCOPE = "warn";
+      process.env.ALLDOTS_TENANT_SCOPE = "warn";
       // pino writes records to fd 1 with the asynchronous fs.write, so that call is the capture point.
       const writes: string[] = [];
       const realWrite = fs.write.bind(fs);

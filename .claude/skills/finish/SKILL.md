@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Finish a feature branch of dvdtrsnk/semprec end to end on the Mac mini - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally (and mobile/scripts/verify when the branch changes mobile/), push it through the Access Hub GitHub authorization by recreating its commits with the Git Data API, open the pull request against develop, drive all required checks and the code-review-bot to green, resolve review threads, merge, then clean up. Use when the user says the feature is done, asks to finish, land, merge, push or ship the branch, or invokes /finish.
+description: Finish a feature branch of dvdtrsnk/alldots end to end on the Mac mini - bring it up to date with develop by merging (never rebasing), run the full CI pipeline locally (and mobile/scripts/verify when the branch changes mobile/), push it through the Access Hub GitHub authorization by recreating its commits with the Git Data API, open the pull request against develop, drive all required checks and the code-review-bot to green, resolve review threads, merge, then clean up. Use when the user says the feature is done, asks to finish, land, merge, push or ship the branch, or invokes /finish.
 ---
 
 # Finish a feature branch
@@ -25,7 +25,7 @@ step from §4 on:
   `run` and `argv` set to the words after `gh`, for example
   `{"argv": ["pr", "checks", "2110", "--json", "name,bucket"]}`.
 - **Hub `gh` runs in the main checkout**
-  (`~/Developer/Projects/semprec`), not in your worktree. That checkout is not
+  (`~/Developer/Projects/alldots`), not in your worktree. That checkout is not
   your branch. Its local `develop` is a local integration line that has
   diverged from `origin/develop`. So never let hub `gh` infer anything from the
   checkout: always name the pull request number, the endpoint or the SHA.
@@ -70,7 +70,7 @@ If a step seems to require breaking one of these, stop and ask the user.
 
 1. `git branch --show-current`. Refuse and stop if it is `develop` or `main`.
 2. `git worktree list`: note the main checkout path (the first entry,
-   normally `~/Developer/Projects/semprec`) and your worktree's path.
+   normally `~/Developer/Projects/alldots`) and your worktree's path.
    `git rev-parse --absolute-git-dir` is your worktree's git directory. The
    payloads of §4 go into `<git-dir>/finish-mirror/`.
 3. `bb status --json`: note whether `.thread.environment` is rooted in your
@@ -140,7 +140,7 @@ Notes:
 
 - The database-backed tiers need no service container — `globalSetup` starts an
   embedded Postgres on a free port, so a concurrent run in another worktree
-  does not clash. `SEMPREC_TEST_PG_PORT` pins the port if you ever need it.
+  does not clash. `ALLDOTS_TEST_PG_PORT` pins the port if you ever need it.
 - `pnpm run format` (backend and web) fixes formatting; `format:check` failures
   are never worth a CI round.
 - If a test is flaky rather than failing, do not retry until it passes and move
@@ -209,8 +209,8 @@ find and commit it.
    reproduce that object, and nothing may point at it. Re-making a step that
    already succeeded is harmless, because GitHub returns the same object.
 3. Move the branch to the plan's `head`:
-   - new branch: hub `gh api repos/dvdtrsnk/semprec/git/refs --method POST -f ref=refs/heads/<branch> -f sha=<head>`;
-   - existing branch: hub `gh api repos/dvdtrsnk/semprec/git/refs/heads/<branch> --method PATCH -f sha=<head> -F force=false`.
+   - new branch: hub `gh api repos/dvdtrsnk/alldots/git/refs --method POST -f ref=refs/heads/<branch> -f sha=<head>`;
+   - existing branch: hub `gh api repos/dvdtrsnk/alldots/git/refs/heads/<branch> --method PATCH -f sha=<head> -F force=false`.
 
    `force=false` accepts only a fast-forward. If GitHub refuses it, the remote
    branch has a commit you do not have. Fetch it, merge it as in §2, and plan
@@ -222,11 +222,11 @@ find and commit it.
 ## 5. Open the pull request
 
 Look for an open pull request of the branch first:
-hub `gh api "repos/dvdtrsnk/semprec/pulls?head=dvdtrsnk:<branch>&state=open" --jq ".[].number"`.
+hub `gh api "repos/dvdtrsnk/alldots/pulls?head=dvdtrsnk:<branch>&state=open" --jq ".[].number"`.
 If there is none, write the body to `<git-dir>/finish-pr-body.md` and open one:
 
 ```
-hub gh api repos/dvdtrsnk/semprec/pulls --method POST -f head=<branch> -f base=develop -f title=<title> -F body=@<git-dir>/finish-pr-body.md
+hub gh api repos/dvdtrsnk/alldots/pulls --method POST -f head=<branch> -f base=develop -f title=<title> -F body=@<git-dir>/finish-pr-body.md
 ```
 
 The base is **`develop`**. Confirm with
@@ -255,9 +255,9 @@ button unblocks.
    nothing wakes you to notice.
 2. Read the findings:
    - summary comment:
-     hub `gh api repos/dvdtrsnk/semprec/issues/<n>/comments --jq '.[] | select(.user.login=="github-actions[bot]") | .body'`
+     hub `gh api repos/dvdtrsnk/alldots/issues/<n>/comments --jq '.[] | select(.user.login=="github-actions[bot]") | .body'`
    - inline threads:
-     hub `gh api repos/dvdtrsnk/semprec/pulls/<n>/comments --jq '.[] | "\(.id) \(.path):\(.line // .original_line) \(.body)"'`
+     hub `gh api repos/dvdtrsnk/alldots/pulls/<n>/comments --jq '.[] | "\(.id) \(.path):\(.line // .original_line) \(.body)"'`
    - CI failure log: hub `gh run view <run-id> --log-failed`
 3. Triage every finding against the `review-rules/` for the platform it
    touches, with the `fix-review-findings` skill in `.bb/skills/`. The bot is
@@ -266,7 +266,7 @@ button unblocks.
    cheap and clearly right; otherwise reply on the thread with the reason. A
    finding that is simply wrong gets a reasoned reply, not a code change made
    to appease it:
-   hub `gh api repos/dvdtrsnk/semprec/pulls/<n>/comments/<id>/replies -f body=...`
+   hub `gh api repos/dvdtrsnk/alldots/pulls/<n>/comments/<id>/replies -f body=...`
 4. Fix, re-run the §3 verification for whatever you touched, commit, and push
    with §4 (the plan now names `origin/<branch>` too). The bot remembers earlier
    rounds — do not re-explain findings it already saw fixed.
@@ -290,7 +290,7 @@ button unblocks.
    review of §3 is the review.
 7. Before declaring the round green, confirm no unresolved threads remain:
    ```
-   hub gh api graphql -f query='{ repository(owner:"dvdtrsnk", name:"semprec") { pullRequest(number: <n>) { reviewThreads(first:100) { nodes { id isResolved path } } } } }'
+   hub gh api graphql -f query='{ repository(owner:"dvdtrsnk", name:"alldots") { pullRequest(number: <n>) { reviewThreads(first:100) { nodes { id isResolved path } } } } }'
    ```
    The bot resolves threads it has fixed via a dedicated token, but that has
    silently failed before (see the comment block in
@@ -313,7 +313,7 @@ finding is open and every thread is resolved, merge without pausing to ask
 again.
 
 ```
-hub gh api repos/dvdtrsnk/semprec/pulls/<n>/merge --method PUT -f merge_method=merge -f sha=<head>
+hub gh api repos/dvdtrsnk/alldots/pulls/<n>/merge --method PUT -f merge_method=merge -f sha=<head>
 ```
 
 `merge_method=merge`, not squash: `develop`'s history is merge commits

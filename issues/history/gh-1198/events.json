@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6262698045",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1198#issuecomment-6262698045",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1198",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6262698045",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1198#issuecomment-6262698045",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1198",
     "id": 6262698045,
     "node_id": "IC_kwDOUFuQ4c8AAAABdUkwPQ",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6262698045/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6262698045/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -112,7 +112,7 @@
   {
     "id": 33623894341,
     "node_id": "LE_lADOUFuQ4c8AAAABX7CYhc8AAAAH1CPpRQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33623894341",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33623894341",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -177,8 +177,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABY-sYJA",
         "number": 1233,
         "title": "[relation-filter-pruning 01/01] Make itemRelationFilter prune to the related item's partition under fresh statistics",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1233",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1233",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "96fb508bd1a87f5f7eb715f4b91228671eab389acaf66be28ac917258b266e30"
       }
@@ -216,14 +216,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJ63V6Q",
         "number": 1234,
         "title": "[relation-filter-pruning 01/01] Make itemRelationFilter prune to the related item's partition under fresh statistics (#1233)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1234",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1234",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1234",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1234",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1234.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1234.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1234",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1234",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1234.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1234.patch",
           "merged_at": "2026-10-22T01:33:09Z"
         },
         "bodySha256": "3695b80d5cca99e54deba9622b9aef052eeb16ca0fae4d587c4fdd62f3a49510"
@@ -233,7 +233,7 @@
   {
     "id": 33905103788,
     "node_id": "CE_lADOUFuQ4c8AAAABX7CYhc8AAAAH5ObTrA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33905103788",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33905103788",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -266,7 +266,7 @@
   {
     "id": 33905130902,
     "node_id": "UNLE_lADOUFuQ4c8AAAABX7CYhc8AAAAH5Oc9lg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33905130902",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33905130902",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

@@ -3,7 +3,7 @@ import Foundation
 import PDFKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The presenter between `ScanIntoInboxIntent` and the scanner: which scene shows it, and what each way a scan ends
 /// captures and answers, over a capture double and a fixed clock.

@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { ALLDOTS_READ_ONLY_MODULE_IDS, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import type { ProposalStep } from "./inboxTickAction.js";
 
 /**
@@ -36,7 +36,7 @@ export async function listWritableProposalTargets(client: PoolClient): Promise<W
     database.system &&
     database.ownerModuleId &&
     database.ownerModuleId !== PROCESSING_PROPOSALS_MODULE_ID &&
-    !SEMPREC_READ_ONLY_MODULE_IDS.includes(database.ownerModuleId)
+    !ALLDOTS_READ_ONLY_MODULE_IDS.includes(database.ownerModuleId)
       ? [{ moduleId: database.ownerModuleId, databaseId: database.id, name: database.name ?? database.ownerModuleId }]
       : [],
   );

@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5925477230",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/727#issuecomment-5925477230",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/727",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5925477230",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/727#issuecomment-5925477230",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/727",
     "id": 5925477230,
     "node_id": "IC_kwDOUFuQ4c8AAAABYS-bbg",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5925477230/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5925477230/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

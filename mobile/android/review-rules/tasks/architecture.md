@@ -9,9 +9,9 @@ Check for architecture and ownership violations in the Android modules:
    what, what a failure means — so the two apps can drift — `DOMAIN-SOURCE`,
    high when it already differs from the shared result, otherwise medium.
 3. A package that does not match its directory, or one package declared in two
-   modules — medium: each module owns its package (`cz.semprec.app`,
-   `cz.semprec.app.core.ui`, `cz.semprec.app.feature.home`,
-   `cz.semprec.app.feature.settings`), so a type is found by its package, and
+   modules — medium: each module owns its package (`cz.alldots.app`,
+   `cz.alldots.app.core.ui`, `cz.alldots.app.feature.home`,
+   `cz.alldots.app.feature.settings`), so a type is found by its package, and
    detekt does not check this (`InvalidPackageDeclaration` is off in
    `mobile/config/detekt/detekt.yml`).
 4. New abstraction, config flag, or generalization not required by the

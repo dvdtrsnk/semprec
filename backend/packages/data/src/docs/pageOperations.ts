@@ -9,8 +9,8 @@ import {
   writeBlock,
   type NewBlockInput,
   type PageBlock,
-} from "@semprec/block-model";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+} from "@alldots/block-model";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import type {
   PageConvertToBlockInput,
   PageConvertToBlockOutput,
@@ -19,7 +19,7 @@ import type {
   PageDuplicateOutput,
   PageRenameInput,
   PageRenameOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";

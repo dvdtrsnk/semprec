@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
 const TENANT_A = "00000000-0000-4000-8000-00000000000a";

@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { ImapFlow } from "imapflow";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import { createImapFlowIdleTransport, type CreateIdleTunedImapFlowClient } from "../mail/imapIdleClient.js";
@@ -53,7 +53,7 @@ interface EmailState {
 describe("messages deleted or moved on the IMAP server by another client", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

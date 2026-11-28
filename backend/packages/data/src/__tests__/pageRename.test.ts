@@ -8,8 +8,8 @@ import {
   setIndent,
   writeBlock,
   type PageBlock,
-} from "@semprec/block-model";
-import { runInTenant, type PageRenameOutput } from "@semprec/shared";
+} from "@alldots/block-model";
+import { runInTenant, type PageRenameOutput } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { lockItemById, lockItemByIdNowait, softDeleteItem } from "../chokePoint/itemsStore.js";
@@ -36,7 +36,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);

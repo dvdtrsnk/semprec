@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -133,7 +133,7 @@ interface OwnedPool {
 }
 
 async function ownedPool(): Promise<OwnedPool> {
-  const owned = await createRuntimeRolePool(admin, "semprec_data");
+  const owned = await createRuntimeRolePool(admin, "alldots_data");
   const sessions: Array<Promise<Session>> = [];
   let first!: (session: Promise<Session>) => void;
   const session = new Promise<Session>((resolve) => (first = resolve));
@@ -359,7 +359,7 @@ function monthlyOn(date: string) {
 describe("the missed status of Tasks (issue #1668)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

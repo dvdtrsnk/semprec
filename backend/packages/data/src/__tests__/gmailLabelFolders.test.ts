@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -273,7 +273,7 @@ async function foldersOf(params: Setup, providerMessageId: string): Promise<stri
 describe("Gmail label folders (issue #1496)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -407,7 +407,7 @@ describe("Gmail label folders (issue #1496)", () => {
 
   it("settles and closes an owned reconcile that times out before the provider call after its first transaction", async () => {
     const params = await setup();
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const capturedBackends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, capturedBackends);
     const holder = await admin.connect();
@@ -521,7 +521,7 @@ describe("Gmail label folders (issue #1496)", () => {
   }, 120_000);
 
   it("settles an owned pool when fixture rollback fails", async () => {
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const backends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, backends);
     const holder = await admin.connect();
@@ -579,7 +579,7 @@ describe("Gmail label folders (issue #1496)", () => {
   }, 120_000);
 
   it("preserves a body failure when rollback also fails and the owned pool settles", async () => {
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const backends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, backends);
     const holder = await admin.connect();
@@ -672,7 +672,7 @@ describe("Gmail label folders (issue #1496)", () => {
 
   it("settles a connection acquired after owned pool cleanup starts", async () => {
     const params = await setup();
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const capturedBackends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, capturedBackends);
     const control = await admin.connect();

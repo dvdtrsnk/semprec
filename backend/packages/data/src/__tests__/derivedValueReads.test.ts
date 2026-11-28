@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createPool, withTransaction } from "../db/pool.js";
@@ -32,13 +32,13 @@ async function link(databaseId: string, key: string, from: string, to: string): 
 describe("derived values through project relations", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    data = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
     const result = await runAsSystem("verify derived read test role", () =>
       data.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(result.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(result.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);

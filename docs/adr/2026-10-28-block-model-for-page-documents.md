@@ -121,7 +121,7 @@ would produce new conflicts.
 
 The block model is pure TypeScript over `yjs`, importable by the server and by
 the WebView editor. It lives in the new directory `shared/block-model/` at the
-repository root, as its own pnpm package (`@semprec/block-model`), outside
+repository root, as its own pnpm package (`@alldots/block-model`), outside
 `backend/`. #1539 creates it. The module has no `pg` dependency and no
 Node-only dependency (no `node:*` imports, no `Buffer`); its only runtime
 dependency is `yjs`. The backend consumes it by a `link:`/`file:` dependency on
@@ -129,7 +129,7 @@ that directory and `web/` the same way (`web/` stays a standalone pnpm project
 with its own lockfile). #1539 adds a test in the module that fails when its source
 imports anything but `yjs` and itself.
 
-Rejected: keeping the module in `@semprec/data`. The WebView editor would then
+Rejected: keeping the module in `@alldots/data`. The WebView editor would then
 have to depend on a package whose entry point imports `pg`, or deep-import a
 file from it, and nothing would stop a later change in that package from
 pulling a Node-only import into the editor bundle. Also rejected: a root-level

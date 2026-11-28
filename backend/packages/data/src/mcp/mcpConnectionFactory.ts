@@ -6,7 +6,7 @@ import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import type { Queryable } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import { getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
@@ -48,7 +48,7 @@ export interface ConnectMcpServerOptions {
 }
 
 const logger = createLogger("mcp");
-const CLIENT_INFO = { name: "semprec-mcp-client", version: "1.0.0" };
+const CLIENT_INFO = { name: "alldots-mcp-client", version: "1.0.0" };
 /** `mcpClient.connect()` has no timeout of its own for a server that accepts but never answers `initialize`. */
 const DEFAULT_CONNECT_TIMEOUT_MS = MCP_DEFAULT_CONNECT_TIMEOUT_MS;
 
@@ -135,12 +135,12 @@ export async function connectMcpServer(
 }
 
 /**
- * Under the sandbox launcher socket when `SEMPREC_MCP_LAUNCH_SOCKET` is set, in-process (`null`) only under
+ * Under the sandbox launcher socket when `ALLDOTS_MCP_LAUNCH_SOCKET` is set, in-process (`null`) only under
  * `NODE_ENV=test`, nowhere otherwise. Refused before decryption, so a host without the launcher never spawns a
  * server with this process's uid. See docs/architecture/delivery-and-operations.md#stdio-mcp-sandbox.
  */
 function resolveStdioLaunchSocket(): string | null {
-  const socketPath = process.env.SEMPREC_MCP_LAUNCH_SOCKET;
+  const socketPath = process.env.ALLDOTS_MCP_LAUNCH_SOCKET;
   if (socketPath !== undefined && socketPath !== "") return socketPath;
   if (process.env.NODE_ENV === "test") return null;
   throw new McpConnectionError("stdio_sandbox_unavailable", "MCP stdio sandbox is not available on this host");
@@ -240,7 +240,7 @@ async function resolveCredential(
     });
   } catch (err) {
     // A real decryption problem is reported as `McpConnectionError`; a transient DB failure is not a credential problem.
-    // `pg` and node connection errors carry a string `.code`, `@semprec/credentials` errors never do.
+    // `pg` and node connection errors carry a string `.code`, `@alldots/credentials` errors never do.
     if (isLikelyDatabaseError(err)) throw err;
     throw new McpConnectionError(
       "credential_decryption_failed",

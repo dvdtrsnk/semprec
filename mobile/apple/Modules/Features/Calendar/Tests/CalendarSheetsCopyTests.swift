@@ -69,7 +69,7 @@ final class CalendarSheetsCopyTests: XCTestCase {
         XCTAssertFalse(swatch.matches("#007AFE"))
     }
 
-    func testCalendarsSemprecFillsExplainWhatFillsThem() {
+    func testCalendarsAlldotsFillsExplainWhatFillsThem() {
         let keys = ["tasks", "birthdays", "sleep", "holidaysCz"]
         let subtitles = keys.compactMap { CalendarRow(id: $0, name: $0, color: "#000000", systemKey: $0).subtitle }
         XCTAssertEqual(Set(subtitles).count, keys.count)

@@ -3,8 +3,8 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { withTransaction } from "../../db/pool.js";
@@ -233,7 +233,7 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

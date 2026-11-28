@@ -1,4 +1,4 @@
-import { collectItemLinks, parseMarkdown } from "@semprec/block-model";
+import { collectItemLinks, parseMarkdown } from "@alldots/block-model";
 import type { PoolClient } from "pg";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -12,7 +12,7 @@ import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "./journalOwnerProcesses.js";
 const JOURNAL_EVENT_LINKS_CONTEXT: SystemRelationWriteContext = { ownerProcess: JOURNAL_EVENT_LINKS_OWNER_PROCESS };
 
 /**
- * Keeps `events` equal to the live Events the page links to (`semprec://items/<id>`); other links are plain content.
+ * Keeps `events` equal to the live Events the page links to (`alldots://items/<id>`); other links are plain content.
  * Nothing is written when the sets already match. The entry row is locked before its edges are read, so two syncs
  * of one entry serialize. RLS hides other tenants' items, so a link to one creates no edge.
  */

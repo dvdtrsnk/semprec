@@ -23,7 +23,7 @@ export function createAttachmentSpool(): AttachmentSpool {
     async spool(attachments) {
       const spooled: ClassifiedAttachment[] = [];
       for (const attachment of attachments) {
-        directory ??= mkdtemp(join(tmpdir(), "semprec-mail-pass-"));
+        directory ??= mkdtemp(join(tmpdir(), "alldots-mail-pass-"));
         const path = join(await directory, String(count++));
         try {
           await pipeline(await attachment.openStream(), createWriteStream(path));

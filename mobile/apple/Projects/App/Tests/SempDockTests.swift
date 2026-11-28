@@ -3,7 +3,7 @@ import CoreGraphics
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// Where the Semp bubble is: docked in Semp's button of the tab bar while that button is shown and on top, floating
 /// wherever the tab bar is hidden or covered, gone under an alert; and what the tab view's Semp button selects.

@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { relatedRowContributorsFor, type RelatedCollectionRow } from "../chokePoint/relatedContributors.js";
 import { withTransaction } from "../db/pool.js";
@@ -133,7 +133,7 @@ async function relationBetween(source: DatabaseRow, target: DatabaseRow, key: st
 describe("relation.related (issue #1839)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
   });

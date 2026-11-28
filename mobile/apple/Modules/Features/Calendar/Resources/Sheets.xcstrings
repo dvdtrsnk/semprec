@@ -502,13 +502,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Název a barva se mění jen v Semprecu, poskytovatel si ponechá své. Kalendář zmizí s odebráním účtu nebo vypnutím jeho kalendářů."
+            "value" : "Název a barva se mění jen v Alldotsu, poskytovatel si ponechá své. Kalendář zmizí s odebráním účtu nebo vypnutím jeho kalendářů."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The name and color change only in Semprec; the provider keeps its own. The calendar goes when its account is removed or its calendars are turned off."
+            "value" : "The name and color change only in Alldots; the provider keeps its own. The calendar goes when its account is removed or its calendars are turned off."
           }
         }
       }
@@ -518,13 +518,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tento kalendář je jen pro čtení: jeho události tu nelze měnit a nové do něj přidat nejde. Název a barva se mění jen v Semprecu."
+            "value" : "Tento kalendář je jen pro čtení: jeho události tu nelze měnit a nové do něj přidat nejde. Název a barva se mění jen v Alldotsu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This calendar is read-only: its events cannot be changed here and new events cannot be added to it. The name and color change only in Semprec."
+            "value" : "This calendar is read-only: its events cannot be changed here and new events cannot be added to it. The name and color change only in Alldots."
           }
         }
       }
@@ -758,13 +758,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ze Semprecu"
+            "value" : "Ze Alldotsu"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "From Semprec"
+            "value" : "From Alldots"
           }
         }
       }

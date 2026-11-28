@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@alldots/data/testSupport";
 import {
   CALENDAR_MODULE_ID,
   createAgentRun,
@@ -13,12 +13,12 @@ import {
   type ChokePoint,
   type CollectionMetadataResolver,
   type DatabaseRow,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
 // The subscription URL of a calendar through the operations `/mcp` and the agent tools call. The
-// rule itself is tested against the choke point in `@semprec/data` (`calendar/__tests__/calendarSubscriptionUrl.test.ts`).
+// rule itself is tested against the choke point in `@alldots/data` (`calendar/__tests__/calendarSubscriptionUrl.test.ts`).
 
 const metadataResolver: CollectionMetadataResolver = {
   resolve: () => ({
@@ -132,7 +132,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
     });
 
     // `item.create` cannot set the system-owned `kind`, so a calendar it makes is never a subscription calendar and the
-    // address is refused by the kind rule; the URL rule on a new subscription calendar is tested in `@semprec/data`.
+    // address is refused by the kind rule; the URL rule on a new subscription calendar is tested in `@alldots/data`.
     it("refuses an address on item.create, which cannot make a subscription calendar, and stores no calendar", async () => {
       await inTenantZero(async () => {
         const actor = await actorOf();

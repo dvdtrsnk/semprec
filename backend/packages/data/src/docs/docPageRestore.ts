@@ -2,8 +2,8 @@
 // call is held for approval, and the approver's decision is the user's.
 import * as Y from "yjs";
 import type { PoolClient } from "pg";
-import { getBlocksMap, getOrderArray, readPageBlocks } from "@semprec/block-model";
-import { canonicalizeJson, type PageRestoreOutput } from "@semprec/shared";
+import { getBlocksMap, getOrderArray, readPageBlocks } from "@alldots/block-model";
+import { canonicalizeJson, type PageRestoreOutput } from "@alldots/shared";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import { buildResourceSnapshot, type DestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
 import { NotFoundError } from "../errors.js";

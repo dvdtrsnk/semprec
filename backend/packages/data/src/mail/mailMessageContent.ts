@@ -1,7 +1,7 @@
 import type { Readable } from "node:stream";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
@@ -36,7 +36,7 @@ export const MAIL_CONTENT_UNAVAILABLE_REASONS = [
   "reauthorizationRequired",
   // The provider could not be reached, did not answer in time, or failed the request.
   "providerUnreachable",
-  // The provider no longer holds the message (or the attachment) where Semprec knows it.
+  // The provider no longer holds the message (or the attachment) where Alldots knows it.
   "messageNotFound",
   // The account is removed or has Mail switched off.
   "mailboxUnavailable",

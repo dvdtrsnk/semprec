@@ -24,10 +24,10 @@ import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } fr
  * overlap. The parser accepts these marks in any order.
  */
 
-const PAGE_LINK_PREFIX = "semprec://page/";
-const ITEM_LINK_PREFIX = "semprec://items/";
+const PAGE_LINK_PREFIX = "alldots://page/";
+const ITEM_LINK_PREFIX = "alldots://items/";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const COMMENT_PATTERN = /^<!-- semprec:block (.*) -->$/;
+const COMMENT_PATTERN = /^<!-- alldots:block (.*) -->$/;
 const LIST_TYPES: ReadonlySet<string> = new Set(["bullet", "number", "todo"]);
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
@@ -51,7 +51,7 @@ export interface SerializeOptions {
    * block itself, so two page blocks that share one page id can keep their own captions.
    */
   resolvePageTitle?: (pageId: string, block: SerializableBlock) => string;
-  /** Write the `semprec:block` id comment before every block. */
+  /** Write the `alldots:block` id comment before every block. */
   withIds?: boolean;
 }
 
@@ -496,7 +496,7 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
       const typeKey = type === "unknown" ? (block.type === "" ? '""' : encodeCommentField(block.type)) : type;
       const toggleField = toggleHeading ? " toggle=true" : "";
       entry.push(
-        `<!-- semprec:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent}${toggleField} -->`,
+        `<!-- alldots:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent}${toggleField} -->`,
       );
     }
     if (line !== "") {
@@ -884,7 +884,7 @@ interface ParsedLine {
 function parseLine(raw: string): ParsedLine {
   const spaces = /^ */.exec(raw)?.[0].length ?? 0;
   const line = raw.trim();
-  const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
+  const page = /^\[(?:\\.|[^\]\\])*\]\(alldots:\/\/page\/([^)\s]+)\)$/.exec(line);
   if (page && page[1] !== undefined) {
     return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1]) };
   }
@@ -924,7 +924,7 @@ interface DraftBlock {
 
 /**
  * Block inputs for `markdown`. Block types come from the line markers; only `toggle` and a type
- * key the registry does not know are read from a `semprec:block` comment, on a plain line. The
+ * key the registry does not know are read from a `alldots:block` comment, on a plain line. The
  * comment's `toggle=true` applies to a heading and is ignored on every other type. Throws
  * `BlockInputError` when a known block fails registry validation or a page link appears
  * while `allowPage` is false.
@@ -1056,7 +1056,7 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
   // Parse page links as ordinary links here so their visible labels survive; page-model parsing
   // deliberately discards those labels because the page title is resolved separately.
   const withVisiblePageLabels = markdown.replace(
-    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
+    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(alldots:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
     "$1(https://example.invalid)$2",
   );
   const text = parseMarkdown(withVisiblePageLabels)
@@ -1072,14 +1072,14 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
 
 /** Item references found in parsed blocks. */
 export interface ItemLinks {
-  /** Distinct lower-cased ids of `semprec://items/<uuid>` links, in order of first appearance. */
+  /** Distinct lower-cased ids of `alldots://items/<uuid>` links, in order of first appearance. */
   ids: string[];
-  /** True when some `semprec://items/` link carries something that is not a UUID. */
+  /** True when some `alldots://items/` link carries something that is not a UUID. */
   malformed: boolean;
 }
 
 /**
- * Collects the item references (`[Title](semprec://items/<uuid>)`) from the link attributes of
+ * Collects the item references (`[Title](alldots://items/<uuid>)`) from the link attributes of
  * parsed blocks. Pure: it neither checks that an item exists nor writes a relation; a server
  * checks the ids against the caller's tenant before it persists the blocks.
  */

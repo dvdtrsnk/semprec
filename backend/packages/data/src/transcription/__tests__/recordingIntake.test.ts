@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@alldots/queue";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -39,8 +39,8 @@ let root: string;
 describe("recording intake", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    root = await mkdtemp(join(tmpdir(), "semprec-recording-intake-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    root = await mkdtemp(join(tmpdir(), "alldots-recording-intake-"));
     const role = await runAsSystem("verify recording role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

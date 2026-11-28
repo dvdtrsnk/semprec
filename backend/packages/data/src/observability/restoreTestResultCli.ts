@@ -1,9 +1,9 @@
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { createPool } from "../db/pool.js";
 import { recordRestoreTestResult } from "./restoreTestResult.js";
 import { parseRestoreTestResultArgs } from "./restoreTestResultArgs.js";
 
-// Invoked by deploy/systemd/scripts/semprec-restore-test.sh under `timeout`; a non-zero exit means
+// Invoked by deploy/systemd/scripts/alldots-restore-test.sh under `timeout`; a non-zero exit means
 // the result was not recorded.
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {

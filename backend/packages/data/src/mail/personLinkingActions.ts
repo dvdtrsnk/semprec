@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { currentTenantScope } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
+import { currentTenantScope } from "@alldots/shared";
 import { z } from "zod";
 import { requireManagedTransaction, withTransaction } from "../db/pool.js";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the app does with the waiting Inbox captures when it becomes active, on iOS and macOS alike, over a double of
 /// the bridge. The background tasks of iOS are checked in `CaptureBackgroundTasksTests`.

@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -122,7 +122,7 @@ async function create(moduleId: string, properties: Record<string, unknown>): Pr
 describe("GET /api/calendar/timeline (issue #1717)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

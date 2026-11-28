@@ -1,0 +1,505 @@
+import type { CollectionMetadataResolver } from "@alldots/data";
+import type { Pool } from "pg";
+import { computeDeleteImpact, createChokePoint, NotFoundError, ValidationError, withTransaction } from "@alldots/data";
+import type { GenericApplicationPort, Property } from "@alldots/shared";
+import type { RouteDefinition } from "./adapter/routeTable.js";
+import {
+  optionalHeader,
+  requireJsonObjectBody,
+  requireStringParam,
+  requireUuidParam,
+} from "./adapter/requestValidation.js";
+import { dispatchGenericOperation, restActor } from "./adapter/genericBinding.js";
+import { toItemDetailEnvelope, toItemEnvelopeWithBlobs } from "./adapter/itemEnvelope.js";
+import { toItemQueryEnvelope } from "./adapter/itemQueryEnvelope.js";
+import { toRelationEnvelope } from "./adapter/relationEnvelope.js";
+
+function requestUrl(rawUrl: string | undefined): URL {
+  return new URL(rawUrl ?? "/", "http://localhost");
+}
+
+function rejectCallerWriterKind(body: Record<string, unknown>): void {
+  if (Object.hasOwn(body, "writerKind")) {
+    throw new ValidationError("'writerKind' is server-controlled", { field: "writerKind" });
+  }
+}
+
+type RelationPropertyResolution = { property: Property } | { conflict: { status: number; body: unknown } };
+
+/**
+ * 404 `not_found` for no match; `validation_failed` for more than one is answered 409 here
+ * (unreachable today given `UNIQUE(database_id, key)`), returned directly because the shared table
+ * fixes `validation_failed` to 400. `property.getByKey` returns every match, so this function maps
+ * none/one/many.
+ */
+async function resolveRelationProperty(
+  service: GenericApplicationPort,
+  actor: ReturnType<typeof restActor>,
+  callerItemId: string,
+  propertyKey: string,
+): Promise<RelationPropertyResolution> {
+  const item = await dispatchGenericOperation(service, "item.get", actor, { itemId: callerItemId });
+  const matches = await dispatchGenericOperation(service, "property.getByKey", actor, {
+    databaseId: item.databaseId,
+    key: propertyKey,
+    type: "relation",
+  });
+  if (matches.length === 0) {
+    throw new NotFoundError(`Relation property '${propertyKey}' not found`, {
+      resource: "relationProperty",
+      databaseId: item.databaseId,
+      propertyKey,
+    });
+  }
+  if (matches.length > 1) {
+    return {
+      conflict: {
+        status: 409,
+        body: { error: { code: "validation_failed", details: { field: "propertyKey", reason: "ambiguous" } } },
+      },
+    };
+  }
+  return { property: matches[0]! };
+}
+
+/**
+ * Every route dispatches through `dispatchGenericOperation` against the injected
+ * `GenericApplicationPort`. The `?include=path` breadcrumb (`chokePoint.getItemPath`) and the
+ * delete impact (`computeDeleteImpact`) reach the data layer directly because no generic operation
+ * covers them.
+ */
+export function createItemRoutes(
+  service: GenericApplicationPort,
+  pool: Pool,
+  resolver: CollectionMetadataResolver,
+): RouteDefinition[] {
+  const chokePoint = createChokePoint(pool);
+
+  return [
+    {
+      method: "POST",
+      path: "/api/databases/:id/items",
+      handler: async (ctx) => {
+        const databaseId = requireUuidParam(ctx.params, "id");
+        const idempotencyKey = optionalHeader(ctx.req, "Idempotency-Key");
+        const body = requireJsonObjectBody(ctx.body);
+        rejectCallerWriterKind(body);
+        const item = await dispatchGenericOperation(service, "item.create", restActor(ctx.identity.user.id), {
+          databaseId,
+          properties: body.properties ?? {},
+          idempotencyKey,
+          relations: body.relations,
+        });
+        return { status: 201, body: await toItemEnvelopeWithBlobs(pool, item) };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        // A comma-separated list; unknown tokens are ignored.
+        const includes = (requestUrl(ctx.req.url).searchParams.get("include") ?? "").split(",");
+        const includePath = includes.includes("path");
+        const includeLinks = includes.includes("links");
+        const includeDerived = includes.includes("derived");
+        const includeAutomation = includes.includes("automation");
+
+        const params = requestUrl(ctx.req.url).searchParams;
+        let relations: Record<string, string[]> | undefined;
+        if (includes.includes("relations")) {
+          const entries = [...params].filter(([key]) => key.startsWith("relations."));
+          if (entries.length) {
+            relations = Object.fromEntries(
+              entries.map(([key, value]) => [key.slice("relations.".length), value === "" ? [] : value.split(",")]),
+            );
+          } else {
+            const existing = await chokePoint.findItem(id);
+            if (!existing) throw new NotFoundError(`Item ${id} not found`);
+            relations = Object.fromEntries(
+              (await chokePoint.listProperties(existing.databaseId))
+                .filter((p) => p.type === "relation")
+                .map((p) => [p.key, []]),
+            );
+          }
+        }
+        if (includePath) {
+          const path = await chokePoint.getItemPath(id, relations === undefined ? undefined : { relations, resolver });
+          const last = path.at(-1);
+          if (!last) throw new NotFoundError(`Item ${id} not found`);
+          const projection = includeDerived ? await chokePoint.getDerivedValuesForItems([id]) : undefined;
+          const links = includeLinks
+            ? ((await chokePoint.getValueLinksForItems([id], includeDerived, projection)).get(id) ?? {})
+            : undefined;
+          const derived = projection !== undefined ? (projection.get(id) ?? {}) : undefined;
+          const automation = includeAutomation ? (await chokePoint.readAutomationForItems([id])).get(id) : undefined;
+          return {
+            status: 200,
+            body: {
+              ...toItemDetailEnvelope(last, path),
+              ...(await toItemEnvelopeWithBlobs(pool, last)),
+              ...(links === undefined ? {} : { links }),
+              ...(derived === undefined ? {} : { derived }),
+              ...(automation === undefined ? {} : { automation }),
+            },
+          };
+        }
+        const item = await dispatchGenericOperation(service, "item.get", restActor(ctx.identity.user.id), {
+          itemId: id,
+          include: {
+            links: includeLinks,
+            derived: includeDerived,
+            automation: includeAutomation,
+            ...(relations === undefined ? {} : { relations }),
+          },
+        });
+        const envelope = await toItemEnvelopeWithBlobs(pool, item);
+        return { status: 200, body: envelope };
+      },
+    },
+    {
+      method: "PATCH",
+      path: "/api/items/:id",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const body = requireJsonObjectBody(ctx.body);
+        rejectCallerWriterKind(body);
+        const item = await dispatchGenericOperation(service, "item.patch", restActor(ctx.identity.user.id), {
+          itemId: id,
+          properties: body.properties,
+          ifVersion: body.ifVersion,
+        });
+        // The explicit projection omits item.patch's transaction pre-image from REST.
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/api/items/:id",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        if (Object.keys(body).length !== 0) throw new ValidationError("DELETE item body must be empty");
+        const item = await dispatchGenericOperation(service, "item.delete", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/restore",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const item = await dispatchGenericOperation(service, "item.restore", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
+        return { status: 200, body: await toItemEnvelopeWithBlobs(pool, item) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/databases/:id/query",
+      handler: async (ctx) => {
+        const databaseId = requireUuidParam(ctx.params, "id");
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        const result = await dispatchGenericOperation(service, "database.query", restActor(ctx.identity.user.id), {
+          databaseId,
+          include: body.include,
+          filter: body.filter,
+          sort: body.sort,
+          cursor: body.cursor,
+          limit: body.limit,
+          inTrash: body.inTrash,
+          includeCount: body.includeCount,
+          q: body.q,
+        });
+        return { status: 200, body: await toItemQueryEnvelope(pool, result) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/databases/:id/facets",
+      handler: async (ctx) => {
+        const databaseId = requireUuidParam(ctx.params, "id");
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "filter" && key !== "facets" && key !== "extra");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected facets field", { field: unexpected });
+        const facets = await dispatchGenericOperation(service, "database.facets", restActor(ctx.identity.user.id), {
+          databaseId,
+          filter: body.filter,
+          facets: body.facets,
+          extra: body.extra,
+        });
+        return { status: 200, body: { facets } };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/count",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "items");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected count field", { field: unexpected });
+        const counts = await dispatchGenericOperation(service, "item.count", restActor(ctx.identity.user.id), {
+          items: body.items,
+        });
+        return { status: 200, body: { counts } };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/unlink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.unlink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/links/:propertyKey/relink",
+      handler: async (ctx) => {
+        const input = {
+          itemId: requireUuidParam(ctx.params, "id"),
+          propertyKey: requireStringParam(ctx.params, "propertyKey"),
+        };
+        return {
+          status: 200,
+          body: await dispatchGenericOperation(service, "link.relink", restActor(ctx.identity.user.id), input),
+        };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/relations",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const actor = restActor(ctx.identity.user.id);
+        // Resolved exactly as the write routes resolve it.
+        const propertyKey = requestUrl(ctx.req.url).searchParams.get("propertyKey");
+        let relationPropertyId: string | undefined;
+        if (propertyKey !== null) {
+          const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+          if ("conflict" in resolution) return resolution.conflict;
+          relationPropertyId = resolution.property.id;
+        }
+        const relations = await dispatchGenericOperation(service, "relation.list", actor, {
+          itemId: id,
+          relationPropertyId,
+        });
+        return { status: 200, body: { relations } };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/related",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const related = await dispatchGenericOperation(service, "relation.related", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
+        return { status: 200, body: related };
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/delete-impact",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        // Same permission as `GET /api/items/:id`; an unknown, trashed and other-tenant id answer
+        // alike. Several statements share one repeatable-read snapshot, because under READ
+        // COMMITTED the four parts could disagree.
+        const impact = await withTransaction(pool, (client) => computeDeleteImpact(client, id, resolver), {
+          isolation: "repeatable_read",
+        });
+        if (!impact) throw new NotFoundError(`Item ${id} not found`, { resource: "item", itemId: id });
+        return { status: 200, body: impact };
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/items/:id/relations/:propertyKey",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const propertyKey = requireStringParam(ctx.params, "propertyKey");
+        const actor = restActor(ctx.identity.user.id);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
+        const body = requireJsonObjectBody(ctx.body);
+        if (Object.keys(body).some((key) => key !== "targetItemId"))
+          throw new ValidationError("Unexpected relation set field", { field: "targetItemId" });
+        try {
+          const edge = await dispatchGenericOperation(service, "relation.set", actor, {
+            relationPropertyId: resolution.property.id,
+            callerItemId: id,
+            targetItemId: body.targetItemId,
+          });
+          return { status: 200, body: edge ? toRelationEnvelope(edge) : { deleted: true } };
+        } catch (error) {
+          if (error instanceof ValidationError && error.message === "Relation property is not single-valued")
+            throw new ValidationError(error.message, { field: "propertyKey" });
+          throw error;
+        }
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/items/:id/relations/:propertyKey/:targetItemId",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const propertyKey = requireStringParam(ctx.params, "propertyKey");
+        const targetItemId = requireUuidParam(ctx.params, "targetItemId");
+        const actor = restActor(ctx.identity.user.id);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        const edge = await dispatchGenericOperation(service, "relation.put", actor, {
+          relationPropertyId: resolution.property.id,
+          callerItemId: id,
+          targetItemId,
+          metadata: body.metadata,
+        });
+        return { status: 200, body: toRelationEnvelope(edge) };
+      },
+    },
+    {
+      method: "DELETE",
+      path: "/api/items/:id/relations/:propertyKey/:targetItemId",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const propertyKey = requireStringParam(ctx.params, "propertyKey");
+        const targetItemId = requireUuidParam(ctx.params, "targetItemId");
+        const actor = restActor(ctx.identity.user.id);
+        const resolution = await resolveRelationProperty(service, actor, id, propertyKey);
+        if ("conflict" in resolution) return resolution.conflict;
+        const edge = await dispatchGenericOperation(service, "relation.delete", actor, {
+          relationPropertyId: resolution.property.id,
+          callerItemId: id,
+          targetItemId,
+        });
+        return { status: 200, body: toRelationEnvelope(edge) };
+      },
+    },
+    {
+      method: "PUT",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => ({
+        status: 200,
+        body: await dispatchGenericOperation(service, "page.ensure", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+        }),
+      }),
+    },
+    {
+      method: "GET",
+      path: "/api/items/:id/page",
+      handler: async (ctx) => {
+        const params = requestUrl(ctx.req.url).searchParams;
+        const rawLimit = params.get("limit");
+        if (rawLimit !== null && !/^\d+$/.test(rawLimit))
+          throw new ValidationError("Invalid page limit", { field: "limit" });
+        const result = await dispatchGenericOperation(service, "page.get", restActor(ctx.identity.user.id), {
+          itemId: requireUuidParam(ctx.params, "id"),
+          format: params.get("format") ?? "summary",
+          ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
+        });
+        return { status: 200, body: result };
+      },
+    },
+    {
+      // The path item is the parent. A Journal period parent is reachable only through the catalog
+      // (MCP, agent tools), because a period without an entry has no item id to name.
+      method: "POST",
+      path: "/api/items/:id/page/subpages",
+      handler: async (ctx) => {
+        const body = ctx.body === undefined ? {} : requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find(
+          (key) => key !== "afterBlockId" && key !== "title" && key !== "fromBlockIds",
+        );
+        if (unexpected !== undefined) throw new ValidationError("Unexpected subpage field", { field: unexpected });
+        const created = await dispatchGenericOperation(service, "page.createSubpage", restActor(ctx.identity.user.id), {
+          parent: { itemId: requireUuidParam(ctx.params, "id") },
+          afterBlockId: body.afterBlockId,
+          title: body.title,
+          fromBlockIds: body.fromBlockIds,
+        });
+        return { status: 201, body: created };
+      },
+    },
+    {
+      // The path item is the subpage to copy; the request body is not used.
+      method: "POST",
+      path: "/api/items/:id/page/duplicate",
+      handler: async (ctx) => ({
+        status: 201,
+        body: await dispatchGenericOperation(service, "page.duplicate", restActor(ctx.identity.user.id), {
+          pageItemId: requireUuidParam(ctx.params, "id"),
+        }),
+      }),
+    },
+    {
+      // The path item is the subpage to rename; the body carries only `title`.
+      method: "PATCH",
+      path: "/api/items/:id/page/title",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "title");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected rename field", { field: unexpected });
+        const renamed = await dispatchGenericOperation(service, "page.rename", restActor(ctx.identity.user.id), {
+          pageItemId: requireUuidParam(ctx.params, "id"),
+          title: body.title,
+        });
+        return { status: 200, body: renamed };
+      },
+    },
+    {
+      // The path item is the parent whose document holds the `page` block; the body carries
+      // `blockId`, `type` and `confirmedPageCount`.
+      method: "POST",
+      path: "/api/items/:id/page/convert",
+      handler: async (ctx) => {
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find(
+          (key) => key !== "blockId" && key !== "type" && key !== "confirmedPageCount",
+        );
+        if (unexpected !== undefined) throw new ValidationError("Unexpected convert field", { field: unexpected });
+        const converted = await dispatchGenericOperation(
+          service,
+          "page.convertToBlock",
+          restActor(ctx.identity.user.id),
+          {
+            parentItemId: requireUuidParam(ctx.params, "id"),
+            blockId: body.blockId,
+            type: body.type,
+            confirmedPageCount: body.confirmedPageCount,
+          },
+        );
+        return { status: 200, body: converted };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/items/:id/page/restore",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const body = requireJsonObjectBody(ctx.body);
+        const restored = await dispatchGenericOperation(
+          service,
+          "page.restoreVersion",
+          restActor(ctx.identity.user.id),
+          {
+            itemId: id,
+            at: body.at,
+          },
+        );
+        return { status: 200, body: restored };
+      },
+    },
+  ];
+}

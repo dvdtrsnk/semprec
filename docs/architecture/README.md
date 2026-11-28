@@ -1,6 +1,6 @@
 # Architecture
 
-The current architecture of the Semprec backend and the rules that span the whole repository.
+The current architecture of the Alldots backend and the rules that span the whole repository.
 Each document states the rules as they hold in the code today. They are normative: code that
 contradicts them is a defect, or the document is updated in the same pull request that changes the rule.
 
@@ -73,7 +73,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-09-19-derived-system-properties-computed-inline-at-choke-point` | [data-model-and-writes.md — Pre-write transforms](data-model-and-writes.md#pre-write-transforms) | dropped |
 | `2026-09-19-task-queue-affinity-routing` | [domain-calendar-tasks-and-media.md — Adjacent rules](domain-calendar-tasks-and-media.md#adjacent-rules) |  |
 | `2026-09-20-desired-current-state-sync-for-provider-writebacks` | [transactions-and-side-effects.md — Provider write-backs (desired/current state)](transactions-and-side-effects.md#provider-write-backs-desiredcurrent-state) |  |
-| `2026-09-22-ffmpeg-confined-to-semprec-transcribe` | [domain-calendar-tasks-and-media.md — Process placement](domain-calendar-tasks-and-media.md#process-placement) |  |
+| `2026-09-22-ffmpeg-confined-to-alldots-transcribe` | [domain-calendar-tasks-and-media.md — Process placement](domain-calendar-tasks-and-media.md#process-placement) |  |
 | `2026-09-22-transcription-queue-affinity-extension` | [domain-calendar-tasks-and-media.md — Process placement](domain-calendar-tasks-and-media.md#process-placement) |  |
 | `2026-09-22-transcription-worker-choke-point-access` | [domain-calendar-tasks-and-media.md — Process placement](domain-calendar-tasks-and-media.md#process-placement) | dropped |
 | `2026-09-23-host-asset-dependent-database-features-activate-on-every-deploy` | [migrations-and-seeding.md — Host-asset-dependent features](migrations-and-seeding.md#host-asset-dependent-features) |  |
@@ -89,7 +89,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-09-27-ai-budget-reservations-under-a-global-advisory-lock` | [agents-approvals-and-ai.md — Budgets and accounting](agents-approvals-and-ai.md#budgets-and-accounting) |  |
 | `2026-09-27-auto-committed-writes-for-records-that-must-survive-a-failure` | [edges-io-and-errors.md — Records that must survive a failure](edges-io-and-errors.md#records-that-must-survive-a-failure) |  |
 | `2026-09-27-runtime-ddl-through-security-definer-functions` | [tenancy-and-security.md — SECURITY DEFINER functions](tenancy-and-security.md#security-definer-functions) |  |
-| `2026-09-27-semprec-api-shutdown-ordering` | [agents-approvals-and-ai.md — Process lifecycle](agents-approvals-and-ai.md#process-lifecycle) |  |
+| `2026-09-27-alldots-api-shutdown-ordering` | [agents-approvals-and-ai.md — Process lifecycle](agents-approvals-and-ai.md#process-lifecycle) |  |
 | `2026-09-27-ssrf-protection-for-stored-outbound-urls` | [edges-io-and-errors.md — Stored user-supplied URLs](edges-io-and-errors.md#stored-user-supplied-urls) |  |
 | `2026-09-28-blob-bytes-deleted-best-effort-after-the-commit` | [domain-calendar-tasks-and-media.md — Ownership and collection](domain-calendar-tasks-and-media.md#ownership-and-collection) |  |
 | `2026-09-28-chunked-transactions-for-large-background-sweeps` | [transactions-and-side-effects.md — Chunked background sweeps](transactions-and-side-effects.md#chunked-background-sweeps) |  |
@@ -161,7 +161,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-10-29-subpages-are-items-of-a-hidden-pages-database` | [data-model-and-writes.md — Subpages](data-model-and-writes.md#subpages) |  |
 | `2026-10-29-tasks-date-and-time-rules-in-pre-write-transform` | [domain-calendar-tasks-and-media.md — Pre-write transform](domain-calendar-tasks-and-media.md#pre-write-transform) |  |
 | `2026-10-31-backend-voice-decision-reconciliation` | [agents-approvals-and-ai.md — Voice and speech](agents-approvals-and-ai.md#voice-and-speech) |  |
-| `2026-10-31-block-and-page-decision-rationale` | [data-model-and-writes.md — Block model (`shared/block-model/`, package `@semprec/block-model`)](data-model-and-writes.md#block-model-sharedblock-model-package-semprecblock-model) | dropped |
+| `2026-10-31-block-and-page-decision-rationale` | [data-model-and-writes.md — Block model (`shared/block-model/`, package `@alldots/block-model`)](data-model-and-writes.md#block-model-sharedblock-model-package-alldotsblock-model) | dropped |
 | `2026-10-31-confirmed-proposal-update-preconditions` | [agents-approvals-and-ai.md — Envelope and confirm](agents-approvals-and-ai.md#envelope-and-confirm) |  |
 | `2026-10-31-item-origin-capture-time-provenance` | [data-model-and-writes.md — Reads](data-model-and-writes.md#reads) |  |
 | `2026-10-31-mail-database-key-cutover` | [migrations-and-seeding.md — One baseline, no versions](migrations-and-seeding.md#one-baseline-no-versions) | dropped |
@@ -419,7 +419,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-14-an-item-hook-invalidates-the-open-cards-of-an-item-without-waiting-for-a-card-a-confirm-holds` | [agents-approvals-and-ai.md — Card locks and invalidation](agents-approvals-and-ai.md#card-locks-and-invalidation) |  |
 | `2026-11-14-an-organizers-update-is-adopted-into-an-event-by-the-calendar-module-until-the-user-changes-the-field` | [domain-calendar-tasks-and-media.md — Event participants and invitations](domain-calendar-tasks-and-media.md#event-participants-and-invitations) |  |
 | `2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session` | [domain-calendar-tasks-and-media.md — Calendar tools over MCP](domain-calendar-tasks-and-media.md#calendar-tools-over-mcp) |  |
-| `2026-11-14-inbox-attachment-facts-are-computed-by-semprec-transcribe-and-recorded-once` | [domain-mail-and-inbox.md — Attachment facts, photos and voice notes](domain-mail-and-inbox.md#attachment-facts-photos-and-voice-notes) |  |
+| `2026-11-14-inbox-attachment-facts-are-computed-by-alldots-transcribe-and-recorded-once` | [domain-mail-and-inbox.md — Attachment facts, photos and voice notes](domain-mail-and-inbox.md#attachment-facts-photos-and-voice-notes) |  |
 | `2026-11-14-inbox-photos-are-read-by-the-proposal-computation-and-cached-on-the-attachment` | [domain-mail-and-inbox.md — Attachment facts, photos and voice notes](domain-mail-and-inbox.md#attachment-facts-photos-and-voice-notes) |  |
 | `2026-11-14-inbox-recording-cards-confirm-into-recording-intake` | [domain-mail-and-inbox.md — Cards: kinds and producers](domain-mail-and-inbox.md#cards-kinds-and-producers) |  |
 | `2026-11-14-mail-thread-cards-are-produced-by-the-mail-module-when-semp-proposes-a-task` | [domain-mail-and-inbox.md — Cards: kinds and producers](domain-mail-and-inbox.md#cards-kinds-and-producers) |  |
@@ -454,7 +454,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-11-15-security-definer-search-path-ends-with-pg-temp` | [tenancy-and-security.md — SECURITY DEFINER functions](tenancy-and-security.md#security-definer-functions) |  |
 | `2026-11-15-tenant-purge-erases-the-tenants-queue-rows` | [tenancy-and-security.md — Account deletion and purge](tenancy-and-security.md#account-deletion-and-purge) |  |
 | `2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links` | [agents-approvals-and-ai.md — Snapshots and reservations](agents-approvals-and-ai.md#snapshots-and-reservations) |  |
-| `2026-11-15-the-inbox-proposal-context-is-read-as-the-semprec-project-with-bounded-fields` | [domain-mail-and-inbox.md — Proposal context](domain-mail-and-inbox.md#proposal-context) |  |
+| `2026-11-15-the-inbox-proposal-context-is-read-as-the-alldots-project-with-bounded-fields` | [domain-mail-and-inbox.md — Proposal context](domain-mail-and-inbox.md#proposal-context) |  |
 | `2026-11-15-the-permanent-purge-locks-only-a-row-that-is-still-trashed-past-the-cutoff` | [data-model-and-writes.md — Items (`data/chokePoint/itemTrash.ts`)](data-model-and-writes.md#items-datachokepointitemtrashts) |  |
 | `2026-11-15-the-proposal-request-carries-the-target-databases-known-text-values-under-the-same-grants` | [agents-approvals-and-ai.md — Computation and grounding](agents-approvals-and-ai.md#computation-and-grounding) |  |
 | `2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials` | [tenancy-and-security.md — Runtime roles](tenancy-and-security.md#runtime-roles) |  |

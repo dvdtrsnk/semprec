@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModuleRegistry, resolveCatalogLabel } from "@semprec/module-registry";
+import { ModuleRegistry, resolveCatalogLabel } from "@alldots/module-registry";
 import { resolveProperty } from "../manifest/catalogResolution.js";
 import type { PropertyRow, PropertyType } from "../types.js";
 

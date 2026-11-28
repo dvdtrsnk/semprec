@@ -2,8 +2,8 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import {
   createItemWithRelationsWithClient,
@@ -20,7 +20,7 @@ import { withTransaction } from "../../db/pool.js";
 import { CardinalityViolationError, ChokePointError } from "../../errors.js";
 import { createInboxItemWithClient } from "../../inbox/inboxStore.js";
 import {
-  createSemprecTickAction,
+  createAlldotsTickAction,
   parseStoredProposalEnvelope,
   type ProposalComputationResult,
 } from "../../inbox/inboxTickAction.js";
@@ -302,7 +302,7 @@ async function createTaskCard(world: World, result: ProposalComputationResult): 
         type: type.id,
       }),
     );
-    await createSemprecTickAction(pool, async () => result)(
+    await createAlldotsTickAction(pool, async () => result)(
       {
         inboxDatabaseId: db.inbox,
         inboxItemTypesDatabaseId: db.inboxItemTypes,
@@ -376,7 +376,7 @@ async function removeRelationPair(propertyId: string): Promise<void> {
 describe("a task from an Event's action item inherits the Event's project and people (issue #1724)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

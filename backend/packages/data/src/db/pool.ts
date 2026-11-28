@@ -4,13 +4,13 @@ import {
   runDetachedAsSystem,
   type TenantScope,
   type TransactionIsolationLevel,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import {
   addPreparedJob,
   assertSearchTaskIdentifiersRegistered,
   SEARCH_TASK_IDENTIFIERS,
   type PreparedJob,
-} from "@semprec/queue";
+} from "@alldots/queue";
 import { logger } from "./logger.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -88,7 +88,7 @@ export interface CreatePoolOptions {
   /** Per-connection `statement_timeout`; `0` disables it (the migrations CLI). */
   statementTimeoutMs?: number;
   /** `-c role=...`, so a CLI logged in as the table owner still works under row-level security. */
-  role?: "semprec_data";
+  role?: "alldots_data";
   /** Most connections the pool opens; pg's default (10) otherwise. */
   max?: number;
 }
@@ -541,7 +541,7 @@ export async function withSavepoint<T>(client: PoolClient, fn: () => Promise<T>)
   if (!owner?.active || owner.client !== client)
     throw new Error("A savepoint requires the active managed transaction of its client");
   // Counter-built name, never from input.
-  const name = `semprec_savepoint_${++savepointSequence}`;
+  const name = `alldots_savepoint_${++savepointSequence}`;
   const mark = markSavepoint(client, owner);
   await client.query(`SAVEPOINT ${name}`);
   let result: T;

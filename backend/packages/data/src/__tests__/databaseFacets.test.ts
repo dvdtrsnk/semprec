@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -74,13 +74,13 @@ function projectStatuses(counts: [number, number, number, number]): DatabaseFace
 describe("choke-point getDatabaseFacets (issue #1759)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
 
@@ -1193,7 +1193,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       });
     };
     // A dedicated pool, so no instrumented client goes back into the pool the other tests use.
-    const observed = await createRuntimeRolePool(admin, "semprec_data");
+    const observed = await createRuntimeRolePool(admin, "alldots_data");
     try {
       await runInTenant(tenant, async () => {
         const tasks = await database("tasks");

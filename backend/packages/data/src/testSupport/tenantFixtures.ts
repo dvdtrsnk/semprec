@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import type { UserRow } from "../auth/types.js";
 import { createPool, withTransaction, type CreatePoolOptions } from "../db/pool.js";
@@ -16,7 +16,7 @@ import { createPool, withTransaction, type CreatePoolOptions } from "../db/pool.
  */
 
 type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
-type RuntimeRole = "semprec_data" | "semprec_side";
+type RuntimeRole = "alldots_data" | "alldots_side";
 
 /**
  * Roles are cluster-wide, so every worker of a run must apply the same password: globalSetup exports one per run.

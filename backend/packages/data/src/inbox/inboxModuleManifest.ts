@@ -1,11 +1,11 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import {
   INBOX_ITEM_TYPES_MODULE_ID,
   INBOX_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
 } from "../seed/inboxPipelineKeys.js";
-import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
+import { ALLDOTS_TICK_ACTION_ID } from "./inboxTickAction.js";
 
 export {
   createInboxProposalGetTool,
@@ -34,22 +34,22 @@ export {
 
 /**
  * Declares the Inbox, Inbox item types and Processing proposals databases, the `journal-inbox` view type and the
- * `semprec.tick` `onItemEvent` heartbeat action. The `journalInboxRecompute` job is core-registered, so no
+ * `alldots.tick` `onItemEvent` heartbeat action. The `journalInboxRecompute` job is core-registered, so no
  * `taskNames` are declared; `onItemEvent` is a core rule kind, so no `heartbeatRuleKinds` either.
  *
  * `proposal`, `status` and `history` are system-owned: confirm, reject and revise go through `proposalActions.ts`. The
  * agent tools are limited to the run's own item-thread card and keep it a proposal, so they need no approval.
  *
- * Each card `kind` has exactly one producer: `inbox` (including `transcription` recording cards) by `semprec.tick`,
- * `transcript` by `semprec-transcribe`, `mailThread` by the mail module (`mail/threadTaskProposals.ts`). Everything
- * after creation stays with this module's proposal actions, with two exceptions owned by `semprec-transcribe`:
+ * Each card `kind` has exactly one producer: `inbox` (including `transcription` recording cards) by `alldots.tick`,
+ * `transcript` by `alldots-transcribe`, `mailThread` by the mail module (`mail/threadTaskProposals.ts`). Everything
+ * after creation stays with this module's proposal actions, with two exceptions owned by `alldots-transcribe`:
  * - `transcriptCardRecompute` rewrites a `transcript` card after a user instruction, under the card's row lock, never a
  *   `confirmed`/`rejected` card or another kind;
  * - speaker suggestion refresh rewrites a `needsClarification` speaker card the user never touched, under a `NOWAIT`
  *   row lock, when the transcript's Event or its participants change.
  *
- * A recording card's confirm runs in `semprec-api`: it records the recording intake, moves the attachment into Files
- * and enqueues the transcription; `semprec-transcribe` then creates the `transcript` card and Transcripts row.
+ * A recording card's confirm runs in `alldots-api`: it records the recording intake, moves the attachment into Files
+ * and enqueues the transcription; `alldots-transcribe` then creates the `transcript` card and Transcripts row.
  */
 export const manifest: ModuleManifest = {
   id: "inboxPipeline",
@@ -87,7 +87,7 @@ export const manifest: ModuleManifest = {
     },
   ],
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
-  heartbeatActions: [SEMPREC_TICK_ACTION_ID],
+  heartbeatActions: [ALLDOTS_TICK_ACTION_ID],
   customRoutes: [
     {
       name: "confirmProposal",

@@ -20,7 +20,7 @@ mail account screens polled every 10 s while an account synced. The server alrea
 
 - Each window has one sync socket, `SyncSocket` in `:shared:data`, on the window's `AuthenticatedApi`: it goes out to
   the stored server with the stored bearer token, as every request does, and a close with 4401 (session revoked)
-  signs the window out, as a `401` does. Its wire handling mirrors the web client (`@semprec/realtime-client`): the
+  signs the window out, as a `401` does. Its wire handling mirrors the web client (`@alldots/realtime-client`): the
   same frame checks for the frames it keeps, the same reconnect backoff (1 s floor, ceiling doubling to 30 s,
   jittered), and one "read everything again" after every successful connect, because the server does not replay
   what it published while the socket was away. The server's heartbeat pings are answered by the engines (URLSession,

@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { recordTokenGatewayCall } from "../../aiGateway/aiGatewayCallsStore.js";
 import { getAiUsageSummary } from "../../aiGateway/aiUsageSummary.js";
 import { setTenantAiBudget } from "../../aiGateway/tenantAiBudgetsStore.js";
@@ -36,7 +36,7 @@ let foreignUser: string;
 describe("Semp status report", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify status test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

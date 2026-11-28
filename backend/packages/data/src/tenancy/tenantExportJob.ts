@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import yazl from "yazl";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { openBlobFromRoots } from "../blobs/openBlobFromRoots.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
@@ -167,7 +167,7 @@ async function exportedTables(client: PoolClient): Promise<string[]> {
   const { rows } = await client.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY 1`,
   );
   const excluded: readonly string[] = EXPORT_EXCLUDED_TABLES;

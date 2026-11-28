@@ -1,5 +1,5 @@
 import webpush, { WebPushError } from "web-push";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import { createOutboundHttp, isOutboundAddressNotAllowed } from "../net/outboundAddressPolicy.js";
 import type { NotificationPushPayload, PushSendResult, WebPushTarget } from "./pushSenders.js";
 

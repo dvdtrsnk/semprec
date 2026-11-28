@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
-import { canonicalizeJson, runInTenant } from "@semprec/shared";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
+import { canonicalizeJson, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -208,7 +208,7 @@ async function approvedRequest(
 describe("module tool approval requests (issue #1791)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   afterAll(async () => {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { createPersonEmailReindexAction } from "../../mail/personLinkingActions.js";
@@ -17,7 +17,7 @@ let other: string;
 describe("sender-known filter", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify sender filter test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

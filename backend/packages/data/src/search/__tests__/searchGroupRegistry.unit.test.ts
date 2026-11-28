@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SEARCH_ITEM_GROUP_TYPES } from "@semprec/shared";
+import { SEARCH_ITEM_GROUP_TYPES } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import {
   clearSearchGroupsForTests,

@@ -10,7 +10,7 @@ import {
   lockItemById,
   PROJECTS_MODULE_ID,
   withTransaction,
-} from "@semprec/data";
+} from "@alldots/data";
 import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,

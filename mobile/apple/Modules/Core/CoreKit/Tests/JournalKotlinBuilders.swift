@@ -66,7 +66,7 @@ enum JournalKotlin {
         SharedSDK.JournalEventState(
             id: "e1", title: "Standup", startMinutes: start.map { KotlinInt(int: $0) },
             endMinutes: end.map { KotlinInt(int: $0) }, allDay: allDay, place: "Office",
-            projectName: "Semprec", projectColor: "#007AFF", hasTranscript: true
+            projectName: "Alldots", projectColor: "#007AFF", hasTranscript: true
         )
     }
 

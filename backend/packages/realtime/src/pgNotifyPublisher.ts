@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { isAgentRunEventId, isUuid, type AgentDeltaChunk } from "./protocolV1.js";
 
 /** The one durable channel for every recoverable realtime message kind, distinguished by `type`. */
-export const REALTIME_CHANNEL = "semprec_events";
+export const REALTIME_CHANNEL = "alldots_events";
 /** Ephemeral typing traffic is deliberately isolated from durable realtime references. */
-export const AGENT_STREAM_CHANNEL = "semprec_agent_stream";
+export const AGENT_STREAM_CHANNEL = "alldots_agent_stream";
 const MAX_AGENT_STREAM_NOTIFY_BYTES = 7_500;
 const AGENT_STREAM_CHUNK_BYTES = 7_000;
 
@@ -400,12 +400,12 @@ function parseEnvelope<M>(raw: unknown, parseMessage: (inner: unknown) => M | nu
   return message ? { tenantId: value.tenantId, message } : null;
 }
 
-/** Validates a `semprec_events` payload: a uuid `tenantId` and a valid `RealtimeMessage`, else `null`. */
+/** Validates a `alldots_events` payload: a uuid `tenantId` and a valid `RealtimeMessage`, else `null`. */
 export function parseRealtimeEnvelope(raw: unknown): RealtimeEnvelope<RealtimeMessage> | null {
   return parseEnvelope(raw, parseRealtimeMessage);
 }
 
-/** Validates a `semprec_agent_stream` payload: a uuid `tenantId` and a valid `AgentStreamMessage`, else `null`. */
+/** Validates a `alldots_agent_stream` payload: a uuid `tenantId` and a valid `AgentStreamMessage`, else `null`. */
 export function parseAgentStreamEnvelope(raw: unknown): RealtimeEnvelope<AgentStreamMessage> | null {
   return parseEnvelope(raw, parseAgentStreamMessage);
 }

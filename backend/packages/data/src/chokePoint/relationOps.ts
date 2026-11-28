@@ -6,7 +6,7 @@
 // `runRelationEdgeWriteHooks`, never a direct domain import.
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import {
   markManagedTransactionRollbackOnly,
   requireManagedTransaction,

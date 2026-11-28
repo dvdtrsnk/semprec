@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -107,7 +107,7 @@ async function heartbeatsOfEmailCreate(): Promise<Array<{ id: string; action_id:
 describe("background jobs of a mail sync batch", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     storageRoot = await mkdtemp(join(tmpdir(), "mail-sync-fanout-"));
   });
 

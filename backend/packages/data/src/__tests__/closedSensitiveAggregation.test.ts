@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { listClosedSensitiveDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { removeAgentDatabaseGrant, setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
@@ -124,7 +124,7 @@ function recompute(property: PropertyRow, item: ItemRow) {
 describe("filters and rollups over a sensitive database an agent cannot read (issue #2000)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await inTenant(() => seedSystem(dataPool, createViewTypeRegistry()));

@@ -6,13 +6,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec zvoní vaše budíky i v tichém režimu a během soustředění."
+            "value" : "Alldots zvoní vaše budíky i v tichém režimu a během soustředění."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec rings your alarms even in silent mode and through a Focus."
+            "value" : "Alldots rings your alarms even in silent mode and through a Focus."
           }
         }
       }
@@ -22,13 +22,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec čte čárové a QR kódy, kterými se zastavuje budík, a skenuje dokumenty do Inboxu."
+            "value" : "Alldots čte čárové a QR kódy, kterými se zastavuje budík, a skenuje dokumenty do Inboxu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox."
+            "value" : "Alldots reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox."
           }
         }
       }
@@ -38,13 +38,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec nahrává schůzky a hlasové poznámky, aby je Semp mohl přepsat."
+            "value" : "Alldots nahrává schůzky a hlasové poznámky, aby je Semp mohl přepsat."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec records meetings and voice notes so that Semp can transcribe them."
+            "value" : "Alldots records meetings and voice notes so that Semp can transcribe them."
           }
         }
       }

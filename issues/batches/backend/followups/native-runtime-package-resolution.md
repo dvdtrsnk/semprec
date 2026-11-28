@@ -47,7 +47,7 @@ failure above remain historical records. Batch acceptance remains pending.
 
 On the local implementation candidate of source sp-994caf89-dfb8-465d-983f-5698cdc851af, after a
 successful recursive backend build (Node 26.12.1 on the delivery host), eight further workspace roots
-(`@semprec/data`, `realtime`, `application`, `notifications`, `ai-gateway-client`, `ai-gateway`,
+(`@alldots/data`, `realtime`, `application`, `notifications`, `ai-gateway-client`, `ai-gateway`,
 `agent-runtime` and `credentials`) select `dist/index.js` for plain Node under
 `docs/adr/2026-11-15-workspace-root-exports-for-the-service-entrypoints.md`. The failure text above
 (`ERR_MODULE_NOT_FOUND` of the plain compiled entries) stays as the historical record of the state before this change.
@@ -56,18 +56,18 @@ Proved natively, as plain `node <entry>` from `backend/` with an environment of 
 compiled entries that `deploy.sh`, the units, the timer scripts and the restore runbook start
 (`packages/data/dist/db/runMigrationsCli.js`, `runSeedCli.js`, `verifyTenancyCli.js`,
 `tenancy/validateRestoreLedgerCli.js`, `tenancy/restoreTenantKeysCli.js`, `tenancy/replayTenantDeletionsCli.js`,
-`observability/restoreTestResultCli.js` and the `dist/serve.js` of `semprec-api`, `semprec-agents`,
-`semprec-ai-gateway` and `semprec-transcribe`). Each ends in its own configuration refusal and none in a
+`observability/restoreTestResultCli.js` and the `dist/serve.js` of `alldots-api`, `alldots-agents`,
+`alldots-ai-gateway` and `alldots-transcribe`). Each ends in its own configuration refusal and none in a
 module-resolution error; `backend/scripts/check-native-entrypoints.mjs` exits 0 naming all eleven, and
 `deploy.sh` now runs it after the build and before the migration. That proves module loading and the refusal, not a
 start.
 
 Started and stopped natively against an owned scratch database as the runtime role (placeholder keys, no network
-call): `semprec-ai-gateway` logged `semprec-ai-gateway listening`, `semprec-agents` and `semprec-transcribe` logged
+call): `alldots-ai-gateway` logged `alldots-ai-gateway listening`, `alldots-agents` and `alldots-transcribe` logged
 `... queue runtime started`, and each exited 0 within 20 seconds of SIGTERM and logged its shutdown completion.
 `packages/e2e/src/__tests__/nativeEntrypoints.e2e.test.ts` runs these cases.
 
-Still open: `semprec-api` was not started, and its start under the production default of strict tenant scope is a
+Still open: `alldots-api` was not started, and its start under the production default of strict tenant scope is a
 separate, known defect (`createApiQueueRuntime` calls `runHeartbeatFireQueueSplitMigration` outside any tenant
 scope). Nothing here is a production deployment, a deployed host or a release-readiness claim, and the production
 Security gate stays BLOCKED.
@@ -75,13 +75,13 @@ Security gate stays BLOCKED.
 ## 2026-11-15 the compiled API start under strict tenant scope (sp-b08abab8-34a6-4359-acb6-5d0e249ef45e)
 
 On the local implementation candidate of source sp-b08abab8-34a6-4359-acb6-5d0e249ef45e (Node 26.12.1 on the
-delivery host), the compiled `services/semprec-api/dist/serve.js` was started from its compiled entry with
-`SEMPREC_TENANT_SCOPE` unset (the default, strict) against an owned scratch database as the `semprec_data` runtime
-role, with placeholder configuration and no network call. It logged `semprec-api listening`, answered
+delivery host), the compiled `services/alldots-api/dist/serve.js` was started from its compiled entry with
+`ALLDOTS_TENANT_SCOPE` unset (the default, strict) against an owned scratch database as the `alldots_data` runtime
+role, with placeholder configuration and no network call. It logged `alldots-api listening`, answered
 `GET /healthz` with 200 `{"status":"ok"}` and exited 0 within 20 seconds of SIGTERM with
-`semprec-api shutdown complete`; the scratch database was dropped and absent. The compiled `semprec-agents`,
-`semprec-ai-gateway` and `semprec-transcribe` were started under the same condition (the environment passed to
-each child has no `SEMPREC_TENANT_SCOPE` key although the test process has one) and reached their log lines and
+`alldots-api shutdown complete`; the scratch database was dropped and absent. The compiled `alldots-agents`,
+`alldots-ai-gateway` and `alldots-transcribe` were started under the same condition (the environment passed to
+each child has no `ALLDOTS_TENANT_SCOPE` key although the test process has one) and reached their log lines and
 exited 0. The cause of the earlier exit with `TenantScopeMissingError` was the `heartbeatFire` queue-split
 migration that `createApiQueueRuntime` called outside any scope; the call is removed, and that one-time step stays
 in the deploy CLI (`db/runMigrationsCli.ts`), which moved a queued legacy job under `heartbeatFireCore` with the

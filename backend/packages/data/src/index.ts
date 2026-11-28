@@ -314,7 +314,7 @@ export {
 } from "./mail/mailLiveSyncRoot.js";
 export { bindMailboxServiceLiveSyncStop } from "./mail/mailboxServiceHooks.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
-// The Gmail watch and Graph subscription owners, hosted by semprec-api.
+// The Gmail watch and Graph subscription owners, hosted by alldots-api.
 export {
   createGmailPubSubDispatcher,
   createGmailWatchLifecycleFactory,

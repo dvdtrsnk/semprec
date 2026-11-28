@@ -26,7 +26,7 @@ import {
   writeNotification,
   createChokePoint,
   createDocStore,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -35,8 +35,8 @@ import {
   getTestPool,
   resetDatabase,
   tenantForNextTestUser,
-} from "@semprec/data/testSupport";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   AGENT_STREAM_CHANNEL,
   parseAgentStreamEnvelope,
@@ -51,8 +51,8 @@ import { wireRealtimeHooks } from "../wireHooks.js";
 const { realtimeWarn } = vi.hoisted(() => ({ realtimeWarn: vi.fn() }));
 
 // Only the realtime logger is replaced so its warnings can be asserted; every other logger stays real.
-vi.mock("@semprec/shared", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/shared")>();
+vi.mock("@alldots/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/shared")>();
   return {
     ...actual,
     createLogger: (name: string) =>
@@ -68,7 +68,7 @@ beforeAll(() => {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Publishes a hand-built envelope, as a foreign or misbehaving publisher could. */
-async function notifyEvent(tenantId: string, message: unknown, channel = "semprec_events"): Promise<void> {
+async function notifyEvent(tenantId: string, message: unknown, channel = "alldots_events"): Promise<void> {
   await pool.query("SELECT pg_notify($1, $2)", [channel, JSON.stringify({ tenantId, message })]);
 }
 
@@ -652,7 +652,7 @@ describe("createSyncServer connections and realtime fan-out", () => {
 
   it("routes a PostgreSQL-enveloped relation invalidation to the acting user's tenant sockets", async () => {
     const { target, targetFrames, peerFrames, foreignFrames } = await tenantSockets();
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const databaseId = randomUUID();
     const itemId = randomUUID();
     try {
@@ -763,7 +763,7 @@ describe("createSyncServer connections and realtime fan-out", () => {
     const notificationId = await createTestNotification(owner);
     const otherTenant = await createTestTenant(pool);
     // Row-level security applies only to a runtime role, so the server under test reads through one.
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const tenantHarness = await startHarness(runtimePool);
     try {
       const received = [
@@ -793,7 +793,7 @@ describe("createSyncServer connections and realtime fan-out", () => {
     const scopedPool = createPool(process.env.TEST_DATABASE_URL ?? "");
     const listener = await pool.connect();
     try {
-      await listener.query("LISTEN semprec_agent_stream");
+      await listener.query("LISTEN alldots_agent_stream");
       const payloads: string[] = [];
       listener.on("notification", (m) => {
         if (m.payload) payloads.push(m.payload);
@@ -816,17 +816,17 @@ describe("createSyncServer connections and realtime fan-out", () => {
 
     const inner = { type: "invalidation", scope: "schema", databaseId: "secret-db" };
     const bad: [string, unknown][] = [
-      ["semprec_events", { message: inner }],
-      ["semprec_events", { tenantId: null, message: inner }],
-      ["semprec_events", { tenantId: "not-a-uuid", message: inner }],
-      ["semprec_events", inner],
-      ["semprec_agent_stream", { message: { type: "agent_run_delta", agentRunId: randomUUID(), delta: "x" } }],
+      ["alldots_events", { message: inner }],
+      ["alldots_events", { tenantId: null, message: inner }],
+      ["alldots_events", { tenantId: "not-a-uuid", message: inner }],
+      ["alldots_events", inner],
+      ["alldots_agent_stream", { message: { type: "agent_run_delta", agentRunId: randomUUID(), delta: "x" } }],
       // A `type` outside the catalog is not echoed into the log line.
-      ["semprec_events", { tenantId: getTenantZeroId(), message: { type: "secret-content" } }],
+      ["alldots_events", { tenantId: getTenantZeroId(), message: { type: "secret-content" } }],
     ];
     for (const [channel, payload] of bad)
       await pool.query("SELECT pg_notify($1, $2)", [channel, JSON.stringify(payload)]);
-    await pool.query("SELECT pg_notify('semprec_events', 'not json')");
+    await pool.query("SELECT pg_notify('alldots_events', 'not json')");
     await waitUntil(() => realtimeWarn.mock.calls.length >= bad.length + 1);
     await sleep(50);
 
@@ -836,10 +836,10 @@ describe("createSyncServer connections and realtime fan-out", () => {
       "realtime_message_without_tenant",
     ];
     expect(realtimeWarn.mock.calls).toEqual([
-      ...Array.from({ length: 4 }, () => warning("semprec_events", "invalidation")),
-      warning("semprec_agent_stream", "agent_run_delta"),
-      warning("semprec_events", undefined),
-      warning("semprec_events", undefined),
+      ...Array.from({ length: 4 }, () => warning("alldots_events", "invalidation")),
+      warning("alldots_agent_stream", "agent_run_delta"),
+      warning("alldots_events", undefined),
+      warning("alldots_events", undefined),
     ]);
   });
 
@@ -969,7 +969,7 @@ describe("createSyncServer doc sync", () => {
     const created = await createDocStore(pool).createSubpage({ parent: { itemId: project } }, "user");
     const page = created.pages[0];
     if (!page) throw new Error("Missing created page");
-    // `semprec://page/<pageItemId>` resolves to the document the socket opens: the page summary names that docId.
+    // `alldots://page/<pageItemId>` resolves to the document the socket opens: the page summary names that docId.
     expect((await createDocStore(pool).getPageSummary(page.pageItemId, "en")).docId).toBe(page.docId);
 
     const [clientA, clientB] = await openDocClients(h, page.docId, ["a", "b"]);
@@ -1017,7 +1017,7 @@ describe("createSyncServer doc sync tenancy", () => {
     tenantB = await createTestTenant(pool);
     // RLS applies only to a runtime role. The fresh pool also makes the LISTEN connection a new one opened in a system
     // scope: a reused connection carrying a tenant scope would throw `TenantScopeConflictError` on a foreign envelope.
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     h = await startHarness(runtimePool);
   });
 
@@ -1114,7 +1114,7 @@ describe("createSyncServer closeTenant", () => {
     tenantB = await createTestTenant(pool);
     authGate = null;
     authStarted = 0;
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     h = await startHarness(runtimePool, (identities) => ({
       authenticate: async (req) => {
         authStarted++;
@@ -1190,7 +1190,7 @@ describe("createSyncServer agent run watch tenancy", () => {
     userA = await createTestUser();
     // Row-level security applies only to a runtime role, so the server reads through one, on a fresh pool so its
     // LISTEN connection is opened outside any tenant scope.
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     h = await startHarness(runtimePool);
   });
 
@@ -1227,11 +1227,11 @@ describe("createSyncServer agent run watch tenancy", () => {
     inA(() =>
       withTransaction(runtimePool, async (client) => {
         for (const payload of raw)
-          await client.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["semprec_agent_stream", payload]);
+          await client.query<{ pg_notify: string }>("SELECT pg_notify($1, $2)", ["alldots_agent_stream", payload]);
         for (const message of messages)
           await client.query<{ pg_notify: string }>(
             "SELECT pg_notify($1, json_build_object('tenantId', app_tenant_default(), 'message', $2::json)::text)",
-            ["semprec_agent_stream", JSON.stringify(message)],
+            ["alldots_agent_stream", JSON.stringify(message)],
           );
       }),
     );
@@ -1621,7 +1621,7 @@ describe("createSyncServer agent run watch tenancy", () => {
       const hold = holdQuery(
         runtimePool,
         (sql, params) =>
-          sql.includes("pg_notify") && Array.isArray(params) && params[0] === "semprec_agent_stream" && ++chunks === 2,
+          sql.includes("pg_notify") && Array.isArray(params) && params[0] === "alldots_agent_stream" && ++chunks === 2,
         "before",
       );
       const publication = publishDelta(fx.run.id, { text: "x".repeat(12000) }, fx.target.sempMessageId, fx.first.id, 1);
@@ -1838,7 +1838,7 @@ describe("createSyncServer agent run watch tenancy", () => {
         // A real row of the watched run, announced under the wrong tenant (a forged NOTIFY).
         const event = await silentEvent(runId);
         return {
-          channel: "semprec_events",
+          channel: "alldots_events",
           message: { type: "agent_run_event", agentRunId: runId, eventId: event.id },
           check: (frame: Record<string, unknown> | undefined) => expect(eventIdOf(frame)).toBe(event.id),
         };

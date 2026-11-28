@@ -74,7 +74,7 @@ export {
   createMailHistoryReleaseRouteHandler,
   createMailHistoryUploadRouteHandler,
 } from "./mailHistoryUpload.js";
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
   EMAILS_MODULE_ID,
@@ -99,7 +99,7 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
  * reindex jobs and the `newEmail` heartbeat are core-registered, so `taskNames` lists only the module's own tasks;
  * `mail.reindexPersonEmails` and `mail.linkPeopleByEmail` are the module's own heartbeat actions.
  *
- * Agent tools: drafting tools declare no approval because a draft stays in Semprec. `mail.draft.send` declares no
+ * Agent tools: drafting tools declare no approval because a draft stays in Alldots. `mail.draft.send` declares no
  * `requiresApproval` and no risk class: its handler files the send's own approval request and sends nothing, so the
  * generic deferral would add a second approval. Over `/mcp` a human session runs the `mcp` handler as its user and a
  * run credential runs the regular handler as its run. `mail.thread.proposeTask` only writes an Inbox card; the user's
@@ -149,7 +149,7 @@ export const manifest: ModuleManifest = {
       riskClass: "read",
       mcp: { humanHandlerExport: "createMailSearchUserTool" },
     },
-    // A draft stays in Semprec and nothing sends it, so creating and updating one needs no approval.
+    // A draft stays in Alldots and nothing sends it, so creating and updating one needs no approval.
     {
       name: "mail.draft.create",
       handlerExport: "createMailDraftCreateTool",
@@ -191,7 +191,7 @@ export const manifest: ModuleManifest = {
   ],
   viewTypes: [MAILBOX_CLIENT_VIEW_TYPE],
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
-  workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
+  workers: [{ name: "alldots-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   linkRules: [
     // A task made from a thread takes over the thread's project. Ownership handoff: `Tasks.project` stays
     // `owner: user`; `valueLinks` writes it only while the task's value link is `on`. Runs in the transaction that

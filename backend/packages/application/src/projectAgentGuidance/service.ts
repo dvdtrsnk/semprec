@@ -1,4 +1,4 @@
-import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@semprec/shared";
+import { GuidanceReferenceNotFoundError, MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@alldots/shared";
 import type {
   GuidanceHeartbeatStore,
   GuidanceReferenceStore,
@@ -8,7 +8,7 @@ import type {
   TransactionRunner,
   TransferProjectAgentGuidanceInput,
   UpsertProjectAgentGuidanceInput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { ProjectAgentGuidanceOwnerViolationError, ProjectAgentGuidanceValidationError } from "./errors.js";
 
 export interface ProjectAgentGuidanceServiceDeps<Tx> {

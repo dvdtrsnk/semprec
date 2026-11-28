@@ -2,9 +2,9 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -39,7 +39,7 @@ describe("explicit value link operations", () => {
     const loader = vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
     restoreLoader = () => loader.mockRestore();
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check link test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

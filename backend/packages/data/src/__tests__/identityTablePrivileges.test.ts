@@ -9,7 +9,7 @@ import type { PasswordResetMailer, SendPasswordResetEmailInput } from "../auth/p
 import { UnauthorizedError } from "../errors.js";
 
 /**
- * The identity tables are written only by `semprec_data`; `semprec_side` reads only `users` and `tenants`
+ * The identity tables are written only by `alldots_data`; `alldots_side` reads only `users` and `tenants`
  * and holds no privilege on the tokens and attempts. Logs in as each role with its own random password.
  */
 const TEST_ROLE_PASSWORD = randomUUID();
@@ -43,10 +43,10 @@ function fakeMailer(): PasswordResetMailer & { sent: SendPasswordResetEmailInput
 describe("identity table privileges (issue #976)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    await adminPool.query(`ALTER ROLE semprec_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
-    dataPool = new Pool({ connectionString: roleConnectionString("semprec_data") });
-    sidePool = new Pool({ connectionString: roleConnectionString("semprec_side") });
+    await adminPool.query(`ALTER ROLE alldots_data WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
+    await adminPool.query(`ALTER ROLE alldots_side WITH PASSWORD '${TEST_ROLE_PASSWORD}'`);
+    dataPool = new Pool({ connectionString: roleConnectionString("alldots_data") });
+    sidePool = new Pool({ connectionString: roleConnectionString("alldots_side") });
   });
 
   afterAll(async () => {
@@ -59,7 +59,7 @@ describe("identity table privileges (issue #976)", () => {
     await resetDatabase(adminPool);
   });
 
-  describe("semprec_side", () => {
+  describe("alldots_side", () => {
     it.each(SIDE_READABLE_IDENTITY_TABLES)("can SELECT %s", async (table) => {
       await expect(sidePool.query(`SELECT * FROM ${table} LIMIT 1`)).resolves.toBeDefined();
     });
@@ -78,7 +78,7 @@ describe("identity table privileges (issue #976)", () => {
     });
   });
 
-  describe("semprec_data", () => {
+  describe("alldots_data", () => {
     it("runs the real auth flows against the identity tables", async () => {
       const user = await bootstrapFirstAccount(dataPool, SETUP_TOKEN, SETUP_TOKEN, {
         email: "owner@example.test",
@@ -142,15 +142,15 @@ describe("identity table privileges (issue #976)", () => {
       expect(attempts.rows).toEqual([{ succeeded: false }]);
     });
 
-    it("holds DML on every identity table directly, not through semprec_side", async () => {
+    it("holds DML on every identity table directly, not through alldots_side", async () => {
       const client = await adminPool.connect();
       try {
         await client.query("BEGIN");
-        await client.query("REVOKE semprec_side FROM semprec_data");
+        await client.query("REVOKE alldots_side FROM alldots_data");
         for (const table of IDENTITY_TABLES) {
           for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
             const { rows } = await client.query<{ granted: boolean }>(
-              `SELECT has_table_privilege('semprec_data', $1, $2) AS granted`,
+              `SELECT has_table_privilege('alldots_data', $1, $2) AS granted`,
               [table, privilege],
             );
             expect(`${table}:${privilege}:${rows[0]?.granted}`).toBe(`${table}:${privilege}:true`);

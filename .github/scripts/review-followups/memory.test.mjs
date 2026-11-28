@@ -54,7 +54,7 @@ function encode(value) {
 }
 
 function memory(overrides = {}) {
-  return { version: 1, project_id: "dvdtrsnk/semprec", pr_number: 551, findings: [{ ...PR_551_FINDING }], ...overrides };
+  return { version: 1, project_id: "dvdtrsnk/alldots", pr_number: 551, findings: [{ ...PR_551_FINDING }], ...overrides };
 }
 
 function comment(id, author, createdAt, body = memoryBody("AAAA")) {

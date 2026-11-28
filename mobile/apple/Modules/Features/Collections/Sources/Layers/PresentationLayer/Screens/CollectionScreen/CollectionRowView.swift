@@ -77,7 +77,7 @@ struct StatusPill: View {
         CollectionRowView(
             row: CollectionRow(
                 id: "p1",
-                title: "Semprec iOS",
+                title: "Alldots iOS",
                 group: FieldOption(key: "inProgress", label: "In progress", color: "#007AFF"),
                 date: "2027-01-31",
                 subtitle: [.targets([FieldTarget(id: "c", databaseKey: "companies", title: "Novák Web", color: nil)])],

@@ -1,9 +1,9 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { ModuleRegistry, type ModuleManifest } from "@alldots/module-registry";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -73,7 +73,7 @@ describe("value link via-edge union", () => {
     registry.validateLinkRules();
     vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check union role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

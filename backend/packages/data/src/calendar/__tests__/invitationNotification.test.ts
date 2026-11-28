@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -242,7 +242,7 @@ describe("calendar invitation notification (issue gh-1954)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

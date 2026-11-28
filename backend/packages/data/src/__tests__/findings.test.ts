@@ -80,7 +80,7 @@ describe("manifest drift findings per tenant", () => {
       await scopeTo(client, tenantB);
       await publishFinding(client, { kind: KIND, dedupeKey: "y", payload: {} });
 
-      await client.query("SET LOCAL ROLE semprec_side");
+      await client.query("SET LOCAL ROLE alldots_side");
       await resolveFindingsNotIn(client, KIND, new Set());
       await client.query("RESET ROLE");
 

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/952",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/952",
   "id": 5687185971,
   "node_id": "I_kwDOUFuQ4c8AAAABUvuSMw",
   "number": 952,
@@ -53,7 +53,7 @@
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "## Behavior specification (approved)\n\nPart of the multi-tenancy program specified in #950. This epic removes every single-user assumption and every global identity from the data layer:\n\n1. Database keys, idempotency keys, person email addresses, provider message ids, mail threads, blob content hashes, notification dedupe keys and manifest drift findings are unique **per tenant**; the same value in two tenants creates two independent records, and no error, status or timing reveals the other tenant.\n2. Each tenant's system databases, Semprec project and settings are provisioned in that tenant's scope (`provisionTenant`); module data migrations and post-migration cutovers run per tenant.\n3. Blobs are deduplicated and stored per tenant (`<tenantId>/` storage prefix); a blob download for a foreign id is indistinguishable from an unknown id, even with a matching `If-None-Match`.\n4. Events, agent runs and notifications that used to go to \"the earliest user\" go to the tenant's own user; operator alerts go to every admin without tenant content; the earliest-user lookups are deleted.\n5. Re-registering a push endpoint used by another account silently moves it; a password reset revokes the user's push registrations.\n6. The partition DDL functions refuse a database outside the current tenant; id-only item lookups touch only the tenant's partitions.\n7. Serialized and bulk queue work runs on per-tenant lanes; there is one Semp conversation per tenant; stored item and database references (parent item, heartbeat trigger database, view configuration ids) are validated inside the tenant.\n\n## Decisions\n\n- **Why re-key instead of relying on RLS alone?** → Unique and foreign-key checks ignore RLS; a global key is an oracle (a 409 or a returned foreign id), a collision or a silent cross-tenant link.\n- **Order of a re-key?** → Composite key added first (expand, #950), code and `ON CONFLICT` arbiters switched here, legacy key dropped in a later release (#960).\n- **Who receives operator alerts?** → Every admin, as content-free rows written in each admin's own tenant.\n\n## Out of scope\n\nRealtime (#953), approvals and MCP (#954), dropping the legacy keys and composite foreign keys (#960).\n",
+  "body": "## Behavior specification (approved)\n\nPart of the multi-tenancy program specified in #950. This epic removes every single-user assumption and every global identity from the data layer:\n\n1. Database keys, idempotency keys, person email addresses, provider message ids, mail threads, blob content hashes, notification dedupe keys and manifest drift findings are unique **per tenant**; the same value in two tenants creates two independent records, and no error, status or timing reveals the other tenant.\n2. Each tenant's system databases, Alldots project and settings are provisioned in that tenant's scope (`provisionTenant`); module data migrations and post-migration cutovers run per tenant.\n3. Blobs are deduplicated and stored per tenant (`<tenantId>/` storage prefix); a blob download for a foreign id is indistinguishable from an unknown id, even with a matching `If-None-Match`.\n4. Events, agent runs and notifications that used to go to \"the earliest user\" go to the tenant's own user; operator alerts go to every admin without tenant content; the earliest-user lookups are deleted.\n5. Re-registering a push endpoint used by another account silently moves it; a password reset revokes the user's push registrations.\n6. The partition DDL functions refuse a database outside the current tenant; id-only item lookups touch only the tenant's partitions.\n7. Serialized and bulk queue work runs on per-tenant lanes; there is one Semp conversation per tenant; stored item and database references (parent item, heartbeat trigger database, view configuration ids) are validated inside the tenant.\n\n## Decisions\n\n- **Why re-key instead of relying on RLS alone?** → Unique and foreign-key checks ignore RLS; a global key is an oracle (a 409 or a returned foreign id), a collision or a silent cross-tenant link.\n- **Order of a re-key?** → Composite key added first (expand, #950), code and `ON CONFLICT` arbiters switched here, legacy key dropped in a later release (#960).\n- **Who receives operator alerts?** → Every admin, as content-free rows written in each admin's own tenant.\n\n## Out of scope\n\nRealtime (#953), approvals and MCP (#954), dropping the legacy keys and composite foreign keys (#960).\n",
   "closed_by": {
     "login": "github-actions[bot]",
     "id": 41898282,
@@ -76,7 +76,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -87,7 +87,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/952/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/952/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

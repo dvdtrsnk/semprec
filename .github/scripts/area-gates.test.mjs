@@ -29,7 +29,7 @@ const SCRIPTS = ["changed-areas.mjs", "is-entry-script.mjs"].map((name) => fileU
 
 /** A clone of a bare `origin` whose base commit already carries the detector, so no later diff includes it. */
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "semprec-area-gates-"));
+  const root = mkdtempSync(join(tmpdir(), "alldots-area-gates-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const remote = join(root, "remote.git");
   const cwd = join(root, "work");

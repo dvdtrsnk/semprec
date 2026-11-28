@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
@@ -23,7 +23,7 @@ describe("seedSystem without a Files.events property (issue #1698)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const actual = await vi.importActual<typeof import("../../chokePoint/propertiesStore.js")>(
       "../../chokePoint/propertiesStore.js",
     );

@@ -6,55 +6,55 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^@semprec\/shared$/,
+        find: /^@alldots\/shared$/,
         replacement: fileURLToPath(new URL("./packages/shared/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/queue$/,
+        find: /^@alldots\/queue$/,
         replacement: fileURLToPath(new URL("./packages/queue/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/module-registry$/,
+        find: /^@alldots\/module-registry$/,
         replacement: fileURLToPath(new URL("./packages/module-registry/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/block-model$/,
+        find: /^@alldots\/block-model$/,
         replacement: fileURLToPath(new URL("../shared/block-model/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/data$/,
+        find: /^@alldots\/data$/,
         replacement: fileURLToPath(new URL("./packages/data/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/realtime$/,
+        find: /^@alldots\/realtime$/,
         replacement: fileURLToPath(new URL("./packages/realtime/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/application$/,
+        find: /^@alldots\/application$/,
         replacement: fileURLToPath(new URL("./packages/application/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/notifications$/,
+        find: /^@alldots\/notifications$/,
         replacement: fileURLToPath(new URL("./packages/notifications/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/ai-gateway-client$/,
+        find: /^@alldots\/ai-gateway-client$/,
         replacement: fileURLToPath(new URL("./packages/ai-gateway-client/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/ai-gateway$/,
+        find: /^@alldots\/ai-gateway$/,
         replacement: fileURLToPath(new URL("./packages/ai-gateway/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/agent-runtime$/,
+        find: /^@alldots\/agent-runtime$/,
         replacement: fileURLToPath(new URL("./packages/agent-runtime/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/credentials$/,
+        find: /^@alldots\/credentials$/,
         replacement: fileURLToPath(new URL("./packages/credentials/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@semprec\/shared\/src\/logger\.js$/,
+        find: /^@alldots\/shared\/src\/logger\.js$/,
         replacement: fileURLToPath(new URL("./packages/shared/src/logger.ts", import.meta.url)),
       },
     ],
@@ -63,6 +63,6 @@ export default defineConfig({
     include: ["packages/*/src/**/*.unit.test.ts", "services/*/src/**/*.unit.test.ts"],
     environment: "node",
     // Unit tests such as `traceEnvelope.unit.test.ts` call `enqueueJob` without a tenant scope; an unset mode is strict.
-    env: { SEMPREC_TENANT_SCOPE: "warn" },
+    env: { ALLDOTS_TENANT_SCOPE: "warn" },
   },
 });

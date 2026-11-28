@@ -2,7 +2,7 @@
   {
     "id": 30089505743,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPCrs8AAAAHAXlrzw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30089505743",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30089505743",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -37,7 +37,7 @@
   {
     "id": 30098802133,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPCrs8AAAAHAgdF1Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30098802133",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30098802133",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -101,8 +101,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPCLg",
         "number": 24,
         "title": "[04/22] Ten hardcoded databases",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/24",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/24",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "6cf1c17c5d3133b5b5a95ae937d25c1f2f335f65e1c79b25d374d442a98dc487"
       }
@@ -140,8 +140,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPDJA",
         "number": 26,
         "title": "[06/22] IMAP Sync Core",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/26",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/26",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "cc778d00199a2bfb1db58e7c602566c1dc99a4be3705f07709b2a7f3257c36f5"
       }
@@ -150,7 +150,7 @@
   {
     "id": 30114629176,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPCrs8AAAAHAvjGOA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30114629176",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30114629176",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -214,8 +214,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPEzQ",
         "number": 29,
         "title": "[09/22] Module contract — ModuleManifest, ModuleRegistry, migrations, drift, testing",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/29",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/29",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "e58270d5fc07fac936bd53a623de20996fb524c1622ddbd48c29de8d3ff1d699"
       }
@@ -253,14 +253,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBS-rDQ",
         "number": 65,
         "title": "[04/22] Ten hardcoded databases",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/65",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/65",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/65",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/65",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/65.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/65.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/65",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/65",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/65.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/65.patch",
           "merged_at": "2026-08-28T07:56:43Z"
         },
         "bodySha256": "542687a1cf02a90da4b174d6cc57d473b804613d1063bacdaf33422ec2c7af2d"
@@ -270,7 +270,7 @@
   {
     "id": 30152854703,
     "node_id": "LE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBUAMrw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30152854703",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30152854703",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -306,7 +306,7 @@
   {
     "id": 30152989337,
     "node_id": "LE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBUIamQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30152989337",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30152989337",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -371,14 +371,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBUJSsA",
         "number": 68,
         "title": "[05/22] Books and Movies/TV — one generic library-module contract",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/68",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/68",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/68",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/68",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/68.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/68.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/68",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/68",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/68.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/68.patch",
           "merged_at": "2026-08-28T10:11:57Z"
         },
         "bodySha256": "dce5ee9e881fa9e6eac8dd6ea83b8560f9d06a8782b1633dd3aada894ba79180"
@@ -386,9 +386,9 @@
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451046415",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/25#issuecomment-5451046415",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/25",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451046415",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/25#issuecomment-5451046415",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/25",
     "id": 5451046415,
     "node_id": "IC_kwDOUFuQ4c8AAAABROheDw",
     "user": {
@@ -418,7 +418,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451046415/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451046415/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -456,8 +456,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -499,7 +499,7 @@
   {
     "id": 30157683344,
     "node_id": "LE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBYm6kA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30157683344",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30157683344",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -535,7 +535,7 @@
   {
     "id": 30157683345,
     "node_id": "UNLE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBYm6kQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30157683345",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30157683345",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -569,9 +569,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451049672",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/25#issuecomment-5451049672",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/25",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451049672",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/25#issuecomment-5451049672",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/25",
     "id": 5451049672,
     "node_id": "IC_kwDOUFuQ4c8AAAABROhqyA",
     "user": {
@@ -597,11 +597,11 @@
     },
     "created_at": "2026-08-28T09:49:18Z",
     "updated_at": "2026-08-28T09:49:18Z",
-    "body": "Automated agent run failed. Log on VPS: `/home/semprec-agent/logs/issue-25-20260828-080725.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
+    "body": "Automated agent run failed. Log on VPS: `/home/alldots-agent/logs/issue-25-20260828-080725.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451049672/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451049672/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -639,8 +639,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -682,7 +682,7 @@
   {
     "id": 30158730693,
     "node_id": "REFE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBZm1xQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30158730693",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30158730693",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -706,14 +706,14 @@
     },
     "event": "referenced",
     "commit_id": "b1de2fcc85511b3f5e11d38e2b38ae6f43ba10a4",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/b1de2fcc85511b3f5e11d38e2b38ae6f43ba10a4",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/b1de2fcc85511b3f5e11d38e2b38ae6f43ba10a4",
     "created_at": "2026-08-28T10:11:58Z",
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451272769",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/25#issuecomment-5451272769",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/25",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451272769",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/25#issuecomment-5451272769",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/25",
     "id": 5451272769,
     "node_id": "IC_kwDOUFuQ4c8AAAABROvSQQ",
     "user": {
@@ -743,7 +743,7 @@
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5451272769/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5451272769/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -782,7 +782,7 @@
   {
     "id": 30158739419,
     "node_id": "CE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBZnX2w",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30158739419",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30158739419",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -815,7 +815,7 @@
   {
     "id": 30158740317,
     "node_id": "UNLE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBZnbXQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30158740317",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30158740317",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -880,14 +880,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBVUJZA",
         "number": 69,
         "title": "[06/22] IMAP Sync Core",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/69",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/69",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/69",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/69",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/69.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/69.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/69",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/69",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/69.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/69.patch",
           "merged_at": null
         },
         "bodySha256": "3907cd46bc1f23dda07fe8c43baa6db3d7f25e384a2325d07388adc98e8505fe"
@@ -926,14 +926,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBWwVUw",
         "number": 70,
         "title": "Rename review:approved to spec:approved, add agent:reviewing-and-fixing / agent:blocked",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/70",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/70",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/70",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/70",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/70.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/70.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/70",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/70",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/70.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/70.patch",
           "merged_at": "2026-08-28T15:26:15Z"
         },
         "bodySha256": "d018825769f8b52fdb14dac5d205c6a487451ac5b3a06c3dbadaccb37ca1ba3e"
@@ -943,7 +943,7 @@
   {
     "id": 30173204954,
     "node_id": "LE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBnaR2g",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30173204954",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30173204954",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -979,7 +979,7 @@
   {
     "id": 30173223054,
     "node_id": "REFE_lADOUFuQ4c8AAAABOdPCrs8AAAAHBnbYjg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30173223054",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30173223054",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -1003,7 +1003,7 @@
     },
     "event": "referenced",
     "commit_id": "3fd8dfe93722054f7ea3128c414476be2a54dff6",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/3fd8dfe93722054f7ea3128c414476be2a54dff6",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/3fd8dfe93722054f7ea3128c414476be2a54dff6",
     "created_at": "2026-08-28T15:26:16Z",
     "performed_via_github_app": null
   },
@@ -1039,14 +1039,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBXiK1Q",
         "number": 71,
         "title": "[06/22] IMAP Sync Core",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/71",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/71",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/71",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/71",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/71.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/71.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/71",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/71",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/71.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/71.patch",
           "merged_at": "2026-08-28T21:48:58Z"
         },
         "bodySha256": "4f0a0b131ba6f98f615e8d0b61d955cf505037ae22640dd60fb443e821d0c677"
@@ -1085,8 +1085,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvoKQ",
         "number": 88,
         "title": "[implementation-audit-fixes 15/23] Implement the library-grid view component and container",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/88",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/88",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "1bfd85e032e6a347576136cdc4f41118c26fe8e9c38fd8b33a10db7e83695748"
       }
@@ -1124,8 +1124,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABPZlYRg",
         "number": 217,
         "title": "[implementation-audit-fixes 13/23] Bootstrap the web workspace with view registry and API client",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/217",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/217",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "0929652f241dce2628bb5525ff9d4223598107bb3d0150fd91c3885f9f4c6d30"
       }
@@ -1163,8 +1163,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABPZlZGg",
         "number": 218,
         "title": "[implementation-audit-fixes 14/23] Serve localized property catalogs from the properties route",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/218",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/218",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "cf949b7add8cc7d61cae726b85f2b74a4feea10480ebddaf2173a86cac796deb"
       }
@@ -1202,14 +1202,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABFzsgqA",
         "number": 836,
         "title": "[pre-tenancy-groundwork 06/07] Extract a shared HTTP helper module for the API service (#658)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/836",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/836",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/836",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/836",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/836.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/836.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/836",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/836",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/836.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/836.patch",
           "merged_at": "2026-09-30T03:10:31Z"
         },
         "bodySha256": "57cce00c51c46b2f6924647b77c58192695beba06610efba96d2d64281bb1087"
@@ -1248,14 +1248,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGdHexg",
         "number": 1104,
         "title": "[mt-foundation 09/16] Teach the convention skills and AGENTS.md the tenancy rules (#970)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1104",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1104",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1104.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1104.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1104",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1104",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1104.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1104.patch",
           "merged_at": "2026-10-05T18:23:06Z"
         },
         "bodySha256": "b6e6c3715ec74f84c2702d12ae4311a09ca02945a02f994ff4563dec6de0ea33"
@@ -1294,14 +1294,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABG25C_g",
         "number": 1121,
         "title": "[mt-context 03/21] Resolve the tenant at authentication and run adapter routes in its scope (#980)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1121",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1121",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1121",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1121",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1121.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1121.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1121",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1121",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1121.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1121.patch",
           "merged_at": "2026-10-06T16:09:41Z"
         },
         "bodySha256": "02134d3c7ba5000cc3381f1f9d92c6329fb33d2388ccc1b4b67069270592f70e"
@@ -1340,14 +1340,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABG97drg",
         "number": 1128,
         "title": "[mt-context 04/21] Run every bespoke HTTP listener in the caller's tenant or an explicit system scope (#981)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1128",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1128",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1128",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1128",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1128.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1128.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1128",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1128",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1128.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1128.patch",
           "merged_at": "2026-10-07T18:50:03Z"
         },
         "bodySha256": "4eb411dd37b06cec0c07fecc4b82d01d1cc5a4212f4d3bd204b5b28a4156ed43"
@@ -1386,14 +1386,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJHvq3A",
         "number": 1210,
         "title": "[mt-ops 10/10] Route realtime logging through the shared logger and forbid console in backend production code (#1077)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1210",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1210",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1210",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1210",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1210.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1210.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1210",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1210",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1210.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1210.patch",
           "merged_at": "2026-10-18T18:27:21Z"
         },
         "bodySha256": "c0910684f53cad714e188ef69a6398f8f598da9f02d0ab469ed03553b1c84867"
@@ -1432,14 +1432,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJKhAEw",
         "number": 1217,
         "title": "[mt-enforcement 04/12] Prove background isolation with an exhaustive two-tenant task suite (#1056)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1217",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1217",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1217",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1217",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1217.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1217.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1217",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1217",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1217.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1217.patch",
           "merged_at": "2026-10-18T17:21:55Z"
         },
         "bodySha256": "51b9f1d270621fb61ec4d46e60d2d0f71fd3c5d5d576198198504b6a00f5e08b"

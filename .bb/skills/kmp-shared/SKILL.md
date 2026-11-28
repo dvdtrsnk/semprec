@@ -1,6 +1,6 @@
 ---
 name: kmp-shared
-description: "How the Kotlin Multiplatform layer under mobile/shared is shaped and changed - the module graph, what commonMain may import, the narrow SharedSDK framework Swift sees through SKIE, typed failures and cancellation across the Kotlin-Swift boundary, every native consumer changed together, and the JVM, native and framework checks. Load this BEFORE editing anything under mobile/shared/ or changing what the framework exports. Triggers on: mobile/shared/, commonMain, commonTest, semprec.kmp, :shared:core, :shared:domain, :shared:data, :shared:presentation, :shared:umbrella, export(project(, SharedSDK, @HiddenFromObjC, @Throws, SKIE, onEnum(of:, FailureKind, RepositoryResult, PlaceholderRepository, a use case, expect/actual, a public suspend fun or Flow, sharedJvmTest, sharedAppleTest, -Pmobile.iosSimulatorId, linkDebugFrameworkIosSimulatorArm64, kmp-framework, and networking or persistence in mobile code. Skip only when nothing under mobile/shared/ and nothing exported changes."
+description: "How the Kotlin Multiplatform layer under mobile/shared is shaped and changed - the module graph, what commonMain may import, the narrow SharedSDK framework Swift sees through SKIE, typed failures and cancellation across the Kotlin-Swift boundary, every native consumer changed together, and the JVM, native and framework checks. Load this BEFORE editing anything under mobile/shared/ or changing what the framework exports. Triggers on: mobile/shared/, commonMain, commonTest, alldots.kmp, :shared:core, :shared:domain, :shared:data, :shared:presentation, :shared:umbrella, export(project(, SharedSDK, @HiddenFromObjC, @Throws, SKIE, onEnum(of:, FailureKind, RepositoryResult, PlaceholderRepository, a use case, expect/actual, a public suspend fun or Flow, sharedJvmTest, sharedAppleTest, -Pmobile.iosSimulatorId, linkDebugFrameworkIosSimulatorArm64, kmp-framework, and networking or persistence in mobile code. Skip only when nothing under mobile/shared/ and nothing exported changes."
 ---
 
 # One Kotlin layer below both UIs. Swift sees only its narrow front.
@@ -16,7 +16,7 @@ the layer around it.
 
 Gradle root is `mobile/`. Each project directory matches its Gradle path
 (`:shared:core` lives in `mobile/shared/core`), and every shared module applies
-the `semprec.kmp` convention plugin from `mobile/build-logic/`.
+the `alldots.kmp` convention plugin from `mobile/build-logic/`.
 
 | Module | Holds today | Depends on |
 |---|---|---|
@@ -48,7 +48,7 @@ Each layer keeps its job:
 
 ## 2. commonMain compiles for five targets
 
-`semprec.kmp` declares `jvm()`, `androidTarget()`, `iosArm64()`,
+`alldots.kmp` declares `jvm()`, `androidTarget()`, `iosArm64()`,
 `iosSimulatorArm64()` and `macosArm64()`, and builds the Apple targets for the
 app's minimum OS versions (iOS 27.0, macOS 26.0 from
 `mobile/gradle/project.properties`). An API used in `src/commonMain` must exist

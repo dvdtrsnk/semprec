@@ -1,7 +1,7 @@
 // The rows a cascade reaches when the owning module registered a cascade expansion.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint.js";
 import { registerItemCascadeExpansion } from "../hooks.js";
 import * as itemsStore from "../itemsStore.js";
@@ -57,7 +57,7 @@ function cascade(root: ItemRow, include?: (candidate: ItemRow) => boolean): Prom
 describe("collectCascadeRows (issue gh-1882)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     // The Events module has no expansion in the composition point; this test gives it one it controls.
     registerItemCascadeExpansion(EVENTS_MODULE_ID, async ({ root }) => added(root));

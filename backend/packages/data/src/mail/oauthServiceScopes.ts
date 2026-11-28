@@ -44,7 +44,7 @@ function grantsAll(provider: MailOauthProvider, granted: readonly string[], requ
 }
 
 /**
- * Whether a grant lets Semprec read and send the account's mail. Google shows each scope as its own unchecked box,
+ * Whether a grant lets Alldots read and send the account's mail. Google shows each scope as its own unchecked box,
  * so a person may continue without them. Graph's sign-in scopes (`offline_access`, `User.Read`) give no mail access and
  * are not checked.
  */

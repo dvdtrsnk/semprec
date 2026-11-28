@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant, type AiGatewayCompletionInput } from "@semprec/shared";
+import { runAsSystem, runInTenant, type AiGatewayCompletionInput } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -264,7 +264,7 @@ async function refusal(call: Promise<unknown>) {
 describe("message content and attachments on demand", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -273,7 +273,7 @@ describe("message content and attachments on demand", () => {
     other = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));
     await runInTenant(other, () => seedSystem(runtime));
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-content-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-content-"));
   });
 
   afterEach(async () => {

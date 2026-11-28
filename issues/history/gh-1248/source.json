@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1248",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1248",
   "id": 5977975425,
   "node_id": "I_kwDOUFuQ4c8AAAABZFCqgQ",
   "number": 1248,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -45,7 +45,7 @@
     {
       "id": 12386016783,
       "node_id": "LA_kwDOUFuQ4c8AAAAC4kOeDw",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/followups:issue",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/followups:issue",
       "name": "followups:issue",
       "color": "bfd4f2",
       "default": false,
@@ -70,14 +70,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1245",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1245",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #1069\n**Model tier:** low\n\n## Context\n\nModel tier rationale: This adds an input-size guard and adjusts existing pure encryption tests without changing the cipher, encoding or stored format.\n\nIssue #1069 also edits the credentials package entry point while retiring the master-only scheme. This follow-up waits for that file owner and changes only the surviving envelope-key wrapper.\n\n- PR #1115, finding `3efdd856ec`, `backend/packages/credentials/src/index.ts:120`: wrapDataKey wraps arbitrary-length plaintext even though unwrapDataKey accepts only a 32-byte data key.\n\n## Task\n\nCheck `dataKey.length === DATA_KEY_BYTES` in `wrapDataKey` before sealing; reject every other length with a plain Error identifying the required size, following the existing error shape without a `code` property. Extend the existing wrap/unwrap unit suite with invalid plaintext-key lengths and retain the valid round-trip case. Repair the existing malformed-unwrapped-key fixture: construct its authenticated short plaintext directly with `sealSecret` and the associated-data bytes `semprec:tenant-key:v1:${tenantId}`, rather than obtaining it through the newly rejecting `wrapDataKey`. That existing test must continue to reach unwrapDataKey's own length guard.\n\n## Touches\n\n- backend/packages/credentials/src/index.ts (wrapDataKey only)\n- backend/packages/data/src/__tests__/credentialEnvelope.unit.test.ts (wrap/unwrap cases only)\n\n## Scope\n\n### In scope\n\nThe wrapping plaintext length guard and the tests that distinguish wrapping rejection from unwrapping rejection.\n\n### Out of scope\n\nMaster-key validation changes, tenant-ID normalization, cryptographic algorithms, credential scheme retirement and unrelated tests.\n\n## Acceptance criteria\n\n- For finding `3efdd856ec`, wrapping empty, short (including 16 and 31 bytes) and oversized (33 bytes) data keys rejects immediately with a plain Error mentioning 32 bytes; a generated 32-byte key still wraps and unwraps unchanged. The direct-seal malformed fixture still reaches and fails the unwrap length check rather than failing during fixture setup.\n\n\n<!-- crb-followup:v1 pr=1115 key=3efdd856ec -->",
+  "body": "**Blocked by:** #1069\n**Model tier:** low\n\n## Context\n\nModel tier rationale: This adds an input-size guard and adjusts existing pure encryption tests without changing the cipher, encoding or stored format.\n\nIssue #1069 also edits the credentials package entry point while retiring the master-only scheme. This follow-up waits for that file owner and changes only the surviving envelope-key wrapper.\n\n- PR #1115, finding `3efdd856ec`, `backend/packages/credentials/src/index.ts:120`: wrapDataKey wraps arbitrary-length plaintext even though unwrapDataKey accepts only a 32-byte data key.\n\n## Task\n\nCheck `dataKey.length === DATA_KEY_BYTES` in `wrapDataKey` before sealing; reject every other length with a plain Error identifying the required size, following the existing error shape without a `code` property. Extend the existing wrap/unwrap unit suite with invalid plaintext-key lengths and retain the valid round-trip case. Repair the existing malformed-unwrapped-key fixture: construct its authenticated short plaintext directly with `sealSecret` and the associated-data bytes `alldots:tenant-key:v1:${tenantId}`, rather than obtaining it through the newly rejecting `wrapDataKey`. That existing test must continue to reach unwrapDataKey's own length guard.\n\n## Touches\n\n- backend/packages/credentials/src/index.ts (wrapDataKey only)\n- backend/packages/data/src/__tests__/credentialEnvelope.unit.test.ts (wrap/unwrap cases only)\n\n## Scope\n\n### In scope\n\nThe wrapping plaintext length guard and the tests that distinguish wrapping rejection from unwrapping rejection.\n\n### Out of scope\n\nMaster-key validation changes, tenant-ID normalization, cryptographic algorithms, credential scheme retirement and unrelated tests.\n\n## Acceptance criteria\n\n- For finding `3efdd856ec`, wrapping empty, short (including 16 and 31 bytes) and oversized (33 bytes) data keys rejects immediately with a plain Error mentioning 32 bytes; a generated 32-byte key still wraps and unwraps unchanged. The direct-seal malformed fixture still reaches and fails the unwrap length check rather than failing during fixture setup.\n\n\n<!-- crb-followup:v1 pr=1115 key=3efdd856ec -->",
   "closed_by": {
     "login": "dvdtrsnk",
     "id": 122625462,
@@ -100,7 +100,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -111,7 +111,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1248/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1248/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

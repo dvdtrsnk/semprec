@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { assertAgentDatabaseAccess, assertReaderDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { allowItemsForTurn } from "../agentGrants/agentRunReadAllowancesStore.js";
@@ -136,7 +136,7 @@ function ids(page: { items: ItemRow[] }): string[] {
 describe("sensitivity inherited through relation edges (issue #1999)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await createUser(adminPool, { tenantId, email: `${randomUUID()}@example.test`, passwordHash: "unused" });

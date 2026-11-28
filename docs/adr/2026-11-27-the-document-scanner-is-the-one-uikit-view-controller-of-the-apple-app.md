@@ -29,7 +29,7 @@ Rejected:
 
 - A camera of our own (`AVFoundation` with Vision's rectangle detection), as the wake guard reads codes. It would
   rebuild the system scanner's edge detection, perspective correction, page review and multi-page flow, worse.
-- Leaving the scan to another app (Files, Notes) and sharing its PDF to Semprec. It needs a share extension, a second
+- Leaving the scan to another app (Files, Notes) and sharing its PDF to Alldots. It needs a share extension, a second
   process the outbox does not coordinate, and several steps from the Action button.
 
 ## Decision

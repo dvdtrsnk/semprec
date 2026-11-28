@@ -21,19 +21,19 @@ targets build for iPhone, iPad and Mac (native macOS, not Mac Catalyst).
 | Android UI | `android/core/ui`, `android/feature/home`, `android/feature/settings`, `android/app` | theme and shared components; one module per feature; the app, which composes everything and owns navigation |
 | Apple UI | `apple/Modules/Core/{CoreKit,DesignSystem,Dependencies}`, `apple/Modules/Features/{Home,Settings}`, `apple/Projects/App` | the Swift side of the shared ViewModels, theme and shared views, the dependency container; one module per feature; the app, which composes everything and owns navigation |
 
-Kotlin packages follow the modules: `cz.semprec.app.core`, `.domain`, `.data`,
-`.presentation` and `.sdk` in `shared/`; `cz.semprec.app` (the app),
-`cz.semprec.app.core.ui`, `cz.semprec.app.feature.home` and
-`cz.semprec.app.feature.settings` in `android/`. No `commonMain` source imports a
+Kotlin packages follow the modules: `cz.alldots.app.core`, `.domain`, `.data`,
+`.presentation` and `.sdk` in `shared/`; `cz.alldots.app` (the app),
+`cz.alldots.app.core.ui`, `cz.alldots.app.feature.home` and
+`cz.alldots.app.feature.settings` in `android/`. No `commonMain` source imports a
 platform API; its only AndroidX imports are `ViewModel` and `viewModelScope` from
 the multiplatform `androidx.lifecycle:lifecycle-viewmodel` artifact.
 
 ### Gradle modules
 
-Every shared module applies the `semprec.kmp` convention plugin (targets `jvm`,
+Every shared module applies the `alldots.kmp` convention plugin (targets `jvm`,
 `androidTarget`, `iosArm64`, `iosSimulatorArm64`, `macosArm64`). Android modules
-apply `semprec.android.compose` (a Compose library) or
-`semprec.android.application`. The project dependencies, from the `build.gradle.kts`
+apply `alldots.android.compose` (a Compose library) or
+`alldots.android.application`. The project dependencies, from the `build.gradle.kts`
 files:
 
 ```
@@ -64,13 +64,13 @@ sequences for flows).
 
 ### Tuist targets
 
-Every target uses `SemprecProject.destinations` (`[.iPhone, .iPad, .mac]`) and
-`SemprecProject.deploymentTargets` (iOS 27.0, macOS 26.0), arm64 only
+Every target uses `AlldotsProject.destinations` (`[.iPhone, .iPad, .mac]`) and
+`AlldotsProject.deploymentTargets` (iOS 27.0, macOS 26.0), arm64 only
 (`ARCHS` from `ProjectConfiguration.architectures`, which the Swift packages in
 `apple/Tuist/Package.swift` use too), Swift 6 with complete strict concurrency, and
 the configurations Debug and Release
-(`apple/Tuist/ProjectDescriptionHelpers/SemprecProject.swift`). The one exception
-is the XCUITest target `SemprecUITests`, which builds for iPhone and iPad only
+(`apple/Tuist/ProjectDescriptionHelpers/AlldotsProject.swift`). The one exception
+is the XCUITest target `AlldotsUITests`, which builds for iPhone and iPad only
 (`destinations: [.iPhone, .iPad]`, `.iOS(ProjectConfiguration.iosMinimum)`):
 on macOS XCUITest needs the Accessibility permission to drive the app, which a
 build machine does not grant. The dependencies, from the `Project.swift` files:
@@ -81,21 +81,21 @@ DesignSystem      -> (nothing)
 Dependencies      -> CoreKit, FactoryKit
 HomeFeature       -> CoreKit, DesignSystem
 SettingsFeature   -> CoreKit, DesignSystem
-Semprec (the app) -> CoreKit, Dependencies, HomeFeature, SettingsFeature, NavigatorUI
+Alldots (the app) -> CoreKit, Dependencies, HomeFeature, SettingsFeature, NavigatorUI
 
 CoreKitTests          -> CoreKit (its import of SharedSDK links the framework through autolinking)
 HomeFeatureTests      -> HomeFeature, CoreKit
 SettingsFeatureTests  -> SettingsFeature, CoreKit
-SemprecTests          -> Semprec, NavigatorUI
-SemprecUITests        -> Semprec (the app under test; it imports none of its modules)
+AlldotsTests          -> Alldots, NavigatorUI
+AlldotsUITests        -> Alldots (the app under test; it imports none of its modules)
 ```
 
-`SemprecUITests` finds elements by the identifiers the app and the features
+`AlldotsUITests` finds elements by the identifiers the app and the features
 declare, so its sources are `Projects/App/UITests/**` plus three files it
 compiles from the targets it does not link: `Projects/App/Sources/AppIdentifiers.swift`,
 `Modules/Features/Home/Sources/HomeIdentifiers.swift` and
 `Modules/Features/Settings/Sources/SettingsIdentifiers.swift`. `ARCH-APPLE`
-checks the imports of those files against the policy of `SemprecUITests`.
+checks the imports of those files against the policy of `AlldotsUITests`.
 
 Only CoreKit's sources and its tests import `SharedSDK`: the sources as
 `@preconcurrency internal import SharedSDK` in
@@ -103,12 +103,12 @@ Only CoreKit's sources and its tests import `SharedSDK`: the sources as
 values for the mapping tests. Features and the app use CoreKit's Swift types, and
 the SwiftLint rule `kmp_framework_outside_corekit` reports an import anywhere else,
 other test targets included. `FactoryKit` is imported only by Dependencies, which
-re-exports it, and `NavigatorUI` only by the app and its tests (`SemprecTests`,
+re-exports it, and `NavigatorUI` only by the app and its tests (`AlldotsTests`,
 which drive the app's NavigatorUI stacks). `apple/Workspace.swift` declares two
-shared schemes. `Semprec` builds the app and runs the four unit test bundles, on
-macOS and on an iOS simulator. `SemprecUITests` builds the app and runs the
+shared schemes. `Alldots` builds the app and runs the four unit test bundles, on
+macOS and on an iOS simulator. `AlldotsUITests` builds the app and runs the
 XCUITest bundle, on an iOS simulator only; it is a scheme of its own so that the
-`Semprec` scheme's tests keep running on macOS without the Accessibility
+`Alldots` scheme's tests keep running on macOS without the Accessibility
 permission.
 
 ## Screen ViewModels
@@ -116,7 +116,7 @@ permission.
 ### The shared contract
 
 `ScreenViewModel<State, Action, Effect>`
-(`shared/presentation/src/commonMain/kotlin/cz/semprec/app/presentation/ScreenViewModel.kt`)
+(`shared/presentation/src/commonMain/kotlin/cz/alldots/app/presentation/ScreenViewModel.kt`)
 extends the multiplatform AndroidX `ViewModel`:
 
 - `state: StateFlow<State>`: one immutable value; a collector receives the latest
@@ -163,9 +163,9 @@ repository call returns after the cancellation. `onAction` does nothing after
 
 ### Android: the ViewModelStore owns it
 
-- `android/app/src/main/kotlin/cz/semprec/app/AppModule.kt` binds one `HomeSDK` and
+- `android/app/src/main/kotlin/cz/alldots/app/AppModule.kt` binds one `HomeSDK` and
   a Koin `viewModel { }` per screen (the detail takes its `itemId` as a parameter);
-  `SemprecApplication` starts Koin with it.
+  `AlldotsApplication` starts Koin with it.
 - `HomeTabHost.kt` and `SettingsTabHost.kt`, next to it, call `koinViewModel()`
   inside each `NavHost` destination, so each ViewModel lives in the
   `ViewModelStore` of its back-stack entry and is cleared when the entry leaves
@@ -250,7 +250,7 @@ router and maps its screens' effects to it, and the app implements the routers a
 owns every tab, stack and sheet. Navigation libraries are dependencies of the apps
 and their tests only: `navigation-compose` (with `kotlinx-serialization-core` and
 the serialization plugin for its type-safe routes) of `android/app`, `NavigatorUI`
-of the Apple app target and of `SemprecTests`.
+of the Apple app target and of `AlldotsTests`.
 
 | | Android | Apple |
 | --- | --- | --- |
@@ -474,7 +474,7 @@ same key:
 | `failure.unexpected` | `android/feature/home` | HomeFeature | Something went wrong. |
 | `settings.title` | `android/feature/settings` | SettingsFeature | Settings |
 | `settings.row.about` | `android/feature/settings` | SettingsFeature | About |
-| `about.title` | `android/feature/settings` | SettingsFeature | About Semprec |
+| `about.title` | `android/feature/settings` | SettingsFeature | About Alldots |
 | `about.description` | `android/feature/settings` | SettingsFeature | This app is a placeholder for the screens to come. |
 | `about.version` | `android/feature/settings` | SettingsFeature | Version `%1$s (%2$s)` (Apple `%1$@ (%2$@)`) |
 | `about.done` | `android/feature/settings` | SettingsFeature | Done |
@@ -522,7 +522,7 @@ Android sets `testTagsAsResourceId` on the scene's `Scaffold` and on `AboutSheet
 (a window of its own), so UIAutomator sees the tags as resource ids. The Apple
 screens mark their container with `.accessibilityElement(children: .contain)`, so
 the screen identifier does not hide the identifiers inside it. Android's
-`SmokeFlowTest` and Apple's `SmokeFlowTests` (`SemprecUITests`, which compiles
+`SmokeFlowTest` and Apple's `SmokeFlowTests` (`AlldotsUITests`, which compiles
 `AppIdentifiers.swift`, `HomeIdentifiers.swift` and `SettingsIdentifiers.swift`)
 find the elements by these values.
 
@@ -532,19 +532,19 @@ find the elements by these values.
 | --- | --- | --- | --- |
 | Kotlin common tests | `shared/*/src/commonTest` (`shared/core` has none) | `sharedJvmTest` on the JVM; `sharedAppleTest` natively on macOS, and with `-Pmobile.iosSimulatorId=<UDID>` also on that iOS simulator | the use cases, the in-memory repository, every ViewModel branch (content, empty, expected and unexpected failure, retry, not found, effects, `close()` cancelling work, a superseded or closed load that answers late never publishing, clearing the owning `ViewModelStore` without `close()`), `ScreenViewModel` effect buffering, `HomeSDK` |
 | Android unit tests | `android/app/src/test`, `android/core/ui/src/test`, `android/feature/*/src/test` | `androidUnitTest` | the `SceneNavigation` queue and its saved state, including the values it drops; command encoding; `CollectEffects` delivery on a simulated main looper; router effect mapping; failure messages |
-| Android instrumented tests | `android/app/src/androidTest/kotlin/cz/semprec/app/` (`SmokeFlowTest`, `HomeStackTest`, `LaunchIntentTest`) | `connectedDebugAndroidTest` on a device | the app on the real SDK: list, detail and back; a detail over another item's detail; ids such as `"null"`; Settings, About with the version, and Done; a Home command right after recreation with Settings selected; every item id reaching its detail entry unchanged; a launch with extras named like the saved keys, with Navigation's deep-link extras to the detail (without arguments, with a `String` or an `Int` `itemId`, without the `itemId`, as `deepLinkExtras`, in a `FLAG_ACTIVITY_NEW_TASK` launch) or with a data URI, and a new intent with deep-link extras and a data URI delivered to the running activity with `FLAG_ACTIVITY_SINGLE_TOP`, each showing the Home list without a detail or a crash, with the activity handing none of it on (`LaunchIntentTest`, which reads the graph and destination ids from the real Home graph) |
-| Swift unit tests | `apple/Modules/*/*/Tests`, `apple/Projects/App/Tests` | the `Semprec` scheme's test action, on macOS and on an iOS simulator | `CoreKitTests`: every mapping branch of the bridges over Kotlin values (`SharedMappingTests`), the bridges over the real Kotlin ViewModels (`SharedScreenModelTests`), and `EffectQueue`; `HomeFeatureTests`, `SettingsFeatureTests`: the feature ViewModels over `ScriptedScreenModel`, failure messages, item titles; `SemprecTests`: the routers and `NavigationContext` over a `StackSpy` and over a real root `Navigator` (the detail on top not pushed again, also after a back swipe, the adapter's `top`, registering the same navigator again) (`NavigationTests`), the real `AppScene` in a window, where the Home router pushes the detail onto the Home stack and the Settings router presents About as a sheet over the Settings stack, and on macOS a click on a list row right of its label opens the row (`AppSceneNavigationTests`), and a closed scene releasing its composition (`SceneLifetimeTests`) |
-| Apple UI tests | `apple/Projects/App/UITests` (`SmokeFlowTests`) | the `SemprecUITests` scheme's test action, on an iOS simulator only | the installed app driven by XCUITest through the test identifiers above, as Android's `SmokeFlowTest` does: list to detail (the title of the tapped row) and Back, then another detail that shows its content; Settings, the About sheet with the version and build, and Done; each tab keeping its own stack across a tab switch |
+| Android instrumented tests | `android/app/src/androidTest/kotlin/cz/alldots/app/` (`SmokeFlowTest`, `HomeStackTest`, `LaunchIntentTest`) | `connectedDebugAndroidTest` on a device | the app on the real SDK: list, detail and back; a detail over another item's detail; ids such as `"null"`; Settings, About with the version, and Done; a Home command right after recreation with Settings selected; every item id reaching its detail entry unchanged; a launch with extras named like the saved keys, with Navigation's deep-link extras to the detail (without arguments, with a `String` or an `Int` `itemId`, without the `itemId`, as `deepLinkExtras`, in a `FLAG_ACTIVITY_NEW_TASK` launch) or with a data URI, and a new intent with deep-link extras and a data URI delivered to the running activity with `FLAG_ACTIVITY_SINGLE_TOP`, each showing the Home list without a detail or a crash, with the activity handing none of it on (`LaunchIntentTest`, which reads the graph and destination ids from the real Home graph) |
+| Swift unit tests | `apple/Modules/*/*/Tests`, `apple/Projects/App/Tests` | the `Alldots` scheme's test action, on macOS and on an iOS simulator | `CoreKitTests`: every mapping branch of the bridges over Kotlin values (`SharedMappingTests`), the bridges over the real Kotlin ViewModels (`SharedScreenModelTests`), and `EffectQueue`; `HomeFeatureTests`, `SettingsFeatureTests`: the feature ViewModels over `ScriptedScreenModel`, failure messages, item titles; `AlldotsTests`: the routers and `NavigationContext` over a `StackSpy` and over a real root `Navigator` (the detail on top not pushed again, also after a back swipe, the adapter's `top`, registering the same navigator again) (`NavigationTests`), the real `AppScene` in a window, where the Home router pushes the detail onto the Home stack and the Settings router presents About as a sheet over the Settings stack, and on macOS a click on a list row right of its label opens the row (`AppSceneNavigationTests`), and a closed scene releasing its composition (`SceneLifetimeTests`) |
+| Apple UI tests | `apple/Projects/App/UITests` (`SmokeFlowTests`) | the `AlldotsUITests` scheme's test action, on an iOS simulator only | the installed app driven by XCUITest through the test identifiers above, as Android's `SmokeFlowTest` does: list to detail (the title of the tapped row) and Back, then another detail that shows its content; Settings, the About sheet with the version and build, and Done; each tab keeping its own stack across a tab switch |
 
 The Kotlin common tests share `FakeRepository` (whose `Behavior.Late` answers only
 after a gate opens, also after its caller was cancelled), `MainDispatcherTest` and
 `ViewModelStore.provide { }`, which creates a ViewModel in a real `ViewModelStore`
 as Android does, from
 `shared/presentation/src/commonTest/.../PresentationTestSupport.kt`. Every Swift
-unit test bundle is hosted in `Semprec.app`, which embeds `SharedSDK` (`TEST_HOST`, with
-its own path for macOS); only `SemprecTests` links against the app executable
-(`BUNDLE_LOADER`). `SemprecUITests` is not hosted: it launches the app it depends
-on (`appUnderTest` `Semprec` in the policy) and runs on iOS only, so on macOS the
+unit test bundle is hosted in `Alldots.app`, which embeds `SharedSDK` (`TEST_HOST`, with
+its own path for macOS); only `AlldotsTests` links against the app executable
+(`BUNDLE_LOADER`). `AlldotsUITests` is not hosted: it launches the app it depends
+on (`appUnderTest` `Alldots` in the policy) and runs on iOS only, so on macOS the
 in-process `AppSceneNavigationTests` are the only tests of the shown scene's
 navigation, and
 no macOS test tells which view the About sheet shows (a macOS sheet window has
@@ -566,16 +566,16 @@ platforms differ:
 | `apple/Modules/Core/DesignSystem/Sources/View+ListRowButton.swift` | the other one: `listRowButton()` keeps the system style on iOS, where a `Button` in a `List` already is a whole-row action that highlights when tapped, and applies the private `ListRowButtonStyle` on macOS, where a list keeps the bordered push button that reacts only on its capsule: the label leading-aligned across the row's full width (`.frame(maxWidth: .infinity, alignment: .leading)`), `.contentShape(Rectangle())` so the whole row reacts to a click, and `Theme.Opacity.pressed` while pressed. The button stays a button for accessibility on both. Every list row that is a `Button` uses it (`HomeScreen`, `SettingsScreen`). Arrow keys and Return do not move through a macOS list, which would need `List(selection:)` |
 | `apple/Projects/App/Tests/Support/SceneWindow.swift` | one of the two test files with an `#if os(...)`, the window helper of the app's tests: it hosts a view in an `NSWindow` of a fixed 480 by 640 points on macOS (`NSHostingController.sizingOptions = []`, because a tab view sized to its content collapses the window to no width) and in a `UIWindow` of the app's `UIWindowScene` on iOS, with AppKit and UIKit types reached through `import SwiftUI` only, and reads what the window shows: `stackTitle`, `presentsSheet`, on iOS `sheetTitle`, on macOS `clickRow(_:atFraction:)` and `listRowCount` |
 | `apple/Projects/App/Tests/AppSceneNavigationTests.swift` | the other test file with an `#if os(...)`: on iOS it also checks the About sheet's title, which a macOS sheet window does not show, and on macOS it clicks a row at 85 % of its width, where only a whole-row button reacts |
-| `apple/Tuist/ProjectDescriptionHelpers/SemprecProject.swift` | `TEST_HOST` is `Semprec.app/Semprec` on iOS and, through `TEST_HOST[sdk=macosx*]`, `Semprec.app/Contents/MacOS/Semprec` on macOS |
-| `apple/Projects/App/Project.swift` | `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` applies `apple/Projects/App/Entitlements/Semprec.entitlements` (the App Sandbox) to the macOS app, and `CODE_SIGN_ENTITLEMENTS[sdk=iphone*]` applies `Semprec-iOS.entitlements` (`aps-environment`: `development` in Debug, `production` in Release, from `SEMPREC_APS_ENVIRONMENT`) to the iOS app; `SemprecApnsEnvironment` in the plist (`sandbox` or `production`) is the environment the device token is registered for. `CFBundleURLTypes` registers the scheme `semprec`, which a Google or Microsoft sign-in returns to (`semprec://oauth`): the Account feature's `BrowserSignIn` opens the provider's page with SwiftUI's `webAuthenticationSession` (`ASWebAuthenticationSession`), which catches that address itself; the app has no `onOpenURL` and reads no URL it is opened with. macOS ignores the plist's UIKit keys, `remote-notification` of `UIBackgroundModes` among them. The XCUITest target `SemprecUITests` builds for iPhone and iPad only, and its scheme runs on an iOS simulator only, because macOS XCUITest needs the Accessibility permission |
-| `apple/Projects/App/Sources/SemprecApp.swift`, `apple/Projects/App/Sources/Notifications/AppDelegate.swift` | the app's one `#if os(iOS)` outside DesignSystem and the tests: only iOS registers for remote notifications, and an iOS app receives its APNs token and its silent pushes only through an application delegate, which `SemprecApp` adopts with `UIApplicationDelegateAdaptor`. `AppDelegate` reaches the UIKit types through `import SwiftUI`, imports no UIKit and hands everything to `AppNotifications`. On macOS the app registers no push token; local reminders, the badge and notification taps (`NotificationCenterDelegate`) work on both |
+| `apple/Tuist/ProjectDescriptionHelpers/AlldotsProject.swift` | `TEST_HOST` is `Alldots.app/Alldots` on iOS and, through `TEST_HOST[sdk=macosx*]`, `Alldots.app/Contents/MacOS/Alldots` on macOS |
+| `apple/Projects/App/Project.swift` | `CODE_SIGN_ENTITLEMENTS[sdk=macosx*]` applies `apple/Projects/App/Entitlements/Alldots.entitlements` (the App Sandbox) to the macOS app, and `CODE_SIGN_ENTITLEMENTS[sdk=iphone*]` applies `Alldots-iOS.entitlements` (`aps-environment`: `development` in Debug, `production` in Release, from `ALLDOTS_APS_ENVIRONMENT`) to the iOS app; `AlldotsApnsEnvironment` in the plist (`sandbox` or `production`) is the environment the device token is registered for. `CFBundleURLTypes` registers the scheme `alldots`, which a Google or Microsoft sign-in returns to (`alldots://oauth`): the Account feature's `BrowserSignIn` opens the provider's page with SwiftUI's `webAuthenticationSession` (`ASWebAuthenticationSession`), which catches that address itself; the app has no `onOpenURL` and reads no URL it is opened with. macOS ignores the plist's UIKit keys, `remote-notification` of `UIBackgroundModes` among them. The XCUITest target `AlldotsUITests` builds for iPhone and iPad only, and its scheme runs on an iOS simulator only, because macOS XCUITest needs the Accessibility permission |
+| `apple/Projects/App/Sources/AlldotsApp.swift`, `apple/Projects/App/Sources/Notifications/AppDelegate.swift` | the app's one `#if os(iOS)` outside DesignSystem and the tests: only iOS registers for remote notifications, and an iOS app receives its APNs token and its silent pushes only through an application delegate, which `AlldotsApp` adopts with `UIApplicationDelegateAdaptor`. `AppDelegate` reaches the UIKit types through `import SwiftUI`, imports no UIKit and hands everything to `AppNotifications`. On macOS the app registers no push token; local reminders, the badge and notification taps (`NotificationCenterDelegate`) work on both |
 | `apple/Modules/Features/Calendar/Sources/Layers/PresentationLayer/Components/CalendarDragSource.swift`, `CalendarPinchSource.swift`, `CalendarVerticalPinch.swift` | the calendar's iOS-only UIKit, reached through `import SwiftUI`, each where SwiftUI has no API for the behavior: on iOS a held event or task lifts into a `UIDragInteraction` on the view that holds the day, whose preview shows no card over the day (the item's own block follows the finger there) and the item's card away from it and in other apps, which `draggable` cannot change during a drag; and the timeline's zoom reads its two fingers with a `UIPinchGestureRecognizer`, which begins only with two touches, so one finger scrolls, turns days and lifts items as before. On macOS the items are SwiftUI's `draggable` and the zoom a `SpatialEventGesture`. No other module uses UIKit besides DesignSystem's `PresentationLayer.swift` and `DocumentScanner.swift` and the volume hold below (`review-rules/tasks/apple-multiplatform.md` item 6); the app target's Semp files below use it too |
 | `apple/Modules/Core/DesignSystem/Sources/PresentationLayer.swift`, `apple/Projects/App/Sources/Semp/SempDockProbe.swift`, `SempLayerWindow.swift`, `SempLayer.swift`, `SempPresentation.swift` | the Semp bubble on iOS (`docs/adr/2026-11-27-semp-docks-in-the-tab-bar-and-floats-over-every-presentation.md`), with UIKit types reached through `import SwiftUI`, each where SwiftUI has no API: `PresentationLayer` reads the root controller of the presentation a drop target is on, through a zero-size view behind it, and the one on top at a point, through the window's hit test; `SempDockProbe` reads the frame of the prominent tab's button in the window's `UITabBarController` and whether a touch at its middle reaches the tab bar, ten times a second; `SempLayerWindow` holds the bubble and the chat in a window over every presentation of the scene and lets through every touch away from the bubble; `SempLayer` is that window's SwiftUI content, iOS-only for its zoom transition and the keyboard's notifications; `SempPresentation` chooses that layer on iOS and keeps the scene's and each sheet's floating bubble on macOS, which has no tab bar |
 | `apple/Modules/Core/CoreKit/Sources/Device/MediaPlayerVolume.swift` | the iOS-only volume hold of the wake guard, in CoreKit and wrapped whole in `#if os(iOS)`: iOS has no API that sets the system volume, so a hidden `MPVolumeView` hosts the slider whose value moves it, reached through `import MediaPlayer` (the one file that imports it, `docs/adr/2026-11-26-the-wake-guard-holds-the-volume-up-with-undocumented-uikit-internals.md`). `VolumeHold.swift` holds the platform-neutral part, and `DeviceVolumeHold` shows nothing on macOS, where there is no volume to hold |
 | `apple/Modules/Core/DesignSystem/Sources/DocumentScanner.swift`, `ScanDocument.swift`, `View+DocumentScanner.swift` | the system document scanner, iOS only: `DocumentScanner.swift`, wrapped whole in `#if os(iOS)`, is the app's one UIKit view controller, a `UIViewControllerRepresentable` over VisionKit's `VNDocumentCameraViewController`, which SwiftUI has no view for, reached through `import SwiftUI` and the one file that imports `VisionKit` (`docs/adr/2026-11-27-the-document-scanner-is-the-one-uikit-view-controller-of-the-apple-app.md`). It sits in DesignSystem so that both the app and a feature can show it, and reports the scanned pages, a cancel or a failure through closures. `ScanDocument` makes the pages one PDF with PDFKit (`Scan YYYY-MM-DD HH-mm.pdf`, `application/pdf`) and answers `isScannerSupported`, false on macOS and wherever VisionKit has no scanner. `documentScanner(isPresented:onFinish:onFail:)` shows it full screen on iOS and nothing on macOS. Two places show it: for `ScanIntoInboxIntent`, which `AddToInboxIntent` opens when Scan is picked as the type, `ScanPresenter` in `apple/Projects/App/Sources/Intents/` (one per process) holds the request and writes the finished scan and `ScanPresentation` shows the scanner over the one active scene that claims it; in the diary, the Journal feature's `JournalCaptureRow` offers Scan document in its attachment menu when `isScannerSupported` and attaches the PDF with source camera, as a picked file is attached |
 | `apple/Projects/App/Sources/Background/CaptureBackgroundTasks.swift`, `CaptureBackgroundTask.swift`, `CaptureSending.swift`, `apple/Projects/App/Tests/CaptureBackgroundTasksTests.swift` | the background sending of the Inbox captures waiting in the outbox (`docs/adr/2026-11-27-apple-app-sends-waiting-inbox-captures-from-background-tasks.md`): the two `BGTaskScheduler` tasks, their scheduling and the only `import BackgroundTasks` are iOS only and wrapped whole in `#if os(iOS)`, because macOS has no `BGTaskScheduler` for apps; `CaptureSending` builds for both and sends when the app becomes active, and only on iOS schedules the tasks after a capture and when the app moves to the background |
 | `scripts/kmp-framework` | `SDK_NAME` selects the Kotlin target (`iphoneos`: `IosArm64`, `iphonesimulator`: `IosSimulatorArm64`, `macosx`: `MacosArm64`) and the embed folder (`.app/Frameworks` or `.app/Contents/Frameworks`) |
-| `build-logic/src/main/kotlin/semprec.kmp.gradle.kts` | the `macosArm64` target is built for `macosMinimum`, the iOS targets for `iosMinimum` |
+| `build-logic/src/main/kotlin/alldots.kmp.gradle.kts` | the `macosArm64` target is built for `macosMinimum`, the iOS targets for `iosMinimum` |
 
 Tuist generates the runpaths of each SDK itself (`Frameworks/` in an iOS bundle,
 `Contents/Frameworks/` in a macOS bundle).
@@ -594,7 +594,7 @@ and the copy keys of each module):
 | `KMP-COMMON` | no platform import in `commonMain` |
 | `KMP-FRAMEWORK` | only the policy's Kotlin framework target (CoreKit) and the targets whose `allowed` list names the framework (`CoreKitTests`) import it |
 | `VM-BRIDGE` | every shared screen ViewModel, also one that extends `ScreenViewModel` through another class, has a test, exactly one CoreKit bridge that closes it in `deinit`, and an Android screen |
-| `NAV-OWNERSHIP` | navigation libraries and controllers stay in the app modules (on Apple the app target and its tests, `SemprecTests`) and out of ViewModels |
+| `NAV-OWNERSHIP` | navigation libraries and controllers stay in the app modules (on Apple the app target and its tests, `AlldotsTests`) and out of ViewModels |
 | `APPLE-IDENTITY` | `gradle/project.properties` and `ProjectConfiguration.swift` agree |
 | `ORG-SCREEN` | a `<X>Screen.kt` directly in a `presentation/screen/<folder>/` has `<X>ScreenLayout.kt` next to it; a `<X>ViewModel.swift` directly in a folder below a `Screens/` directory has `<X>Screen.swift` next to it. It looks into no other folder, so a screen or ViewModel placed elsewhere passes it, and the platforms' review (`tasks/architecture.md`) checks where screen files sit |
 | `COPY-PARITY` | Android and Apple copy keys match the policy, each with a non-empty English and Czech value, and Android copy lives only in `src/main/res` (`src/androidMain/res` in a Kotlin Multiplatform module) |
@@ -615,7 +615,7 @@ it holds the steps. Following the Settings feature, a new feature touches:
 - shared: its state, action and effect types and ViewModel in
   `shared/presentation`, with common tests; its creation in
   `HomeViewModelFactory` and a method on `HomeSDK` in `shared/umbrella`.
-- Android: a module `android/feature/<name>/` (applying `semprec.android.compose`,
+- Android: a module `android/feature/<name>/` (applying `alldots.android.compose`,
   included in `settings.gradle.kts`) with its router and `handle`,
   `presentation/screen/<name>/<Name>Screen.kt` and `<Name>ScreenLayout.kt`,
   strings in English and Czech, test tags and unit tests; in `android/app`, a
@@ -635,7 +635,7 @@ it holds the steps. Following the Settings feature, a new feature touches:
   the dependency in `apple/Projects/App/Project.swift`, a router,
   `AppDestination` cases and the views in `AppScene`, for a new tab an `AppTab`
   case and its `Tab(…, value:)`, and, when the UI tests drive the feature, its
-  `<Name>Identifiers.swift` in the `sources` of `SemprecUITests` with a flow in
+  `<Name>Identifiers.swift` in the `sources` of `AlldotsUITests` with a flow in
   `Projects/App/UITests/`.
 - The feature's Gradle module, Apple targets and copy keys in
   `scripts/architecture-policy.json`.

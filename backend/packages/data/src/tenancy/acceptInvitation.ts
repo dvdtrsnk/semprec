@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { MIN_PASSWORD_LENGTH, type PublicUser } from "../auth/authActions.js";
 import { normalizeDisplayName } from "../auth/displayName.js";
 import { hashPassword } from "../auth/passwordHash.js";

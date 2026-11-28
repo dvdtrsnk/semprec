@@ -1,6 +1,6 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -178,7 +178,7 @@ describe("synced Event times and recurrence", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

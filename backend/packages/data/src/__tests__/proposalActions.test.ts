@@ -4,7 +4,7 @@ import { insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 import { getDocByItemId } from "../docs/docsStore.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { z } from "zod";
-import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
+import { readPageBlocks, writeBlock, type BlockInput } from "@alldots/block-model";
 import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
@@ -16,7 +16,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -32,7 +32,7 @@ import {
   type InboxCardsInvalidationEvent,
   type InvalidationEvent,
 } from "../realtimeHook.js";
-import { runOnce, type TaskList } from "@semprec/queue";
+import { runOnce, type TaskList } from "@alldots/queue";
 import { heartbeatFireJobKey } from "../scheduler/schedulerStore.js";
 import { COMPUTING_TIMEOUT_MS } from "../inbox/inboxCardsStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -43,10 +43,10 @@ import { createMarkdownPageContentProposal } from "../testSupport/pageProposalFi
 import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
-  createSemprecTickAction,
+  createAlldotsTickAction,
   parseStoredProposalEnvelope,
   storedEnvelopeStillValid,
-  type ComputeSemprecProposalFn,
+  type ComputeAlldotsProposalFn,
   type ProposalEnvelope,
 } from "../inbox/inboxTickAction.js";
 import {
@@ -613,7 +613,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
   }
   /** Runs `fn` on a pool of the runtime role, which row-level security applies to, and closes it. */
   async function withRuntimePool(fn: (runtime: Pool) => Promise<void>): Promise<void> {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -652,8 +652,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
   }
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+    const handler = createAlldotsTickAction(pool, computeProposal);
     await handler(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -1198,7 +1198,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const target = await projectWithPage([]);
       const linked = await createIn("projects", { name: "Linked" });
       const proposal = await createV2Proposal(target, {
-        markdown: `See [it](semprec://items/${linked})`,
+        markdown: `See [it](alldots://items/${linked})`,
         placement: "end",
       });
       await pool.query(`UPDATE items SET deleted_at = now() WHERE id = $1`, [linked]);
@@ -2227,7 +2227,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         (
           existingTaskId: string,
           update: Record<string, unknown> = { name: "Buy oat milk" },
-        ): ComputeSemprecProposalFn =>
+        ): ComputeAlldotsProposalFn =>
         async () => ({
           properties: { name: "Buy milk" },
           operations: [
@@ -6182,7 +6182,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
   });
 
   describe("journal entry proposals (issues gh-1975 and gh-1981)", () => {
-    const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+    const PAGE_LINK = "[Sub page](alldots://page/00000000-0000-4000-8000-000000000001)";
     let journalId: string;
     let companiesId: string;
     let projectsId: string;

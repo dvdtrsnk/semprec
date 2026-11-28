@@ -12,7 +12,7 @@ push tags:
 ```sh
 cd backend
 pnpm install --frozen-lockfile
-pnpm --filter @semprec/release run release-tag v1.2.3 <full-sha-of-main-head>
+pnpm --filter @alldots/release run release-tag v1.2.3 <full-sha-of-main-head>
 ```
 
 The command tags the commit only when all of these hold, and otherwise exits with code 2 and

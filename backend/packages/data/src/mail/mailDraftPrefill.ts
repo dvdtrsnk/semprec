@@ -3,7 +3,7 @@
 // the source's attachments through `attachFileToDraft`.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { toManifestLocale, type ManifestLocale } from "../manifest/catalogResolution.js";

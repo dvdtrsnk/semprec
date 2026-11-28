@@ -3,9 +3,9 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier, readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier, readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../../testSupport/tenantFixtures.js";
 import { createBlob } from "../../blobs/blobsStore.js";
@@ -29,7 +29,7 @@ import {
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../journalInboxCompute.js";
 
 // The cached day summary lists each Inbox item's attachments, and the day is recomputed where the attachments change.
-// Everything runs through the runtime role `semprec_data` inside a tenant, with two tenants.
+// Everything runs through the runtime role `alldots_data` inside a tenant, with two tenants.
 let adminPool: Pool;
 let runtimePool: Pool;
 
@@ -55,7 +55,7 @@ const recomputeJobSchema = z.object({ payload: z.object({ journalDayItemId: z.st
 beforeAll(async () => {
   adminPool = getTestPool();
   await resetDatabase(adminPool);
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 afterEach(() => {

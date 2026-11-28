@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -14,7 +14,7 @@ import { createHeartbeat } from "../../scheduler/schedulerStore.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createSempChatThread, sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { ensureQueueSchema } from "@semprec/queue";
+import { ensureQueueSchema } from "@alldots/queue";
 import { claimSempMessage, finishSempMessageTurn } from "../sempMessagesStore.js";
 import { buildSempThreadMessageSearch, sempMessageSearchVectorSql } from "../sempMessageSearch.js";
 import { listSempThreads } from "../sempThreadsListStore.js";
@@ -153,7 +153,7 @@ async function seedOwnTenant(): Promise<void> {
 async function startTickRun(name: string) {
   return inTenant(own, async (client) => {
     const inbox = await getDatabaseByModuleId(client, "inbox");
-    if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+    if (!inbox?.ownerProjectItemId) throw new Error("Missing Alldots project");
     const heartbeat = await createHeartbeat(client, {
       projectItemId: inbox.ownerProjectItemId,
       name,
@@ -174,7 +174,7 @@ async function startTickRun(name: string) {
 describe("Semp message search vector", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:semp-message-search-role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

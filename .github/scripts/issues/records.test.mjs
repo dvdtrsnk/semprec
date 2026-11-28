@@ -14,7 +14,7 @@ export const body = "**Blocked by:** none\n**Model tier:** medium\n\n## Context\
 export function issue() { return createRecord({ title: "Implement operation", body, now }); }
 function approved() { return queueIssue(approveIssue(issue(), "maintainer", now), now); }
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "semprec-issues-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-issues-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "issues/items"), { recursive: true });
   await mkdir(join(root, "issues/handovers"), { recursive: true });

@@ -3,7 +3,7 @@ import type { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -519,7 +519,7 @@ async function reauthorize(
 describe("mailbox restore hook (gh-2032)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
     // A registry has no unregister: both hooks stay for the file and refuse only the item a test names.
     registerItemDeleteHook(async (context) => {

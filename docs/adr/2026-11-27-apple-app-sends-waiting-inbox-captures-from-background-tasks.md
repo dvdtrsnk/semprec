@@ -31,10 +31,10 @@ Rejected:
 
 ## Decision
 
-- **Two tasks, one send.** On iOS the app registers a processing task `cz.semprec.app.inboxCaptures.send`
-  (`requiresNetworkConnectivity = true`) and an app refresh task `cz.semprec.app.inboxCaptures.refresh`, both listed in
+- **Two tasks, one send.** On iOS the app registers a processing task `cz.alldots.app.inboxCaptures.send`
+  (`requiresNetworkConnectivity = true`) and an app refresh task `cz.alldots.app.inboxCaptures.refresh`, both listed in
   `BGTaskSchedulerPermittedIdentifiers`, with the `fetch` and `processing` background modes. The identifiers start with
-  the app's bundle id `cz.semprec.app`. Apple does not require that prefix, but it keeps the names clear of other
+  the app's bundle id `cz.alldots.app`. Apple does not require that prefix, but it keeps the names clear of other
   apps'. Both tasks run the same thing: `InboxCaptureSDK.send()` through the CoreKit bridge `InboxShortcutCapture`, the
   headless entry of the system entry points. No Swift code sends a capture itself.
 - **Where they are registered.** In `AppDelegate.application(_:didFinishLaunchingWithOptions:)`, the iOS app delegate
@@ -54,7 +54,7 @@ Rejected:
   during it), by the scanner (once the scan's capture is kept), or by the diary's capture row, and when the app moves to
   the background. A new request replaces the pending one with the same identifier. A refused submission is not retried;
   the next trigger schedules again.
-- **Sending when active.** When the app as a whole becomes active (`scenePhase` of `SemprecApp`), it runs one send
+- **Sending when active.** When the app as a whole becomes active (`scenePhase` of `AlldotsApp`), it runs one send
   through the bridge, on iOS and macOS; while the send of an earlier activation still runs, it starts none. On macOS
   this is the only part that applies, and the BackgroundTasks code is compiled only for iOS (`#if os(iOS)`).
 - **One owner.** `CaptureSending` (one per process, in the app target) owns all of this. The app delegate, the app's

@@ -1,4 +1,4 @@
-import { serializeBlocks, type NewBlockInput, type PageBlock, type SerializableBlock } from "@semprec/block-model";
+import { serializeBlocks, type NewBlockInput, type PageBlock, type SerializableBlock } from "@alldots/block-model";
 
 /**
  * Cap on rows x columns of the LCS table for the changed middle stretch (shared prefix/suffix are not counted); past

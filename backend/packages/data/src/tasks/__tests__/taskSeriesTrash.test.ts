@@ -3,7 +3,7 @@ import "../../domainWriteHooks.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getTaskRecurrenceBySeriesId } from "../taskRecurrenceStore.js";
@@ -148,7 +148,7 @@ async function seriesOfThree(): Promise<{ seriesId: string; done: [string, strin
 describe("trashing and restoring a recurring task series (issue gh-1882)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

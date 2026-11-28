@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import type { Queryable } from "./pool.js";
 
 /**
@@ -8,9 +8,9 @@ import type { Queryable } from "./pool.js";
  */
 export type TenancyViolation = { invariant: string; object: string; detail: string };
 
-const RUNTIME_ROLES = ["semprec_data", "semprec_side"];
+const RUNTIME_ROLES = ["alldots_data", "alldots_side"];
 
-const TENANT_COMMENT = "semprec:tenancy=tenant";
+const TENANT_COMMENT = "alldots:tenancy=tenant";
 
 /** A table in `public` (ordinary or partitioned, not a partition) whose comment is not exactly a tenancy classification. */
 async function findClassificationViolations(client: Queryable): Promise<TenancyViolation[]> {
@@ -20,7 +20,7 @@ async function findClassificationViolations(client: Queryable): Promise<TenancyV
       WHERE c.relnamespace = 'public'::regnamespace
         AND c.relkind IN ('r', 'p')
         AND NOT c.relispartition
-        AND COALESCE(obj_description(c.oid, 'pg_class'), '') NOT IN ('semprec:tenancy=tenant', 'semprec:tenancy=global')
+        AND COALESCE(obj_description(c.oid, 'pg_class'), '') NOT IN ('alldots:tenancy=tenant', 'alldots:tenancy=global')
       ORDER BY c.relname`,
   );
   return rows.map((row) => ({
@@ -28,8 +28,8 @@ async function findClassificationViolations(client: Queryable): Promise<TenancyV
     object: row.table_name,
     detail:
       row.comment === null
-        ? "has no semprec:tenancy=tenant|global comment"
-        : "its comment is not exactly semprec:tenancy=tenant or semprec:tenancy=global",
+        ? "has no alldots:tenancy=tenant|global comment"
+        : "its comment is not exactly alldots:tenancy=tenant or alldots:tenancy=global",
   }));
 }
 
@@ -211,7 +211,7 @@ function parseSearchPath(value: string): string[] {
 
 type SchemaFacts = { exists: boolean; runtimeRoleMayCreate: boolean };
 
-/** Existence and `CREATE` for `PUBLIC`/`semprec_data`/`semprec_side`; a missing runtime role is skipped here. */
+/** Existence and `CREATE` for `PUBLIC`/`alldots_data`/`alldots_side`; a missing runtime role is skipped here. */
 async function readSchemaFacts(client: Queryable, names: string[]): Promise<Map<string, SchemaFacts>> {
   const facts = new Map<string, SchemaFacts>();
   if (names.length === 0) return facts;
@@ -235,9 +235,9 @@ async function readSchemaFacts(client: Queryable, names: string[]): Promise<Map<
  * A `SECURITY DEFINER` function outside `pg_catalog`/`information_schema` that
  * - has no pinned `search_path`, or one not ending in `pg_temp` (otherwise the temporary schema is
  *   searched first), lists `pg_temp` earlier, names a missing schema (`"$user"` included), or names a
- *   schema `PUBLIC`, `semprec_data` or `semprec_side` may create in;
+ *   schema `PUBLIC`, `alldots_data` or `alldots_side` may create in;
  * - is executable by `PUBLIC` (a NULL `proacl` grants it);
- * - or is owned by neither `semprec_router` nor the owner of `public.items`.
+ * - or is owned by neither `alldots_router` nor the owner of `public.items`.
  */
 async function findDefinerFunctionViolations(client: Queryable): Promise<TenancyViolation[]> {
   const { rows } = await client.query<{
@@ -254,7 +254,7 @@ async function findDefinerFunctionViolations(client: Queryable): Promise<Tenancy
             (p.proacl IS NULL
              OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) AS acl
                          WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE')) AS public_execute,
-            (p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'semprec_router')
+            (p.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'alldots_router')
              OR p.proowner = (SELECT relowner FROM pg_class WHERE oid = to_regclass('public.items'))) IS TRUE
               AS allowed_owner
        FROM pg_proc p
@@ -301,7 +301,7 @@ async function findDefinerFunctionViolations(client: Queryable): Promise<Tenancy
       }
     }
     if (row.public_execute) problems.push("is executable by PUBLIC");
-    if (!row.allowed_owner) problems.push("is owned by neither semprec_router nor the owner of items");
+    if (!row.allowed_owner) problems.push("is owned by neither alldots_router nor the owner of items");
     if (problems.length > 0) {
       violations.push({ invariant: "definerFunction", object: row.function_name, detail: problems.join("; ") });
     }

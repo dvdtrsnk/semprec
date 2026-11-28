@@ -1,8 +1,8 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { findOrCreateBlob } from "../../blobs/blobsStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -73,7 +73,7 @@ const followsProjectOf = (itemId: string) => ({
 describe("Threads.attachments and the project of an attachment (issue gh-1898)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

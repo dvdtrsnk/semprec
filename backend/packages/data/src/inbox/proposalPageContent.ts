@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
-import { readPageBlocks, type PageBlock } from "@semprec/block-model";
+import { readPageBlocks, type PageBlock } from "@alldots/block-model";
 import { ConflictError } from "../errors.js";
 import type { PageContentV2 } from "./proposalEnvelope.js";
 import { lockLiveItem } from "../docs/lockLiveItem.js";

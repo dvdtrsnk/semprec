@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -178,7 +178,7 @@ async function refusal(write: Promise<unknown>): Promise<unknown> {
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

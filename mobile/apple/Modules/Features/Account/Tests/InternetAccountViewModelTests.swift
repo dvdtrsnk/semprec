@@ -35,7 +35,7 @@ final class InternetAccountViewModelTests: XCTestCase {
 
     @MainActor
     func testTheListOpensTheSignInPageInTheBrowserItStartedWithAndReportsHowItEnded() async throws {
-        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&code=c"))
+        let callback = try XCTUnwrap(URL(string: "alldots://oauth?state=s&code=c"))
         let outcomes: [(BrowserSignIn, InternetAccountsAction)] = [
             (BrowserSignIn { _ in callback }, .signInReturned(callbackUrl: callback.absoluteString)),
             (BrowserSignIn { _ in throw ASWebAuthenticationSessionError(.canceledLogin) }, .signInCancelled),
@@ -75,7 +75,7 @@ final class InternetAccountViewModelTests: XCTestCase {
 
     @MainActor
     func testTheListSignsAnAccountInAgainInTheBrowserItStartedWith() async throws {
-        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&code=c"))
+        let callback = try XCTUnwrap(URL(string: "alldots://oauth?state=s&code=c"))
         let model = ScriptedInternetAccountsScreenModel(state: InternetAccountsState())
         let viewModel = InternetAccountsViewModel(model: model, router: RouterSpy())
         let observer = Task { await viewModel.observe() }
@@ -126,7 +126,7 @@ final class InternetAccountViewModelTests: XCTestCase {
     // MARK: - Account
     @MainActor
     func testTheAccountSignsInAgainAndAllowsCalendarsInTheBrowserItStartedWith() async throws {
-        let callback = try XCTUnwrap(URL(string: "semprec://oauth?state=s&error=access_denied"))
+        let callback = try XCTUnwrap(URL(string: "alldots://oauth?state=s&error=access_denied"))
         let model = ScriptedInternetAccountScreenModel(state: InternetAccountState())
         let viewModel = InternetAccountViewModel(model: model, router: RouterSpy())
         let observer = Task { await viewModel.observe() }

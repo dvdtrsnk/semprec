@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient, QueryConfig } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
@@ -35,7 +35,7 @@ import {
 } from "../inboxAttachmentsStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inboxTickAction.js";
 import {
   confirmProposalWithClient,
   recomputeProposalWithClient,
@@ -128,7 +128,7 @@ async function storedCard(
   return row.id;
 }
 
-const TASK_COMPUTATION: ComputeSemprecProposalFn = async (input) => ({
+const TASK_COMPUTATION: ComputeAlldotsProposalFn = async (input) => ({
   properties: { name: input.sourceItem.properties.text },
 });
 
@@ -136,7 +136,7 @@ async function proposedCard(
   text: string,
   options: {
     when?: { date: string; time: string };
-    compute?: ComputeSemprecProposalFn;
+    compute?: ComputeAlldotsProposalFn;
     typeId?: string;
   } = {},
 ): Promise<{ itemId: string; cardId: string }> {
@@ -145,7 +145,7 @@ async function proposedCard(
     const item = await withTransaction(adminPool, (client) =>
       createInboxItemWithClient(client, { inboxDatabaseId: inboxId, ...when, text, type: typeId }),
     );
-    await createSemprecTickAction(adminPool, compute)(
+    await createAlldotsTickAction(adminPool, compute)(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );
@@ -205,7 +205,7 @@ async function bareProposedCards(count: number): Promise<void> {
 async function invalidateBySourceDeletion(itemId: string): Promise<void> {
   await inTenantZero(async () => {
     await withTransaction(adminPool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
-    await createSemprecTickAction(adminPool, async () => {
+    await createAlldotsTickAction(adminPool, async () => {
       throw new Error("The tick must not compute a card whose source was deleted");
     })(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
@@ -586,7 +586,7 @@ describe("listInboxCards (issue #1807)", () => {
       expect(cardOf(await listCards(adminPool, ownerId), card.cardId).status).toBe("computeFailed");
 
       await inTenantZero(() =>
-        createSemprecTickAction(adminPool, async () => ({ properties: { name: "Buy oat milk" } }))(
+        createAlldotsTickAction(adminPool, async () => ({ properties: { name: "Buy oat milk" } }))(
           { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
           { heartbeatId: "hb", projectItemId: "proj", itemId: card.itemId },
         ),
@@ -775,7 +775,7 @@ describe("listInboxCards (issue #1807)", () => {
     });
 
     it("lists for each of two tenants only its own item's attachments, on the runtime role", async () => {
-      const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      const dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
       try {
         const card = await proposedCard("First tenant capture");
         const own = await attach(card.itemId, {
@@ -815,7 +815,7 @@ describe("listInboxCards (issue #1807)", () => {
             });
             return item.id;
           });
-          await createSemprecTickAction(dataPool, TASK_COMPUTATION)(databases, {
+          await createAlldotsTickAction(dataPool, TASK_COMPUTATION)(databases, {
             heartbeatId: "hb",
             projectItemId: "proj",
             itemId,
@@ -1385,7 +1385,7 @@ describe("listInboxCards (issue #1807)", () => {
     });
 
     it("names no item of another tenant when a stored step points at one, on the runtime role", async () => {
-      const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      const dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
       try {
         const cardId = await stepsCard([moveToFinance()]);
         const otherTenantId = await createTestTenant(adminPool);
@@ -1547,7 +1547,7 @@ describe("listInboxCards (issue #1807)", () => {
   it(
     "shows and counts for a second tenant none of the cards and approvals of the first, on the runtime role",
     async () => {
-      const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      const dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
       try {
         const card = await proposedCard("First tenant capture");
         const transcript = await transcriptCard("First tenant transcript", "2026-08-28T08:00:00.000Z");

@@ -2,8 +2,8 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Pool, PoolClient } from "pg";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { getDocById, getItemsByIds, getNotificationById, withTransaction } from "@semprec/data";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { getDocById, getItemsByIds, getNotificationById, withTransaction } from "@alldots/data";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   AGENT_STREAM_CHANNEL,
   REALTIME_CHANNEL,

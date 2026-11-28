@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import type { AiGatewayClientPort } from "@semprec/shared";
+import type { AiGatewayClientPort } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";

@@ -1,4 +1,4 @@
-This is the `mobile/android/` platform of the Semprec monorepo (the repository
+This is the `mobile/android/` platform of the Alldots monorepo (the repository
 root, `backend/`, `web/`, `mobile/` and `mobile/apple/` are separate platforms
 with their own review-rules and are reviewed independently). `mobile/android/`
 is the native Android app: Kotlin, Jetpack Compose with Material 3, Koin and
@@ -12,13 +12,13 @@ Android lifecycle. The Apple app in `mobile/apple/` renders the same shared
 ViewModels, so the two apps are expected to behave alike
 (`tasks/parity.md`). The modules:
 
-- `:android:app` (`app/`, package `cz.semprec.app`) — `SemprecApplication`
+- `:android:app` (`app/`, package `cz.alldots.app`) — `AlldotsApplication`
   starts Koin with `appModule` (`single { HomeSDK() }` and one `viewModel { … }`
   per shared screen ViewModel); `MainActivity` shows `AppScene`; `AppScene` and
   `AppSceneState` own the bottom bar (`AppTab`), one `NavHostController` per
   tab (`HomeTabHost`, `SettingsTabHost`) over the type-safe routes of
   `AppRoutes.kt` (`HomeRoute`, `DetailRoute(itemId)`, `SettingsRoute`, which
-  need the kotlinx-serialization plugin the `semprec.android.application`
+  need the kotlinx-serialization plugin the `alldots.android.application`
   convention plugin applies) and the About sheet (`components/AboutSheet.kt`);
   `navigation/SceneNavigation.kt` implements the feature routers. `app/build.gradle.kts` defines the debug and release build
   types (release minified with R8, unsigned in the repository) and runs lint

@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import type { RiskClass } from "@semprec/shared";
+import type { RiskClass } from "@alldots/shared";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { approvalNotificationBody } from "../notifications/approvalNotificationBody.js";
 import { approvalNotificationLinkHref } from "../notifications/approvalNotificationLink.js";

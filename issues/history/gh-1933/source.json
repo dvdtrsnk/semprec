@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1933",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1933",
   "id": 6022967350,
   "node_id": "I_kwDOUFuQ4c8AAAABZv8wNg",
   "number": 1933,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1318",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1318",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1369, #2035\n**Model tier:** medium\n\n## Context\n\nModel tier rationale: One new variant of an existing ref schema with validation and label resolution against a thread alias lookup, following the patterns of the other ref kinds.\n\nA Semp chat message can carry references to things the user dragged in. A mail message and a draft are references to items of the Emails database; an attachment is a reference to its Files item (`mail/attachments.ts` creates it, so no separate attachment kind is needed). A thread is not an item the client may address by item id, because its public id is the thread id and the Threads item id is internal. The ref schema is #1369, validation and storage #1682, label and trash state in history #1684. Merged threads keep resolving through #1493. The agent reads a thread with `mail.thread.get` (#1927); the expansion of refs into the turn is #1733.\n\nDecision: a thread ref that names a merged-away id is stored as given and translated when read or expanded; \"trashed\" means every message of the thread is in the Trash folder; \"purged\" means the thread id is unknown and has no alias.\n\nShared-file ordering: this issue also waits for #2035 because both edit the same registry, manifest, cutover, route matrix or hook files listed in Touches.\n\n## Task\n\nLoad `canonical-keys`, `io-hardening` and `testing`.\n\n1. Extend the ref schema with the variant `{ kind: \"mailThread\", threadId }` (uuid) (kind in camelCase as stored).\n2. Validation (#1682): a `mailThread` ref must name a thread of the caller's tenant, directly or through an alias; otherwise it is rejected as `validation_failed`.\n3. Translation: add `mail/mailThreadRef.ts` with a function resolving a `threadId` to the current thread id through the aliases; use it when the ref is expanded for the agent (so the agent receives the current thread through `mail.thread.get`) and when its label is resolved.\n4. Label and state for history (#1684): label = the thread subject, state `trashed` for a thread whose messages are all in Trash, `purged` for an unknown id.\n5. A ref `{ kind: \"item\" }` to a Threads item is not accepted by this issue's code path; it stays governed by ref validation.\n\n## Touches\n\n- backend/packages/shared/src/sempMessageRefs.ts (ref schema file created by #1369; the new variant)\n- backend/packages/data/src/mail/mailThreadRef.ts (new)\n- backend/packages/data/src/mail/mailModuleManifest.ts (ref resolver registration, if the contract of #1682 uses the manifest)\n- backend/packages/data/src/mail/__tests__/ (new tests)\n\n## Scope\n\n### In scope\n\n- The `mailThread` ref variant, its validation, alias translation and label and state resolution.\n\n### Out of scope\n\n- Expanding refs into turn context (#1733); the schema and validation framework (#1369, #1682).\n- The mail tools (#1927).\n\n## Acceptance criteria\n\n- A message with a ref to an existing thread is accepted; a ref to an unknown thread id is rejected.\n- A ref to a thread that was merged away is accepted, and expanding it yields the current thread.\n- In the thread history the ref label is the subject; a thread whose messages are all in Trash shows `trashed`, an unknown id shows `purged`.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1933/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1933/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1218",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1218",
   "id": 5910986783,
   "node_id": "I_kwDOUFuQ4c8AAAABYFKAHw",
   "number": 1218,
@@ -53,7 +53,7 @@
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** none\n**Model tier:** high\n\n## Context\n\nModel tier rationale: The exhaustive runtime-role route suite in #1053 found two tenant-boundary failures involving uniqueness and foreign-key checks, which bypass RLS. The repository owner requested resolution of all blocked PRs on 2026-10-18. PR #1213 must remain limited to the route inventory and proof, so these production corrections are delivered separately before it is rebased.\n\n## Task\n\n1. Relax the obsolete global blobs_content_hash_uq index in a new forward-only migration. Migration 0064 already installed blobs_tenant_content_hash_uq and findOrCreateBlob already uses targetless ON CONFLICT. Identical content must upload independently in two tenants while deduplication within a tenant remains unchanged.\n2. Make setProjectMcpGrant resolve the registration through the caller's RLS scope, locked in the same SQL statement that upserts the grant. A foreign registration and a nonexistent registration must raise the same NotFoundError without writing or updating a grant. Preserve allowed grant/revoke behavior. Remove the unchecked foreign-key error cast made obsolete by this guard.\n3. Add focused integration coverage on two tenants through a semprec_data runtime pool, proving independent identical-content blobs, same-tenant deduplication, allowed grant/revoke, foreign/missing registration refusal and no side effects. Also verify against the route suite on PR #1213.\n\n## Scope\n\n### In scope\n\nThe blob index relaxation, stale blob arbiter comment, MCP grant write guard and focused runtime-role integration tests.\n\n### Out of scope\n\nChanging the global push-device-token ownership/displacement contract, rewriting existing migrations, weakening or marking isolation cases as expected failures, and unrelated route changes.\n\n## Acceptance criteria\n\n- Identical bytes in tenants A and B create distinct tenant-owned blobs; repeating in either tenant reuses its own blob.\n- Both grant and revoke reject A's registration when called as B exactly like an unknown registration; neither A's grant nor B's grants change.\n- A can grant and revoke its own registration.\n- Integration tests use createRuntimeRolePool and two createTestTenant fixtures, with no superuser pool used for isolation assertions.\n- The new migration removes only the legacy global content-hash index and preserves the tenant-leading index.\n- backend and web verify pass before merge.\n",
+  "body": "**Blocked by:** none\n**Model tier:** high\n\n## Context\n\nModel tier rationale: The exhaustive runtime-role route suite in #1053 found two tenant-boundary failures involving uniqueness and foreign-key checks, which bypass RLS. The repository owner requested resolution of all blocked PRs on 2026-10-18. PR #1213 must remain limited to the route inventory and proof, so these production corrections are delivered separately before it is rebased.\n\n## Task\n\n1. Relax the obsolete global blobs_content_hash_uq index in a new forward-only migration. Migration 0064 already installed blobs_tenant_content_hash_uq and findOrCreateBlob already uses targetless ON CONFLICT. Identical content must upload independently in two tenants while deduplication within a tenant remains unchanged.\n2. Make setProjectMcpGrant resolve the registration through the caller's RLS scope, locked in the same SQL statement that upserts the grant. A foreign registration and a nonexistent registration must raise the same NotFoundError without writing or updating a grant. Preserve allowed grant/revoke behavior. Remove the unchecked foreign-key error cast made obsolete by this guard.\n3. Add focused integration coverage on two tenants through a alldots_data runtime pool, proving independent identical-content blobs, same-tenant deduplication, allowed grant/revoke, foreign/missing registration refusal and no side effects. Also verify against the route suite on PR #1213.\n\n## Scope\n\n### In scope\n\nThe blob index relaxation, stale blob arbiter comment, MCP grant write guard and focused runtime-role integration tests.\n\n### Out of scope\n\nChanging the global push-device-token ownership/displacement contract, rewriting existing migrations, weakening or marking isolation cases as expected failures, and unrelated route changes.\n\n## Acceptance criteria\n\n- Identical bytes in tenants A and B create distinct tenant-owned blobs; repeating in either tenant reuses its own blob.\n- Both grant and revoke reject A's registration when called as B exactly like an unknown registration; neither A's grant nor B's grants change.\n- A can grant and revoke its own registration.\n- Integration tests use createRuntimeRolePool and two createTestTenant fixtures, with no superuser pool used for isolation assertions.\n- The new migration removes only the legacy global content-hash index and preserves the tenant-leading index.\n- backend and web verify pass before merge.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -76,7 +76,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -87,7 +87,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1218/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1218/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

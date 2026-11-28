@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { EVENT_ALERT_MINUTES, EVENT_TRAVEL_MINUTES } from "../calendar/eventReminderValuesHook.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -101,7 +101,7 @@ async function legacyEvent(values: Record<string, unknown>): Promise<string> {
 describe("Events alertMinutes and travelMinutes validation at the choke point", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

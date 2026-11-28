@@ -25,13 +25,13 @@ failures into screen state.
 No mobile code calls the backend yet. `:shared:data` has one repository,
 `InMemoryPlaceholderRepository`, which never fails. The Android manifest declares no `INTERNET`
 permission, and the macOS app's entitlements
-(`mobile/apple/Projects/App/Entitlements/Semprec.entitlements`) enable the App Sandbox without
+(`mobile/apple/Projects/App/Entitlements/Alldots.entitlements`) enable the App Sandbox without
 `com.apple.security.network.client`, so neither the Android app nor the macOS app can open a
 network connection today.
 
 ## Decision
 
-Every call a mobile app makes to the Semprec backend is made by Kotlin code in
+Every call a mobile app makes to the Alldots backend is made by Kotlin code in
 `mobile/shared/data`, implementing a port that `mobile/shared/domain` declares (as
 `InMemoryPlaceholderRepository` implements `PlaceholderRepository` today). Screens reach it only
 through use cases and shared ViewModels. Expected failures cross the port as typed values

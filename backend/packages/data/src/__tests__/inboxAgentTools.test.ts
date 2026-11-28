@@ -6,10 +6,10 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "../inbox/inboxAgentTools.js";
 import { reviseProposalWithClient } from "../inbox/proposalActions.js";
 import { insertInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
@@ -35,7 +35,7 @@ describe("Inbox proposal tool owner", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -106,7 +106,7 @@ describe("Inbox proposal tool owner", () => {
         );
         attachmentIds = rows.rows.map((row) => row.attachment_id);
       }
-      const tick = createSemprecTickAction(runtime, async () => {
+      const tick = createAlldotsTickAction(runtime, async () => {
         throw new Error("Unexpected model computation");
       });
       await tick(

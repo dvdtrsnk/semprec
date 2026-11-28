@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { AGENT_TASK_NAMES, type Task, type TaskAffinity } from "@semprec/queue";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import { AGENT_TASK_NAMES, type Task, type TaskAffinity } from "@alldots/queue";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";

@@ -1,4 +1,4 @@
-plugins { id("semprec.android.compose") }
+plugins { id("alldots.android.compose") }
 dependencies {
     implementation(project(":android:core:ui"))
     implementation(project(":shared:presentation"))

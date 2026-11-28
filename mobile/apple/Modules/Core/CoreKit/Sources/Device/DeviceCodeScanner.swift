@@ -33,7 +33,7 @@ public final class DeviceCodeScanner: ObservableObject {
     private let codeContinuation: AsyncStream<String>.Continuation
     private let frameContinuation: AsyncStream<CGImage>.Continuation
     private let session = AVCaptureSession()
-    private let queue = DispatchQueue(label: "cz.semprec.app.codeScanner")
+    private let queue = DispatchQueue(label: "cz.alldots.app.codeScanner")
     private var isConfigured = false
 
     // MARK: - Init

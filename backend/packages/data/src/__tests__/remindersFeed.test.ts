@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -192,7 +192,7 @@ function world(tenantId: string, userId: string) {
 describe("upcoming reminders feed (issue gh-1858)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("verify reminders feed role", () =>
       dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

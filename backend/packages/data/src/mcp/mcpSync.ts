@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
-import type { AiGatewayClientPort } from "@semprec/shared";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@alldots/queue";
+import type { AiGatewayClientPort } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";

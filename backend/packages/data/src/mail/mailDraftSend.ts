@@ -1,4 +1,4 @@
-// Sends one saved Semprec draft for `POST /api/mail/drafts/:id/send` and maps refusals and failures to the codes of the
+// Sends one saved Alldots draft for `POST /api/mail/drafts/:id/send` and maps refusals and failures to the codes of the
 // REST contract.
 import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";

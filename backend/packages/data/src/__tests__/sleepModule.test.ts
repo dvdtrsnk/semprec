@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser, updateUserLocale } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -213,7 +213,7 @@ async function sleepShape(tenantId: string) {
 describe("sleep system module (issue #1776)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

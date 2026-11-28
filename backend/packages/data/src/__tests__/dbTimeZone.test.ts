@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
@@ -40,12 +40,12 @@ describe("createPool session time zone", () => {
   });
 
   it("reports UTC on a pool with the role option", async () => {
-    const pool = createPool(connectionString(), { role: "semprec_data" });
+    const pool = createPool(connectionString(), { role: "alldots_data" });
     pools.push(pool);
     const result = await runAsSystem("test", () =>
       pool.query<{ zone: string; role: string }>("SELECT current_setting('TimeZone') AS zone, current_user AS role"),
     );
-    expect(result.rows[0]).toEqual({ zone: "UTC", role: "semprec_data" });
+    expect(result.rows[0]).toEqual({ zone: "UTC", role: "alldots_data" });
   });
 
   it("preserves role and tenant isolation across a rolled-back transaction and view queries", async () => {
@@ -62,7 +62,7 @@ describe("createPool session time zone", () => {
       const view = await adminChokePoint.createView({ databaseId: database.id, type: "table", name: "Dates" });
       return { item, view };
     });
-    const runtime = createPool(connectionString(), { role: "semprec_data" });
+    const runtime = createPool(connectionString(), { role: "alldots_data" });
     pools.push(runtime);
     const cp = createChokePoint(runtime);
     const rollback = new Error("rollback probe");
@@ -72,7 +72,7 @@ describe("createPool session time zone", () => {
           const result = await client.query<{ zone: string; role: string; tenant: string }>(
             "SELECT current_setting('TimeZone') AS zone, current_user AS role, current_setting('app.tenant_id') AS tenant",
           );
-          expect(result.rows[0]).toEqual({ zone: "UTC", role: "semprec_data", tenant: tenantA });
+          expect(result.rows[0]).toEqual({ zone: "UTC", role: "alldots_data", tenant: tenantA });
           throw rollback;
         }),
       ),

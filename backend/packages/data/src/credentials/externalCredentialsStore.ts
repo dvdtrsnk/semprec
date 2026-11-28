@@ -1,4 +1,4 @@
-import { openSecret, sealSecret } from "@semprec/credentials";
+import { openSecret, sealSecret } from "@alldots/credentials";
 import type { Queryable } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "./tenantKeysStore.js";
@@ -19,7 +19,7 @@ export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
 /** Binds the ciphertext to its tenant and item so it cannot be copied onto another row. */
 function credentialAssociatedData(tenantId: string, itemId: string): Buffer {
-  return Buffer.from(`semprec:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
+  return Buffer.from(`alldots:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
 }
 
 export const CREDENTIAL_ACTOR_TYPES = [

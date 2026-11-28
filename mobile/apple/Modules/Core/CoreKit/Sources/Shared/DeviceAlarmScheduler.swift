@@ -48,7 +48,7 @@ extension DeviceAlarmScheduler: @preconcurrency SharedSDK.DeviceAlarms {
 
 #if os(iOS)
 /// The metadata of this app's alarms. They carry none; AlarmKit requires the type to exist.
-struct SemprecAlarmMetadata: AlarmMetadata {}
+struct AlldotsAlarmMetadata: AlarmMetadata {}
 
 /// How the system removes an alarm: one that rings is stopped, any other is cancelled.
 enum AlarmRemoval: Equatable {
@@ -141,7 +141,7 @@ private extension DeviceAlarmScheduler {
         guard AlarmManager.shared.authorizationState != .denied else {
             return SharedSDK.DeviceAlarmSchedulingRefused(failure: .notAuthorized)
         }
-        let configuration = AlarmManager.AlarmConfiguration<SemprecAlarmMetadata>.alarm(
+        let configuration = AlarmManager.AlarmConfiguration<AlldotsAlarmMetadata>.alarm(
             schedule: .fixed(date),
             attributes: AlarmAttributes(
                 presentation: AlarmPresentation(alert: alert(opensWakeGuard: opensWakeGuard)),

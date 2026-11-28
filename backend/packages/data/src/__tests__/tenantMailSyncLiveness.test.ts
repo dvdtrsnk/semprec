@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -93,7 +93,7 @@ describe("per-tenant mailbox liveness (issue #1000)", () => {
     await pool.query("DELETE FROM tenant_observability_checks");
     await seedSystem(pool);
     tenantZero = getTenantZeroId();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
     await markAllProcessesFresh();
     await createUser(pool, {
       email: `${randomUUID()}@example.test`,
@@ -143,7 +143,7 @@ describe("per-tenant mailbox liveness (issue #1000)", () => {
     const tenantB = await createTenantWithMailboxes();
     const mailboxZero = await createStaleMailbox(tenantZero);
     const mailboxB = await createStaleMailbox(tenantB);
-    vi.stubEnv("SEMPREC_TENANT_SCOPE", "strict");
+    vi.stubEnv("ALLDOTS_TENANT_SCOPE", "strict");
 
     await expect(runCheck()).resolves.toBeUndefined();
 

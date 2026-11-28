@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -19,7 +19,7 @@ import { sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
 import { createInboxProposalSplitTool, inboxProposalSplitArgsSchema } from "../inboxAgentTools.js";
 import { lockInboxSource } from "../inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createSemprecTickAction } from "../inboxTickAction.js";
+import { createAlldotsTickAction } from "../inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
 
 const refusalSchema = z.object({
@@ -74,7 +74,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -123,7 +123,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
         // An empty capture leaves the tick's card without a model call, as in the revise tool test.
         createInboxItemWithClient(client, { inboxDatabaseId, date: "2026-11-14", time: "12:00", text: "" }),
       );
-      const tick = createSemprecTickAction(runtime, async () => {
+      const tick = createAlldotsTickAction(runtime, async () => {
         throw new Error("Unexpected model computation");
       });
       await tick(

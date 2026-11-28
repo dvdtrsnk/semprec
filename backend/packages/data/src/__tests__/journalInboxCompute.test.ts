@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runOnce } from "@semprec/queue";
+import { runOnce } from "@alldots/queue";
 import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -12,7 +12,7 @@ import { createActionRegistry } from "../scheduler/actions.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
   rejectProposalWithClient,
@@ -25,7 +25,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { JOURNAL_INBOX_COMPUTED_KEY, recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import type { JournalInboxItemSummary } from "../inbox/journalInboxCompute.js";
-import { AiGatewayFailedError } from "@semprec/shared";
+import { AiGatewayFailedError } from "@alldots/shared";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -85,8 +85,8 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     );
   }
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+    const handler = createAlldotsTickAction(pool, computeProposal);
     await inTenantZero(() =>
       handler(
         { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
@@ -402,7 +402,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       return type.id;
     }
 
-    function filesComputation(relations: Record<string, string[]>): ComputeSemprecProposalFn {
+    function filesComputation(relations: Record<string, string[]>): ComputeAlldotsProposalFn {
       return async () => ({
         properties: {},
         operations: [

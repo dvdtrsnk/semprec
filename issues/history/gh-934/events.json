@@ -2,7 +2,7 @@
   {
     "id": 32328421906,
     "node_id": "LE_lADOUFuQ4c8AAAABUlg7cs8AAAAHhuySEg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32328421906",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32328421906",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -38,7 +38,7 @@
   {
     "id": 32328422044,
     "node_id": "LE_lADOUFuQ4c8AAAABUlg7cs8AAAAHhuySnA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32328422044",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32328422044",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -72,9 +72,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5950951646",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/934#issuecomment-5950951646",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/934",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5950951646",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/934#issuecomment-5950951646",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/934",
     "id": 5950951646,
     "node_id": "IC_kwDOUFuQ4c8AAAABYrRQ3g",
     "user": {
@@ -104,7 +104,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5950951646/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5950951646/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -213,8 +213,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmoIA",
         "number": 935,
         "title": "[followups-934] Review follow-ups of harvest #934 — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/935",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/935",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "ff71f7caa3bc91dd1ee473650fbe3d7517e43f71b7cfef6f221adf30436734c6"
       }
@@ -252,8 +252,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmo5w",
         "number": 936,
         "title": "[followups-934 01/07] Remove dead code from three data-package tests",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/936",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/936",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "345df007083a0867bac87006c9a18ed57a2d1e3983e0719b1bb55c4b67cfe534"
       }
@@ -291,8 +291,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmqcg",
         "number": 937,
         "title": "[followups-934 02/07] Check the affected-row count of three unchecked targeted updates",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/937",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/937",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "517bd9cf28e91f15f368c7e3b985c532c00a53af3d6b319296e2e582cee18cf0"
       }
@@ -330,8 +330,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmr_Q",
         "number": 938,
         "title": "[followups-934 03/07] Replace five unchecked boundary casts with runtime checks",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/938",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/938",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "7a1459e52a250d4e19e3127d6b211e1ea9c617b6e3ee8cea54719b1ad9b72486"
       }
@@ -369,8 +369,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmtEQ",
         "number": 939,
         "title": "[followups-934 04/07] Close six test coverage gaps flagged by the review bot",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/939",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/939",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "fc937013e1e3be9140253b54fb8e335ff1f774c7b491918f4586bd462235217f"
       }
@@ -408,8 +408,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmuAw",
         "number": 940,
         "title": "[followups-934 05/07] Rethrow non-ENOENT stat errors in sweepStalePostgresDirs",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/940",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/940",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "672bfc4c0667751860719ebd58099729768cc893810575d70b4543ff68661f68"
       }
@@ -447,17 +447,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmvdg",
         "number": 941,
         "title": "[followups-934 06/07] Remove a redundant retry status and fix three stale or ungrammatical texts",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/941",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/941",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "852f652b9b7a6c9636de974c55323e02b22e7d8e6e8877a1ec12331c8350eda5"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5951065564",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/934#issuecomment-5951065564",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/934",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5951065564",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/934#issuecomment-5951065564",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/934",
     "id": 5951065564,
     "node_id": "IC_kwDOUFuQ4c8AAAABYrYN3A",
     "user": {
@@ -487,7 +487,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5951065564/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5951065564/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -596,8 +596,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUlmwgg",
         "number": 942,
         "title": "[followups-934 07/07] Constrain the arguments of the failEventsFor test helper",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/942",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/942",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "fb329a813130f6cac70c009babfdf414e132f9a6a8f6ab85217feb6560495c38"
       }
@@ -606,7 +606,7 @@
   {
     "id": 32328924760,
     "node_id": "UNLE_lADOUFuQ4c8AAAABUlg7cs8AAAAHhvQ-WA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32328924760",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32328924760",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -642,7 +642,7 @@
   {
     "id": 32328925630,
     "node_id": "CE_lADOUFuQ4c8AAAABUlg7cs8AAAAHhvRBvg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32328925630",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32328925630",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -704,14 +704,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGU04lQ",
         "number": 944,
         "title": "[followups-934 02/07] Check the affected-row count of three unchecked targeted updates (#937)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/944",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/944",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/944",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/944",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/944.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/944.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/944",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/944",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/944.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/944.patch",
           "merged_at": "2026-10-02T17:49:12Z"
         },
         "bodySha256": "088bc286c0d0eab4a24fa52340dc31f18c38f3ec88881eaa4bc1432d28ac457b"
@@ -750,14 +750,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGVWFzw",
         "number": 947,
         "title": "[followups-934 07/07] Constrain the arguments of the failEventsFor test helper (#942)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/947",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/947",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/947",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/947",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/947.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/947.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/947",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/947",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/947.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/947.patch",
           "merged_at": "2026-10-02T18:43:25Z"
         },
         "bodySha256": "ee30aff598e336fa89ed9a3a5896941988ec40da93d72e13ba2c119152af904c"
@@ -796,14 +796,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGVtTKA",
         "number": 949,
         "title": "[followups-934 06/07] Remove a redundant retry status and fix three stale or ungrammatical texts (#941)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/949",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/949",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/949",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/949",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/949.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/949.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/949",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/949",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/949.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/949.patch",
           "merged_at": "2026-10-02T19:24:24Z"
         },
         "bodySha256": "1377d642af16fbbea36656f6729b1273d6c45c2b00dbfeef34dfc8bd87f8d55b"

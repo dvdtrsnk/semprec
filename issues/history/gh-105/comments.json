@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558259068",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558259068",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558259068",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558259068",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558259068,
     "node_id": "IC_kwDOUFuQ4c8AAAABS0xNfA",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558259068/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558259068/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558328638",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558328638",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558328638",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558328638",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558328638,
     "node_id": "IC_kwDOUFuQ4c8AAAABS01dPg",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-06T09:27:55Z",
     "updated_at": "2026-09-06T09:27:55Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #287\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-105-inbox-pipeline-06-07-confirm-reject-an-thr_c2g93czrgc`.\n\n## Summary\n\nImplements issue #105: confirm, reject, and revise for Processing proposals.\n\n- **`inbox/proposalActions.ts`** (new): `confirmProposalWithClient`, `rejectProposalWithClient`, `reviseProposalWithClient`.\n  - Confirm is the sole cross-destination write path: `database` envelopes go through the existing `createItemWithClient` choke point; `pageContent` envelopes go through a new `putBlockWithClient`. Persists `resultItemId`/`resultLabel` and locks `confirmed`. Idempotent under retry.\n  - Reject locks `rejected` with no destination write; idempotent; refuses an already-confirmed proposal.\n  - Revise replaces the complete envelope (including `entityKind`, so it can switch atomically between `database` and `pageContent`), appends a user-authored history entry, and refuses a locked proposal.\n- **`docs/docPersistence.ts` / `docs/docStore.ts`**: added client-scoped `mutateDocWithClient`/`putBlockWithClient` so a page-content block append commits in the same transaction as the proposal's `confirmed` lock.\n- **`inbox/inboxTickAction.ts`**: exported `appendHistoryEntry` (now with a selectable author) and `assertValidProposalEnvelope` for reuse.\n- **`manifest/permissionManifest.ts`**: added `writable` to `ManifestDatabase` and scoped Semprec's own project grant so Inbox/Inbox item types are read-only and only Processing proposals is writable (grant separation).\n- New tests in `proposalActions.test.ts` and a grant-separation test in `manifest.test.ts`.\n\nFull workspace build and test suite (307 tests) pass.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #287\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-105-inbox-pipeline-06-07-confirm-reject-an-thr_c2g93czrgc`.\n\n## Summary\n\nImplements issue #105: confirm, reject, and revise for Processing proposals.\n\n- **`inbox/proposalActions.ts`** (new): `confirmProposalWithClient`, `rejectProposalWithClient`, `reviseProposalWithClient`.\n  - Confirm is the sole cross-destination write path: `database` envelopes go through the existing `createItemWithClient` choke point; `pageContent` envelopes go through a new `putBlockWithClient`. Persists `resultItemId`/`resultLabel` and locks `confirmed`. Idempotent under retry.\n  - Reject locks `rejected` with no destination write; idempotent; refuses an already-confirmed proposal.\n  - Revise replaces the complete envelope (including `entityKind`, so it can switch atomically between `database` and `pageContent`), appends a user-authored history entry, and refuses a locked proposal.\n- **`docs/docPersistence.ts` / `docs/docStore.ts`**: added client-scoped `mutateDocWithClient`/`putBlockWithClient` so a page-content block append commits in the same transaction as the proposal's `confirmed` lock.\n- **`inbox/inboxTickAction.ts`**: exported `appendHistoryEntry` (now with a selectable author) and `assertValidProposalEnvelope` for reuse.\n- **`manifest/permissionManifest.ts`**: added `writable` to `ManifestDatabase` and scoped Alldots's own project grant so Inbox/Inbox item types are read-only and only Processing proposals is writable (grant separation).\n- New tests in `proposalActions.test.ts` and a grant-separation test in `manifest.test.ts`.\n\nFull workspace build and test suite (307 tests) pass.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558328638/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558328638/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558441273",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558441273",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558441273",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558441273",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558441273,
     "node_id": "IC_kwDOUFuQ4c8AAAABS08VOQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-06T09:51:20Z",
     "updated_at": "2026-09-06T09:51:20Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #287\n\nTokens: 0 · Cost: $0.0000\n\nPushed to the existing branch `bb/relay-105-inbox-pipeline-06-07-confirm-reject-an-thr_c2g93czrgc` (updates PR #287), fast-forward `ff29e22..596e51b`.\n\n## Summary\n\nAddressed the two blocking findings from the code-review CI run on PR #287:\n\n- **High (notification-before-commit):** `appendDocUpdateWithClient` was firing the realtime `notifyDocUpdate` hook immediately after inserting the `doc_updates` row, while the surrounding transaction (e.g. `confirmProposalWithClient`, which also updates the proposal's status) was still open — a later rollback could leave subscribers having observed a write that never persisted. Added a generic `runAfterCommit(client, callback)` primitive to `db/pool.ts`'s `withTransaction` and deferred the notification through it.\n- **Medium (missing input validation):** `assertValidProposalEnvelope`'s `database` branch only checked that the target existed, not whether it was one of Semprec's own read-only-to-the-agent databases (Inbox, Inbox item types) — so a user-supplied `revise` could retarget a proposal there and bypass the manifest's `writable: false`. Extracted the shared module-id list to `seed/inboxPipelineKeys.ts`'s `SEMPREC_READ_ONLY_MODULE_IDS` (now reused by both the manifest and this validation) and reject such targets.\n\nAdded regression tests for both. Full build and test suite verified green (310/310 tests) before pushing.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #287\n\nTokens: 0 · Cost: $0.0000\n\nPushed to the existing branch `bb/relay-105-inbox-pipeline-06-07-confirm-reject-an-thr_c2g93czrgc` (updates PR #287), fast-forward `ff29e22..596e51b`.\n\n## Summary\n\nAddressed the two blocking findings from the code-review CI run on PR #287:\n\n- **High (notification-before-commit):** `appendDocUpdateWithClient` was firing the realtime `notifyDocUpdate` hook immediately after inserting the `doc_updates` row, while the surrounding transaction (e.g. `confirmProposalWithClient`, which also updates the proposal's status) was still open — a later rollback could leave subscribers having observed a write that never persisted. Added a generic `runAfterCommit(client, callback)` primitive to `db/pool.ts`'s `withTransaction` and deferred the notification through it.\n- **Medium (missing input validation):** `assertValidProposalEnvelope`'s `database` branch only checked that the target existed, not whether it was one of Alldots's own read-only-to-the-agent databases (Inbox, Inbox item types) — so a user-supplied `revise` could retarget a proposal there and bypass the manifest's `writable: false`. Extracted the shared module-id list to `seed/inboxPipelineKeys.ts`'s `ALLDOTS_READ_ONLY_MODULE_IDS` (now reused by both the manifest and this validation) and reject such targets.\n\nAdded regression tests for both. Full build and test suite verified green (310/310 tests) before pushing.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558441273/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558441273/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558509344",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558509344",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558509344",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558509344",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558509344,
     "node_id": "IC_kwDOUFuQ4c8AAAABS1AfIA",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558509344/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558509344/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558575671",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558575671",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558575671",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558575671",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558575671,
     "node_id": "IC_kwDOUFuQ4c8AAAABS1EiNw",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558575671/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558575671/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -440,9 +440,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558640711",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/105#issuecomment-5558640711",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/105",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558640711",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/105#issuecomment-5558640711",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/105",
     "id": 5558640711,
     "node_id": "IC_kwDOUFuQ4c8AAAABS1IgRw",
     "user": {
@@ -472,7 +472,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5558640711/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5558640711/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

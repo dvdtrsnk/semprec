@@ -33,10 +33,10 @@ const ENTRIES = [
   { path: "packages/data/dist/tenancy/restoreTenantKeysCli.js", refusal: /Offline key restore failed/ },
   { path: "packages/data/dist/tenancy/replayTenantDeletionsCli.js", refusal: NOT_SET },
   { path: "packages/data/dist/observability/restoreTestResultCli.js", refusal: NOT_SET },
-  { path: "services/semprec-api/dist/serve.js", refusal: NOT_SET },
-  { path: "services/semprec-agents/dist/serve.js", refusal: NOT_SET },
-  { path: "services/semprec-ai-gateway/dist/serve.js", refusal: NOT_SET },
-  { path: "services/semprec-transcribe/dist/serve.js", refusal: NOT_SET },
+  { path: "services/alldots-api/dist/serve.js", refusal: NOT_SET },
+  { path: "services/alldots-agents/dist/serve.js", refusal: NOT_SET },
+  { path: "services/alldots-ai-gateway/dist/serve.js", refusal: NOT_SET },
+  { path: "services/alldots-transcribe/dist/serve.js", refusal: NOT_SET },
 ];
 
 const RESOLUTION_FAILURES = [

@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -65,7 +65,7 @@ interface Account {
 describe("the Sent copy of an SMTP send", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

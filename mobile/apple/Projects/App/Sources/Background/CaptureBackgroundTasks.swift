@@ -12,9 +12,9 @@ final class CaptureBackgroundTasks {
 
     // MARK: - Identifiers
     /// The processing task, which needs a network connection. Listed in `BGTaskSchedulerPermittedIdentifiers`.
-    static let sendIdentifier = "cz.semprec.app.inboxCaptures.send"
+    static let sendIdentifier = "cz.alldots.app.inboxCaptures.send"
     /// The app refresh task. Listed in `BGTaskSchedulerPermittedIdentifiers`.
-    static let refreshIdentifier = "cz.semprec.app.inboxCaptures.refresh"
+    static let refreshIdentifier = "cz.alldots.app.inboxCaptures.refresh"
 
     /// The system's scheduler, where the requests go in production.
     nonisolated static var systemScheduler: any CaptureTaskScheduler { BGTaskScheduler.shared }

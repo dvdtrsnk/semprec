@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 final class WakeGuardViewModelTests: XCTestCase {
 

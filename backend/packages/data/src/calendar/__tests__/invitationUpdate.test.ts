@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { ValidationError } from "../../errors.js";
 import { createRuntimeRolePool, getTestPool, resetDatabase, withTenantTransaction } from "../../testSupport/testDb.js";
@@ -114,7 +114,7 @@ describe("an organizer's update of an answered invitation (issue gh-2007)", () =
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     mail = createInvitationMail(runtime);
   });
 

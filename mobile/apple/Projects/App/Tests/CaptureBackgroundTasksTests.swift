@@ -2,7 +2,7 @@
 import BackgroundTasks
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The iOS background tasks of the waiting Inbox captures: when both are scheduled, and how a run of either ends, over
 /// doubles of the bridge, the scheduler and the system's task. macOS has no `BGTaskScheduler`, so this file is iOS

@@ -2,7 +2,7 @@
   {
     "id": 31240097348,
     "node_id": "LE_lADOUFuQ4c8AAAABRkLTE88AAAAHRg4ORA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31240097348",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31240097348",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -67,14 +67,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABD071kA",
         "number": 417,
         "title": "Give the repository-root review platform the tasks it never had",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/417",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/417",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/417",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/417",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/417.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/417.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/417",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/417",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/417.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/417.patch",
           "merged_at": "2026-09-16T20:35:12Z"
         },
         "bodySha256": "1550d9f54b11a30694ca07f773dfe2dd90a094f242a684cee1410225b4a665ba"
@@ -84,7 +84,7 @@
   {
     "id": 31724556855,
     "node_id": "LE_lADOUFuQ4c8AAAABRkLTE88AAAAHYu5SNw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31724556855",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31724556855",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -120,7 +120,7 @@
   {
     "id": 31724556900,
     "node_id": "LE_lADOUFuQ4c8AAAABRkLTE88AAAAHYu5SZA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31724556900",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31724556900",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -154,9 +154,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5806581980",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/413#issuecomment-5806581980",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/413",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5806581980",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/413#issuecomment-5806581980",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/413",
     "id": 5806581980,
     "node_id": "IC_kwDOUFuQ4c8AAAABWhlo3A",
     "user": {
@@ -186,7 +186,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5806581980/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5806581980/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -295,14 +295,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABE3GjTQ",
         "number": 476,
         "title": "CI workflows and review-rules are outside every review scope, so they merge unreviewed (#413)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/476",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/476",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/476",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/476",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/476.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/476.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/476",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/476",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/476.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/476.patch",
           "merged_at": "2026-09-24T05:47:06Z"
         },
         "bodySha256": "a91dbe985eeb38c00d55d45cc2c599dec7c2609332c8c7f7ea234a26fc8ad367"
@@ -312,7 +312,7 @@
   {
     "id": 31731758261,
     "node_id": "CE_lADOUFuQ4c8AAAABRkLTE88AAAAHY1w0tQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31731758261",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31731758261",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -345,7 +345,7 @@
   {
     "id": 31739476670,
     "node_id": "UNLE_lADOUFuQ4c8AAAABRkLTE88AAAAHY9H6vg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31739476670",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31739476670",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -410,8 +410,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABTN1Qow",
         "number": 566,
         "title": "[review-followups 01/19] Bring .github/scripts/** into the root review scope",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/566",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/566",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "ce4511ac6ff216b8f0bfcec94fa8409291a3b6de911b3254359a322aa08b2cf8"
       }

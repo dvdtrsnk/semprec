@@ -94,7 +94,7 @@ export function validateMetadata(value) {
   if (meta.source !== null) {
     const source = object(meta.source, "source");
     exactKeys(source, ["system", "repository", "number", "id", "nodeId", "url", "bodySha256", "importedAt"], "source");
-    if (source.system !== "github" || source.repository !== "dvdtrsnk/semprec") throw new Error("Unexpected source repository");
+    if (source.system !== "github" || source.repository !== "dvdtrsnk/alldots") throw new Error("Unexpected source repository");
     integer(source.number, "source.number");
     integer(source.id, "source.id");
     string(source.nodeId, "source.nodeId", 200);

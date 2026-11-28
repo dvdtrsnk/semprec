@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6346051829",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1249#issuecomment-6346051829",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1249",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6346051829",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1249#issuecomment-6346051829",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1249",
     "id": 6346051829,
     "node_id": "IC_kwDOUFuQ4c8AAAABekEQ9Q",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-10-22T16:40:21Z",
     "updated_at": "2026-10-22T16:40:21Z",
-    "body": "Implementation prepared ahead of its gate on branch [`mt/1249-followup`](https://github.com/dvdtrsnk/semprec/tree/mt/1249-followup) (head `484af8ac8`). It is stacked on the prepared `mt/1069-retire-master-credential-scheme` branch, so open its pull request after that branch has landed.\n\nStatus: full backend `pnpm run verify` passed on the branch, and the diff went through an independent review against this issue. Merge `develop` into it first when its base lands.",
+    "body": "Implementation prepared ahead of its gate on branch [`mt/1249-followup`](https://github.com/dvdtrsnk/alldots/tree/mt/1249-followup) (head `484af8ac8`). It is stacked on the prepared `mt/1069-retire-master-credential-scheme` branch, so open its pull request after that branch has landed.\n\nStatus: full backend `pnpm run verify` passed on the branch, and the diff went through an independent review against this issue. Merge `develop` into it first when its base lands.",
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6346051829/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6346051829/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

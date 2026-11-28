@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
@@ -95,7 +95,7 @@ const saveInitialGuidance = () =>
 describe("the problem of a guidance drift finding closes when the finding ends (issue #1915)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createTestProjectItem, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { createViewTypeRegistry } from "../viewTypeRegistry.js";
@@ -103,7 +103,7 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   it("treats another tenant's item as nonexistent", async () => {
     const otherTenant = await createTestTenant(pool);
     // A runtime-role pool, because the superuser pool bypasses row-level security and would find tenant zero's Projects database.
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const foreignProject = await runInTenant(otherTenant, () => createTestProjectItem(runtimePool)).finally(() =>
       runtimePool.end(),
     );

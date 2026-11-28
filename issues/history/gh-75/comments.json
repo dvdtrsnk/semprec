@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458426873",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/75#issuecomment-5458426873",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458426873",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/75#issuecomment-5458426873",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75",
     "id": 5458426873,
     "node_id": "IC_kwDOUFuQ4c8AAAABRVj7-Q",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-08-28T22:29:18Z",
     "updated_at": "2026-08-28T22:29:18Z",
-    "body": "Automated agent run failed. Log on VPS: `/home/semprec-agent/logs/semprec/issue-75-20260828-222914.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
+    "body": "Automated agent run failed. Log on VPS: `/home/alldots-agent/logs/alldots/issue-75-20260828-222914.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458426873/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458426873/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -70,8 +70,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -89,9 +89,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458447327",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/75#issuecomment-5458447327",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458447327",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/75#issuecomment-5458447327",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75",
     "id": 5458447327,
     "node_id": "IC_kwDOUFuQ4c8AAAABRVlL3w",
     "user": {
@@ -117,11 +117,11 @@
     },
     "created_at": "2026-08-28T22:32:16Z",
     "updated_at": "2026-08-28T22:32:16Z",
-    "body": "Automated agent run failed. Log on VPS: `/home/semprec-agent/logs/semprec/issue-75-20260828-223212.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
+    "body": "Automated agent run failed. Log on VPS: `/home/alldots-agent/logs/alldots/issue-75-20260828-223212.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458447327/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458447327/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -159,8 +159,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -178,9 +178,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458456134",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/75#issuecomment-5458456134",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458456134",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/75#issuecomment-5458456134",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75",
     "id": 5458456134,
     "node_id": "IC_kwDOUFuQ4c8AAAABRVluRg",
     "user": {
@@ -206,11 +206,11 @@
     },
     "created_at": "2026-08-28T22:33:34Z",
     "updated_at": "2026-08-28T22:33:34Z",
-    "body": "Automated agent run failed. Log on VPS: `/home/semprec-agent/logs/semprec/issue-75-20260828-223325.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
+    "body": "Automated agent run failed. Log on VPS: `/home/alldots-agent/logs/alldots/issue-75-20260828-223325.log`. Labeled `agent:failed` — the pipeline is halted until a human intervenes; remove the label to retry.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458456134/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458456134/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -248,8 +248,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -267,9 +267,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458484168",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/75#issuecomment-5458484168",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458484168",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/75#issuecomment-5458484168",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75",
     "id": 5458484168,
     "node_id": "IC_kwDOUFuQ4c8AAAABRVnbyA",
     "user": {
@@ -295,11 +295,11 @@
     },
     "created_at": "2026-08-28T22:37:31Z",
     "updated_at": "2026-08-28T22:37:31Z",
-    "body": "Done. Merged to develop as b8cc49ceffaa8aa1dee8b71daf22b9523fec24f5.\n\nCreated the single file `docs/pipeline-smoke-test.md` containing exactly `Semprec agent pipeline smoke test — verified working.` (em-dash U+2014, trailing newline, no other content). No other files were modified. This verifies the generalized multi-project agent dispatch pipeline end-to-end: harness → run-agent → checkout → implementation → PR → CI (ci, review, and code-review all green) → squash-merge → report.",
+    "body": "Done. Merged to develop as b8cc49ceffaa8aa1dee8b71daf22b9523fec24f5.\n\nCreated the single file `docs/pipeline-smoke-test.md` containing exactly `Alldots agent pipeline smoke test — verified working.` (em-dash U+2014, trailing newline, no other content). No other files were modified. This verifies the generalized multi-project agent dispatch pipeline end-to-end: harness → run-agent → checkout → implementation → PR → CI (ci, review, and code-review all green) → squash-merge → report.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5458484168/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5458484168/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -337,8 +337,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",

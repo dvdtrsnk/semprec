@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { RISK_CLASSES, runInTenant } from "@semprec/shared";
+import { RISK_CLASSES, runInTenant } from "@alldots/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -160,7 +160,7 @@ describe("approvalRequestsStore toolCallId (issue #1618)", () => {
 
   it("deduplicates overlapping requests under the tenant runtime role", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", userId: ownerId });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const input = {
       agentRunId: run.id,
       toolName: "search_web",
@@ -511,7 +511,7 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
   it("preserves later committed activity when an older request waits on the thread row", async () => {
     const threadId = await insertThread();
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "t", userId: ownerId, threadId });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let startRequest = () => {};
     let finishUpdate = () => {};
     let reportOld = (_pid: number) => {};

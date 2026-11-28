@@ -30,24 +30,24 @@ describe("resolveBlobStorageDir", () => {
     delete process.env.FILES_STORAGE_DIR;
     delete process.env.MAIL_ATTACHMENTS_DIR;
 
-    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/tmp/semprec-files");
-    expect(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")).toBe("/tmp/semprec-mail-attachments");
+    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/tmp/alldots-files");
+    expect(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")).toBe("/tmp/alldots-mail-attachments");
   });
 
   it("treats an empty variable as unset", () => {
     process.env.NODE_ENV = "test";
     process.env.FILES_STORAGE_DIR = "";
 
-    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/tmp/semprec-files");
+    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/tmp/alldots-files");
   });
 
   it.each(["test", "production"])("returns the configured value under NODE_ENV=%s", (nodeEnv) => {
     process.env.NODE_ENV = nodeEnv;
-    process.env.FILES_STORAGE_DIR = "/opt/semprec/data/files";
-    process.env.MAIL_ATTACHMENTS_DIR = "/opt/semprec/data/mail-attachments";
+    process.env.FILES_STORAGE_DIR = "/opt/alldots/data/files";
+    process.env.MAIL_ATTACHMENTS_DIR = "/opt/alldots/data/mail-attachments";
 
-    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/opt/semprec/data/files");
-    expect(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")).toBe("/opt/semprec/data/mail-attachments");
+    expect(resolveBlobStorageDir("FILES_STORAGE_DIR")).toBe("/opt/alldots/data/files");
+    expect(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")).toBe("/opt/alldots/data/mail-attachments");
   });
 
   it("throws naming the variable outside NODE_ENV=test when it is unset", () => {
