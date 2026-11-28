@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
-import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
+import { CORE_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
@@ -100,7 +100,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     const databaseKeys = (await registry.getDatabases()).map((db) => db.key).sort();
     expect(databaseKeys).toEqual(
       [
-        ...TEN_DATABASE_MODULE_IDS,
+        ...CORE_DATABASE_MODULE_IDS,
         BOOKS_MODULE_ID,
         MOVIES_MODULE_ID,
         EMAILS_MODULE_ID,
@@ -140,7 +140,7 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     expect(databaseKeys).not.toContain(BOOKS_MODULE_ID);
     expect(databaseKeys).not.toContain(MOVIES_MODULE_ID);
     expect(databaseKeys).toEqual(
-      expect.arrayContaining([...TEN_DATABASE_MODULE_IDS, EMAILS_MODULE_ID, INBOX_MODULE_ID]),
+      expect.arrayContaining([...CORE_DATABASE_MODULE_IDS, EMAILS_MODULE_ID, INBOX_MODULE_ID]),
     );
 
     expect(await registry.getViewTypes()).not.toContain(LIBRARY_GRID_VIEW_TYPE);

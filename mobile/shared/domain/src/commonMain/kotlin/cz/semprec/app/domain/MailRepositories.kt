@@ -7,8 +7,8 @@ package cz.semprec.app.domain
 interface MailRepository {
     suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage>
 
-    /** The project counts of the filter, narrowed by the selected project. */
-    suspend fun facets(projectId: String?): RepositoryResult<MailFacets>
+    /** The thread counts of the filter, over every visible thread. */
+    suspend fun facets(): RepositoryResult<MailFacets>
 
     suspend fun summary(): RepositoryResult<MailSummary>
 
@@ -28,6 +28,12 @@ interface MailRepository {
 
     /** Asks the server to make a task from the thread and to name it from the conversation. */
     suspend fun createTask(threadId: String): RepositoryResult<MailNamedRef>
+}
+
+/** The name of a project a thread list starts with, which the facet options leave out when it holds no thread. */
+fun interface MailProjectNames {
+    /** The name of the project [projectId]; `null` when it is gone or has none. */
+    suspend fun projectName(projectId: String): RepositoryResult<String?>
 }
 
 /** What changed in a thread list view since a changes cursor ([MailThreadPage.changesCursor]). */
