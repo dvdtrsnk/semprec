@@ -658,7 +658,9 @@ The same directory holds the Inbox attachments the person opened, for the system
 at most 100 MB, into `inbox-attachments/<account>/blobs/<blobId>/<file name>` and answers that file afterwards, also
 offline; the file of a capture that waits in the outbox is copied from its `.bin` into `captures/<captureId>/` on every
 open. The file name is the attachment's own without any path or reserved characters, or one named after its source,
-with an extension of its media type (`attachmentFileName` in `shared/domain`). Every end of the session deletes them.
+with an extension of its media type (`attachmentFileName` in `shared/domain`); `FileInboxAttachmentFiles` refuses a
+name that sanitizer would change as `INVALID_DATA`, so no path reaches the file system. Every end of the session
+deletes them.
 
 ## Decisions
 

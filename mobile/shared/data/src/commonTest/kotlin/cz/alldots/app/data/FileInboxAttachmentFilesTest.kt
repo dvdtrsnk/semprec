@@ -56,6 +56,15 @@ class FileInboxAttachmentFilesTest {
         return FileInboxAttachmentFiles(directory, api, StandardTestDispatcher(testScheduler))
     }
 
+    /** Adds a capture with a PDF to the outbox of [layer] and answers its id. */
+    private suspend fun waitingCapture(layer: OfflineLayer): String {
+        layer.store.people.keep(accountKey(ATTACHMENT_SESSION), ATTACHMENT_PERSON)
+        val file = InboxCaptureFile("scan.pdf", "application/pdf", PDF_BYTES, InboxCaptureSource.CAMERA)
+        val capture = InboxCapture("Pay the plumber", CalendarDay(2026, 11, 28), "08:15", null, file)
+        assertEquals(RepositoryResult.Content(Unit), layer.captures.add(ATTACHMENT_SESSION, capture))
+        return layer.captures.waitingOf(ATTACHMENT_SESSION).single().id
+    }
+
     private fun RepositoryResult<String>.path(): String = assertIs<RepositoryResult.Content<String>>(this).value
 
     @Test fun `a server attachment is downloaded into the cache under its file name`() = runTest {
@@ -109,6 +118,32 @@ class FileInboxAttachmentFilesTest {
         assertEquals(emptyList(), requests)
     }
 
+    @Test fun `a file name that is not one plain file name never becomes a path`() = runTest {
+        // The attachments live one level below `cache`, so a name that climbed out of them would land in `cache`.
+        val layer = OfflineLayer(OfflineStore(data, StandardTestDispatcher(testScheduler)), backgroundScope)
+        val captureId = waitingCapture(layer)
+        val files = files(layer, directory = "$cache/app")
+        val names = listOf("../x.pdf", "a/b.pdf", "a\\b.pdf", "../../../../../escape.pdf", "..", ".", "", "x\u0000.pdf")
+        val locations = listOf(BLOB, InboxAttachmentLocation.WaitingCapture(captureId))
+
+        names.forEach { name ->
+            locations.forEach { location ->
+                val result = files.file(location, name)
+                assertEquals(RepositoryResult.Failure(FailureKind.INVALID_DATA), result, "$location '$name'")
+            }
+        }
+
+        assertEquals(emptyList(), requests)
+        assertEquals(emptyList(), listCacheDirectory(cache), "nothing is written inside or outside the cache")
+    }
+
+    @Test fun `a file name the sanitizer keeps opens with spaces and diacritics`() = runTest {
+        val path = files().file(BLOB, "Faktura č. 12.pdf").path()
+
+        assertTrue(path.endsWith("/blobs/b1/Faktura č. 12.pdf"))
+        assertContentEquals(PDF_BYTES, readCacheBytes(path))
+    }
+
     @Test fun `without a cache directory or a session nothing is opened`() = runTest {
         assertEquals(RepositoryResult.Failure(FailureKind.UNAVAILABLE), files(directory = null).file(BLOB, "a.pdf"))
         storage.save(null)
@@ -119,11 +154,7 @@ class FileInboxAttachmentFilesTest {
     @Test fun `the file of a waiting capture is copied from the outbox while offline`() = runTest {
         reachable = false
         val layer = OfflineLayer(OfflineStore(data, StandardTestDispatcher(testScheduler)), backgroundScope)
-        layer.store.people.keep(accountKey(ATTACHMENT_SESSION), ATTACHMENT_PERSON)
-        val file = InboxCaptureFile("scan.pdf", "application/pdf", PDF_BYTES, InboxCaptureSource.CAMERA)
-        val capture = InboxCapture("Pay the plumber", CalendarDay(2026, 11, 28), "08:15", null, file)
-        assertEquals(RepositoryResult.Content(Unit), layer.captures.add(ATTACHMENT_SESSION, capture))
-        val captureId = layer.captures.waitingOf(ATTACHMENT_SESSION).single().id
+        val captureId = waitingCapture(layer)
 
         val path = files(layer).file(InboxAttachmentLocation.WaitingCapture(captureId), "scan.pdf").path()
 

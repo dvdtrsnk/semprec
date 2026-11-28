@@ -5,6 +5,7 @@ import cz.alldots.app.core.StoredSession
 import cz.alldots.app.domain.InboxAttachmentFiles
 import cz.alldots.app.domain.InboxAttachmentLocation
 import cz.alldots.app.domain.RepositoryResult
+import cz.alldots.app.domain.attachmentFileName
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,8 +24,9 @@ private val SAFE_ID = Regex("^[A-Za-z0-9-]{1,64}$")
  * and that file is answered from then on, also without a connection; one never downloaded fails offline with
  * [FailureKind.UNAVAILABLE]. The file of a capture that waits in the outbox is copied from it into
  * `captures/<captureId>/` on every call, since the capture may have been sent and deleted since. A blob or capture id
- * that is not a plain id is [FailureKind.INVALID_DATA] and never becomes part of a path. Without a [directory] there
- * is nowhere to keep a file, and every call fails with [FailureKind.UNAVAILABLE].
+ * that is not a plain id, and a file name that [attachmentFileName] would change (a path, `.` or `..`, an empty name,
+ * control or reserved characters), are [FailureKind.INVALID_DATA] and never become part of a path. Without a
+ * [directory] there is nowhere to keep a file, and every call fails with [FailureKind.UNAVAILABLE].
  */
 class FileInboxAttachmentFiles internal constructor(
     private val directory: String?,
@@ -42,7 +44,7 @@ class FileInboxAttachmentFiles internal constructor(
         return when {
             directory == null -> RepositoryResult.Failure(FailureKind.UNAVAILABLE)
             session == null -> RepositoryResult.Failure(FailureKind.UNAUTHORIZED)
-            !SAFE_ID.matches(id) -> RepositoryResult.Failure(FailureKind.INVALID_DATA)
+            !SAFE_ID.matches(id) || !isSafeFileName(fileName) -> RepositoryResult.Failure(FailureKind.INVALID_DATA)
             else -> {
                 val account = "${root(directory)}/${accountKey(session)}"
                 when (location) {
@@ -87,3 +89,6 @@ class FileInboxAttachmentFiles internal constructor(
 
     private fun root(directory: String) = "${directory.trimEnd('/')}/$ROOT"
 }
+
+/** A single file name the domain sanitizer leaves as it is, so it names a file in one directory and nothing else. */
+private fun isSafeFileName(fileName: String): Boolean = attachmentFileName(fileName, null, null) == fileName
