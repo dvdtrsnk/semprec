@@ -35,6 +35,8 @@ class HomeSDKTest {
             sdk.homeViewModel() to sdk.homeViewModel(),
             sdk.detailViewModel("item-1") to sdk.detailViewModel("item-1"),
             sdk.settingsViewModel() to sdk.settingsViewModel(),
+            sdk.passwordReset.viewModel("https://alldots.app", "t") to
+                sdk.passwordReset.viewModel("https://alldots.app", "t"),
         )
         pairs.forEach { (first, second) ->
             assertNotSame(first, second)

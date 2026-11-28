@@ -63,7 +63,7 @@ final class AccountFormatTests: XCTestCase {
     }
 
     func testTheHostIsTakenFromAServerAddressOrTheAddressItselfIsKept() {
-        XCTAssertEqual(AccountFormat.host(of: "https://alldots.tresnak.cc/app"), "alldots.tresnak.cc")
+        XCTAssertEqual(AccountFormat.host(of: "https://api.alldots.app/app"), "api.alldots.app")
         XCTAssertEqual(AccountFormat.host(of: "not a url"), "not a url")
         XCTAssertNil(AccountFormat.host(of: nil))
     }

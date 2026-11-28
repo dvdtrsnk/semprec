@@ -9,10 +9,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-private class RecordingAuth : AuthRepository {
+/** Records every call and answers [resetAnswer] to a password reset. */
+internal class RecordingAuth(
+    var resetAnswer: RepositoryResult<PasswordResetOutcome> = RepositoryResult.Content(PasswordResetOutcome.Done),
+) : AuthRepository {
     override val status: StateFlow<SessionStatus> = MutableStateFlow(SessionStatus.SignedOut)
     val signIns = mutableListOf<Triple<String, String, String>>()
     val resets = mutableListOf<Pair<String, String>>()
+    val passwordResets = mutableListOf<Triple<String, String, String>>()
     override suspend fun restore() = Unit
     override suspend fun signIn(serverUrl: String, email: String, password: String): RepositoryResult<Session> {
         signIns += Triple(serverUrl, email, password)
@@ -21,6 +25,14 @@ private class RecordingAuth : AuthRepository {
     override suspend fun requestPasswordReset(serverUrl: String, email: String): RepositoryResult<Unit> {
         resets += serverUrl to email
         return RepositoryResult.Content(Unit)
+    }
+    override suspend fun resetPassword(
+        serverUrl: String,
+        token: String,
+        newPassword: String,
+    ): RepositoryResult<PasswordResetOutcome> {
+        passwordResets += Triple(serverUrl, token, newPassword)
+        return resetAnswer
     }
     override suspend fun signOut() = Unit
 }

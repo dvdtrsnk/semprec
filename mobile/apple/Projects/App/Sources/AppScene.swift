@@ -53,6 +53,7 @@ struct AppScene: View {
             AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
                 .task { await composition.notifications?.signedOut() }
         }
+        .passwordResetLinks(models: composition.models, navigation: composition.navigation)
         .wakeGuard(makeModel: { composition.models.makeWakeGuard() }, navigation: composition.navigation)
         // The document scanner `ScanIntoInboxIntent` asks for, shown by the one active scene that claims it.
         .modifier(ScanPresentation(presenter: .shared))

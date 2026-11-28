@@ -73,7 +73,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel", "SyncStatusViewModel", "WakeSettingsViewModel", "WakeGuardViewModel", "DebugAlarmViewModel"],
+    "appleOnly": ["LoginViewModel", "PasswordResetViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "InternetAccountsViewModel", "InternetAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel", "NoteEditorViewModel", "ProjectMailSignalsViewModel", "SyncStatusViewModel", "WakeSettingsViewModel", "WakeGuardViewModel", "DebugAlarmViewModel"],
     "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
@@ -218,7 +218,20 @@
         "login.error.incomplete",
         "login.error.unauthorized",
         "login.error.unavailable",
-        "login.error.unexpected"
+        "login.error.unexpected",
+        "passwordReset.title",
+        "passwordReset.newPassword",
+        "passwordReset.repeat",
+        "passwordReset.submit",
+        "passwordReset.cancel",
+        "passwordReset.done",
+        "passwordReset.signIn",
+        "passwordReset.error.linkInvalid",
+        "passwordReset.error.linkExpired",
+        "passwordReset.error.linkUsed",
+        "passwordReset.error.weakPassword",
+        "passwordReset.error.unavailable",
+        "passwordReset.error.unexpected"
       ]
     },
     {

@@ -4,6 +4,7 @@ import cz.alldots.app.domain.AuthRepository
 import cz.alldots.app.domain.LoadPlaceholderItem
 import cz.alldots.app.domain.LoadPlaceholderItems
 import cz.alldots.app.domain.RequestPasswordReset
+import cz.alldots.app.domain.ResetPassword
 import cz.alldots.app.domain.RestoreSession
 import cz.alldots.app.domain.SignIn
 import cz.alldots.app.domain.SignOut
@@ -35,4 +36,8 @@ class HomeViewModelFactory(
 
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun loginViewModel(): LoginViewModel = LoginViewModel(SignIn(auth), RequestPasswordReset(auth))
+
+    /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
+    fun passwordResetViewModel(serverUrl: String, token: String): PasswordResetViewModel =
+        PasswordResetViewModel(serverUrl, token, ResetPassword(auth))
 }

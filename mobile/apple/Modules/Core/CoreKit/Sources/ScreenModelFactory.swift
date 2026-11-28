@@ -17,6 +17,9 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
+    /// The "Set a new password" form of a reset link: `token` is set at `serverUrl` (`https://host`), the server the
+    /// link came from.
+    func makePasswordReset(serverUrl: String, token: String) -> any PasswordResetScreenModel
     func makeOverview() -> any OverviewScreenModel
     func makeSearch() -> any SearchScreenModel
     func makeTasks(start: TasksStart) -> any TasksScreenModel

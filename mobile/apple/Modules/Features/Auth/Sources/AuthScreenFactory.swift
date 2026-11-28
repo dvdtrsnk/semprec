@@ -10,4 +10,11 @@ public enum AuthScreenFactory {
     public static func login(makeModel: @escaping @MainActor () -> any LoginScreenModel) -> some View {
         LoginScreen(viewModel: LoginViewModel(model: makeModel()))
     }
+
+    /// The "Set a new password" sheet of a password-reset link; it closes itself.
+    public static func passwordReset(
+        makeModel: @escaping @MainActor () -> any PasswordResetScreenModel
+    ) -> some View {
+        PasswordResetScreen(viewModel: PasswordResetViewModel(model: makeModel()))
+    }
 }

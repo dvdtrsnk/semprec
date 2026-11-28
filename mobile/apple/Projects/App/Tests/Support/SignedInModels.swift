@@ -38,6 +38,10 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
+    func makePasswordReset(serverUrl: String, token: String) -> any PasswordResetScreenModel {
+        real.makePasswordReset(serverUrl: serverUrl, token: token)
+    }
+
     func makeOverview() -> any OverviewScreenModel { real.makeOverview() }
 
     func makeSearch() -> any SearchScreenModel { real.makeSearch() }
