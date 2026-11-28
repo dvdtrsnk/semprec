@@ -72,9 +72,9 @@ data class ItemWriteFailure(val propertyKey: String?, val kind: FailureKind?)
 
 /**
  * Everything one item detail shows. [saving] is true while a write is in flight; [deleted] once the item is gone.
- * [writeFailure] is the last write that failed; [choiceFailure] is the last new choice ([ItemAction.Edit.AddChoice])
- * that could not be added and set, kept apart so that only the place that adds choices shows it. The next write
- * clears both.
+ * [writeFailure] is the last write that failed; [choiceFailure] is the last write of a choice itself (added and set,
+ * renamed, recolored or removed) that did not go through, kept apart so that only the place that manages choices shows
+ * it. The next write clears both. [swatches] are the colours a choice can be given, in the order they are offered.
  */
 data class ItemState(
     val phase: ItemPhase = ItemPhase.LOADING,
@@ -90,4 +90,5 @@ data class ItemState(
     val writeFailure: ItemWriteFailure? = null,
     val choiceFailure: ItemWriteFailure? = null,
     val deleted: Boolean = false,
+    val swatches: List<CalendarSwatch> = CALENDAR_SWATCHES,
 )

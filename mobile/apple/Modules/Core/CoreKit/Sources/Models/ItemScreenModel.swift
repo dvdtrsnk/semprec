@@ -211,9 +211,12 @@ public struct ItemState: Equatable, Sendable {
     public var saving: Bool
     /// The last write that failed; the item screen shows it as an alert.
     public var writeFailure: ItemWriteFailure?
-    /// The last new choice (`.edit(.addChoice)`) that could not be added and set, shown only where choices are added.
+    /// The last write of a choice itself (added and set, renamed, recolored or removed) that did not go through,
+    /// shown only where choices are managed.
     public var choiceFailure: ItemWriteFailure?
     public var deleted: Bool
+    /// The colours a choice can be given, in the order they are offered.
+    public var swatches: [CalendarSwatch]
 
     public init(
         phase: ItemPhase = .loading,
@@ -228,7 +231,8 @@ public struct ItemState: Equatable, Sendable {
         saving: Bool = false,
         writeFailure: ItemWriteFailure? = nil,
         choiceFailure: ItemWriteFailure? = nil,
-        deleted: Bool = false
+        deleted: Bool = false,
+        swatches: [CalendarSwatch] = []
     ) {
         self.phase = phase
         self.failure = failure
@@ -243,6 +247,7 @@ public struct ItemState: Equatable, Sendable {
         self.writeFailure = writeFailure
         self.choiceFailure = choiceFailure
         self.deleted = deleted
+        self.swatches = swatches
     }
 }
 
@@ -270,6 +275,12 @@ public enum ItemAction: Equatable, Sendable {
         /// Adds a new choice named `label` to a select or multi-select and sets it on the item, a multi-select keeping
         /// the choices it holds; a blank name changes nothing.
         case addChoice(propertyKey: String, label: String)
+        /// Renames the choice `key` to `label` for every item of the database; a blank name changes nothing.
+        case renameChoice(propertyKey: String, key: String, label: String)
+        /// Gives the choice `key` the colour `color` (`#RRGGBB`) for every item of the database.
+        case recolorChoice(propertyKey: String, key: String, color: String)
+        /// Removes the choice `key`, and with it the key from every item that holds it.
+        case removeChoice(propertyKey: String, key: String)
         /// Ends the link that makes a value follow its source; the value stays as the item's own.
         case unlink(propertyKey: String)
         /// Makes the value follow its source again.

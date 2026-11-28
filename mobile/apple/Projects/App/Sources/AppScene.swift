@@ -185,6 +185,10 @@ private extension AppScene {
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: AppCollectionsRouter(context: composition.navigation, tab: tab, closesSheet: true)
             )
+        case .projectTags(let projectId):
+            ProjectTagsDestination(projectId: projectId, composition: composition)
+        case .projectTag(let projectId, let tagKey):
+            ProjectTagDestination(projectId: projectId, tagKey: tagKey, composition: composition)
         case .sleepPlan, .sleepNight, .sleepWakeSettings:
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:

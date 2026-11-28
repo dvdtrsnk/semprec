@@ -201,6 +201,9 @@ class FakeCollections : CollectionReads, CollectionWrites {
     var uploadAnswer: suspend () -> RepositoryResult<CollectionItem> = { RepositoryResult.Content(fileItem("f", "F")) }
     var addOptionAnswer: suspend (String) -> RepositoryResult<PropertyOption> =
         { label -> RepositoryResult.Content(PropertyOption(label.lowercase(), label, null)) }
+    var updateOptionAnswer: suspend (String, String?, String?) -> RepositoryResult<PropertyOption> =
+        { key, label, color -> RepositoryResult.Content(PropertyOption(key, label ?: key, color)) }
+    var removeOptionAnswer: suspend (String) -> RepositoryResult<Unit> = { RepositoryResult.Content(Unit) }
 
     val queries = mutableListOf<CollectionQuery>()
     val facetQueries = mutableListOf<Pair<CollectionQuery, List<String>>>()
@@ -294,6 +297,21 @@ class FakeCollections : CollectionReads, CollectionWrites {
     override suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption> {
         calls += "addOption:${property.id}:$label"
         return addOptionAnswer(label)
+    }
+
+    override suspend fun updateOption(
+        property: CollectionProperty,
+        key: String,
+        label: String?,
+        color: String?,
+    ): RepositoryResult<PropertyOption> {
+        calls += "updateOption:${property.id}:$key:$label:$color"
+        return updateOptionAnswer(key, label, color)
+    }
+
+    override suspend fun removeOption(property: CollectionProperty, key: String): RepositoryResult<Unit> {
+        calls += "removeOption:${property.id}:$key"
+        return removeOptionAnswer(key)
     }
 
     override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageContent> {

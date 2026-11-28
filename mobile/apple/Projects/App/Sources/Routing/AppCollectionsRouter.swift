@@ -33,6 +33,16 @@ extension AppCollectionsRouter: CollectionsRouting {
         context.push(.collection(target), in: tab)
     }
 
+    func showProjectTags(projectId: String) {
+        leaveSheet()
+        context.push(.projectTags(projectId: projectId), in: tab)
+    }
+
+    func showProjectTag(projectId: String, tagKey: String) {
+        leaveSheet()
+        context.push(.projectTag(projectId: projectId, tagKey: tagKey), in: tab)
+    }
+
     func showEvent(itemId: String) {
         leaveSheet()
         context.showItem(itemId: itemId, databaseKey: "events", from: tab)

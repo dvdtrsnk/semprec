@@ -59,7 +59,8 @@ extension SharedItemScreenModel {
             saving: state.saving,
             writeFailure: state.writeFailure.map(writeFailure),
             choiceFailure: state.choiceFailure.map(writeFailure),
-            deleted: state.deleted
+            deleted: state.deleted,
+            swatches: state.swatches.map(CalendarSwatch.init)
         )
     }
 
@@ -103,6 +104,11 @@ extension SharedItemScreenModel {
         case .setFlag(let key, let isOn): SharedSDK.ItemActionEditSetFlag(propertyKey: key, on: isOn)
         case .setChoices(let key, let keys): SharedSDK.ItemActionEditSetChoices(propertyKey: key, keys: keys)
         case .addChoice(let key, let label): SharedSDK.ItemActionEditAddChoice(propertyKey: key, label: label)
+        case .renameChoice(let property, let key, let label):
+            SharedSDK.ItemActionEditRenameChoice(propertyKey: property, key: key, label: label)
+        case .recolorChoice(let property, let key, let color):
+            SharedSDK.ItemActionEditRecolorChoice(propertyKey: property, key: key, color: color)
+        case .removeChoice(let property, let key): SharedSDK.ItemActionEditRemoveChoice(propertyKey: property, key: key)
         case .unlink(let key): SharedSDK.ItemActionEditUnlink(propertyKey: key)
         case .relink(let key): SharedSDK.ItemActionEditRelink(propertyKey: key)
         case .removeTarget(let key, let targetId):

@@ -3,14 +3,16 @@ import DesignSystem
 import SwiftUI
 
 /// The settings of a project: its status, its deadline (which a long-term project does not have), its tags
-/// with a field that creates a new one, whether it is pinned to the overview, and the entry to its mail signals, which
-/// the project opens on its stack once the sheet is closed.
+/// with a field that creates a new one, whether it is pinned to the overview, and the entries to the tags of the
+/// projects, which rename, recolor and delete them, and to its mail signals; the project opens either on its stack
+/// once the sheet is closed.
 struct ProjectSettingsSheet: View {
 
     // MARK: - Dependencies
     let state: ItemState
     let send: (ItemAction) -> Void
     let close: () -> Void
+    let openTags: () -> Void
     let openMailSignals: () -> Void
 
     // MARK: - State
@@ -113,6 +115,17 @@ private extension ProjectSettingsSheet {
                             .disabled(!canAddTag)
                             .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsAddTag)
                     }
+                    Button(action: openTags) {
+                        HStack {
+                            Text("project.tags.manage", bundle: .module)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .listRowButton()
+                    .foregroundStyle(.primary)
+                    .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsManageTags)
                 }
             } header: {
                 Text(tags.name).accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)

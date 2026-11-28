@@ -43,6 +43,18 @@ final class SharedItemActionMappingTests: XCTestCase {
             action(.addChoice(propertyKey: "tags", label: "Client")),
             SharedSDK.ItemActionEditAddChoice(propertyKey: "tags", label: "Client")
         )
+        XCTAssertEqual(
+            action(.renameChoice(propertyKey: "tags", key: "client", label: "Customer")),
+            SharedSDK.ItemActionEditRenameChoice(propertyKey: "tags", key: "client", label: "Customer")
+        )
+        XCTAssertEqual(
+            action(.recolorChoice(propertyKey: "tags", key: "client", color: "#34C759")),
+            SharedSDK.ItemActionEditRecolorChoice(propertyKey: "tags", key: "client", color: "#34C759")
+        )
+        XCTAssertEqual(
+            action(.removeChoice(propertyKey: "tags", key: "client")),
+            SharedSDK.ItemActionEditRemoveChoice(propertyKey: "tags", key: "client")
+        )
         XCTAssertEqual(action(.unlink(propertyKey: "status")), SharedSDK.ItemActionEditUnlink(propertyKey: "status"))
         XCTAssertEqual(action(.relink(propertyKey: "status")), SharedSDK.ItemActionEditRelink(propertyKey: "status"))
         XCTAssertEqual(
