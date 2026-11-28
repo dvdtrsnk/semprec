@@ -60,8 +60,9 @@ struct AddToInboxIntent: AppIntent {
         return scan
     }
 
-    /// Waits for `capture.send()` at most `sendingWait`, so a slow connection does not hold the answer back; cancelling
-    /// the wait leaves the sending running.
+    /// Waits for `capture.send()` at most `sendingWait`, so a slow connection does not hold the answer back. Cancelling
+    /// the wait leaves the sending running, because adding the capture started the outbox's round, which waits for it
+    /// too.
     @MainActor
     static func sendBriefly(_ capture: InboxShortcutCapture) async {
         let sending = Task { @MainActor in _ = await capture.send() }

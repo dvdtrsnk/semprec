@@ -116,7 +116,9 @@ class InboxCaptureSDK(sessionStorage: SessionStorage, dataDirectory: String) {
     /**
      * Sends the captures that wait now, or joins the round under way, and answers whether no capture of the person
      * signed in is left; `false` also when nobody is signed in or the round failed unexpectedly. Cancelling the call
-     * stops only the waiting: the round goes on in the background.
+     * cancels the round when no other trigger waits for it (a capture just added, a window, a retry after a backoff
+     * each wait for the round they started), and loses nothing: a capture is deleted only after the server created
+     * its item.
      */
     suspend fun send(): Boolean = try {
         offline.sendCaptures()

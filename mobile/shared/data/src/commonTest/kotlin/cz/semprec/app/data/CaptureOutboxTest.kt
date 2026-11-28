@@ -576,6 +576,56 @@ class CaptureOutboxTest {
             assertEquals(1, server.mostInFlight)
         }
 
+    /** A capture kept after a `401` ended its round, so no round runs and no retry is due when the test sends. */
+    private suspend fun TestScope.idleWithACapture(): OfflineLayer {
+        val layer = layer()
+        layer.signIn()
+        server.item = { refusal(401) }
+        layer.add()
+        runCurrent()
+        server.items.clear()
+        server.item = {
+            delay(10.seconds)
+            OUTBOX_CREATED
+        }
+        return layer
+    }
+
+    @Test fun `cancelling the only send waiting for a round cancels the round and the capture is sent later`() =
+        runTest {
+            val layer = idleWithACapture()
+            val sending = async { layer.captures.send() }
+            runCurrent()
+            assertEquals(1, server.inFlight)
+
+            sending.cancel()
+            runCurrent()
+            assertEquals(0, server.inFlight, "the request of the cancelled round was cancelled")
+            advanceTimeBy(1.minutes)
+            assertEquals(1, server.items.size, "nothing starts the round again")
+            assertEquals(listOf("c1.json"), files())
+
+            online()
+            assertTrue(layer.captures.send())
+            assertEquals(listOf("c1", "c1"), server.items.map { it.idempotencyKey() })
+            assertTrue(files().isEmpty())
+        }
+
+    @Test fun `cancelling a send while another trigger waits for the same round leaves the round running`() =
+        runTest {
+            val layer = idleWithACapture()
+            val cancelled = async { layer.captures.send() }
+            val other = async { layer.captures.send() }
+            runCurrent()
+
+            cancelled.cancel()
+            runCurrent()
+            assertEquals(1, server.inFlight)
+            assertTrue(other.await())
+            assertEquals(1, server.items.size)
+            assertTrue(files().isEmpty())
+        }
+
     @Test fun `a capture is sent when added when the server is reached again the socket connects or a window starts`() =
         runTest {
             val layer = layer()

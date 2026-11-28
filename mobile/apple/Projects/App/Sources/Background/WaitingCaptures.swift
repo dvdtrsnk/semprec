@@ -7,7 +7,7 @@ import Foundation
 protocol WaitingCaptures: AnyObject, Sendable {
 
     /// Sends the captures that wait now and answers whether none of the person signed in is left. Cancelling it stops
-    /// only the waiting.
+    /// the sending, unless another trigger of the outbox waits for it too.
     func send() async -> Bool
 
     /// Whether a capture of the person signed in waits for the server: `.nothing` when nobody is signed in, and

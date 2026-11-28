@@ -55,8 +55,9 @@ final class CaptureBackgroundTasks {
 
     /// Runs `task`: sends the captures that wait through the bridge, then completes it with success when none is left,
     /// or schedules both tasks again and completes it without success when some still wait (no network, a server
-    /// that did not answer) or when that could not be counted. When the system expires the task first, the send is cancelled, both tasks are scheduled
-    /// again, because the send did not finish, and the task completes without success. It completes exactly once;
+    /// that did not answer) or when that could not be counted. When the system expires the task first, the send is
+    /// cancelled, which stops the outbox's round unless another trigger waits for it, both tasks are scheduled again,
+    /// because the send did not finish, and the task completes without success. It completes exactly once;
     /// the returned task is the send, which tests await.
     @discardableResult
     func run(_ task: any CaptureBackgroundTask) -> Task<Void, Never> {

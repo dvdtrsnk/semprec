@@ -7,6 +7,8 @@ import cz.semprec.app.domain.RepositoryResult
 import io.ktor.http.HttpMethod
 import io.ktor.util.hex
 import io.ktor.util.sha1
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
@@ -103,6 +105,8 @@ internal class CaptureOutbox(
     /**
      * Runs a round now, or joins the one under way, and answers whether no capture of the owner signed in is left;
      * `false` when nobody is signed in or no person is kept for the session, since then nothing could be sent.
+     * Cancelling it cancels the round when no other trigger waits for it. That loses nothing: a capture is deleted
+     * only after the server created its item, and one sent again carries the same `Idempotency-Key`.
      */
     suspend fun send(): Boolean {
         rounds.join()
@@ -180,42 +184,73 @@ internal class CaptureOutbox(
 
 /**
  * Runs [pass] in [scope] as rounds, one at a time: [join] starts a round, or joins the one under way and asks it for
- * one more pass, and returns once that round ended.
+ * one more pass, and returns once that round ended. A round is cancelled when every caller of [join] waiting for it
+ * was cancelled, so a caller that alone wants a round (a background task the system expires) stops it, while a round
+ * that another trigger also waits for goes on.
  */
 private class OneRoundAtATime(private val scope: CoroutineScope, private val pass: suspend () -> Unit) {
     private val lock = Mutex()
-    private var running: Deferred<Unit>? = null
-    private var again = false
+    private var current: Round? = null
+
+    /** One round: whether a trigger asked it for another pass, and how many callers of [join] wait for it. */
+    private class Round(val work: Deferred<Unit>) {
+        var again = true
+        var waiters = 0
+    }
 
     suspend fun join() {
         val round = lock.withLock {
-            again = true
-            running ?: scope.async { passes() }.also { running = it }
+            val round = current?.also { it.again = true } ?: newRound()
+            round.waiters += 1
+            round
         }
-        round.await()
+        round.work.start()
+        try {
+            round.work.await()
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) { leave(round) }
+            throw cancelled
+        }
+    }
+
+    /** A round that has not started yet; it starts once [join] released the lock its first pass takes. */
+    private fun newRound(): Round {
+        lateinit var round: Round
+        round = Round(scope.async(start = CoroutineStart.LAZY) { passes(round) })
+        current = round
+        return round
+    }
+
+    /** A caller of [join] was cancelled: the round under way is cancelled when nobody else waits for it. */
+    private suspend fun leave(round: Round) = lock.withLock {
+        round.waiters -= 1
+        if (round.waiters == 0 && current === round) {
+            current = null
+            round.work.cancel()
+        }
     }
 
     /** Passes as long as a trigger asked for one; however it ends, the next [join] starts a round. */
-    private suspend fun passes() {
+    private suspend fun passes(round: Round) {
         var ended = false
         try {
-            while (nextPass()) pass()
+            while (nextPass(round)) pass()
             ended = true
         } finally {
-            if (!ended) withContext(NonCancellable) { lock.withLock { running = null } }
+            if (!ended) withContext(NonCancellable) { lock.withLock { if (current === round) current = null } }
         }
     }
 
     /**
-     * Whether a trigger asked for another pass. When none did the round ends here, under the lock [join] takes, so a
-     * trigger either finds this round and is seen by it or finds none and starts the next.
+     * Whether a trigger asked [round] for another pass. When none did the round ends here, under the lock [join]
+     * takes, so a trigger either finds this round and is seen by it or finds none and starts the next.
      */
-    private suspend fun nextPass(): Boolean = lock.withLock {
-        if (again) {
-            again = false
+    private suspend fun nextPass(round: Round): Boolean = lock.withLock {
+        if (round.again) {
+            round.again = false
             true
         } else {
-            running = null
+            if (current === round) current = null
             false
         }
     }
@@ -261,8 +296,11 @@ private class CaptureDelivery(
         state.answered(response)
         return when (response) {
             is ApiResponse.Success -> {
-                files.delete(owner, capture.id)
-                state.changed()
+                // A round cancelled now still deletes what the server created and tells every window.
+                withContext(NonCancellable) {
+                    files.delete(owner, capture.id)
+                    state.changed()
+                }
                 DeliveryEnd.ON
             }
             is ApiResponse.Failure ->

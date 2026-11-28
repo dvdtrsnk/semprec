@@ -45,8 +45,10 @@ Rejected:
   nothing or unknown when the count failed). With nothing waiting it completes with success. With some waiting, or
   when that is unknown, it schedules both tasks again and completes without success. When the
   system expires the task first, the run cancels the send's Swift task, schedules both tasks again (the send did not
-  finish), and completes without success. Cancelling the send stops only the wait in Kotlin: the outbox's round goes
-  on for as long as the process runs.
+  finish), and completes without success. Cancelling the send cancels the outbox's round when no other trigger
+  waits for it (a capture just added, a window, a retry after a backoff each wait for the round they started), so an
+  expired task leaves no request of its own running while the system suspends the app. Nothing is lost: a capture is
+  deleted only after the server created its item, and one sent again carries the same `Idempotency-Key`.
 - **When they are scheduled.** Both are scheduled together, and only while captures wait or the count failed: after a capture is added by
   the intent (after its brief send), by the scanner (once the scan's capture is kept), or by the diary's capture row,
   and when the app moves to the background. A new request replaces the pending one with the same identifier. A

@@ -202,8 +202,9 @@ class OfflineLayer internal constructor(
 
     /**
      * Sends the Inbox captures that wait now, through the layer's sender, or joins the round under way; answers
-     * whether no capture of the person signed in is left ([CaptureOutbox.send]). For an entry without a window, such
-     * as an App Intent's `InboxCaptureSDK`, which cannot wait for a window's triggers.
+     * whether no capture of the person signed in is left ([CaptureOutbox.send]). Cancelling it cancels the round when
+     * no other trigger waits for it. For an entry without a window, such as an App Intent's `InboxCaptureSDK`, which
+     * cannot wait for a window's triggers.
      */
     suspend fun sendCaptures(): Boolean = captures.send()
 

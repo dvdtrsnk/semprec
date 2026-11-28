@@ -86,8 +86,9 @@ public final class InboxShortcutCapture {
         return Self.capture(answer)
     }
 
-    /// Sends the captures that wait now and answers whether none of the person signed in is left. Cancelling it stops
-    /// only the waiting; the sending goes on in the background for as long as the process runs.
+    /// Sends the captures that wait now and answers whether none of the person signed in is left. Cancelling the
+    /// calling task stops the sending, unless another trigger of the outbox (a capture just added, a window, a retry
+    /// after a backoff) waits for the same round; it loses no capture.
     public func send() async -> Bool {
         guard let sent = try? await sdk.send() else { return false }
         return sent.boolValue
