@@ -67,7 +67,7 @@ class FileInboxAttachmentFilesTest {
         assertContentEquals(PDF_BYTES, readCacheBytes(path))
     }
 
-    @Test fun `a second open answers the file downloaded before without a request, also offline`() = runTest {
+    @Test fun `a second open answers the file downloaded before without a request and also offline`() = runTest {
         val first = files().file(BLOB, "Invoice.pdf").path()
         reachable = false
 
@@ -116,7 +116,7 @@ class FileInboxAttachmentFilesTest {
         assertEquals(emptyList(), requests)
     }
 
-    @Test fun `the file of a waiting capture is copied from the outbox, offline`() = runTest {
+    @Test fun `the file of a waiting capture is copied from the outbox while offline`() = runTest {
         reachable = false
         val layer = OfflineLayer(OfflineStore(data, StandardTestDispatcher(testScheduler)), backgroundScope)
         layer.store.people.keep(accountKey(ATTACHMENT_SESSION), ATTACHMENT_PERSON)

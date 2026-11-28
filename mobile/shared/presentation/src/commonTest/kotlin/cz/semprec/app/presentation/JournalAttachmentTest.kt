@@ -25,7 +25,7 @@ class JournalAttachmentTest : MainDispatcherTest() {
             .journalViewModel("2026-10-16")
             .also { runCurrent() }
 
-    @Test fun `an attachment shows its wait and then the file to preview, named for its media type`() =
+    @Test fun `an attachment shows its wait and then the file to preview named for its media type`() =
         runTest(dispatcher) {
             val gate = CompletableDeferred<Unit>()
             attachments.answer = { _, name ->
@@ -80,7 +80,7 @@ class JournalAttachmentTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `closing while an attachment is opened cancels it, and a newer open supersedes an older`() =
+    @Test fun `closing while an attachment is opened cancels it and a newer open supersedes an older`() =
         runTest(dispatcher) {
             val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
             attachments.answer = { _, name ->
