@@ -34,15 +34,18 @@ internal object CaptureProjection {
         captures: List<KeptCapture>,
         emojis: Map<String, String>,
     ): ApiResponse {
-        val day = dayOf(read) ?: return answer
-        val success = answer as? ApiResponse.Success ?: return answer
-        val root = parseJsonObject(success.body) ?: return answer
-        val listed = (root["inbox"] as? JsonArray).orEmpty()
+        val day = dayOf(read)
+        val success = answer as? ApiResponse.Success
+        val root = success?.let { parseJsonObject(it.body) }
+        val listed = (root?.get("inbox") as? JsonArray).orEmpty()
         val ids = listed.mapNotNull { it.idOf() }.toSet()
         val waiting = captures.filter { it.day == day && it.id !in ids }
-        if (waiting.isEmpty()) return answer
-        val inbox = JsonArray(listed + waiting.map { it.entry(emojis) })
-        return success.copy(body = JsonObject(root + ("inbox" to inbox)).toString())
+        return if (success == null || root == null || waiting.isEmpty()) {
+            answer
+        } else {
+            val inbox = JsonArray(listed + waiting.map { it.entry(emojis) })
+            success.copy(body = JsonObject(root + ("inbox" to inbox)).toString())
+        }
     }
 
     /** The day of the diary [read] asks for, `YYYY-MM-DD`, or `null` for any other request. */
@@ -70,17 +73,16 @@ internal class CaptureViews(private val store: OfflineStore, private val capture
         read: ApiRequest,
         answer: ApiResponse,
     ): ApiResponse {
-        if (CaptureProjection.dayOf(read) == null || answer !is ApiResponse.Success) return answer
-        val waiting = captures.waitingOf(session)
-        if (waiting.isEmpty()) return answer
+        val projected = CaptureProjection.dayOf(read) != null && answer is ApiResponse.Success
+        val waiting = if (projected) captures.waitingOf(session) else emptyList()
         val emojis = if (waiting.any { it.typeId != null }) emojis(account) else emptyMap()
-        return CaptureProjection.apply(read, answer, waiting, emojis)
+        return if (waiting.isEmpty()) answer else CaptureProjection.apply(read, answer, waiting, emojis)
     }
 
     /** The emoji of each Inbox type the kept `GET /api/inbox-types` names, by type id; none when it is not kept. */
     private suspend fun emojis(account: String): Map<String, String> {
-        val kept = store.answers.answer(account, ApiRequest(HttpMethod.Get, INBOX_TYPES_PATH).key()) ?: return emptyMap()
-        val types = decodeCaptureOrNull { ApiJson.decodeFromString(InboxTypesDto.serializer(), kept.body) }
+        val kept = store.answers.answer(account, ApiRequest(HttpMethod.Get, INBOX_TYPES_PATH).key())
+        val types = kept?.let { decodeCaptureOrNull { ApiJson.decodeFromString(InboxTypesDto.serializer(), it.body) } }
         return types?.types.orEmpty().filter { it.emoji.isNotBlank() }.associate { it.id to it.emoji }
     }
 }

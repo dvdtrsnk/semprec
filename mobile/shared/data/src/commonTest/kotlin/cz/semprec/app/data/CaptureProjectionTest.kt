@@ -117,7 +117,8 @@ class CaptureProjectionTest {
         session: StoredSession = ADA_SESSION,
     ) {
         minute += 1
-        assertEquals(RepositoryResult.Content(Unit), captures.add(session, InboxCapture(text, day, "08:15", typeId, file)))
+        val capture = InboxCapture(text, day, "08:15", typeId, file)
+        assertEquals(RepositoryResult.Content(Unit), captures.add(session, capture))
     }
 
     /** Counts what [OfflineLayer.changes] emits while the test runs. */
