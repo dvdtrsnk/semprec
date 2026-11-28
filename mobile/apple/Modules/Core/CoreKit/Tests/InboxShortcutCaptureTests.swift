@@ -49,6 +49,17 @@ final class InboxShortcutCaptureTests: XCTestCase {
         }
     }
 
+    func testEveryAnswerOfTheWaitingCapturesMapsToItsCase() {
+        let answers: [(SharedSDK.InboxCapturesWaiting, InboxShortcutCapture.Waiting)] = [
+            (.waiting, .waiting),
+            (.nothing, .nothing),
+            (.unknown, .unknown)
+        ]
+        for (shared, expected) in answers {
+            XCTAssertEqual(InboxShortcutCapture.waiting(shared), expected)
+        }
+    }
+
     func testAFileMapsWithEveryValueAndEverySource() {
         let sources: [(InboxCaptureSource, SharedSDK.InboxCaptureAttachmentSource)] = [
             (.camera, .camera),
@@ -87,7 +98,7 @@ final class InboxShortcutCaptureTests: XCTestCase {
         let sent = await capture.send()
         XCTAssertFalse(sent)
         let waits = await capture.capturesWait()
-        XCTAssertFalse(waits)
+        XCTAssertEqual(waits, .nothing)
     }
 
     func testABlankTextIsRefusedAsInvalid() async {

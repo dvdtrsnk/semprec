@@ -9,7 +9,7 @@ final class CaptureSendingTests: XCTestCase {
 
     func testBecomingActiveSendsTheWaitingCapturesThroughTheBridge() async {
         let captures = CapturesDouble()
-        captures.waits = true
+        captures.waits = .waiting
         let sending = CaptureSending(captures: captures)
 
         await sending.appBecameActive()

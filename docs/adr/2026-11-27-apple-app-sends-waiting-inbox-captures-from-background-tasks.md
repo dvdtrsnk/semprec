@@ -41,12 +41,13 @@ Rejected:
   that already exists for remote notifications. The system requires registration before the app finishes launching.
   The handlers run on the main queue.
 - **How a run ends.** A run completes its task exactly once. When the send returns, the run asks whether a capture of
-  the person signed in still waits (`InboxCaptureSDK.capturesWait()`, a count on the device). With none waiting it
-  completes with success. With some waiting it schedules both tasks again and completes without success. When the
+  the person signed in still waits (`InboxCaptureSDK.capturesWait()`, a count on the device, which answers waiting,
+  nothing or unknown when the count failed). With nothing waiting it completes with success. With some waiting, or
+  when that is unknown, it schedules both tasks again and completes without success. When the
   system expires the task first, the run cancels the send's Swift task, schedules both tasks again (the send did not
   finish), and completes without success. Cancelling the send stops only the wait in Kotlin: the outbox's round goes
   on for as long as the process runs.
-- **When they are scheduled.** Both are scheduled together, and only while captures wait: after a capture is added by
+- **When they are scheduled.** Both are scheduled together, and only while captures wait or the count failed: after a capture is added by
   the intent (after its brief send), by the scanner (once the scan's capture is kept), or by the diary's capture row,
   and when the app moves to the background. A new request replaces the pending one with the same identifier. A
   refused submission is not retried; the next trigger schedules again.
@@ -78,6 +79,7 @@ Rejected:
 - An expired run, or an expiration that arrives after the run completed, schedules once more even when nothing waits.
   The extra run then finds nothing to send and completes with success.
 - `InboxCaptureSDK` exports `capturesWait()`, so Swift can ask whether captures wait without reading the outbox's
-  files.
+  files. A count that fails answers unknown rather than nothing waiting, so a failure schedules the tasks instead of
+  leaving a capture without them.
 - A later Swift entry point that adds a capture reports it to `CaptureSending.captureAdded()`. A capture added by
   Kotlin alone (another screen's capture through the shared ViewModel) is covered by the move to the background.

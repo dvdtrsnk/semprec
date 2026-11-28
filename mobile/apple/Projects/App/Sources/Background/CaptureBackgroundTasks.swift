@@ -46,15 +46,16 @@ final class CaptureBackgroundTasks {
         }
     }
 
-    /// Schedules both tasks when a capture of the person signed in waits; nothing when none does.
+    /// Schedules both tasks unless no capture of the person signed in waits: a count that failed schedules them, since
+    /// an extra run that finds nothing to send costs less than a capture left waiting.
     func scheduleIfWaiting() async {
-        guard await captures.capturesWait() else { return }
+        guard await captures.capturesWait() != .nothing else { return }
         schedule()
     }
 
     /// Runs `task`: sends the captures that wait through the bridge, then completes it with success when none is left,
     /// or schedules both tasks again and completes it without success when some still wait (no network, a server
-    /// that did not answer). When the system expires the task first, the send is cancelled, both tasks are scheduled
+    /// that did not answer) or when that could not be counted. When the system expires the task first, the send is cancelled, both tasks are scheduled
     /// again, because the send did not finish, and the task completes without success. It completes exactly once;
     /// the returned task is the send, which tests await.
     @discardableResult
@@ -62,7 +63,7 @@ final class CaptureBackgroundTasks {
         let completion = Completion(task)
         let captures = self.captures
         let sending = Task { @MainActor in
-            let waits = if await captures.send() { false } else { await captures.capturesWait() }
+            let waits = if await captures.send() { false } else { await captures.capturesWait() != .nothing }
             // An expired task was scheduled again and completed by its expiration handler.
             guard !Task.isCancelled else { return }
             if waits { self.schedule() }

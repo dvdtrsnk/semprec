@@ -1,3 +1,4 @@
+import CoreKit
 import Foundation
 
 @testable import Semprec
@@ -10,7 +11,7 @@ final class CapturesDouble: WaitingCaptures {
     // MARK: - Properties
     var sendAnswer = true
     var holdsSend = false
-    var waits = false
+    var waits: InboxShortcutCapture.Waiting = .nothing
     private(set) var sends = 0
     private(set) var sendWasCancelled = false
     private(set) var waitChecks = 0
@@ -24,7 +25,7 @@ final class CapturesDouble: WaitingCaptures {
         return false
     }
 
-    func capturesWait() async -> Bool {
+    func capturesWait() async -> InboxShortcutCapture.Waiting {
         waitChecks += 1
         return waits
     }

@@ -15,7 +15,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
 
     // MARK: - Scheduling
     func testMovingToTheBackgroundWithCapturesWaitingSchedulesBothTasks() async throws {
-        captures.waits = true
+        captures.waits = .waiting
 
         await sending().appMovedToBackground()
 
@@ -23,7 +23,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     }
 
     func testMovingToTheBackgroundWithNothingWaitingSchedulesNothing() async {
-        captures.waits = false
+        captures.waits = .nothing
 
         await sending().appMovedToBackground()
 
@@ -31,8 +31,16 @@ final class CaptureBackgroundTasksTests: XCTestCase {
         XCTAssertTrue(scheduler.requests.isEmpty)
     }
 
+    func testMovingToTheBackgroundWhenTheWaitingCapturesCannotBeCountedSchedulesBothTasks() async throws {
+        captures.waits = .unknown
+
+        await sending().appMovedToBackground()
+
+        try assertBothScheduled()
+    }
+
     func testACaptureAddedWhileCapturesWaitSchedulesBothTasks() async throws {
-        captures.waits = true
+        captures.waits = .waiting
 
         await sending().captureAdded()
 
@@ -40,7 +48,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     }
 
     func testACaptureAddedThatAlreadyReachedTheServerSchedulesNothing() async {
-        captures.waits = false
+        captures.waits = .nothing
 
         await sending().captureAdded()
 
@@ -48,7 +56,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     }
 
     func testARefusedRequestStillSubmitsTheOtherOne() async {
-        captures.waits = true
+        captures.waits = .waiting
         scheduler.refuses = [CaptureBackgroundTasks.sendIdentifier]
 
         await sending().appMovedToBackground()
@@ -73,7 +81,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
 
     func testARunThatLeavesCapturesWaitingSchedulesBothAgainAndCompletesWithoutSuccess() async throws {
         captures.sendAnswer = false
-        captures.waits = true
+        captures.waits = .waiting
         let task = TaskDouble()
 
         await sending().backgroundTasks.run(task).value
@@ -83,10 +91,21 @@ final class CaptureBackgroundTasksTests: XCTestCase {
         try assertBothScheduled()
     }
 
+    func testARunWhoseWaitingCapturesCannotBeCountedSchedulesBothAgainAndCompletesWithoutSuccess() async throws {
+        captures.sendAnswer = false
+        captures.waits = .unknown
+        let task = TaskDouble()
+
+        await sending().backgroundTasks.run(task).value
+
+        XCTAssertEqual(task.completions, [false])
+        try assertBothScheduled()
+    }
+
     func testARunWithNobodySignedInCompletesWithSuccessAndSchedulesNothing() async {
         // The send confirms nothing and no capture of a person signed in waits: nothing could be sent later either.
         captures.sendAnswer = false
-        captures.waits = false
+        captures.waits = .nothing
         let task = TaskDouble()
 
         await sending().backgroundTasks.run(task).value
@@ -97,7 +116,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
 
     func testAnExpiredRunCancelsItsSendSchedulesAgainAndCompletesOnce() async throws {
         captures.holdsSend = true
-        captures.waits = true
+        captures.waits = .waiting
         let task = TaskDouble()
         let run = sending().backgroundTasks.run(task)
         try await eventually { self.captures.sends == 1 }

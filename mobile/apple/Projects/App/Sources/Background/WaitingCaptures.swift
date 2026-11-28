@@ -10,8 +10,9 @@ protocol WaitingCaptures: AnyObject, Sendable {
     /// only the waiting.
     func send() async -> Bool
 
-    /// Whether a capture of the person signed in waits for the server; false when nobody is signed in.
-    func capturesWait() async -> Bool
+    /// Whether a capture of the person signed in waits for the server: `.nothing` when nobody is signed in, and
+    /// `.unknown` when it could not be counted.
+    func capturesWait() async -> InboxShortcutCapture.Waiting
 }
 
 // MARK: - Protocol conformance

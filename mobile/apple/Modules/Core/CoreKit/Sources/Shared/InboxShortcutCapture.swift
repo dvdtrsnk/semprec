@@ -19,6 +19,14 @@ public final class InboxShortcutCapture {
         case failed(Failed)
     }
 
+    /// What `capturesWait()` answers: a capture of the person signed in waits, none does, or the count failed and it
+    /// is not known. Who decides on the answer treats `.unknown` as possibly waiting.
+    public enum Waiting: Equatable, Sendable {
+        case waiting
+        case nothing
+        case unknown
+    }
+
     /// A file kept with a capture: its name, its media type, its bytes as Base64 text and where it came from.
     public struct File: Equatable, Sendable {
 
@@ -85,11 +93,12 @@ public final class InboxShortcutCapture {
         return sent.boolValue
     }
 
-    /// Whether a capture of the person signed in waits for the server, counted on the device now; false when nobody is
-    /// signed in, when no window has kept the person of the session, and when the call throws (it was cancelled).
-    public func capturesWait() async -> Bool {
-        guard let waits = try? await sdk.capturesWait() else { return false }
-        return waits.boolValue
+    /// Whether a capture of the person signed in waits for the server, counted on the device now: `.nothing` when
+    /// nobody is signed in or no window has kept the person of the session, `.unknown` when the count failed or the
+    /// call throws (it was cancelled).
+    public func capturesWait() async -> Waiting {
+        guard let waits = try? await sdk.capturesWait() else { return .unknown }
+        return Self.waiting(waits)
     }
 }
 
@@ -120,6 +129,14 @@ extension InboxShortcutCapture {
         switch onEnum(of: answer) {
         case .kept: nil
         case .refused(let refused): Failed(refused.failure)
+        }
+    }
+
+    static func waiting(_ answer: SharedSDK.InboxCapturesWaiting) -> Waiting {
+        switch answer {
+        case .waiting: .waiting
+        case .nothing: .nothing
+        case .unknown: .unknown
         }
     }
 }

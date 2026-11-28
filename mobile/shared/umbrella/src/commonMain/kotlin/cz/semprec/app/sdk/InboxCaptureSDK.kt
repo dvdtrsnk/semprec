@@ -33,6 +33,13 @@ sealed interface InboxCaptureAnswer {
     data class Refused(val failure: Failed) : InboxCaptureAnswer
 }
 
+/**
+ * What [InboxCaptureSDK.capturesWait] answers: a capture of the person signed in waits, none does (also when nobody is
+ * signed in or no window has kept the person of the session, since then none could be sent), or the count failed and
+ * it is not known.
+ */
+enum class InboxCapturesWaiting { WAITING, NOTHING, UNKNOWN }
+
 /** A file attached to a capture: its name, its media type, its bytes as Base64 text and where it came from. */
 data class InboxCaptureFileInput(
     val filename: String,
@@ -120,17 +127,21 @@ class InboxCaptureSDK(sessionStorage: SessionStorage, dataDirectory: String) {
     }
 
     /**
-     * Whether a capture of the person signed in waits for the server, counted on the device now; `false` when nobody
-     * is signed in or no window has kept the person of the session, since then none could be sent, and when the
-     * count failed unexpectedly.
+     * Whether a capture of the person signed in waits for the server, counted on the device now:
+     * [InboxCapturesWaiting.NOTHING] when nobody is signed in or no window has kept the person of the session, since
+     * then none could be sent, and [InboxCapturesWaiting.UNKNOWN] when the count failed unexpectedly, so a failure
+     * never reads as nothing waiting.
      */
-    suspend fun capturesWait(): Boolean = try {
-        offline.capturesWait()
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (_: Exception) {
-        false
-    }
+    suspend fun capturesWait(): InboxCapturesWaiting = waitingAnswer { offline.capturesWait() }
+}
+
+/** [InboxCaptureSDK.capturesWait] for [count]: an unexpected exception is not known, cancellation is rethrown. */
+internal suspend fun waitingAnswer(count: suspend () -> Boolean): InboxCapturesWaiting = try {
+    if (count()) InboxCapturesWaiting.WAITING else InboxCapturesWaiting.NOTHING
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Exception) {
+    InboxCapturesWaiting.UNKNOWN
 }
 
 private suspend fun <T> guarded(call: suspend () -> RepositoryResult<T>): RepositoryResult<T>? = try {
