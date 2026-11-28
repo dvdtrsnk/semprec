@@ -38,7 +38,9 @@ final class CaptureBackgroundTasks {
         for identifier in [Self.sendIdentifier, Self.refreshIdentifier] {
             let handler: @Sendable (BGTask) -> Void = { [weak self] task in
                 // The system calls the handler on the main queue (`using: .main`) and never touches the task from
-                // another thread before it, so handing it to the main actor shares it with nobody.
+                // another thread before it, so handing it to the main actor shares it with nobody. The precondition
+                // names the queue the isolation assumes, should a later registration pass another.
+                dispatchPrecondition(condition: .onQueue(.main))
                 nonisolated(unsafe) let task = task
                 MainActor.assumeIsolated { _ = self?.run(task) }
             }
