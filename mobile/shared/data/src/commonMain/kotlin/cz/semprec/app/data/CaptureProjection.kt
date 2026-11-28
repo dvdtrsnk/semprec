@@ -3,7 +3,6 @@ package cz.semprec.app.data
 import cz.semprec.app.core.StoredSession
 import io.ktor.http.HttpMethod
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -85,5 +84,3 @@ internal class CaptureViews(private val store: OfflineStore, private val capture
         return types?.types.orEmpty().filter { it.emoji.isNotBlank() }.associate { it.id to it.emoji }
     }
 }
-
-private fun JsonArray?.orEmpty(): List<JsonElement> = this ?: emptyList()
