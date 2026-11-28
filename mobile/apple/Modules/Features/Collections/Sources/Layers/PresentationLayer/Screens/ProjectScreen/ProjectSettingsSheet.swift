@@ -55,6 +55,12 @@ struct ProjectSettingsSheet: View {
         guard case .choices(let options) = tags.content else { return "" }
         return options.map { "#" + $0.label }.joined(separator: " ")
     }
+
+    /// The refusal of the last write of the project's tags, shown under the Tags row: setting the chosen tags fails as
+    /// a write, changing a tag itself as a choice, and either can arrive after the tags sheet closed.
+    static func tagsFailure(in state: ItemState, propertyKey: String) -> ItemWriteFailure? {
+        [state.writeFailure, state.choiceFailure].compactMap { $0 }.first { $0.propertyKey == propertyKey }
+    }
 }
 
 // MARK: - Sections
@@ -118,6 +124,10 @@ private extension ProjectSettingsSheet {
                 .foregroundStyle(.primary)
                 .disabled(!tags.editable)
                 .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
+            } footer: {
+                if let failure = Self.tagsFailure(in: state, propertyKey: tags.propertyKey) {
+                    Text(FailureKind.message(for: failure.kind)).foregroundStyle(Theme.Colors.destructive)
+                }
             }
         }
     }

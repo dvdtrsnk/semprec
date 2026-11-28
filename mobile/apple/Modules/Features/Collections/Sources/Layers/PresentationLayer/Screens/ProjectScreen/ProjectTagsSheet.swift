@@ -108,64 +108,6 @@ struct ProjectTagsSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(CollectionsIdentifiers.projectTagsSheet)
     }
-
-    // MARK: - Methods
-    /// The keys of the tags the project holds now, in the order it holds them.
-    static func heldKeys(of tags: FieldView) -> [String] {
-        if case .choices(let options) = tags.content { options.map(\.key) } else { [] }
-    }
-
-    /// The write that sets `keys` on the project, in the order of the tags, leaving out a tag deleted meanwhile; nil
-    /// when the project already holds exactly those tags.
-    static func choosing(_ keys: Set<String>, in tags: FieldView) -> ItemAction? {
-        let ordered = tags.options.map(\.key).filter(keys.contains)
-        guard Set(ordered) != Set(heldKeys(of: tags)) else { return nil }
-        return .edit(.setChoices(propertyKey: tags.propertyKey, keys: ordered))
-    }
-
-    /// The existing tag a typed name means, whatever its case and surrounding spaces.
-    static func existingTag(named name: String, in tags: FieldView) -> FieldOption? {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tags.options.first { $0.label.compare(trimmed, options: .caseInsensitive) == .orderedSame }
-    }
-
-    /// The write that creates a tag named `name` and sets it on the project, or nil when the name is blank or a write
-    /// is running, which would drop it.
-    static func creating(_ name: String, in tags: FieldView, saving: Bool) -> ItemAction? {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !saving else { return nil }
-        return .edit(.addChoice(propertyKey: tags.propertyKey, label: trimmed))
-    }
-
-    /// The tags among `now` whose keys were not among `before`: the ones a sent name created.
-    static func added(since before: Set<String>?, now: [FieldOption]) -> [String] {
-        guard let before else { return [] }
-        return now.map(\.key).filter { !before.contains($0) }
-    }
-
-    /// The write that renames `option` to `name`, or nil when the name is blank, unchanged or a write is running.
-    static func renaming(_ name: String, of option: FieldOption, in tags: FieldView, saving: Bool) -> ItemAction? {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != option.label, !saving else { return nil }
-        return .edit(.renameChoice(propertyKey: tags.propertyKey, key: option.key, label: trimmed))
-    }
-
-    /// The write that gives the tag `key` the colour of `swatch`.
-    static func recoloring(_ key: String, to swatch: CalendarSwatch, in tags: FieldView) -> ItemAction {
-        .edit(.recolorChoice(propertyKey: tags.propertyKey, key: key, color: swatch.hex))
-    }
-
-    /// The text of a chip: white on a selected chip, which its colour fills, and the tag's colour on one that is not,
-    /// so a tag is recognized by its colour either way; a tag without a colour reads in the primary colour.
-    static func chipText(selected: Bool, color: Color?) -> AnyShapeStyle {
-        if selected { return AnyShapeStyle(.white) }
-        return color.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary)
-    }
-
-    /// The write that deletes the tag `key` from every project.
-    static func removal(of key: String, in tags: FieldView) -> ItemAction {
-        .edit(.removeChoice(propertyKey: tags.propertyKey, key: key))
-    }
 }
 
 // MARK: - Subviews
@@ -313,6 +255,67 @@ private extension ProjectTagsSheet {
         let keys = committing ? selection : Set(original)
         if let action = Self.choosing(keys, in: tags) { send(action) }
         dismiss()
+    }
+}
+
+// MARK: - Methods
+extension ProjectTagsSheet {
+
+    /// The keys of the tags the project holds now, in the order it holds them.
+    static func heldKeys(of tags: FieldView) -> [String] {
+        if case .choices(let options) = tags.content { options.map(\.key) } else { [] }
+    }
+
+    /// The write that sets `keys` on the project, in the order of the tags, leaving out a tag deleted meanwhile; nil
+    /// when the project already holds exactly those tags.
+    static func choosing(_ keys: Set<String>, in tags: FieldView) -> ItemAction? {
+        let ordered = tags.options.map(\.key).filter(keys.contains)
+        guard Set(ordered) != Set(heldKeys(of: tags)) else { return nil }
+        return .edit(.setChoices(propertyKey: tags.propertyKey, keys: ordered))
+    }
+
+    /// The existing tag a typed name means, whatever its case and surrounding spaces.
+    static func existingTag(named name: String, in tags: FieldView) -> FieldOption? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tags.options.first { $0.label.compare(trimmed, options: .caseInsensitive) == .orderedSame }
+    }
+
+    /// The write that creates a tag named `name` and sets it on the project, or nil when the name is blank or a write
+    /// is running, which would drop it.
+    static func creating(_ name: String, in tags: FieldView, saving: Bool) -> ItemAction? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !saving else { return nil }
+        return .edit(.addChoice(propertyKey: tags.propertyKey, label: trimmed))
+    }
+
+    /// The tags among `now` whose keys were not among `before`: the ones a sent name created.
+    static func added(since before: Set<String>?, now: [FieldOption]) -> [String] {
+        guard let before else { return [] }
+        return now.map(\.key).filter { !before.contains($0) }
+    }
+
+    /// The write that renames `option` to `name`, or nil when the name is blank, unchanged or a write is running.
+    static func renaming(_ name: String, of option: FieldOption, in tags: FieldView, saving: Bool) -> ItemAction? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != option.label, !saving else { return nil }
+        return .edit(.renameChoice(propertyKey: tags.propertyKey, key: option.key, label: trimmed))
+    }
+
+    /// The write that gives the tag `key` the colour of `swatch`.
+    static func recoloring(_ key: String, to swatch: CalendarSwatch, in tags: FieldView) -> ItemAction {
+        .edit(.recolorChoice(propertyKey: tags.propertyKey, key: key, color: swatch.hex))
+    }
+
+    /// The text of a chip: white on a selected chip, which its colour fills, and the tag's colour on one that is not,
+    /// so a tag is recognized by its colour either way; a tag without a colour reads in the primary colour.
+    static func chipText(selected: Bool, color: Color?) -> AnyShapeStyle {
+        if selected { return AnyShapeStyle(.white) }
+        return color.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.primary)
+    }
+
+    /// The write that deletes the tag `key` from every project.
+    static func removal(of key: String, in tags: FieldView) -> ItemAction {
+        .edit(.removeChoice(propertyKey: tags.propertyKey, key: key))
     }
 }
 

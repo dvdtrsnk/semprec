@@ -85,6 +85,21 @@ final class ProjectTagsSheetTests: XCTestCase {
         XCTAssertEqual(ProjectSettingsSheet.summary(of: tags(held: [])), "")
     }
 
+    func testTheSettingsRowShowsARefusedWriteOfTheTagsWhetherASetOrAChoiceChangeFailed() {
+        let refused = ItemWriteFailure(propertyKey: "tags", kind: .rejected)
+        let other = ItemWriteFailure(propertyKey: "status", kind: .rejected)
+        let cases: [(state: ItemState, shown: ItemWriteFailure?)] = [
+            (ItemState(phase: .content, writeFailure: refused), refused),
+            (ItemState(phase: .content, choiceFailure: refused), refused),
+            (ItemState(phase: .content, writeFailure: other, choiceFailure: refused), refused),
+            (ItemState(phase: .content, writeFailure: other), nil),
+            (ItemState(phase: .content), nil)
+        ]
+        for (state, shown) in cases {
+            XCTAssertEqual(ProjectSettingsSheet.tagsFailure(in: state, propertyKey: "tags"), shown)
+        }
+    }
+
     func testChipsWrapOntoANewRowWhereTheNextNoLongerFits() {
         let chip = CGSize(width: 40, height: 20)
         let rows = TagFlowLayout.rows(of: [chip, chip, chip, CGSize(width: 120, height: 30)], width: 100, spacing: 8)
