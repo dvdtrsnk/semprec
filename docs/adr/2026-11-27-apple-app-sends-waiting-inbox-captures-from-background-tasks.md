@@ -80,5 +80,6 @@ Rejected:
 - `InboxCaptureSDK` exports `capturesWait()`, so Swift can ask whether captures wait without reading the outbox's
   files. A count that fails answers unknown rather than nothing waiting, so a failure schedules the tasks instead of
   leaving a capture without them.
-- A later Swift entry point that adds a capture reports it to `CaptureSending.captureAdded()`. A capture added by
+- A later Swift entry point that adds a capture reports it to `CaptureSending.captureAdded()`, or, when it does not
+  wait, to `CaptureSending.reportCaptureAdded()`, which owns the check's task, as the diary does. A capture added by
   Kotlin alone (another screen's capture through the shared ViewModel) is covered by the move to the background.

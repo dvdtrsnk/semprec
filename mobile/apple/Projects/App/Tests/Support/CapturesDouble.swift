@@ -14,6 +14,8 @@ final class CapturesDouble: WaitingCaptures {
     var waits: InboxShortcutCapture.Waiting = .nothing
     /// Called when a send starts.
     var onSend: (() -> Void)?
+    /// Called when a check of the waiting captures starts.
+    var onWaitCheck: (() -> Void)?
     private(set) var sends = 0
     private(set) var sendWasCancelled = false
     private(set) var waitChecks = 0
@@ -30,6 +32,7 @@ final class CapturesDouble: WaitingCaptures {
 
     func capturesWait() async -> InboxShortcutCapture.Waiting {
         waitChecks += 1
+        onWaitCheck?()
         return waits
     }
 }

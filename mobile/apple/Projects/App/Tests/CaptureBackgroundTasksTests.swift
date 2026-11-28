@@ -55,6 +55,35 @@ final class CaptureBackgroundTasksTests: XCTestCase {
         XCTAssertTrue(scheduler.requests.isEmpty)
     }
 
+    func testCapturesTheDiaryReportsTogetherShareOneCheck() async throws {
+        captures.waits = .waiting
+        let sending = sending()
+
+        let first = sending.reportCaptureAdded()
+        let second = sending.reportCaptureAdded()
+        await first.value
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(captures.waitChecks, 1)
+        try assertBothScheduled()
+    }
+
+    func testACaptureTheDiaryReportsWhileACheckRunsChecksOnceMoreInTheSameTask() async {
+        captures.waits = .waiting
+        let sending = sending()
+        var joined: Task<Void, Never>?
+        captures.onWaitCheck = { if joined == nil { joined = sending.reportCaptureAdded() } }
+
+        let check = sending.reportCaptureAdded()
+        await check.value
+
+        XCTAssertEqual(joined, check)
+        XCTAssertEqual(captures.waitChecks, 2)
+        XCTAssertEqual(scheduler.requests.count, 4)
+        await sending.reportCaptureAdded().value
+        XCTAssertEqual(captures.waitChecks, 3, "After the check ended, a report starts a new one")
+    }
+
     func testAnIntentsCaptureIsScheduledBeforeItsBriefSend() async throws {
         captures.waits = .waiting
         var scheduledBeforeSend: Int?
