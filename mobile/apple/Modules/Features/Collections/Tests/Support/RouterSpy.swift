@@ -16,8 +16,6 @@ final class RouterSpy: CollectionsRouting {
     var mailSignals: [String] = []
     var notes: [String] = []
     var agents: [String] = []
-    var projectTags: [String] = []
-    var projectTag: [String] = []
 
     // MARK: - CollectionsRouting
     func showItem(itemId: String, databaseKey: String?) {
@@ -31,8 +29,6 @@ final class RouterSpy: CollectionsRouting {
     func showProjectMailSignals(projectId: String) { mailSignals.append(projectId) }
     func showProjectNotes(projectId: String) { notes.append(projectId) }
     func showProjectAgent(projectId: String) { agents.append(projectId) }
-    func showProjectTags(projectId: String) { projectTags.append(projectId) }
-    func showProjectTag(projectId: String, tagKey: String) { projectTag.append("\(projectId):\(tagKey)") }
 }
 
 /// Polls `condition` on the main actor until it holds or `timeout` passes.

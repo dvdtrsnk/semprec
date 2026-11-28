@@ -53,6 +53,8 @@ class AuthenticatedApiChangesTest {
         assertEquals(0, announcements { api.send(HttpMethod.Get, "/api/items/i1") })
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/databases/d1/query", body = "{}") })
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/items/count", body = "{}") })
+        // A collection reads its facets after every change it is told of; announcing them would loop.
+        assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/databases/d1/facets", body = "{}") })
         assertEquals(0, announcements { api.send(HttpMethod.Get, "/api/search", listOf("q" to "x")) })
         assertEquals(0, announcements { api.send(HttpMethod.Post, "/api/search/recent", body = "{}") })
         val preview = "/api/mail/projects/p1/signals/preview"

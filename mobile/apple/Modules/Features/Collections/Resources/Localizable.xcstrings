@@ -1985,6 +1985,22 @@
         }
       }
     },
+    "project.tag.cancel" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zrušit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        }
+      }
+    },
     "project.tag.color" : {
       "localizations" : {
         "cs" : {
@@ -2177,22 +2193,6 @@
         }
       }
     },
-    "project.tag.delete" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smazat štítek"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Delete tag"
-          }
-        }
-      }
-    },
     "project.tag.delete.confirm" : {
       "localizations" : {
         "cs" : {
@@ -2214,13 +2214,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Štítek bude odebrán ze všech projektů."
+            "value" : "Štítek se odebere i ze všech projektů, které ho mají. Tuto akci nelze vrátit."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The tag is removed from every project."
+            "value" : "The tag will also be removed from every project that has it. This cannot be undone."
           }
         }
       }
@@ -2273,66 +2273,34 @@
         }
       }
     },
-    "project.tags.add" : {
+    "project.tag.rename.save" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Přidat"
+            "value" : "Uložit"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Add"
+            "value" : "Save"
           }
         }
       }
     },
-    "project.tags.empty" : {
+    "project.tag.rename.title" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zatím žádné štítky."
+            "value" : "Přejmenovat štítek"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No tags yet."
-          }
-        }
-      }
-    },
-    "project.tags.footer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přejmenování, nová barva nebo smazání štítku se projeví ve všech projektech."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Renaming, recoloring or deleting a tag changes it in every project."
-          }
-        }
-      }
-    },
-    "project.tags.manage" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Spravovat štítky"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Manage tags"
+            "value" : "Rename tag"
           }
         }
       }
@@ -2342,13 +2310,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nový štítek"
+            "value" : "Přidat nový štítek…"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "New tag"
+            "value" : "Add new tag…"
           }
         }
       }

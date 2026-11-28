@@ -46,10 +46,6 @@ struct ProjectContent: View {
                 state: state,
                 send: send,
                 close: { isShowingSettings = false },
-                openTags: {
-                    isShowingSettings = false
-                    show(.tags)
-                },
                 openMailSignals: {
                     isShowingSettings = false
                     show(.mailSignals)
