@@ -46,13 +46,15 @@ private const val ATTACHMENTS_FIELD = "attachments"
  * time in the order they were made ([CaptureDelivery]), and only one round runs at a time: a trigger while one runs
  * makes it look at the directory once more instead of starting another. A round that ended without an answer, on a
  * `5xx`, a `429` or a busy type is followed by another after [nextReplayDelayMillis], for as long as the process runs.
- * [waiting] counts the captures of the owner signed in.
+ * [waiting] counts the captures of the owner signed in. Adding a capture and a capture the server created each make
+ * every kept answer stale and the layer's change flow emit, so the open screens read again and show it
+ * ([CaptureProjection]).
  */
 @OptIn(ExperimentalTime::class)
 internal class CaptureOutbox(
     private val store: OfflineStore,
     private val scope: CoroutineScope,
-    state: LayerState,
+    private val state: LayerState,
     private val clock: QueueClock,
     private val newId: () -> String,
     private val sender: () -> QueueSender?,
@@ -84,7 +86,11 @@ internal class CaptureOutbox(
             createdAt = clock.now(),
         )
         val written = files.add(owner, kept, capture.file?.bytes)
-        if (written) sendSoon()
+        if (written) {
+            // The diary shows the capture before the server has it, so what every window keeps turns stale.
+            state.changed()
+            sendSoon()
+        }
         return if (written) RepositoryResult.Content(Unit) else RepositoryResult.Failure(FailureKind.UNAVAILABLE)
     }
 
@@ -111,6 +117,10 @@ internal class CaptureOutbox(
         val owner = signedInOwner() ?: return false
         return files.count(owner) > 0
     }
+
+    /** The captures made with [session] that wait, the oldest first; none when no person is kept for [session]. */
+    suspend fun waitingOf(session: StoredSession): List<KeptCapture> =
+        ownerOf(session)?.let { files.captures(it) }.orEmpty()
 
     /** The session ended: no owner is signed in, so none of the captures, which stay, is counted. */
     fun cleared() {

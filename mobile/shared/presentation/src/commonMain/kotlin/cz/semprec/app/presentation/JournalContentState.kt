@@ -55,8 +55,21 @@ data class JournalEventState(
 
 data class JournalBirthdayState(val id: String, val personName: String)
 
-/** Where an Inbox item stands, from the backend's canonical keys. */
-enum class JournalInboxStatus { NONE, PENDING, FAILED, NEEDS_CLARIFICATION, PROPOSED, CONFIRMED, REJECTED, INVALID }
+/**
+ * Where an Inbox item stands, from the backend's canonical keys; [WAITING] is a capture that waits on the device for
+ * the server, which never sends that key.
+ */
+enum class JournalInboxStatus {
+    NONE,
+    WAITING,
+    PENDING,
+    FAILED,
+    NEEDS_CLARIFICATION,
+    PROPOSED,
+    CONFIRMED,
+    REJECTED,
+    INVALID,
+}
 
 data class JournalInboxState(
     val id: String,

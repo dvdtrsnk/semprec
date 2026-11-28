@@ -86,6 +86,12 @@ struct JournalInboxRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if item.status == .waiting {
+                Image(systemName: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(item.status.color)
+                    .accessibilityLabel(Text("journal.inbox.status.waiting", bundle: .module))
+            }
         }
     }
 
@@ -100,7 +106,7 @@ private extension JournalInboxStatus {
 
     var message: String? {
         switch self {
-        case .none: nil
+        case .none, .waiting: nil
         case .pending: String(localized: "journal.inbox.status.pending", bundle: .module)
         case .failed: String(localized: "journal.inbox.status.failed", bundle: .module)
         case .needsClarification: String(localized: "journal.inbox.status.needsClarification", bundle: .module)
@@ -115,7 +121,7 @@ private extension JournalInboxStatus {
         switch self {
         case .failed, .invalid, .rejected: Theme.Colors.destructive
         case .proposed, .needsClarification: Theme.Colors.accent
-        case .none, .pending, .confirmed: Theme.Colors.secondaryText
+        case .none, .waiting, .pending, .confirmed: Theme.Colors.secondaryText
         }
     }
 }
@@ -136,6 +142,9 @@ private extension JournalInboxStatus {
                 id: "i", time: "18:02", text: "Faktura za obklady", emoji: "💸", status: .proposed,
                 attachmentName: "Fotka 18:02", attachmentCount: 1
             )
+        )
+        JournalInboxRow(
+            item: JournalInboxItem(id: "c", time: "18:10", text: "Zavolat instalatérovi", status: .waiting)
         )
     }
     .padding()

@@ -80,6 +80,7 @@ internal fun JournalInboxEntry.toState() = JournalInboxState(
 )
 
 private fun inboxStatus(key: String?): JournalInboxStatus = when (key) {
+    "waiting" -> JournalInboxStatus.WAITING
     "pending" -> JournalInboxStatus.PENDING
     "failed" -> JournalInboxStatus.FAILED
     "needsClarification" -> JournalInboxStatus.NEEDS_CLARIFICATION

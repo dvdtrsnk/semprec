@@ -650,23 +650,24 @@ class CaptureOutboxTest {
         assertEquals(OfflineStatus(offline = false, waiting = 0, failed = 0), layer.status.first())
     }
 
-    @Test fun `a capture the server created makes the change flow emit and a refused one does not`() = runTest {
-        val layer = layer()
-        layer.signIn()
-        var changes = 0
-        backgroundScope.launch { layer.changes.collect { changes += 1 } }
-        runCurrent()
+    @Test fun `adding a capture and the server creating it make the change flow emit and a refusal does not`() =
+        runTest {
+            val layer = layer()
+            layer.signIn()
+            var changes = 0
+            backgroundScope.launch { layer.changes.collect { changes += 1 } }
+            runCurrent()
 
-        server.item = { refusal(400) }
-        layer.add()
-        runCurrent()
-        assertEquals(0, changes)
+            server.item = { refusal(400) }
+            layer.add()
+            runCurrent()
+            assertEquals(1, changes, "only the capture added")
 
-        server.item = { OUTBOX_CREATED }
-        layer.add()
-        runCurrent()
-        assertEquals(1, changes)
-    }
+            server.item = { OUTBOX_CREATED }
+            layer.add()
+            runCurrent()
+            assertEquals(3, changes, "the capture added, then the one the server created")
+        }
 
     @Test fun `without a person signed in a round sends nothing and answers that captures may be left`() = runTest {
         val layer = layer()

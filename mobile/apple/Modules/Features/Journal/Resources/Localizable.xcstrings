@@ -529,6 +529,22 @@
         }
       }
     },
+    "journal.inbox.status.waiting" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čeká na odeslání"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting to be sent"
+          }
+        }
+      }
+    },
     "journal.notes" : {
       "localizations" : {
         "cs" : {

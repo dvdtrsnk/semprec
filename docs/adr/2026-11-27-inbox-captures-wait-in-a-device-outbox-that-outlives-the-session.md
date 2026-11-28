@@ -69,7 +69,16 @@ once, as before.
   `5xx`, a `429` or a busy type (`409` naming `typeId`), with a backoff from 1 s doubling to 60 s with jitter, for as
   long as the process runs, so a capture reaches the Inbox as soon as the server can take it. A round ended by a `401`
   waits for the next trigger (a sign-in starts one).
-- **After a success** the layer's change flow emits, so the open screens of every window read again.
+- **Shown at once.** Every answer of `GET /api/journal/periods/day/<day>` that the offline layer returns, kept or
+  from the server, lists after the server's Inbox entries of that day the captures of the person the read is made
+  with whose day is that day and whose id the server's entries do not contain, in creation order. Each is an entry
+  with the capture's id (the `captureId`), time and text, the emoji of its type when the kept answer of
+  `GET /api/inbox-types` names it, the name of its file, and the status `waiting`, which the server never sends. The
+  kept answer itself stays as the server sent it. No other answer (the Inbox cards, the badge counts) lists captures.
+- **Fresh after a capture.** Adding a capture and every capture the server created make every kept answer stale, as
+  a successful write does, and make the layer's change flow emit, so the open screens of every window read again at
+  once: without a connection the diary shows the waiting entry, with one the server's entry replaces it. The capture
+  is deleted before the flow emits, so a read the emission starts never lists both.
 - **Status.** The captures of the owner signed in count in `OfflineStatus.waiting`; with nobody signed in none count.
 
 ## Consequences
@@ -84,3 +93,7 @@ once, as before.
   picked. A type that is only busy is kept, and the capture waits for it.
 - A server that keeps answering `5xx` or `429` is asked again at most once a minute, for as long as the process runs.
 - A `401` is not retried on a timer; the capture waits for the next trigger.
+- The server's Inbox entry carries no capture id, so a read that reaches the server between its creating the item and
+  the device deleting the capture lists both until the read the deletion starts, a moment later.
+- Each capture made with a connection makes the next reads of every screen wait for the server instead of answering
+  from the device at once, as any write does.

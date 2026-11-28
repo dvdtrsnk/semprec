@@ -79,9 +79,15 @@ internal class KeptCaptures(private val store: OfflineStore) {
         names.filter { it.endsWith(CAPTURE_BYTES) && it.removeSuffix(CAPTURE_BYTES) !in ids }
             .forEach { deleteCachePath("$directory/$it") }
         mutableWaiting.value = ids.size
-        ids.mapNotNull { id -> readCapture(store, captureFile(root, owner, id, CAPTURE_JSON), id) }
-            .sortedWith(compareBy<Pair<Instant, KeptCapture>> { it.first }.thenBy { it.second.id })
-            .map { it.second }
+        readable(owner, ids)
+    }
+
+    /** The readable captures of [owner], the oldest first, read without deleting or counting anything. */
+    suspend fun captures(owner: String): List<KeptCapture> = locked {
+        val ids = listCacheDirectory(captureDirectory(root, owner))
+            .filter { it.endsWith(CAPTURE_JSON) }
+            .map { it.removeSuffix(CAPTURE_JSON) }
+        readable(owner, ids)
     }
 
     /** How many captures of [owner] there are. */
@@ -107,6 +113,11 @@ internal class KeptCaptures(private val store: OfflineStore) {
     }
 
     private suspend fun <T> locked(block: () -> T): T = withContext(store.dispatcher) { lock.withLock { block() } }
+
+    private fun readable(owner: String, ids: Collection<String>): List<KeptCapture> =
+        ids.mapNotNull { id -> readCapture(store, captureFile(root, owner, id, CAPTURE_JSON), id) }
+            .sortedWith(compareBy<Pair<Instant, KeptCapture>> { it.first }.thenBy { it.second.id })
+            .map { it.second }
 
     private fun writeJson(owner: String, capture: KeptCapture): Boolean = writeCacheFile(
         captureFile(root, owner, capture.id, CAPTURE_JSON),

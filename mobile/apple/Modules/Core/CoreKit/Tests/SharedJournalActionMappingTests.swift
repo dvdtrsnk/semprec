@@ -65,7 +65,7 @@ final class SharedJournalActionMappingTests: XCTestCase {
 
     func testInboxStatusesMapEveryCase() {
         let pairs: [(SharedSDK.JournalInboxStatus, CoreKit.JournalInboxStatus)] = [
-            (.none, .none), (.pending, .pending), (.failed, .failed), (.needsClarification, .needsClarification),
+            (.none, .none), (.waiting, .waiting), (.pending, .pending), (.failed, .failed), (.needsClarification, .needsClarification),
             (.proposed, .proposed), (.confirmed, .confirmed), (.rejected, .rejected), (.invalid, .invalid)
         ]
         for (shared, native) in pairs { XCTAssertEqual(CoreKit.JournalInboxStatus(shared), native) }

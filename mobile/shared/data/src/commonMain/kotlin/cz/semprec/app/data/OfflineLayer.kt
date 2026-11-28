@@ -117,6 +117,7 @@ class OfflineLayer internal constructor(
 
     /** The Inbox captures that wait for the server, sent through the window's sender; never removed by [clear]. */
     internal val captures = CaptureOutbox(store, scope, state, clock, newId) { writes.sender() }
+    private val captureViews = CaptureViews(store, captures)
 
     init {
         writes.afterReplay = {
@@ -144,8 +145,9 @@ class OfflineLayer internal constructor(
 
     /**
      * Answers [request], a read of the offline set made with [session]; [transmit] sends it to the server. Every id
-     * the device made that the server answered is replaced by the server's id first, and the writes still queued are
-     * applied to the answer ([QueuedViews]).
+     * the device made that the server answered is replaced by the server's id first, the writes still queued are
+     * applied to the answer ([QueuedViews]), and a day of the diary lists the Inbox captures of [session]'s person that
+     * wait in the outbox ([CaptureViews]).
      */
     internal suspend fun read(
         session: StoredSession,
@@ -155,7 +157,8 @@ class OfflineLayer internal constructor(
         val account = accountKey(session)
         val queued = store.queue.state(account)
         val resolved = queued?.let { request.resolved(it.ids) } ?: request
-        return views.project(account, resolved, reads.answer(account, resolved, transmit), queued)
+        val answer = views.project(account, resolved, reads.answer(account, resolved, transmit), queued)
+        return captureViews.project(session, account, resolved, answer)
     }
 
     /** Sends or queues [request], a write of [route] made with [session]; [transmit] sends it to the server. */

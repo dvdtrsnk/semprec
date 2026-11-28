@@ -159,10 +159,11 @@ public struct JournalBirthday: Equatable, Sendable, Identifiable {
     }
 }
 
-/// Where an Inbox item stands.
+/// Where an Inbox item stands; `waiting` is a capture that waits on the device to be sent.
 public enum JournalInboxStatus: Equatable, Sendable {
 
     case none
+    case waiting
     case pending
     case failed
     case needsClarification

@@ -181,6 +181,7 @@ extension JournalInboxStatus {
     init(_ status: SharedSDK.JournalInboxStatus) {
         switch status {
         case .none: self = .none
+        case .waiting: self = .waiting
         case .pending: self = .pending
         case .failed: self = .failed
         case .needsClarification: self = .needsClarification

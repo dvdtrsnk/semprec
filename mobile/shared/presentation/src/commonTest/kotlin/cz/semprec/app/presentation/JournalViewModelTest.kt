@@ -97,7 +97,10 @@ class JournalViewModelTest : MainDispatcherTest() {
 
     @Test fun `inbox processing wins over the card status and unknown keys are none`() = runTest(dispatcher) {
         val keys =
-            listOf("pending", "failed", "needsClarification", "proposed", "confirmed", "rejected", "invalid", "other")
+            listOf(
+                "waiting", "pending", "failed", "needsClarification", "proposed", "confirmed", "rejected", "invalid",
+                "other",
+            )
         repository.onPeriod = {
             content(
                 periodPage(it).copy(
@@ -110,7 +113,8 @@ class JournalViewModelTest : MainDispatcherTest() {
         val vm = loaded()
         assertEquals(
             listOf(
-                JournalInboxStatus.PENDING, JournalInboxStatus.FAILED, JournalInboxStatus.NEEDS_CLARIFICATION,
+                JournalInboxStatus.WAITING, JournalInboxStatus.PENDING, JournalInboxStatus.FAILED,
+                JournalInboxStatus.NEEDS_CLARIFICATION,
                 JournalInboxStatus.PROPOSED, JournalInboxStatus.CONFIRMED, JournalInboxStatus.REJECTED,
                 JournalInboxStatus.INVALID, JournalInboxStatus.NONE,
             ),
