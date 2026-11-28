@@ -210,7 +210,7 @@ private extension ProjectTagsSheet {
                     isSelected ? AnyShapeStyle(color ?? Theme.Colors.accent) : AnyShapeStyle(.fill.tertiary),
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                 )
-                .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
         .contextMenu { menu(for: option) }
