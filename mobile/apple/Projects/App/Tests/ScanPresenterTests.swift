@@ -40,6 +40,23 @@ final class ScanPresenterTests: XCTestCase {
         XCTAssertEqual(captures.reported, 1, "A kept scan is reported once, so its background sending is scheduled")
     }
 
+    func testAKeptScanIsReportedBeforeTheIntentHearsItWasSaved() async throws {
+        let captures = CaptureRecorder()
+        let presenter = try presenter(captures) {
+            try? await Task.sleep(for: .milliseconds(50))
+            captures.reported += 1
+        }
+
+        let scan = Task { await presenter.scan(Self.request) }
+        try await eventually { presenter.request != nil }
+        presenter.claim(scene: scene)
+        presenter.finish(pages: [page()])
+        let outcome = await scan.value
+
+        XCTAssertEqual(outcome, .saved)
+        XCTAssertEqual(captures.reported, 1, "The background sending is scheduled before the intent's brief send")
+    }
+
     func testAFinishedScanKeepsTheChosenDay() async throws {
         let captures = CaptureRecorder()
         let presenter = try presenter(captures)
@@ -167,12 +184,15 @@ final class ScanPresenterTests: XCTestCase {
     // MARK: - Private
     private static let request = ScanPresenter.Request(day: nil)
 
-    private func presenter(_ captures: CaptureRecorder) throws -> ScanPresenter {
+    private func presenter(
+        _ captures: CaptureRecorder,
+        captured: (@MainActor () async -> Void)? = nil
+    ) throws -> ScanPresenter {
         let parts = DateComponents(year: 2026, month: 11, day: 27, hour: 7, minute: 45)
         let now = try XCTUnwrap(Calendar.current.date(from: parts))
         return ScanPresenter(
             capture: { day, time, file in captures.record(CaptureRecorder.Call(day: day, time: time, file: file)) },
-            captured: { captures.reported += 1 },
+            captured: captured ?? { captures.reported += 1 },
             now: { now }
         )
     }

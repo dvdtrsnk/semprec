@@ -8,7 +8,7 @@ import PDFKit
 /// one scene of the app shows the scanner full screen (`ScanPresentation`), and the scanner's outcome comes back here.
 /// The presenter itself writes a finished scan to the device's capture outbox, without a type and without a text, in a
 /// task of the app rather than of the intent's run, so the capture is kept even when the system ends that run first,
-/// and then reports it (`captured`), which schedules its background sending while it waits.
+/// and reports it (`captured`), which schedules its background sending, before the intent hears that it was saved.
 ///
 /// It is one per process, because the system runs the intent outside any scene; a request is shown by the first
 /// active scene that claims it, so only one window shows the scanner.
@@ -80,7 +80,7 @@ final class ScanPresenter: ObservableObject {
     }
 
     /// The person finished the scan with `pages`: the scanner closes, the pages become one PDF and the capture is
-    /// written to the outbox; the outcome is `.saved` once it is kept, and then `captured` is called. No page counts
+    /// written to the outbox; once it is kept `captured` is called, and then the outcome is `.saved`. No page counts
     /// as cancelled.
     func finish(pages: [PDFPage]) {
         guard let request else { return }
@@ -104,8 +104,9 @@ final class ScanPresenter: ObservableObject {
         let captured = captured
         Task { @MainActor in
             let failure = await capture(IsoDay.string(from: request.day ?? date), ClockTime.string(from: date), file)
-            waiting.resume(returning: failure.map(Outcome.failed) ?? .saved)
+            // Reported before the intent hears of it, so the background sending is scheduled before its brief send.
             if failure == nil { await captured() }
+            waiting.resume(returning: failure.map(Outcome.failed) ?? .saved)
         }
     }
 
