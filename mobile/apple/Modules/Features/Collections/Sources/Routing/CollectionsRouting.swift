@@ -15,6 +15,12 @@ public protocol CollectionsRouting: AnyObject {
     /// Opens a collection, such as the files of a project or a related collection of an item.
     func showCollection(_ target: CollectionTarget)
 
+    // MARK: - Project tags
+    /// Every tag of the projects, reached from the settings of the project `projectId`.
+    func showProjectTags(projectId: String)
+    /// One tag of the projects (`tagKey`), to be renamed, recolored or deleted.
+    func showProjectTag(projectId: String, tagKey: String)
+
     // MARK: - Screens of other features
     /// The shared "Podrobnosti" sheet of an event.
     func showEvent(itemId: String)
@@ -33,6 +39,8 @@ final class PreviewCollectionsRouter: CollectionsRouting {
     // MARK: - Methods
     func showItem(itemId: String, databaseKey: String?) {}
     func showCollection(_ target: CollectionTarget) {}
+    func showProjectTags(projectId: String) {}
+    func showProjectTag(projectId: String, tagKey: String) {}
     func showEvent(itemId: String) {}
     func showProjectTasks(projectId: String) {}
     func showProjectMail(projectId: String) {}

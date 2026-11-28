@@ -278,6 +278,10 @@ class HttpCollectionWritesTest {
         val gone = fixture { respond("", HttpStatusCode.NotFound) }
         assertEquals(
             FailureKind.NOT_FOUND,
+            assertIs<RepositoryResult.Failure>(gone.writes.updateOption(tags, "a", "A", null)).kind,
+        )
+        assertEquals(
+            FailureKind.NOT_FOUND,
             assertIs<RepositoryResult.Failure>(gone.writes.removeOption(tags, "a")).kind,
         )
         val unreadable = fixture { json("""{"label":"A"}""") }

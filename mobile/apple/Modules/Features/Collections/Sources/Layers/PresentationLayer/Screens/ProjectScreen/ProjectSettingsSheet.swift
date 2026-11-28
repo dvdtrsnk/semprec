@@ -3,14 +3,16 @@ import DesignSystem
 import SwiftUI
 
 /// The settings of a project: its status, its deadline (which a long-term project does not have), its tags
-/// with a field that creates a new one and the pages that rename, recolor and delete them, whether it is pinned to the
-/// overview, and the entry to its mail signals, which the project opens on its stack once the sheet is closed.
+/// with a field that creates a new one, whether it is pinned to the overview, and the entries to the tags of the
+/// projects, which rename, recolor and delete them, and to its mail signals; the project opens either on its stack
+/// once the sheet is closed.
 struct ProjectSettingsSheet: View {
 
     // MARK: - Dependencies
     let state: ItemState
     let send: (ItemAction) -> Void
     let close: () -> Void
+    let openTags: () -> Void
     let openMailSignals: () -> Void
 
     // MARK: - State
@@ -30,7 +32,6 @@ struct ProjectSettingsSheet: View {
             }
             .onChange(of: tagKeys) { _, keys in clearNewTagOnceAdded(keys) }
             .onChange(of: state.choiceFailure) { _, failure in if failure != nil { tagsBeforeAdd = nil } }
-            .navigationDestination(for: ProjectSettingsPage.self) { page in pageView(page) }
             .navigationTitle(Text("project.settings", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
@@ -114,8 +115,17 @@ private extension ProjectSettingsSheet {
                             .disabled(!canAddTag)
                             .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsAddTag)
                     }
-                    NavigationLink(value: ProjectSettingsPage.tags) { Text("project.tags.manage", bundle: .module) }
-                        .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsManageTags)
+                    Button(action: openTags) {
+                        HStack {
+                            Text("project.tags.manage", bundle: .module)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .listRowButton()
+                    .foregroundStyle(.primary)
+                    .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsManageTags)
                 }
             } header: {
                 Text(tags.name).accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
@@ -154,24 +164,6 @@ private extension ProjectSettingsSheet {
             .accessibilityIdentifier(CollectionsIdentifiers.projectMailSignals)
         } footer: {
             Text("project.settings.mailSignals.footer", bundle: .module)
-        }
-    }
-
-    @ViewBuilder
-    func pageView(_ page: ProjectSettingsPage) -> some View {
-        if let tags = field("tags") {
-            switch page {
-            case .tags: ProjectTagsPage(tags: tags)
-            case .tag(let key):
-                ProjectTagPage(
-                    tags: tags,
-                    tagKey: key,
-                    swatches: state.swatches,
-                    saving: state.saving,
-                    failure: state.choiceFailure,
-                    send: send
-                )
-            }
         }
     }
 

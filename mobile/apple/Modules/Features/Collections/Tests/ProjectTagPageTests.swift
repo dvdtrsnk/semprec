@@ -49,6 +49,24 @@ final class ProjectTagPageTests: XCTestCase {
         )
     }
 
+    func testTheTagScreenClosesOnlyOnceItsTagWasShownAndIsGone() {
+        let home = FieldOption(key: "home", label: "Home", color: nil)
+        let cases: [(before: [FieldOption], now: [FieldOption], closes: Bool)] = [
+            ([client, home], [home], true),
+            ([], [client, home], false),
+            ([], [], false),
+            ([client], [client.relabelled("Customer")], false),
+            ([home], [], false)
+        ]
+        for (before, now, closes) in cases {
+            XCTAssertEqual(
+                ProjectTagPage.wasRemoved("client", before: before, now: now),
+                closes,
+                "\(before.map(\.key)) -> \(now.map(\.key))"
+            )
+        }
+    }
+
     func testEveryColourOfThePaletteHasAName() {
         let keys = ["red", "orange", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "brown", "gray"]
         for key in keys {
@@ -63,5 +81,13 @@ final class ProjectTagPageTests: XCTestCase {
         XCTAssertTrue(green.isTagColor("#34c759"))
         XCTAssertFalse(green.isTagColor("#FF9500"))
         XCTAssertFalse(green.isTagColor(nil))
+    }
+}
+
+// MARK: - Helpers
+private extension FieldOption {
+
+    func relabelled(_ label: String) -> FieldOption {
+        FieldOption(key: key, label: label, color: color)
     }
 }

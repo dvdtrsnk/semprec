@@ -3,8 +3,7 @@ import DesignSystem
 import SwiftUI
 
 /// One tag of the projects: its name, its colour from the palette and its deletion, each changing the tag in every
-/// project. Deleting asks first; the page closes once the tag is gone, while a refused change keeps it open with the
-/// failure.
+/// project. Deleting asks first; a refused change shows its failure.
 struct ProjectTagPage: View {
 
     // MARK: - Dependencies
@@ -16,8 +15,6 @@ struct ProjectTagPage: View {
     let send: (ItemAction) -> Void
 
     // MARK: - State
-    @Environment(\.dismiss)
-    private var dismiss
     @State private var name: String
     @State private var isConfirmingDeletion = false
 
@@ -49,9 +46,6 @@ struct ProjectTagPage: View {
                 deleteSection
             }
         }
-        .navigationTitle(Text(verbatim: option?.label ?? ""))
-        .inlineNavigationTitle()
-        .onChange(of: option == nil) { _, gone in if gone { dismiss() } }
         .confirmationDialog(
             Text(verbatim: deletionTitle),
             isPresented: $isConfirmingDeletion,
@@ -64,11 +58,15 @@ struct ProjectTagPage: View {
         } message: {
             Text("project.tag.delete.message", bundle: .module)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(CollectionsIdentifiers.projectTagPage)
     }
 
     // MARK: - Methods
+    /// Whether the tag `key` was among the choices `before` and is no longer among those `now`: it was deleted, and its
+    /// screen closes. Choices that were not read yet hold no tag, so a screen still loading never closes.
+    static func wasRemoved(_ key: String, before: [FieldOption], now: [FieldOption]) -> Bool {
+        before.contains { $0.key == key } && !now.contains { $0.key == key }
+    }
+
     /// The intent that renames `option` to `name`, or nil when the name is blank, unchanged or a write is running.
     static func renaming(_ name: String, of option: FieldOption, in tags: FieldView, saving: Bool) -> ItemAction? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

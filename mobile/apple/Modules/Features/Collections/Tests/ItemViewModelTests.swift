@@ -145,12 +145,16 @@ final class ItemViewModelTests: XCTestCase {
         viewModel.showProject(.notes)
         viewModel.showProject(.agent)
         viewModel.showProject(.files)
+        viewModel.showProject(.tags)
+        viewModel.showProject(.tag(key: "client"))
         XCTAssertEqual(router.tasks, ["p1"])
         XCTAssertEqual(router.mail, ["p1"])
         XCTAssertEqual(router.mailSignals, ["p1"])
         XCTAssertEqual(router.notes, ["p1"])
         XCTAssertEqual(router.agents, ["p1"])
         XCTAssertEqual(router.collections, [.ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")])
+        XCTAssertEqual(router.projectTags, ["p1"])
+        XCTAssertEqual(router.projectTag, ["p1:client"])
     }
 
     @MainActor

@@ -1,4 +1,5 @@
 import CalendarFeature
+import CollectionsFeature
 import InboxFeature
 import JournalFeature
 import NotesFeature
@@ -84,6 +85,34 @@ struct InboxDestination: View {
             makeNote: { composition.models.makeNoteEditor(source: $0) },
             router: composition.inboxRouter(in: tab)
         )
+    }
+}
+
+/// The tags of the projects (`projectTags` and `projectTag`), each screen over a model of the project they were
+/// reached from.
+struct ProjectTagsDestination: View {
+
+    let destination: AppDestination
+    let composition: AppComposition
+
+    var body: some View {
+        switch destination {
+        case .projectTags(let projectId):
+            CollectionsScreenFactory.projectTags(
+                projectId: projectId,
+                makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+                router: composition.collectionsRouter
+            )
+        case .projectTag(let projectId, let tagKey):
+            CollectionsScreenFactory.projectTag(
+                projectId: projectId,
+                tagKey: tagKey,
+                makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+                router: composition.collectionsRouter
+            )
+        default:
+            EmptyView()
+        }
     }
 }
 
