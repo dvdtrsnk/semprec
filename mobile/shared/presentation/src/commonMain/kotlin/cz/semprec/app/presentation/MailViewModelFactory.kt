@@ -2,6 +2,7 @@ package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailDraftRepository
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailThreadChangesRepository
 import cz.semprec.app.domain.MailThreadListCache
@@ -30,6 +31,7 @@ class MailViewModelFactory(
     private val drafts: MailDraftRepository,
     private val mailboxes: MailboxRepository,
     private val content: MailContentRepository,
+    private val projectNames: MailProjectNames,
     private val changes: Flow<Unit> = emptyFlow(),
     private val sync: SyncChanges = SyncChanges(),
     private val threadLists: MailThreadListCache = NoMailThreadListCache(),
@@ -40,6 +42,7 @@ class MailViewModelFactory(
         mailboxes,
         content,
         SyncMailThreadList(mail, threadChanges, threadLists),
+        projectNames,
         start,
         changes,
         merge(sync.changes(SyncTopic.MAIL_THREADS), sync.changes(SyncTopic.MAIL_ACCOUNTS)),

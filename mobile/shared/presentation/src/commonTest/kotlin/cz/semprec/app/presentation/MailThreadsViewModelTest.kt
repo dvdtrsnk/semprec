@@ -25,7 +25,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         mail: ScriptedMailRepository = ScriptedMailRepository(),
         mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
         start: MailListStart = MailListStart(),
-    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail).threadsViewModel(start)
+    ) = MailViewModelFactory(mail, mail, ScriptedMailDraftRepository(), mailboxes, mail, mail).threadsViewModel(start)
 
     @Test fun `starts loading and publishes the rows the server listed`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedMailRepository(threads = MailCall(mailContent(mailPage(next = "c1")))))
@@ -50,7 +50,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         runCurrent()
         val expected = MailThreadQuery(MailBox.SEMP_DRAFTS, "m1", "f1", "pr1")
         assertEquals(expected, mail.threads.asked.single())
-        assertEquals(listOf<String?>("pr1"), mail.facets.asked)
+        assertEquals(1, mail.facets.count)
         vm.close()
     }
 
@@ -380,7 +380,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
     }
 
     @Test fun `the facets fill the sheet and name the project the list starts with`() = runTest(dispatcher) {
-        val mail = ScriptedMailRepository(facets = MailCall(mailContent(mailFacets(selectedProjectName = "Web"))))
+        val mail = ScriptedMailRepository()
         val vm = viewModel(mail, start = MailListStart(projectId = "pr1"))
         runCurrent()
         val state = vm.state.value
@@ -400,6 +400,50 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `a project without threads that the list starts with is named from the projects`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(projectNames = MailCall(mailContent("Zahrada")))
+        val vm = viewModel(mail, start = MailListStart(projectId = "quiet"))
+        runCurrent()
+        assertEquals(listOf("quiet"), mail.projectNames.asked)
+        assertEquals(MailFacetsPhase.READY, vm.state.value.facets.phase)
+        assertEquals("Zahrada", vm.state.value.projectName)
+        vm.close()
+    }
+
+    @Test fun `a list without a project names none and asks for no name`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(projectNames = MailCall(mailContent("Zahrada")))
+        val vm = viewModel(mail)
+        runCurrent()
+        assertTrue(mail.projectNames.asked.isEmpty())
+        assertNull(vm.state.value.projectName)
+        vm.close()
+    }
+
+    @Test fun `a failed or empty project name keeps the name of the facet options`() = runTest(dispatcher) {
+        for (answer in listOf(mailFailure<String?>(FailureKind.UNAVAILABLE), mailContent<String?>(null))) {
+            val mail = ScriptedMailRepository(projectNames = MailCall(answer))
+            val vm = viewModel(mail, start = MailListStart(projectId = "pr1"))
+            runCurrent()
+            assertEquals("Web", vm.state.value.projectName)
+            vm.close()
+        }
+    }
+
+    @Test fun `a project name that answers after the context changed is not shown`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mail = ScriptedMailRepository(
+            projectNames = MailCall(answersLate(gate, RepositoryResult.Content<String?>("Zahrada"))),
+        )
+        val vm = viewModel(mail, start = MailListStart(projectId = "quiet"))
+        runCurrent()
+        vm.onAction(MailThreadsAction.ClearContext)
+        gate.complete(Unit)
+        runCurrent()
+        assertNull(vm.state.value.projectId)
+        assertNull(vm.state.value.projectName)
+        vm.close()
+    }
+
     @Test fun `a project is chosen by name and clearing the context reads everything`() = runTest(dispatcher) {
         val mail = ScriptedMailRepository()
         val vm = viewModel(mail, start = MailListStart(projectId = "pr2"))
@@ -412,7 +456,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         assertNull(vm.state.value.projectId)
         assertNull(vm.state.value.projectName)
         runCurrent()
-        assertEquals(listOf<String?>("pr2", "pr1", null), mail.facets.asked)
+        assertEquals(1, mail.facets.count)
         vm.onAction(MailThreadsAction.SetProject("pr2"))
         vm.onAction(MailThreadsAction.ClearContext)
         assertNull(vm.state.value.projectId)
@@ -526,7 +570,7 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
             threads = MailCall(mailContent(mailPage()), mailContent(mailPage(mailThread(id = "t2")))),
         )
         val drafts = ScriptedMailDraftRepository()
-        val vm = MailViewModelFactory(mail, mail, drafts, ScriptedMailboxRepository(), mail, changes)
+        val vm = MailViewModelFactory(mail, mail, drafts, ScriptedMailboxRepository(), mail, mail, changes)
             .threadsViewModel(MailListStart())
         runCurrent()
         changes.emit(Unit)

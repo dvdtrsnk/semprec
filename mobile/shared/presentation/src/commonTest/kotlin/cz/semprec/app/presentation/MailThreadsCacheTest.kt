@@ -49,6 +49,7 @@ class MailThreadsCacheTest : MainDispatcherTest() {
         ScriptedMailDraftRepository(),
         ScriptedMailboxRepository(),
         mail,
+        mail,
         sync = sync,
         threadLists = cache,
     ).threadsViewModel(MailListStart())

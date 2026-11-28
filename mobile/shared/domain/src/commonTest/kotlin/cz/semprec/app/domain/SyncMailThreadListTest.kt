@@ -47,7 +47,7 @@ private class ScriptedThreadLists(
         return changes.removeFirst()
     }
 
-    override suspend fun facets(projectId: String?) = error("not asked")
+    override suspend fun facets() = error("not asked")
     override suspend fun summary() = error("not asked")
     override suspend fun thread(threadId: String) = error("not asked")
     override suspend fun setRead(threadId: String, read: Boolean) = error("not asked")

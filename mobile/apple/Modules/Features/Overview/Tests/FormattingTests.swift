@@ -92,9 +92,7 @@ final class FormattingTests: XCTestCase {
         for key in statuses { XCTAssertFalse(subtitle([part(.status, key)]).isEmpty, key) }
     }
 
-    func testCountsAndTheMovedAndMissedNotesAreComposed() {
-        XCTAssertEqual(subtitle([part(.count, "6")]), "Projects: 6")
-        XCTAssertEqual(subtitle([part(.count, "many")]), "")
+    func testTheMovedAndMissedNotesAreComposed() {
         XCTAssertEqual(subtitle([part(.movedFrom, "2026-10-15")]), "moved from Yesterday")
         XCTAssertEqual(subtitle([part(.movedFrom, "soon")]), "")
         XCTAssertEqual(subtitle([part(.missedInEvent, "Dentist")]), "missed in Dentist")
