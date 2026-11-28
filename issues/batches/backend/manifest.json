@@ -219,11 +219,11 @@
       "status": "proposed",
       "title": "[backend-delivery 01/74] Implement application, data/chokePoint, data/inbox changes",
       "bodyCharacters": 56364,
-      "specSha256": "32ca630a869d1b9f25f385142c341e55a77c33aaab2f1fe0d71a43718665dc20",
+      "specSha256": "1978c4c9008ee54329a38ca57991cb2ab5c75ad886ca1ce02a921bfdd02d75e1",
       "members": [
         {
           "id": "gh-1434",
-          "specSha256": "b11acccf392085bf8916d4d944b7b77ad2634def7578df29379f1e910768e7dd",
+          "specSha256": "70af3e3b40eb9c00bba3077f19cc14e678957ab1f01f6d85da1d72db54a95cf8",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1392"
@@ -232,7 +232,7 @@
         },
         {
           "id": "gh-1415",
-          "specSha256": "a0222234a6ee306e2eb34738fbb0575f788a418c6b9f95624f68c3c137f9e599",
+          "specSha256": "6bb4446148619faa5b9fee4cc34f6637b702f2160c4d7dd9a62685b85d895654",
           "parent": "gh-1330",
           "dependencies": [],
           "approval": "approved"
@@ -246,7 +246,7 @@
         },
         {
           "id": "gh-1403",
-          "specSha256": "9d2648054ff14b2a51d73be11d75becdc5e0411762bb489b4ffd07de34ecfa5d",
+          "specSha256": "a301537a502b665cd8d495de93f59552d3afdb9b3ac675cc57507939ff8847d4",
           "parent": "gh-1326",
           "dependencies": [],
           "approval": "approved"
@@ -260,7 +260,7 @@
         },
         {
           "id": "gh-1406",
-          "specSha256": "0678361fe744c257146c5c1ff68aac33bfbe8cc376dcec07e18cfa75b3943927",
+          "specSha256": "53a38b0e06cf11b83645f204975d01ea0faac87c70494246763a0acd3fb3d9b0",
           "parent": "gh-1300",
           "dependencies": [],
           "approval": "approved"
@@ -280,18 +280,18 @@
       "status": "proposed",
       "title": "[backend-delivery 02/74] Implement data/manifest, module-registry, application changes",
       "bodyCharacters": 59440,
-      "specSha256": "d2f3f29433f2bdf67383bdcc0015271498b07c5410600ab402fccfd349e867e2",
+      "specSha256": "4287361526ab7afa169509047adcf75e685c27a7dd63df74c44c9dab2b74b01b",
       "members": [
         {
           "id": "gh-1459",
-          "specSha256": "06347899272e2efac8d78a38fce00a80403505986b1b1c1627ec4be6b6c6d9df",
+          "specSha256": "57b9ed88d2e85a5a529e7bdf3e0a56a172f83d4472d0b9bcb8f6e0e5e1a93229",
           "parent": "gh-1311",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1407",
-          "specSha256": "f8cfd9ad142f8031170f6c909c21ae90b3fcfdc1119199fbd286a8786509a494",
+          "specSha256": "a7142a837f5d3679fa52eb537cec08086c52ac0a51956939667d65f1f67c92a2",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1397"
@@ -309,7 +309,7 @@
         },
         {
           "id": "gh-1427",
-          "specSha256": "bf79e4e5c4e51e56481f5c107c711bcd3808387e937f2678571c270b29cd91c7",
+          "specSha256": "7d2649534df5344ec93d666f32e2ba0d19c49cb880cfc7dba2c9a26f8df36eea",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1411"
@@ -318,7 +318,7 @@
         },
         {
           "id": "gh-1528",
-          "specSha256": "60f926439ce21d035b8f2b7e54aae0846f66332e879062eaeb320e0b9c74860b",
+          "specSha256": "77de1557812a3be8abcb837fd5f95e72c3da1153d636397a01918782f4889afe",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1407"
@@ -349,25 +349,25 @@
       "status": "proposed",
       "title": "[backend-delivery 03/74] Implement architecture changes",
       "bodyCharacters": 59748,
-      "specSha256": "0e1410962abce571e50c3f797ac3ef72f8369742577b0a10bb9695e3e1e7b82a",
+      "specSha256": "aa747622930fe193aac849f89348bde3e393bbdaed235033db435ff0192e58bf",
       "members": [
         {
           "id": "gh-1366",
-          "specSha256": "656f34be11266588e4246f21ceb7f3d2de3a4fee3a06a3efcc72bcdbdbd5b9db",
+          "specSha256": "a941e6d314c86e065e23f5f48743874748c4eb987bba3abc75fa02aac9ae823f",
           "parent": "gh-1303",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1371",
-          "specSha256": "fa0ea612949ca2886dc27b23b6fdf5ff56e8ccce821c32be65ddc5ebd4af5f47",
+          "specSha256": "61438a75daead149ec59c2b4182a86810c39b92961e0dd5c308eade84cc9d401",
           "parent": "gh-1307",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1394",
-          "specSha256": "1ae3268d5aed3c2d77f38407f962e22eeccc2fbb00049a46f990713951d92bd2",
+          "specSha256": "012d08fd455746d94304ae5cc0ed5cecb5f32b82620296abd353097a4b48bd82",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1366"
@@ -411,14 +411,14 @@
         },
         {
           "id": "gh-1380",
-          "specSha256": "855d94e2164ef5ee5edcffa3cabf3b93f3221807bb7b6f57c6a8d4c2321f56e8",
+          "specSha256": "4cfbfd9031bf15d8fbe44c3650bad2df6990539a25740ebef70f058f1c04fb05",
           "parent": "gh-1313",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1385",
-          "specSha256": "f1521194ffa233223ca901585b9898a6e7ea62a04762a972d3efaa8f6684b583",
+          "specSha256": "8e4da04ee1ada252ff9b3c975c1941667dd4662715f0c1a252133225fd347ca8",
           "parent": "gh-1318",
           "dependencies": [],
           "approval": "approved"
@@ -440,7 +440,7 @@
       "status": "proposed",
       "title": "[backend-delivery 04/74] Implement data/inbox, data/chokePoint, data/tenancy changes",
       "bodyCharacters": 59983,
-      "specSha256": "a0104f9d915c06bd3f43d9947f6c3527269fb577b98d307bdeebca6b0fe39260",
+      "specSha256": "98ea2e907a5c4f445e0ef34bd712db1d21cb6bcb250268cafe3e5c9a1e9fcb55",
       "members": [
         {
           "id": "gh-1479",
@@ -473,7 +473,7 @@
         },
         {
           "id": "gh-1659",
-          "specSha256": "d3096f01fdba47cb24a89f98a87157319909c4a5b77640929ae2f2a636a8feb2",
+          "specSha256": "77f07bc012df280f6dae959d2ec1a348d13e43fc2155004f75d0e03c7c8be002",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1486"
@@ -482,7 +482,7 @@
         },
         {
           "id": "gh-1716",
-          "specSha256": "202e70910946edce5cde75622fcf0921bb17ef0126de54e127c25c8a758eecc1",
+          "specSha256": "435eb504160c452cf5fbeafec6e61d89a3f03a4284b825855c4366552c5a73c9",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1659"
@@ -507,7 +507,7 @@
         },
         {
           "id": "gh-1419",
-          "specSha256": "3d7ce2137607f2cf15e7552c937ba3bb4b1797f0ca40aa7798009cc3244eb3ed",
+          "specSha256": "f511cad62c9a37eef42e9e820585a2a9b8b5e96c36cf6f2795adc7e8760e18a2",
           "parent": "gh-1331",
           "dependencies": [],
           "approval": "approved"
@@ -528,7 +528,7 @@
         },
         {
           "id": "gh-1358",
-          "specSha256": "c81c8b5adbf46602bf578de5e77b502b60d9bd077056112eb470dc9accf7b3ed",
+          "specSha256": "3b8acea3771e7da7f1f322cffccc679fbad8a82a0bbdb9a96ccad0b3b73ee45b",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
@@ -541,32 +541,32 @@
       "status": "proposed",
       "title": "[backend-delivery 05/74] Implement data/mail, data/tenancy, queue changes",
       "bodyCharacters": 59904,
-      "specSha256": "17156b9d87060a7cd9476ca301c9312ee529bba6f325a6dc250a1340a642ce47",
+      "specSha256": "36e88b72b7b16e3d0432cc46ebb65f71e64ed3182cde4726481dcd580cea3863",
       "members": [
         {
           "id": "gh-1367",
-          "specSha256": "b3fee7da0821a336cb9ce816e034f7ca01eb0393f9c9dfa76e83b46be42f6914",
+          "specSha256": "fed41d3784b147e09645caaadc9f2d96e788bbac3c9fee6386ab7b74a554bdbc",
           "parent": "gh-1304",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1473",
-          "specSha256": "855e9ed8ecbe9d2f2822197303f98b2def57e7cf59ea185921e96c9ca276957e",
+          "specSha256": "8668ed3c5606ad50f2ae430a981077a3de40d631611f3f053dc67a8d0b44ea59",
           "parent": "gh-1336",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1487",
-          "specSha256": "4caf09569e5f4329bb1cb7b43da5b2dc979b3b01f7fb7c315b327d949b2d863e",
+          "specSha256": "682f11a8f10b2ed5c65f25cec1433c57d88876921eebdddad6f6bc9ff181ddc4",
           "parent": "gh-1317",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1356",
-          "specSha256": "17d17adb96a8be61bd2d429451eeb64233e775becda950893971a184a4471569",
+          "specSha256": "0534497a5b712a581f007f9e62c7ee2409cbadb21e7acbeb1ab77066761ebde3",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
@@ -580,14 +580,14 @@
         },
         {
           "id": "gh-1384",
-          "specSha256": "81cc828dcb69cdc99acdbfe75de4a3f85bb630d737090ae66f33d48abec7655b",
+          "specSha256": "431d3be2099f887420dfc23811627b7b932ba2b1f8e2e581ec3be52c985bfe12",
           "parent": "gh-1317",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1468",
-          "specSha256": "a687966469407756f0a7e5efa7c67faf1c57e12236acd84074f9be477f327daf",
+          "specSha256": "1b762a6386c3e75610e93c03ab1ed16355d96c4b2912babaa304ce9d4f937544",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1397"
@@ -596,7 +596,7 @@
         },
         {
           "id": "gh-1483",
-          "specSha256": "7085359a9dba02986d8d7da2fb2aba8c5ba42cef15ddc85065383eeb0798b4ec",
+          "specSha256": "cfb990587734cb8d98694e7205ab774c0ee830cce267d74ceb369dad7d04402e",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1468"
@@ -605,7 +605,7 @@
         },
         {
           "id": "gh-1496",
-          "specSha256": "6939ca2093f3918d8150b25eb530076034e8db894c4fc4b834e7f2280663dba5",
+          "specSha256": "351ebb3beb1f95fe07b4847dfb1c053e870c80e962997c8f8c83821a902ce2ff",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1483"
@@ -629,7 +629,7 @@
       "status": "proposed",
       "title": "[backend-delivery 06/74] Implement agent-runtime, alldots-agents, data/agentRuns changes",
       "bodyCharacters": 59911,
-      "specSha256": "fd52a123dd75b6c292b90c0ab839e845de861daf4b4745324b375be5fde8f128",
+      "specSha256": "25a594b2b54e2d30298d986169eba1d75ed98480225406f6edf6686fbae08bcc",
       "members": [
         {
           "id": "gh-1452",
@@ -642,7 +642,7 @@
         },
         {
           "id": "gh-1446",
-          "specSha256": "3c673929079ea5dd597a73030a058205687c060b5d612ba03c9863d55cc752e7",
+          "specSha256": "0dcb68856158e18c3c39497ff657ad69088b5436a155f3db3aaa704ac7493ed9",
           "parent": "gh-1308",
           "dependencies": [],
           "approval": "approved"
@@ -658,7 +658,7 @@
         },
         {
           "id": "gh-1566",
-          "specSha256": "7ddc8ca78839a798f14ec751f0ce2532c94b4b28948226673991939bfc0c68f2",
+          "specSha256": "f4537219d3d35f431b75b730e252c85e309d2332e0a6726e4606a1095e27afbd",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1560"
@@ -667,7 +667,7 @@
         },
         {
           "id": "gh-1547",
-          "specSha256": "ba44af3875c7b1de1302fa447a311f0662d6155840c233980c0972112c0ce760",
+          "specSha256": "8568f0c294c6936d913cdc82243c8948a122052b1e07a91d715cae288ef5b3c5",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1446"
@@ -676,7 +676,7 @@
         },
         {
           "id": "gh-1398",
-          "specSha256": "99d030341f090ba7ecfc872d73ff7f8078268917f8cc0b8969cdb95861908975",
+          "specSha256": "97864592deb2ea955932b3657fa0aaf77ece2c6a987f80c754dbeee58d83bbe3",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1566"
@@ -685,21 +685,21 @@
         },
         {
           "id": "gh-1444",
-          "specSha256": "4c88942ad2b517c1758c0c226a2c0096b7185485d5cfea2d3054401a716ca6cc",
+          "specSha256": "1f4799cb6943ed50178ae62373ced91961b988473762a495d4705e25076a25e5",
           "parent": "gh-1308",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1420",
-          "specSha256": "6f2b20266ae6b27b61544ba15b27e06047542e5a5b98efd783ef89b5228be65b",
+          "specSha256": "d5fff8c61a3e903de3782773c33903949aa53a524252fc461a8752fabe3252ce",
           "parent": "gh-1305",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1374",
-          "specSha256": "4784544038c43bd4a51b624b5fd4b265b0e79c28bd80beb9517c369856905c72",
+          "specSha256": "1e8b7c313fa859f69c232dfc09a5a23a78b1c872cf37abd76badace0b7639cdd",
           "parent": "gh-1308",
           "dependencies": [],
           "approval": "approved"
@@ -712,11 +712,11 @@
       "status": "proposed",
       "title": "[backend-delivery 07/74] Implement data/blobs, data/chokePoint, application changes",
       "bodyCharacters": 59261,
-      "specSha256": "6afb433d4f14aeeac4191b2628a374a39eb7a0f4a47ff30c212ee0e67dceb9f6",
+      "specSha256": "8882f0895a4924091c21b7b2c2124a78a37a58a475cd03dcc5c6d7269d4eff5f",
       "members": [
         {
           "id": "gh-1401",
-          "specSha256": "ac1d5fde248932445f0a7e8e0e06c8112eca6e10e73c23c411d2aa3f96609d9a",
+          "specSha256": "d0b7d0b90b67bab3450747ad5ec6635861aca0f357035be532d83b83d7c3c67d",
           "parent": "gh-1325",
           "dependencies": [
             "gh-1355",
@@ -726,7 +726,7 @@
         },
         {
           "id": "gh-1564",
-          "specSha256": "b655681a2dc4ce57af72ba15a6af150156acac9a703ad1ea0b5600b0d7fb84bb",
+          "specSha256": "01abcd3857cb4c5e8b1001e4e46b81e1ca037422f85ba376ae771a2c994620c0",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1401"
@@ -744,14 +744,14 @@
         },
         {
           "id": "gh-1412",
-          "specSha256": "ea1febb0bb6cbab119bccb6efe03ec1c6eb38567bb8fc84c4a8475f9f42a8934",
+          "specSha256": "87d4927e1e2cce7bb13f306ec0694406431df2cd3f4f804a934abe641e51d4ed",
           "parent": "gh-1328",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1404",
-          "specSha256": "e7d012e79d0543acc92361ed9e6d801f5a576eeb475f2f82bfb423377f525cac",
+          "specSha256": "f9408a80b9bd47585264a41da79ceb9c7d1a03bfd48dd0e7d303198e6ab898f6",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1401"
@@ -760,7 +760,7 @@
         },
         {
           "id": "gh-1592",
-          "specSha256": "24d6f3626c3a9485824b9101755884c02d0dd89899088f9c1ce94c663cf18f15",
+          "specSha256": "e4991fcb082f29d76db23c630c54e7f4d4a38c56a3b06fa55c661cba4e867466",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1528"
@@ -769,7 +769,7 @@
         },
         {
           "id": "gh-1617",
-          "specSha256": "6a09000cf2b936ec001123b3e7efd5c641a9a9b7d47cb2cf04d7abad740bf45f",
+          "specSha256": "6c0968d577f2940184af71030127c2f89f9f67dc3c51d3ead6044246352df9dd",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1394",
@@ -795,7 +795,7 @@
       "status": "proposed",
       "title": "[backend-delivery 08/74] Implement data/mcp, data/notifications, data/push changes",
       "bodyCharacters": 59891,
-      "specSha256": "18ac698a21989714eb127b3abf163f7a9a07b4f74c92cff1ded6c6b97a4fb01c",
+      "specSha256": "f9a45f7837c66e19af3fe1aecbe468661b01655206abcb7b1bbcd394b26e1da6",
       "members": [
         {
           "id": "gh-1437",
@@ -806,21 +806,21 @@
         },
         {
           "id": "gh-1391",
-          "specSha256": "78f8ad97a7dfc28c34f1345345962f7a744d881c3de3df976d4a5f223486a0e1",
+          "specSha256": "bd2d530c749cd5b010e29f10c97b7312b006acb88f84a81db4b48aeefae2d021",
           "parent": "gh-1321",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1450",
-          "specSha256": "6e125fb8f4efa99877ea13b02f27044b95e6f116b6386131227ba431b67b5839",
+          "specSha256": "5b42baf89fb8fc186e42089c7369d7ccd92c95a7c6e75cb2c8908586d0298700",
           "parent": "gh-1321",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1455",
-          "specSha256": "1fdd5847c8b1b4a335898b7b1d68f3cabe03c528fb13827367ac3e6772006b98",
+          "specSha256": "a18e572ad32ad1e4a1f9c6e443fbdde839309027d25f60082e8aa0925799d726",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1391",
@@ -830,21 +830,21 @@
         },
         {
           "id": "gh-1463",
-          "specSha256": "445483d5389eeb2f912fad0550ffea905eb9c95ce9f7c6c20a638c23984a4eee",
+          "specSha256": "3bfdd81cd34a1d8566016b6bd2cc05056875710df2a8b82ebc57f532b58e55ca",
           "parent": "gh-1334",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1368",
-          "specSha256": "c9e263ac393f7e7656aa560a150c27f839e1c1c300eb2a7c7717775650132e87",
+          "specSha256": "7e4b8eef8dd550ac63e192e3b11e889d855db0da08b79f1a4239e68a87ed262d",
           "parent": "gh-1305",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1441",
-          "specSha256": "113dbf151fa91cdc95fd2709a9dc45b8f2fa7fef56c93d73df640873c3c7ccf8",
+          "specSha256": "ccb2034e552cba06dd23687daf71668d57b877a6ed774e9174ac001a2b2c3aa7",
           "parent": "gh-1334",
           "dependencies": [
             "gh-1404"
@@ -895,7 +895,7 @@
       "status": "proposed",
       "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 59446,
-      "specSha256": "4f8f57c0a4e32460bfc7fd6c603b7916998523868de22dd24e6e4f72d35d9693",
+      "specSha256": "f36a457a6a434f92376499f5e87eb12010d290db62186a1afc3104aeec60314b",
       "members": [
         {
           "id": "gh-1470",
@@ -906,7 +906,7 @@
         },
         {
           "id": "gh-1703",
-          "specSha256": "0c86ac71a345ccb9eb211cf497f2fd2e78b9686b894bf6a042712fca35358d10",
+          "specSha256": "4e27e3400d35cd95854449039f904177205188037414bd0405035f9522eb09e7",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1564",
@@ -916,7 +916,7 @@
         },
         {
           "id": "gh-1577",
-          "specSha256": "2c193f445ca2ef482607c308726786caab91c4abc8b584abab6a41cf4482fe4a",
+          "specSha256": "2695ffae0b0546186a9c887412b50e079d83cc2f8089908932c67d826a49e5b3",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1421"
@@ -925,14 +925,14 @@
         },
         {
           "id": "gh-1386",
-          "specSha256": "1df49efefc389ded5384a0daa16d22fee843ccc3ce620e5b52f52e0446264ee4",
+          "specSha256": "f320720519e171f609d2df5b99c6c59a9a70e5ced552f92833699893b797ef1c",
           "parent": "gh-1319",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1582",
-          "specSha256": "753e9499676eb4cc2cf557f46d9fd464f44eb5dfc0e055d2006f7350908aca52",
+          "specSha256": "959908447ab5dbcbdea57734e9a21092b9ac7d411ba12ab7bfee13eb26321513",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1386"
@@ -941,14 +941,14 @@
         },
         {
           "id": "gh-1377",
-          "specSha256": "ed05089613f67653270c154f2619c06c785b7f6334d778076f5f5f10676a83fd",
+          "specSha256": "b80a524f9415fbb902e01563c17849b646bce9ac862a21633a1235ea96c1bcb7",
           "parent": "gh-1311",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1402",
-          "specSha256": "d618125ea6708a4e926db40f46913df0b322e85ae3b4d99b803a21b4fe14cd8c",
+          "specSha256": "a2fade77beeb377dd2f8a9ae87013bbb29f11dc4fe7e385db9032864361cad3b",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1397"
@@ -957,7 +957,7 @@
         },
         {
           "id": "gh-1488",
-          "specSha256": "e2fc3e9d29c1c7372897f678ed85ee65fcdd78f2d4c0a35504fa2047910536d1",
+          "specSha256": "0408653595b0e7305c2853903945e7b64339e87ea1c6a917868dcf46131c8877",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1426",
@@ -967,7 +967,7 @@
         },
         {
           "id": "gh-1492",
-          "specSha256": "c87d1bc536ae7a8ad5e2629aff2dff7d8cb9ae980294553fa4d2572c71957751",
+          "specSha256": "f800113a17db81a3fca75feb7a94bb3e8c10fbd420eccef352b4e6854a695f78",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1434",
@@ -977,7 +977,7 @@
         },
         {
           "id": "gh-1606",
-          "specSha256": "f0b805ebce513defde3dc5f267dd23a8bf9c8a051bcbc24080d7e8b61f4a78cd",
+          "specSha256": "cdba67f62e117a36123227ff19004e147da410cb57f7236870139dedb9471583",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1564"
@@ -999,11 +999,11 @@
       "status": "proposed",
       "title": "[backend-delivery 10/74] Implement ai-gateway-client, alldots-ai-gateway, shared changes",
       "bodyCharacters": 59877,
-      "specSha256": "aa86d43ca90a6f633e107c62fd329ba893988b1bba391972ab4a41943ea88a85",
+      "specSha256": "0466e7e709bcbf0ee26b20c381f1a9963dc7076703bb4151349ad05fab3f00b0",
       "members": [
         {
           "id": "gh-1369",
-          "specSha256": "9e8c9da37d1d14c2c818b48bec4218e82bd5182585b6e137144ca7d25dd5b291",
+          "specSha256": "686c141ae837e940be1e7766145d255d80d5b2b1d0b4b51357e2176f556ac0de",
           "parent": "gh-1306",
           "dependencies": [],
           "approval": "approved"
@@ -1017,14 +1017,14 @@
         },
         {
           "id": "gh-1381",
-          "specSha256": "5b981ca91e2b7ef0faf75fc139c5be74eae094fd91928979922aa8fa7ae8663d",
+          "specSha256": "d3949931ac4a36f5571ed52e1219fb6d140418717ed119a99e96a351e8e468c0",
           "parent": "gh-1314",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1396",
-          "specSha256": "554863afb69e0248364daa0c25f9e015d45867eded67e315a3788be2cb138fff",
+          "specSha256": "533e5b20115c0291035983aa6098c1563d7d8d76410d1b843098785d1261881d",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371"
@@ -1033,7 +1033,7 @@
         },
         {
           "id": "gh-1399",
-          "specSha256": "2633816059a41fb95d073d308b131358ff4dde4652ed99b370370663d3983ea6",
+          "specSha256": "5f487d699e93606f37da211b84aa73c3fce48525d1ba0034ef9ef3d315aa33c0",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371",
@@ -1043,7 +1043,7 @@
         },
         {
           "id": "gh-1465",
-          "specSha256": "1397a796ca4bc2849e3d3bff07d0b58149e074bf27c857cf446ad74c05755905",
+          "specSha256": "08189fca432b47db3f935b5c89c1e0e0223bd281fa4bb718172d7a6f5565a50e",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1375",
@@ -1053,7 +1053,7 @@
         },
         {
           "id": "gh-1558",
-          "specSha256": "3a9546d197919cd562e75c9c67343e49e39c1ad2f9d0953d8337db40958d051a",
+          "specSha256": "3f6f27f0d9df16e170ac980d63140b12ad59e27a6c0eb9f49874b02752dafcc0",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1459",
@@ -1070,7 +1070,7 @@
         },
         {
           "id": "gh-1539",
-          "specSha256": "9f3ba5c00c6802ecb0e6372f626127b5e0991025dc09a19ae7cf42d9b74e33fb",
+          "specSha256": "8465f668f36fa8473ffb68deee5d1d88025a5ba1042548f7f91f3721e2dc62fe",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1366"
@@ -1079,7 +1079,7 @@
         },
         {
           "id": "gh-1474",
-          "specSha256": "5292276782043ffcbdb51be1ce73763fc54b97ab6c3fd6a1217de218d76af52c",
+          "specSha256": "6c1d3c34ea3270084137ff2ea3d7e4c6e38e424760b6a2059b8991f8820354ca",
           "parent": "gh-1317",
           "dependencies": [],
           "approval": "approved"
@@ -1092,11 +1092,11 @@
       "status": "proposed",
       "title": "[backend-delivery 11/74] Implement data/chokePoint, data/tasks changes",
       "bodyCharacters": 59979,
-      "specSha256": "d352b330767833aabece85aa23e47e6ec685c249bcb3e2557d515357018442d2",
+      "specSha256": "a0147311e379a9435bd9d5b2cad821f792a4cd1ee02e6e6ea1222a28d1b792f1",
       "members": [
         {
           "id": "gh-1608",
-          "specSha256": "719990136b0a378140c4a5fde8f01bd25f3370b9a89c3a0c4ff6d366318633a0",
+          "specSha256": "d56c0c667eecf10c06ab4eb83d8bbbd04458a25d4a18b150ab9f41ee35804255",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1539"
@@ -1112,7 +1112,7 @@
         },
         {
           "id": "gh-1610",
-          "specSha256": "382ec342337a6cec93f440e254185fdcbd28aaf510de72d10dd845880ef8bd3b",
+          "specSha256": "780484d011239901a7ebffa1b1a65af883dd63d8d96bc163aa07009e98633588",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1539"
@@ -1121,7 +1121,7 @@
         },
         {
           "id": "gh-1413",
-          "specSha256": "b781ee5de0423bd1d85cb09ce27495df637aa61d48c8b5eff8d607409ce931ea",
+          "specSha256": "e07dc57516eb4475513a56e01bf1ceabfa787d672f251e961bb535935c69f217",
           "parent": "gh-1298",
           "dependencies": [],
           "approval": "approved"
@@ -1138,7 +1138,7 @@
         },
         {
           "id": "gh-1536",
-          "specSha256": "bc59be967347e3a9aca23f004f484632272bbef342babca563f649ef6712d79c",
+          "specSha256": "8bb84d133064e26078448df61129b14473ea7ddedd5b33627f94cab0d32490ac",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1422"
@@ -1147,7 +1147,7 @@
         },
         {
           "id": "gh-1516",
-          "specSha256": "fee54e27d41bb828b1e1f3c147dfad9638827af98a33a0d6b3f49f64d733ba37",
+          "specSha256": "c6fe126d7c97e8bae49978b48c1b728133b6c1951b34ba8eaa873b891dc3b2e3",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1403",
@@ -1163,18 +1163,18 @@
       "status": "proposed",
       "title": "[backend-delivery 12/74] Implement data/aiGateway, data/scheduler, data/agentRuns changes",
       "bodyCharacters": 59904,
-      "specSha256": "03651b10bfc0ea9797f6ec7007749e43fdb63e427757408d782b82f5af387dec",
+      "specSha256": "050c316388d86e916ca949ccd4fc91938a6581157e8f23a3b1c16888d459fb07",
       "members": [
         {
           "id": "gh-1442",
-          "specSha256": "3384524171728d8dfae71eac07fbe20cb7ff0d8e85fce229eac355ca8ef810be",
+          "specSha256": "94640f4eb30078fef345fa4b15245a8a6ac609718e12476cf5791b3f23d2276f",
           "parent": "gh-1310",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1467",
-          "specSha256": "a78fd2109a27a7fa02ac01cee5bd572a9a653b7b5195cb82adf6f675ad7265b7",
+          "specSha256": "1b5b8475dd52a61f3b8ba94868a937b8b85901d7b49fb6431b57cdbc1e8eb405",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1462"
@@ -1183,7 +1183,7 @@
         },
         {
           "id": "gh-1472",
-          "specSha256": "eb36abb928e7bee9d51b4ef99b6baeaba07bc94e61a5df304a36d616cf7b9f97",
+          "specSha256": "b34d12d441d6cf55f150171252d687819f953c263c69703c3ffa057aa3001c18",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1442",
@@ -1193,7 +1193,7 @@
         },
         {
           "id": "gh-1477",
-          "specSha256": "4efe3c28f2231fda2e4e3ec57b9efaa3bc90f3a49c788c7b241f81d44857bf41",
+          "specSha256": "619a5190568c7d354bff44a019dae50973002f20ee3dcd27d401dd1413de2615",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1472"
@@ -1232,7 +1232,7 @@
         },
         {
           "id": "gh-1453",
-          "specSha256": "afbeea5f589ecb26c8f935885799c4359219406c3f226f7506d7618e80359e1f",
+          "specSha256": "088afe23beb1bbf1003075ecb02600931ad4687cf73993701d4a1b96689947a7",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1441"
@@ -1241,7 +1241,7 @@
         },
         {
           "id": "gh-1456",
-          "specSha256": "3f92644bd96681052508b7a8304435093e4bdbba3a711f64bee434a5a381ce3a",
+          "specSha256": "a02215a2fd7dce2551e956c88675e1780bd01797582ff7f1e5c66214b657c4dd",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1453"
@@ -1250,7 +1250,7 @@
         },
         {
           "id": "gh-1614",
-          "specSha256": "86c4a8f8dde4bed0bc4aba78a51da3da333ef46d34ec44ecca62a0af7be0eca3",
+          "specSha256": "1eae484666d9262fae8739d4e04ac07311d2cbf04ec88d3b42b31c9d441fb374",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1608"
@@ -1265,7 +1265,7 @@
       "status": "proposed",
       "title": "[backend-delivery 13/74] Implement data/mail, alldots-api/adapter changes",
       "bodyCharacters": 59982,
-      "specSha256": "a7c31a387663070ac89475b5b75093bb7186ddaa800cb11e14e90febc1491ec4",
+      "specSha256": "0d53e86b4f62f06ff099e4c585511023d0a92e33dade2a0907404ab11636d1ab",
       "members": [
         {
           "id": "gh-1497",
@@ -1276,7 +1276,7 @@
         },
         {
           "id": "gh-1504",
-          "specSha256": "dd111b94d2c3dcc9902911aef478d12e2e1939348f10c983bb681e1a57abccfa",
+          "specSha256": "c611c521f76a9d5cc29288f6fb21bbefcdcd45329d9f486d2f8719841276e7bb",
           "parent": "gh-1338",
           "dependencies": [],
           "approval": "approved"
@@ -1301,7 +1301,7 @@
         },
         {
           "id": "gh-1505",
-          "specSha256": "1f933bdaa142262e768eeaa1ca4075e3f07cac64d26096be9e75512c98e05939",
+          "specSha256": "d688f490d72d7dcb12b0529478e7e66d0a1b0bf53f79b8f005ea6414b2be1dbd",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1481"
@@ -1310,7 +1310,7 @@
         },
         {
           "id": "gh-1508",
-          "specSha256": "79d3a67461d18bfb49f19446d1730301eb662e00fb474466c71ba0c23462a165",
+          "specSha256": "fcc10ce60d46ad9d80ed2d7bdfcd75e5697ed232fab371a35e8ab1118489a099",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1505"
@@ -1319,7 +1319,7 @@
         },
         {
           "id": "gh-1510",
-          "specSha256": "5b85b4093369a55f8feadfe00a7b3a4d0e593c7f275e2b7239196f245021f243",
+          "specSha256": "e26884763a991dd94e3414109657b91365fbee2943ab4f0419e97bd7e93ef613",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1473",
@@ -1337,7 +1337,7 @@
         },
         {
           "id": "gh-1493",
-          "specSha256": "ae5e5e18efb298e475b8913b7f46b36ef57b8c41070f13e7ed1c9cef6fb4e1c7",
+          "specSha256": "89529a235baa25bdfe0cfb037f9a499c968f34985a2b8e71af279f8a89da478e",
           "parent": "gh-1317",
           "dependencies": [],
           "approval": "approved"
@@ -1358,7 +1358,7 @@
         },
         {
           "id": "gh-1569",
-          "specSha256": "5c27f00a937e83d6e34259db3f61708f572cad0342718138bab6b568fe6cfee8",
+          "specSha256": "9de0cf992a7ccf70fe59eb223ba4c2a118e5adde8182cdafb353bc606e0b646e",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1478"
@@ -1373,7 +1373,7 @@
       "status": "proposed",
       "title": "[backend-delivery 14/74] Implement data/views, data/chokePoint, shared/genericOperations changes",
       "bodyCharacters": 59740,
-      "specSha256": "2b45f5e2ea1b6ce60636966c8e3170d6ba123b64c7c232933086cb0ae56d19f3",
+      "specSha256": "99d6346eb01ac29a1b42a9d92b80b9597c30db9ce7a675ef30321c3fb62c2599",
       "members": [
         {
           "id": "gh-1524",
@@ -1386,7 +1386,7 @@
         },
         {
           "id": "gh-1409",
-          "specSha256": "668c3fb30d907a1ab7f261e8ec8f76fc4d7607b197fc934dc1a599428a2b8fc8",
+          "specSha256": "485a5b71cbf65040a93924803c46e5953946d3b574ac773a80a498b263c085ba",
           "parent": "gh-1298",
           "dependencies": [],
           "approval": "approved"
@@ -1438,7 +1438,7 @@
         },
         {
           "id": "gh-1460",
-          "specSha256": "688e0403ac391f71dd3a5c895ba80528c0171b576f783091f789ce7b0fe8631b",
+          "specSha256": "21e8a74d244a0b726a79ebbabfe38b70bde0ec5ad83875da90bed7c569bac9eb",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1456"
@@ -1454,14 +1454,14 @@
         },
         {
           "id": "gh-1433",
-          "specSha256": "179ab0eb0d3b1aecab71bb91ef944261462eb5bcc9fd13f2623d7112930d399a",
+          "specSha256": "235156b36e2238040664e251f004d570120d6676c328f9a76acd6f819e4fc145",
           "parent": "gh-1315",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1565",
-          "specSha256": "b2b6bc9a72dfad93f5c7a3e312070b26d53f3ede2d175d3d5da131625dc43bc8",
+          "specSha256": "336a940c123ba123316c79e8166c9a50ab607ae5e6032a3713eff954348f255b",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1560"
@@ -1470,7 +1470,7 @@
         },
         {
           "id": "gh-1447",
-          "specSha256": "b111044fa7e839ca1b957ada9ff72d42d9560c73fe3f3fdb6e2fd90e3fa80604",
+          "specSha256": "1bb4fc52e85aa604d8825b111c42cb00dc8510fd018a11da10f83b784d260067",
           "parent": "gh-1321",
           "dependencies": [],
           "approval": "approved"
@@ -1483,11 +1483,11 @@
       "status": "proposed",
       "title": "[backend-delivery 15/74] Implement agent-runtime, alldots-agents, application changes",
       "bodyCharacters": 57637,
-      "specSha256": "152803fb6746492837082f6684bdd536a3fb93f712a0102eb297d88342458b50",
+      "specSha256": "7a5c08997c5428fc16ae86013c7bc30f7b14a04509ffe4e347c597cdf7c279f3",
       "members": [
         {
           "id": "gh-1568",
-          "specSha256": "d6f71b3e35ee59231a6ec89888181ffea49ffb528932046f3b350a2163a588a0",
+          "specSha256": "bed39cad99eae4143a1ec9d68c9bb4c3e579ff6f68108581633efaa62b6d3313",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1374",
@@ -1497,7 +1497,7 @@
         },
         {
           "id": "gh-1527",
-          "specSha256": "7bf06475702adbf55ea5d9403f33ed0b1ec4e8867b079a07db524787081ce4d6",
+          "specSha256": "13b14f1740fe63fc84d0bf571add0fd8aeae448ff297a10e47103161894c3a7d",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1424",
@@ -1507,7 +1507,7 @@
         },
         {
           "id": "gh-1618",
-          "specSha256": "d4adfcb6313cc19c8f43fe6d1b48f3345bfa975648f20df15d817e47a33dfad8",
+          "specSha256": "7987cfe7d96b86f1b112b36185a7467b08347706e0f25d8c356619f7c9db94db",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1527"
@@ -1535,21 +1535,21 @@
         },
         {
           "id": "gh-1383",
-          "specSha256": "31068a19b9347043e33467e3b808b7069877814cb4d4afa8a22313e9ed2f0d88",
+          "specSha256": "609218181fa436ff3f8ff6f249b1021c08f721ee85930776baa79dc0369d5d74",
           "parent": "gh-1316",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1388",
-          "specSha256": "a75b6bf922032dfedfd3aaa42b064dfa65f996e310e927ee71620c76756fae89",
+          "specSha256": "0a45b3528a3dbef9d22475118dac5749a698127bd7c44b4b884573198a20df08",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1533",
-          "specSha256": "43d903c9e456268a48c1553050ac9e059b4fb789949faf0c175922905ddcc064",
+          "specSha256": "fadc446d843fb8b26fcda9f6ce51860e4951ed6e5999775a10b5fb50501db11b",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1447"
@@ -1568,7 +1568,7 @@
         },
         {
           "id": "gh-1773",
-          "specSha256": "418b4e40f86a65232d3dddb48d2d6a58f99df031f095430322a1729433ec99d2",
+          "specSha256": "4ee258742b40c1a4c5bbe63ccdd659d86ce28b16dd5c19565886d70ff3501cc6",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1466",
@@ -1584,11 +1584,11 @@
       "status": "proposed",
       "title": "[backend-delivery 16/74] Implement architecture, data/auth, realtime changes",
       "bodyCharacters": 57557,
-      "specSha256": "fde2b2b36835a0c2e3924cc646d10bbf6be3382ca9d524b5f4f35c52b4d504f8",
+      "specSha256": "6749f0611085628a702b0ffcab6bd25995d994f5bc2e8323ef86ee367a8e0dc2",
       "members": [
         {
           "id": "gh-1395",
-          "specSha256": "38800336eec3320b851e94e730ab4c3773375723a00d81d2dfb7ecb6886b2ede",
+          "specSha256": "5dea0298c54bbb9dd84749a2062cb843a7f4fb4684c11c8f5b1a6a57cbdf2c21",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1367",
@@ -1615,14 +1615,14 @@
         },
         {
           "id": "gh-1354",
-          "specSha256": "21910ff2a714381c1ba0493c01d9c1e2ab1c6549418c9cf1cea31b1eaf505242",
+          "specSha256": "21647cd00399bb70f13baf47d346cb3c71946507890e3865b0676868769de363",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1512",
-          "specSha256": "2014931b16f0553ef1214ff2835d200ae211c799aa9edf2d7cb9663d942844a5",
+          "specSha256": "159254c146b48ca942d1bbc1e9287c593526c2e04a30a411be2e559b0bfac9b1",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1354"
@@ -1631,14 +1631,14 @@
         },
         {
           "id": "gh-1373",
-          "specSha256": "925d2a377e3cad82bf90aca5c0b69c5006d21d6d0cbd7f480d0ee084856418ba",
+          "specSha256": "2ba8244ec35b3ca4cceaeed05d3aa88b6fa38208cf43c2d8eb3420c8df8fb552",
           "parent": "gh-1305",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1393",
-          "specSha256": "23a0051e44cc483091a0dfb6de97b0060d26d567bcf2ca1e99fc20a56f19e5aa",
+          "specSha256": "50d33499e33de42c8a3c24db21ee25eb1633f107bd93ede896858616649729e7",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1366"
@@ -1647,7 +1647,7 @@
         },
         {
           "id": "gh-1382",
-          "specSha256": "8c306b714476af1c8457bbe0c90336c69b835260b8a370264747b8a17d1ef95c",
+          "specSha256": "2bb5d63de2180ab8576b015fc28257bac1521ec24825a23c6c09ece9b6e0f390",
           "parent": "gh-1315",
           "dependencies": [],
           "approval": "approved"
@@ -1663,7 +1663,7 @@
         },
         {
           "id": "gh-1428",
-          "specSha256": "fb9df54326e47c8f796e705a9da368a283a2aa025cd3ad008c1e5eb7ee5d42f3",
+          "specSha256": "076aa27b1edb40b112fa9cdb531a6ff9831636287c4dcfdc0385deb57c2d74cc",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1422"
@@ -1678,7 +1678,7 @@
       "status": "proposed",
       "title": "[backend-delivery 17/74] Implement data/mail, data/inbox, alldots-api/adapter changes",
       "bodyCharacters": 58840,
-      "specSha256": "89f75e638284a3bc87b91b7892227d158e733681bf48bc4ddd63acc1e9175d2f",
+      "specSha256": "2a65785f46ee5be794cab51068240444124dadbdbf5887dde8eed418c6ab874a",
       "members": [
         {
           "id": "gh-1431",
@@ -1689,7 +1689,7 @@
         },
         {
           "id": "gh-1432",
-          "specSha256": "96c965d2afd58008a2f69be2848fd926d23a2cf8ae8a720f2a3b78a54e539397",
+          "specSha256": "b77893bbfe9d3e360a6bcb2c22a14306f5be17a1e5b5691974be560607c6f7ed",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1428"
@@ -1698,7 +1698,7 @@
         },
         {
           "id": "gh-1436",
-          "specSha256": "018f8b2978c4079e543c31ad5873596ada6ddc7e261101102c09c85381150969",
+          "specSha256": "e73482424a4ada6b02e734bbb4353164d61541c1151e936f90daf8840b1c3bfa",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1432"
@@ -1707,7 +1707,7 @@
         },
         {
           "id": "gh-1439",
-          "specSha256": "06be19473dd3310b80d1b77edb53a025cab7b03669bff52680d739cb33e46586",
+          "specSha256": "cab8b854cb26121af5bf91843d0f971cc3af6df5f958bf9674c05df2693f1a40",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1436"
@@ -1716,7 +1716,7 @@
         },
         {
           "id": "gh-1490",
-          "specSha256": "0b199b83ffb99379a8b314fdd91eee694be881f59e89c4683d71b61d329c3b56",
+          "specSha256": "1830132c02b43702973da370667a53375c9386253ea856d4e5064394346ba392",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1436"
@@ -1725,7 +1725,7 @@
         },
         {
           "id": "gh-1525",
-          "specSha256": "507dfc24153a292fe685176b0f9b228a82b625a76ed2f198e136591028129dbd",
+          "specSha256": "8c3b72bf14293dac1e11f0e16c09c7cdaa775a93655bb81982cf407243468b29",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1407",
@@ -1735,7 +1735,7 @@
         },
         {
           "id": "gh-1494",
-          "specSha256": "4a4236afbaa9e63fd7a88b0b29673cdde5471410c583deb4a72c2a6871b5ea6a",
+          "specSha256": "2cdf8268a3aac94f917722ec867fd9d6ae11a253ae2b829abe06370bc4935ad3",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1490"
@@ -1753,7 +1753,7 @@
         },
         {
           "id": "gh-1570",
-          "specSha256": "e89cd4ff57164e6eb1df613bcde883e52173a7908db4dabdb564862348cfaf40",
+          "specSha256": "50e9de55bdadcb7b48390617b04c5eddc37b9b4f0f11380d23fefc92b9e33aac",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1384",
@@ -1790,7 +1790,7 @@
       "status": "proposed",
       "title": "[backend-delivery 18/74] Implement data/mail, data/observability, data/docs changes",
       "bodyCharacters": 57913,
-      "specSha256": "46e223ecfbe2381637d8c856040bde4c200a959f766c32c42aef64dfad8ae6e6",
+      "specSha256": "41c7b8669a6beb901f569923ec536c70c494ed950335e49d22d1cc69dc7286f5",
       "members": [
         {
           "id": "gh-1658",
@@ -1805,7 +1805,7 @@
         },
         {
           "id": "gh-1503",
-          "specSha256": "915ee5a7b05048a9967805fc9e4fb9b094afeaff596bf07f7ad49ccfb51b42d1",
+          "specSha256": "55f664997583233365cc5bb732cc824bf340431fcee0869c8c60e1a23de56416",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1497"
@@ -1824,7 +1824,7 @@
         },
         {
           "id": "gh-1746",
-          "specSha256": "ded6a5b025e662b53139662cb0bb62e17fda6735981b2476bc1751676d9b956a",
+          "specSha256": "1f00c69771989bc62d8ec7429380a6e812d94d8ab2690311380fff38541049e1",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1510"
@@ -1833,7 +1833,7 @@
         },
         {
           "id": "gh-1641",
-          "specSha256": "e511814ada607ec7ff4c213cf3a2f99e997996cd49827325ffbefc021f11ffc3",
+          "specSha256": "f2e513ea830ea8d997f66da285d1404d76e58ebcf406652044c1a2d868267812",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1634"
@@ -1842,7 +1842,7 @@
         },
         {
           "id": "gh-1550",
-          "specSha256": "652c29f2a3c54502e58225850b6dbf18b4eafe223a8b46ba2d367735c2caf544",
+          "specSha256": "30906591c809cb4bfabcd18939059092514f377fc88117921cef6c3253e6acc6",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1510"
@@ -1860,14 +1860,14 @@
         },
         {
           "id": "gh-1357",
-          "specSha256": "fa31528954b31ce9c586aefefdd7507f386a54c27fc87f77a4c0e1434d6e94c8",
+          "specSha256": "9c95c7d2490b739e99ec1673d0502c3c16d5304ee1ce8f0ad6169f7cd0eacfdf",
           "parent": "gh-1296",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1531",
-          "specSha256": "4fbac23d0d9d627cf5cab13e5d28daecd3689a31d716b6f98fb8cedb4611663c",
+          "specSha256": "4ea90a91fcc0b71912d7cdfbbd56770b377fa27c3347f7aaa69f6ed80ec8ee98",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1418"
@@ -1882,7 +1882,7 @@
       "status": "proposed",
       "title": "[backend-delivery 19/74] Accept local security repairs and retain the production release gate",
       "bodyCharacters": 35037,
-      "specSha256": "7905c11e0ffd6a447ebc44564cb421a7bed645f80185323087561810a8e0ae4a",
+      "specSha256": "ce4c81d55d4b0307a644b8f8ef50cb3a58ba482a0215f43a5c6d5a7329a1da70",
       "members": [
         {
           "id": "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
@@ -1893,7 +1893,7 @@
         },
         {
           "id": "sp-94a5c71d-4663-4014-9256-db63e179346e",
-          "specSha256": "d22a6c947b95440e198661065198b34c379f86e4b02cdccaa03b7f8fd1858217",
+          "specSha256": "2e258c0414d4b4030093a2ef57f39e4044844e6d537232815f24ef7876a87b5a",
           "parent": "gh-961",
           "dependencies": [
             "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a"
@@ -1902,7 +1902,7 @@
         },
         {
           "id": "sp-dd171464-d76c-45f9-b113-73d81b38aad4",
-          "specSha256": "8bdcb30ec25fef4b2fa9d4b5afc4316b451a79af2cb55ee1f58280565e142c7b",
+          "specSha256": "f30cdc5a063fb7a28cc878a9cd8062dfa19a833c60ece2d3c1b0b2104546ae3b",
           "parent": "gh-961",
           "dependencies": [
             "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
@@ -1912,7 +1912,7 @@
         },
         {
           "id": "sp-a0f046dd-8781-4141-bc04-5dad0b725faf",
-          "specSha256": "d0d303cfd8e700d98d2783270f666e827d6dba9fba314f8464b1b21db737d2e2",
+          "specSha256": "258b55dbc9151bb919bc7b9462f180e8ec62b4dc78b6f28e0fecbc3825af2942",
           "parent": "gh-961",
           "dependencies": [
             "sp-62b97861-bb73-46ec-83d7-2dcfd881b16a",
@@ -1922,7 +1922,7 @@
         },
         {
           "id": "gh-1086",
-          "specSha256": "9f9bcd536dbedbd13251269c79b8defec0daeff45532be90d2328ead44493369",
+          "specSha256": "bc270280e733725519967175b68fcdb1b7ab52b8b5a467aca9e626102539ccaf",
           "parent": "gh-961",
           "dependencies": [
             "gh-1000",
@@ -1962,11 +1962,11 @@
       "status": "proposed",
       "title": "[backend-delivery 20/74] Implement data/tenancy, data/auth, data/inbox changes",
       "bodyCharacters": 55757,
-      "specSha256": "cc85ffc570901ba3ced62a4854ecadd4de0beb4e9d7145f0d89be28705ea6b07",
+      "specSha256": "cc46422dd1174fec2d7986eb78b76f85cad39e5555fd5a5bfe4b15fad45ed006",
       "members": [
         {
           "id": "gh-1087",
-          "specSha256": "8518b6be6bac140ba70a4ee2cd8d843b49b1678d1349d0525a90e81e9c526044",
+          "specSha256": "bba669a8114adada1b13a8c02b935d13b0b9f89e9c3cc3575e9745af3d894933",
           "parent": "gh-961",
           "dependencies": [
             "gh-1005",
@@ -1981,7 +1981,7 @@
         },
         {
           "id": "gh-1262",
-          "specSha256": "2cfe2fa0690c4637324b1e57f99ebacfef39b15c07df4a4d65379f72ed08667c",
+          "specSha256": "f77477c85887ad514ca5c032249e31879dcfdb976ab9c3a8de9c0fa7aa6e856c",
           "parent": null,
           "dependencies": [
             "gh-1067",
@@ -1991,7 +1991,7 @@
         },
         {
           "id": "gh-1387",
-          "specSha256": "420e5077be9b137aff507e826963609b80a2f021ffc2462c09abd6d492e171f1",
+          "specSha256": "5cda1a53a605c7284bf555a5175dedd939184e7671993ef1df4332c9516193b4",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1262"
@@ -2000,7 +2000,7 @@
         },
         {
           "id": "gh-1449",
-          "specSha256": "a7baeb21b2cf04570943d2b7b14c94371f6dee11ac771974345a246e1c46d417",
+          "specSha256": "32edbc594ec4dec69d49aef31a4488bde792c24eee06094a5e49020a163f10cf",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1416",
@@ -2010,7 +2010,7 @@
         },
         {
           "id": "gh-1513",
-          "specSha256": "b90bfef014138af48760d48e82fbb3b3f96c5ac2e522bc98940a163ab96ebcb1",
+          "specSha256": "bbd04f6c9816b7dee35c770d99c00dac3ac063258da4077140404c4e5841874a",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1387",
@@ -2020,7 +2020,7 @@
         },
         {
           "id": "gh-1451",
-          "specSha256": "b26665547aaae06374420f798a204724b175b9e5ac709257c347fbdbc8c1ac0c",
+          "specSha256": "15de32ee667dfe7c506c7f9d9d5e9660b7b930306fa6c14d29bad2f5e5fb9ea9",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1449"
@@ -2044,11 +2044,11 @@
       "status": "proposed",
       "title": "[backend-delivery 21/74] Implement data/mail, data/inbox, data/transcription changes",
       "bodyCharacters": 59916,
-      "specSha256": "2e9242b46e60d013ead7ad8b6f9acb5cf71114c32272b6ad81ef0fbfaee8ed7b",
+      "specSha256": "3e27bd9618f07f24b22d97830979f953d009c6d2f2378480cf9a5364dabf2f8e",
       "members": [
         {
           "id": "gh-1454",
-          "specSha256": "6616d50967d6f2ff65ff55c13384d7bde8b3e547c6b475f4a47cc79c12dc53d3",
+          "specSha256": "e2bcaa33c8e8ca923d252827c4b7f49b13854bf09543b20190b5904989fa0438",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1407",
@@ -2076,7 +2076,7 @@
         },
         {
           "id": "gh-1480",
-          "specSha256": "be39aaf8e3d12820d875805c65886f5c51843118eb4e34b4bfaf3a16ad809037",
+          "specSha256": "f6138b1a2a0442d6ae473cc4e3684c125d3c1c6583415dd880bd995edee19be9",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1457"
@@ -2085,7 +2085,7 @@
         },
         {
           "id": "gh-1501",
-          "specSha256": "53d8bd1b6d00b29b024137ae9a8fe3044613f71e47c3661f9419e63089f30fdb",
+          "specSha256": "1bf3aa2c779ff6b94934c46e87220af5f456bef1c442233a5f87f50677a68a32",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1454",
@@ -2095,7 +2095,7 @@
         },
         {
           "id": "gh-1507",
-          "specSha256": "6cce18cf6abf2f675a6021c2843668b01582189e53335b3209d06d0e44204ac6",
+          "specSha256": "85e761093d7f4baf402dfa0cc1fb25d0e9d26fa8aac8818c23244a77d6435d9e",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1501"
@@ -2104,7 +2104,7 @@
         },
         {
           "id": "gh-1571",
-          "specSha256": "eeee1d70aa67056e4df6676a4f1a9ac056a5aa994afb02c9e2ee9158ee2ef519",
+          "specSha256": "9e6f9070547de0cbac61a5fb1849693546e760ea6580608022fa847687670ea8",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1457",
@@ -2114,7 +2114,7 @@
         },
         {
           "id": "gh-1485",
-          "specSha256": "42db6b9c377ce634e74de6c33051a606666afb53624c2ef50fcff432ae367297",
+          "specSha256": "be87f95979ee4c6c2c4d92e3945f8a3a4adf865b3584f9b1a4fa1495887ddab9",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1434",
@@ -2124,7 +2124,7 @@
         },
         {
           "id": "gh-1648",
-          "specSha256": "f4a4b1c061b0f1b6070e4f1719b3e20ba85eae69ad91604b21100b4dc36353ad",
+          "specSha256": "64f8b3de68a5c454c4faa4846ae6b49a011cbfa988526d28bf31fe27e6739a08",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1451",
@@ -2134,7 +2134,7 @@
         },
         {
           "id": "gh-1464",
-          "specSha256": "f8dde22bbe3c720704cea225186dce0999adce4fd010ac9a80f77aa2af3b959a",
+          "specSha256": "c17705085c9844d4b32a877e1aefd31624ef14ada124f257c28b04ae89e9527e",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1461"
@@ -2143,7 +2143,7 @@
         },
         {
           "id": "gh-1471",
-          "specSha256": "7daadc137cc62036e43b667164cdb4134eaa30f8b69e9ac4b49368f468572cd7",
+          "specSha256": "ecab25a627a41458cf5f0cb015a10270517bc34d5951814dd6dc9fb3c64b7dc2",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1451"
@@ -2158,11 +2158,11 @@
       "status": "proposed",
       "title": "[backend-delivery 22/74] Implement application, data/chokePoint, shared/genericOperations changes",
       "bodyCharacters": 59348,
-      "specSha256": "2d2a7edde0a1f5bacec83c58e056a590f519bb6f725c8964030fafe568d0543c",
+      "specSha256": "77016e6a65aee9705f5b1aff7177672362eea470cd7b5a426711743cd3ae7ea7",
       "members": [
         {
           "id": "gh-1469",
-          "specSha256": "0c7331e5fdb53c208ce2e7a133ab24df13686d20c33c5f0c5883cd6bbbac5060",
+          "specSha256": "34d75a732c937591e241fef811b2a3cdb451465411ff239ffc7624572bf60fbc",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1464"
@@ -2171,7 +2171,7 @@
         },
         {
           "id": "gh-1475",
-          "specSha256": "fc3dcbcf4d7ecd980185dac7010326b89fb41f1e864e087e6d0fb90a59bf77e1",
+          "specSha256": "79a28ba114172c109b2f8b1edb01046d6a77d4d3969536d163dedc7ea187fa32",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1469"
@@ -2180,7 +2180,7 @@
         },
         {
           "id": "gh-1509",
-          "specSha256": "ae1d4c2cd3298eb6c9e09ece1f40ee52972178db9fe2719720d804d8ee4937ef",
+          "specSha256": "1052616b5ae7474ac82783702b49194a7083b0e89dc94617e2f891c043f187bc",
           "parent": "gh-1339",
           "dependencies": [
             "gh-1475",
@@ -2190,7 +2190,7 @@
         },
         {
           "id": "gh-1518",
-          "specSha256": "db32f197c0ec906dce2659aba1d83ee43674fea01e0ad82cfc917c06486e633c",
+          "specSha256": "b6d1f39f82a57d7ea5d2e83a47e3ddf75f6acefc55fd8ae400c4201dd2f25baa",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1412",
@@ -2200,7 +2200,7 @@
         },
         {
           "id": "gh-1521",
-          "specSha256": "c9c4a8b39c9b96394d4f584930263a579723571455d84ff30e9d111eca63ab90",
+          "specSha256": "0b5fc5117799f29b91e1e0015831a65fd6efa34e54fb544315e283ce4708f3a1",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1518",
@@ -2210,7 +2210,7 @@
         },
         {
           "id": "gh-1590",
-          "specSha256": "74c548ac6d20e822d9b271b954d0e6c1bf1a197fb19f4119d4a43eb800df524f",
+          "specSha256": "e4fc7b0ec4c43cce29634023bc7be7c5fd829c0d60a8264980381a306a9bcb84",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1521"
@@ -2219,7 +2219,7 @@
         },
         {
           "id": "gh-1621",
-          "specSha256": "a265b82f233f8a80ec92cdf2524cac2f31199cbfdae64cd5823ad999f2e776ae",
+          "specSha256": "47e7f8df68ff35c59cef0c0183acfe375acb03c2309fecad1ade6f32630d03c0",
           "parent": "gh-1327",
           "dependencies": [
             "gh-1590"
@@ -2234,11 +2234,11 @@
       "status": "proposed",
       "title": "[backend-delivery 23/74] Implement data/inbox, data/chokePoint, application changes",
       "bodyCharacters": 59951,
-      "specSha256": "5dbcdd51202fbf9b14034011b4e60afaa1dcc21aa9518f306da40a4d4c8329ae",
+      "specSha256": "e555608d2a087ec5262d32b83ef868c5364ebd37a3f2b67b8b5df2806ef2939d",
       "members": [
         {
           "id": "gh-1713",
-          "specSha256": "71d3ea36368eb16b7b4bd467aa73452840654af606df669068f4833004921511",
+          "specSha256": "e9cbbfedf2e6bfa8e29305b78fcab5c2be9141528e314371c42852a3bc29fdad",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1415",
@@ -2261,7 +2261,7 @@
         },
         {
           "id": "gh-1604",
-          "specSha256": "a6b9b57be1426f4c80c1b8fdef5bc6c246344b08c2904be83a942ee2905ed7d0",
+          "specSha256": "3e12b0a18ba0967b72e697134df8cc28d6b2af097d3a0e41d9e10edb56930a2e",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1482"
@@ -2270,7 +2270,7 @@
         },
         {
           "id": "gh-1661",
-          "specSha256": "f83c5232797baec71c8dc1a779fbffafda92ec95d0a5e22269412cf2bdefcb89",
+          "specSha256": "dd14131078d640f4af3c5168d7863894bd379d5ca21330db7cda640ef6ec7620",
           "parent": "gh-1328",
           "dependencies": [
             "gh-1590"
@@ -2289,7 +2289,7 @@
         },
         {
           "id": "gh-1495",
-          "specSha256": "a0e6d19bbbaa4f65f815501a36c4be18f8887a79cfbce8b16105a05ef5ad6fc5",
+          "specSha256": "fc3df0cd7157261f77173a1c07a8528973b002bdd39bedd1902dc8c3c0d015fd",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1434",
@@ -2299,7 +2299,7 @@
         },
         {
           "id": "gh-1500",
-          "specSha256": "d9bac75e1a4881d1f33522869d93b6f24d98f3d46c4e34bf7816480be7fdf62a",
+          "specSha256": "6a13f324faae8d3f856e3004c03a5301f78731d6060b276840947d079e58ac1c",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1434",
@@ -2319,7 +2319,7 @@
         },
         {
           "id": "gh-1625",
-          "specSha256": "b8a8d151935fed2a42ec3960227084a257ae98d0f683ca2410a2060d3e6c41e5",
+          "specSha256": "8bbb5302581a93ed3ee5539b24ae8bcbe3558687cd9ba06db9fd6884f07f54b3",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1405",
@@ -2335,11 +2335,11 @@
       "status": "proposed",
       "title": "[backend-delivery 24/74] Implement data/chokePoint, data/projects, module-registry changes",
       "bodyCharacters": 59894,
-      "specSha256": "e881fb925ac7b9f754e398ee258155ca544c4f611f758eec55d826121bddc637",
+      "specSha256": "07ad4ab4c02d360164c4d2ece6cafde17cb518bc3652d96ad797337375bf9806",
       "members": [
         {
           "id": "gh-1515",
-          "specSha256": "e7a044a629086ad805a26bb98d3e788c3c71fe7546b6df7e77a26ef3d130bdf9",
+          "specSha256": "05f555c82cefad83835563c333fa0be3d7249f89e4ff1f674b80b8b995898349",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1413",
@@ -2350,7 +2350,7 @@
         },
         {
           "id": "gh-1520",
-          "specSha256": "2f9dacec575cbb7ceb66fe3fa9fc159ff57f6415e61788957bbe1eaf0ad0b060",
+          "specSha256": "ea95061c0e78d57809ff5b7788005894fcde4a894b81672612b6b4dda9e82398",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1515"
@@ -2359,7 +2359,7 @@
         },
         {
           "id": "gh-1579",
-          "specSha256": "6b9386b7b3bf47467f910810c6366f78ede935041841e049c02fcd09c2b3ef45",
+          "specSha256": "33a330c6f04104f8f66d844eb6434cefb45567c52f88566e924e6e0a53bbe274",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1520"
@@ -2368,7 +2368,7 @@
         },
         {
           "id": "gh-1530",
-          "specSha256": "f90c5fc3f706d2da3000908e50398c16c995aa9402550df8cf6d0fe4dcc1419a",
+          "specSha256": "32df166bde913a46773e318663652a434ccd08449340a6aa70a6762b27bda10a",
           "parent": "gh-1330",
           "dependencies": [
             "gh-1520"
@@ -2387,7 +2387,7 @@
         },
         {
           "id": "gh-1523",
-          "specSha256": "9b27c9e9cb930aed84a0df3da844b83c910f1c64b826591aeb865e2a597fbc52",
+          "specSha256": "06010e75f1548c0286bccb036e0e1671495bb2ffa27353ea49a26f9d4ced5576",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1385",
@@ -2408,7 +2408,7 @@
         },
         {
           "id": "gh-1535",
-          "specSha256": "0e59dfb1316dee1a297bfb07cf7a0a90e7bd7c97efedbfc1db7bbd685f03ddf3",
+          "specSha256": "a2d14575a90f36be91b95a68c54ec553cf67a274b05de9b8f2e4f0c76db4f478",
           "parent": "gh-1339",
           "dependencies": [
             "gh-1529"
@@ -2441,7 +2441,7 @@
       "status": "proposed",
       "title": "[backend-delivery 25/74] Implement data/journal, data/mail, data/docs changes",
       "bodyCharacters": 59983,
-      "specSha256": "d2154ba1d098e7b4afa956349d1f217483123282908134b2a88f51fbbd0617c7",
+      "specSha256": "aebda6ecae1fca2833f7f005156cc2d62facd51aa1912a26aafa963ab3bb34ca",
       "members": [
         {
           "id": "gh-1589",
@@ -2463,7 +2463,7 @@
         },
         {
           "id": "gh-1741",
-          "specSha256": "ac476974b0038de54507f312596e567121a3d5a1527f8e26331e0b30ebaea2c4",
+          "specSha256": "e65f07719e81bb8488dbc22c8c0acff4df93e4ae60d79ce2b6f4dee648d169db",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1591",
@@ -2473,7 +2473,7 @@
         },
         {
           "id": "gh-1537",
-          "specSha256": "66f5baedf7492cd756821927a1b8933bee2648efe6e8322bc01749c136762369",
+          "specSha256": "82ba94d634db09f7782e54e65edfc5782882b031d971c85367d4b7779854169a",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1431",
@@ -2484,7 +2484,7 @@
         },
         {
           "id": "gh-1541",
-          "specSha256": "eaecc605b591c8f741952bce8dd9314f3dffb539cb97df434697dfd1568f5eeb",
+          "specSha256": "85035f266b5a033620399a83ffa76e3009c5ea525f7654a275cdf60ec25e4c61",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1537"
@@ -2503,7 +2503,7 @@
         },
         {
           "id": "gh-1543",
-          "specSha256": "e4f4a452b09e9e5f5100b5bc8b7460cba5ceea1015985585b3ee0bfdcc7328d8",
+          "specSha256": "3b2602547e16fef2c3efe9fd9f2a1b7e714887c9b2303afe089a515eefef076d",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1367",
@@ -2513,7 +2513,7 @@
         },
         {
           "id": "gh-1580",
-          "specSha256": "2f17969fc516420ba02c2dd7fdf7424bad521a746d18df54ff612387da9c3a94",
+          "specSha256": "bb73500120d097c935f7fe2c94ef3dc86c59bc3e0eaf9e6e10a715e733b157af",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1523"
@@ -2531,7 +2531,7 @@
         },
         {
           "id": "gh-1546",
-          "specSha256": "9a52766f587d2a1cb5aba9acfe9ecdc7e5ae527290371331180e4bfb2e660889",
+          "specSha256": "b566b5282b9b5b68e9a61b0a82065c83559bddde7c69ab48a3697eeed1601f35",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1371",
@@ -2547,11 +2547,11 @@
       "status": "proposed",
       "title": "[backend-delivery 26/74] Implement data/tasks, application/projectAgentGuidance, data/guidanceDrift changes",
       "bodyCharacters": 59898,
-      "specSha256": "0828de91a9877340a0456bcad46f53bba65e22e08aeca00838abf819779bc12f",
+      "specSha256": "b9a16e7cedffc739367fbc9c6438235f1d1bdf67e49b4f6bbb6e30de76a7fbfa",
       "members": [
         {
           "id": "gh-1540",
-          "specSha256": "4a26124ceeab284dbdaee1b06fd03ff924a42bcdebb113883e5101f433bafec9",
+          "specSha256": "cefaca3aa828559fd5f76937b4f50cf7b53a2976c940742c3770a1f8314d0694",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1365",
@@ -2562,7 +2562,7 @@
         },
         {
           "id": "gh-1542",
-          "specSha256": "faa3968f35c78a0b9a986e687cd322c12089f5b2c973c0f2b7fcab54c413584e",
+          "specSha256": "936a9e1db571efeeb7a8d90fe2f9078fb6743be814bc59e2222894c5c2fbbd24",
           "parent": "gh-1342",
           "dependencies": [
             "gh-1540"
@@ -2571,7 +2571,7 @@
         },
         {
           "id": "gh-1544",
-          "specSha256": "ca24fd504800f01e56a3e1b978d2b7381dbcfbebd1916d46289b7b20d41015e8",
+          "specSha256": "4fb9e73a4d688cfa1ce2791022f8247008e2c53e57ee6a2a5515e24b6618d6da",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1540"
@@ -2580,7 +2580,7 @@
         },
         {
           "id": "gh-1602",
-          "specSha256": "9b52852289274fe67ee024457be7c46c74804d40d92e76371ceff25f7c4eb0c5",
+          "specSha256": "91f2f318ef9e2c4b0ff5427c320e74c6ca6156b1ce52fe114742a50bb05b8796",
           "parent": "gh-1345",
           "dependencies": [
             "gh-1540"
@@ -2589,7 +2589,7 @@
         },
         {
           "id": "gh-1545",
-          "specSha256": "b33bc8f7c77bf19f8bc269d085c999ee18ccf6b72e3acfdf3442cb6bcd5fc4e0",
+          "specSha256": "761f227a36cb0104a8b29f3553009943c5b1e7f145e940c734dbb2a1ad28a673",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1542"
@@ -2598,7 +2598,7 @@
         },
         {
           "id": "gh-1548",
-          "specSha256": "c0a71bccdbeebe204ff7eb580eb573af7a17bb88985008c071027f8fc43af648",
+          "specSha256": "d9f9dc343c58face95be1ae80205481f0463f1417dddcf241066e0b4699a61ad",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1546"
@@ -2607,7 +2607,7 @@
         },
         {
           "id": "gh-1629",
-          "specSha256": "e9b99ac67e80ea4c63244e34f0bd93fe1837048909f8aac81c236cb424b176e3",
+          "specSha256": "8dd77e804d1530475387f687c7d65a9771eb73f25675ab0b97fa2f5b3c14ab75",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1375",
@@ -2624,7 +2624,7 @@
       "status": "proposed",
       "title": "[backend-delivery 27/74] Implement data/chokePoint, data/derived, data/mail changes",
       "bodyCharacters": 59944,
-      "specSha256": "f7688e056b61308f6bd5359079142551fd8d63091e80684f6e6d6f2b5027fc74",
+      "specSha256": "2aadc82f4b1e922bfc0784c06c71ed5696a73ef582e401b37d6c457f4854e81e",
       "members": [
         {
           "id": "gh-1549",
@@ -2637,7 +2637,7 @@
         },
         {
           "id": "gh-1551",
-          "specSha256": "2360a39fa447352d1e49389310a8d8d9eddba519efe3b075b4ad9f413feaf803",
+          "specSha256": "f6323ce0249f1f8296eb0042d2f2bb53e4922d91b7cafa5041e8351e8fc41b51",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1438",
@@ -2648,7 +2648,7 @@
         },
         {
           "id": "gh-1555",
-          "specSha256": "f6b951d92ef9dd3194b775497e40649d37c419dc1c693ad0cc66fc3cedee87f2",
+          "specSha256": "2352e87ad526573542ca28c163b887e18bc4902e2d300f86e9fec2bc4f83a6a1",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1459",
@@ -2658,7 +2658,7 @@
         },
         {
           "id": "gh-1595",
-          "specSha256": "1b7b198e490b3fa6a68e2e37def61517043c3adff92f7f3756079d0d76545aa3",
+          "specSha256": "0ad13d6922fdef5e483f4460a4d7e02d5f876306c0f6faa6ed3163a560c2b796",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1403",
@@ -2669,7 +2669,7 @@
         },
         {
           "id": "gh-1662",
-          "specSha256": "25f2cbe43c04d1f23d0c0426a38589d78eb7325bba1a08a586c38e7d121c15f1",
+          "specSha256": "c848ba08741ad764091f955d5b90129a59c796fb0a55cd81bc457ac5e9b3aa9d",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1595"
@@ -2678,7 +2678,7 @@
         },
         {
           "id": "gh-1552",
-          "specSha256": "982801dae04aa3d27db3f68e7c284b4ce7f1b5bf915711d0ef249c64ac162fb2",
+          "specSha256": "86c4da62046160924282421202960af04714d402435ac06b6171aa6514d5a1b3",
           "parent": "gh-1318",
           "dependencies": [
             "gh-1502",
@@ -2698,7 +2698,7 @@
         },
         {
           "id": "gh-1559",
-          "specSha256": "13fc88155259b3440de659366ad05136b6b86a77a1e0e2628e61e9c186d45688",
+          "specSha256": "79ddcfd4a1ee40bc24160c403f2c6628e3e8dc774109bcabc631bfcd30ce45bf",
           "parent": "gh-1334",
           "dependencies": [
             "gh-1463",
@@ -2708,7 +2708,7 @@
         },
         {
           "id": "gh-1567",
-          "specSha256": "be545e14f60c1762a5269d7874d9d491d4ae58adab5958e5af72f1197dc28924",
+          "specSha256": "f190086ee005a0df0062923ad360847c537e022cf58c39be099fad605e422a8d",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1384",
@@ -2726,11 +2726,11 @@
       "status": "proposed",
       "title": "[backend-delivery 28/74] Implement data/mail, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 59996,
-      "specSha256": "fff19c937bc429a32583b64956a2b983513a9a86b499cca6cc4052c3b7df787a",
+      "specSha256": "42bb509b4cc2e2520249ebd33ab9c77bce8e84d0e808c531db7ef8766df2b090",
       "members": [
         {
           "id": "gh-1633",
-          "specSha256": "d99fb54fe321cb2c11dd35f2fbe952a9ae6cfa6698419957cc2ed435af2254ac",
+          "specSha256": "ffe0dcbfa4531b76d1ecaca42f7a87637f769a2a3411e759c67f2de1da134206",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1567"
@@ -2739,7 +2739,7 @@
         },
         {
           "id": "gh-1572",
-          "specSha256": "34318760419365dd3580046754f0d1ab0591f09919c0f9bccf615e9507df6378",
+          "specSha256": "54f5130a0adf7de3aa899e0b85d758b9663c6bb040e02876fc9516d6f6f888f2",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1497",
@@ -2749,7 +2749,7 @@
         },
         {
           "id": "gh-1573",
-          "specSha256": "2cad6ee45a6d99f9a30f5f75878424071f2cf206ee5031f7b1b8a6d4f361daaa",
+          "specSha256": "8c8c7e2162da66f2bf9e89911b94d7e07d85c4f2bae982d1cea1c429a6b991e8",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1493",
@@ -2761,7 +2761,7 @@
         },
         {
           "id": "gh-1638",
-          "specSha256": "d42b14f3bce21ef4a2e664d3fc1827ad0393e0bfffea297127e01abdc9fc99da",
+          "specSha256": "0462e810863222d4848d68d167498e097be89aa53bfef4fdcd6c74905b9a80ec",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1573",
@@ -2771,7 +2771,7 @@
         },
         {
           "id": "gh-1639",
-          "specSha256": "533e67e1c37f6c7a572dd410813f4f8ed2f545332efadee9c9dcd97c744d87c4",
+          "specSha256": "62ad0759dfeec81d081546ed557dc0de44a6a945580ce433ee565ffb63a151ad",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1591",
@@ -2781,7 +2781,7 @@
         },
         {
           "id": "gh-1574",
-          "specSha256": "62f79ed0c64cfbe6d8a86436de80f98b60322f812801d6da3cbc1db78d00d44d",
+          "specSha256": "3db5ff83904dd4849be0a879d8980a037af14f2e8930b7343611c193bf94d689",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1572"
@@ -2790,7 +2790,7 @@
         },
         {
           "id": "gh-1576",
-          "specSha256": "f68a0b734e9bf4e79906c8f443a3553168aef383962746af5ea59cdcb4c4f431",
+          "specSha256": "78ec500ca694af9580fbb4d5cea65571aedac3a8754a9dc1988aede9519186cc",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1386",
@@ -2800,7 +2800,7 @@
         },
         {
           "id": "gh-1640",
-          "specSha256": "b8b3adc5384cb3e1946cbfda7edf1fb9db85db5de37b368e58a41074d1f4d478",
+          "specSha256": "d054636947f1f2a3b7971a7bff441438bbd19d704c4dd618ed23a4860cbebfa7",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1476",
@@ -2816,7 +2816,7 @@
       "status": "proposed",
       "title": "[backend-delivery 29/74] Implement data/library, alldots-transcribe, queue changes",
       "bodyCharacters": 59924,
-      "specSha256": "c206f549387fa159b94ba54a91c0dac1bffcf5a81160084dc7db5039fa3158a3",
+      "specSha256": "be7920582118430a3a46ef47a1df6b2637e9b1e4bd79b4afea039cb29eba55a8",
       "members": [
         {
           "id": "gh-1575",
@@ -2829,7 +2829,7 @@
         },
         {
           "id": "gh-1655",
-          "specSha256": "8eac906ce51323f5d45e742b891c959a93de3842556c000deb04bbc1d5bf1563",
+          "specSha256": "f644f2c44a3e22c7b4dc8e834be65fc0f1d294d645a695faacc06fd81651b2a3",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1575"
@@ -2838,7 +2838,7 @@
         },
         {
           "id": "gh-1706",
-          "specSha256": "8d24d632f35d3cc968f36274ef34325c2747912ed4def68a24194639fd1eae45",
+          "specSha256": "30367c775978b33280e1f82a6935798bef4e70334d3999e8caa35b5bcb9fc2e6",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1655"
@@ -2847,7 +2847,7 @@
         },
         {
           "id": "gh-1708",
-          "specSha256": "1f2e375021b09ab08ab73dc6a91d3be51333db81e9798faa01bd520c1b05df6a",
+          "specSha256": "010cf359ec7d64d2c81bfcaf25d9c13534f6ffa4135f071e39621ebb9fd8b436",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1706"
@@ -2856,7 +2856,7 @@
         },
         {
           "id": "gh-1768",
-          "specSha256": "fd997c469a41884c6913c7d4a53196bbc18c2824f0ff8de8bc73c92c4d5eaa11",
+          "specSha256": "9f932921d547cda5b0f39bb851bc06dca35773d09cd86da6bf092ac038b21507",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1708"
@@ -2865,7 +2865,7 @@
         },
         {
           "id": "gh-1593",
-          "specSha256": "fd516d99a94bc083c55e141d6716905a33729655f92e24fc15f7d9c3b65b686e",
+          "specSha256": "4d715f430feceb7a9a028636a0a7f04bc2562fae804c0cbb83a20d894dd87299",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1516",
@@ -2876,7 +2876,7 @@
         },
         {
           "id": "gh-1624",
-          "specSha256": "8e676a8cae46e1e5d878b74fb647bb674c112b9400be002aa5aab9632296706a",
+          "specSha256": "ec718d5fb62f9572723580b501689d673414cc7b48ffc38fbd40df4db6ed2efc",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1574",
@@ -2886,7 +2886,7 @@
         },
         {
           "id": "gh-1627",
-          "specSha256": "7cbe77bffa69d0d4d2a2489c54f833da5f4cb240de591e315ed4b7b1491149c6",
+          "specSha256": "d3f7e674adabbafaf2047262177f442607e56a97b8c55832b3c51825e3a2d8d6",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1574"
@@ -2895,7 +2895,7 @@
         },
         {
           "id": "gh-1696",
-          "specSha256": "cb6ab2aa0cfb9442bcb61ec62d5addb39cf275fafe4c8b80850b150b6e2c983e",
+          "specSha256": "a55d2acadfb01e24fdb3792c6a24160746206c6e2f1f432c975d648a83d9c2be",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1470",
@@ -2912,7 +2912,7 @@
       "status": "proposed",
       "title": "[backend-delivery 30/74] Implement application, shared/genericOperations, data/chokePoint changes",
       "bodyCharacters": 59891,
-      "specSha256": "dd6117d5c6237b73663dac8a17b0095ad1cf8c7eaebc82bfda267f2ad36e9120",
+      "specSha256": "4effab0b025c974d282d6f7acd8af675056b6a14321876165901e15272be225c",
       "members": [
         {
           "id": "gh-1578",
@@ -2925,7 +2925,7 @@
         },
         {
           "id": "gh-1583",
-          "specSha256": "08d276be153d1c0d48356afee8806c50d7c4fb44e89ee335e816ba06da1fb701",
+          "specSha256": "924b4d62c9c10101f19336c1ca327fc5518400fe25af7f5464474823fee8697a",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1512",
@@ -2935,7 +2935,7 @@
         },
         {
           "id": "gh-1584",
-          "specSha256": "38ba712c58ce2cb12aaabeb32d4711b1f79f6e0514c7471026b13c015ab2402d",
+          "specSha256": "5fbdf3b27694069056ba8e6919a896b640cf37e6e682eeb770eaed82c9e5110f",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1360",
@@ -2945,7 +2945,7 @@
         },
         {
           "id": "gh-1586",
-          "specSha256": "257f041c2ebe11d3ef8f9cf25d112f0b28e16361ec77fc9d7b4a19b02bb47423",
+          "specSha256": "adc5d6c3efc3db8b58eb18caca548b7ed4a50bc81dc7e5dab920585eb469a80a",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1576",
@@ -2955,7 +2955,7 @@
         },
         {
           "id": "gh-1997",
-          "specSha256": "eff235f192f3ee986110b1a77bde4d9ea5b8cb4aef60d0019ca3b4845db2e5a0",
+          "specSha256": "c845bf9f6a59d0905dadcbd5b8b581ae8e35c7c54bfe5a26f2297544c688f4ee",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1556",
@@ -2965,7 +2965,7 @@
         },
         {
           "id": "gh-1587",
-          "specSha256": "e7957c75699d6fb008d400da00c634e160890b79766fd5ac6e1830655980a818",
+          "specSha256": "5ee1d98c8a464944bbd5f5c8da01de175488fb7cc896826bc10277bbd799dcdd",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1516",
@@ -2975,7 +2975,7 @@
         },
         {
           "id": "gh-1615",
-          "specSha256": "97c2f06e2aae9e72c8243d2b0cdcfb8012ef52b98c542c197f5fbb1ee9feaa1f",
+          "specSha256": "c7429081d956fbe9f80536130d1e7c615e8631ae4fdaa08c2651eea4e4aa8785",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1394",
@@ -2987,7 +2987,7 @@
         },
         {
           "id": "gh-1616",
-          "specSha256": "2d446b0cf9209dc69c25a676c2ed5cd7867354057cf6dc81b274cb27f2c11972",
+          "specSha256": "e4aee0576ae70653fff4e9ab557b075e14a3df8772b61f615fd569ccc7c99941",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1615"
@@ -3002,11 +3002,11 @@
       "status": "proposed",
       "title": "[backend-delivery 31/74] Implement alldots-agents, data/semp, queue changes",
       "bodyCharacters": 59832,
-      "specSha256": "dc56cc91a163bf1157b4589dbedbebcb403de6ad703aaddd2cb1a600d87c5e53",
+      "specSha256": "00f71b1b032689e88506944158aafbbea91a452ad0da2e6fd48ca16cb07c9665",
       "members": [
         {
           "id": "gh-1620",
-          "specSha256": "353337c873522ea6f09a873325b9b575b530236683c580da0b4ee450bc3bc130",
+          "specSha256": "652448b8fd0b82eb1373f0cad40d018bdf178863a3563ed061ba2f7b173af3f4",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1452",
@@ -3017,7 +3017,7 @@
         },
         {
           "id": "gh-1727",
-          "specSha256": "7a82cad7b127d31a8bd7d2f09cd344d9891896b21d76991d3330c4701ab71641",
+          "specSha256": "3a44b9609d9a747517b52f8a1ec728cee6564347977bb9a485c23b4bd0594e3b",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1370",
@@ -3031,7 +3031,7 @@
         },
         {
           "id": "gh-1769",
-          "specSha256": "0d4a7531afe641a123cf9e4b92e1e8705182ccf171790fd8e538708ce907a7f7",
+          "specSha256": "020853cfcef819ff066beec31750906934ade5070fa0002408517d83a84a5843",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1727"
@@ -3040,7 +3040,7 @@
         },
         {
           "id": "gh-1755",
-          "specSha256": "3aa6a04ff92205b1fb97343e3b6bab508af5205e0daaff6269bec83590c0cc22",
+          "specSha256": "469d57684c2b0569c3791afa10e5fe15e69f716967cee2554a04ae83e4843880",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1727"
@@ -3049,7 +3049,7 @@
         },
         {
           "id": "gh-1732",
-          "specSha256": "6f126f7a80a5f3b4ef9ed02ea6bd47b2cde64e16e1bbf98ebfe6cd339843483f",
+          "specSha256": "5892cea90fdccc30dc87b9b229330641016fd326efbf7f2a309f14910ffc93a2",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1568",
@@ -3059,7 +3059,7 @@
         },
         {
           "id": "gh-1744",
-          "specSha256": "4049e48f3e3603668453fdfa843f5a3791e3fb043b9d961d3ea2aad7299918a0",
+          "specSha256": "45fb35dafced953a0e82b37c31b3617dede386e684f20c8e8eb7c3d83759cedc",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1727"
@@ -3068,7 +3068,7 @@
         },
         {
           "id": "gh-1731",
-          "specSha256": "b0f67bde2f95d8af8d74852b292872f233fbae8131f5718c01db9e03070dce0a",
+          "specSha256": "f91a9235d4a5116115101fe6fffd0b259cbb293fb4aa9168f7dbbe1caafcc582",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1557",
@@ -3078,7 +3078,7 @@
         },
         {
           "id": "gh-1738",
-          "specSha256": "47da4b65d61856c1aced25d3673331bc507fb8dd1dbdb71c64595ee0b5450218",
+          "specSha256": "575c8319501bf86ea44f86e8ad2d4a64077c548ecc93e051da9788b1828e2e1f",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1388",
@@ -3088,7 +3088,7 @@
         },
         {
           "id": "gh-1563",
-          "specSha256": "b39a99a77f4482b79efe957a26ec645dee20bceca7bd9bbbd774969f1b3d21e8",
+          "specSha256": "12bf6b00b8f236ab6561f10a7001a200a6aaa50c01b61b138b10b1aff5e0b02d",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1543",
@@ -3104,11 +3104,11 @@
       "status": "proposed",
       "title": "[backend-delivery 32/74] Implement data/inbox, data/semp, alldots-agents changes",
       "bodyCharacters": 59819,
-      "specSha256": "16ce1c8b403f8f88126e5d189453cfc29294ac0f901f5f53bf88ed440b1526a5",
+      "specSha256": "c158efd50fae0e01e6b585dcad1b4d69dc41226a5c481c6937598e02583f5c18",
       "members": [
         {
           "id": "gh-1682",
-          "specSha256": "1469e2c26bbe6f9afdb72ec4782b747e4c1d696640c81f08a343608a5f448243",
+          "specSha256": "e4e36c5aebc365c21f563ac53356d1f745b0427673e5dc8d885c1ae1855c0c4c",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1369",
@@ -3118,7 +3118,7 @@
         },
         {
           "id": "gh-1626",
-          "specSha256": "1b8b7d2629ac8a1e1be9f01d9a3ebd3ddf0f0f10c7743482ed0614c207fc3517",
+          "specSha256": "6ae03d49b9bf76ce0ee1d413cdbebfd424a113fc9ca404e5732e1f53e703b6f0",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1372",
@@ -3138,7 +3138,7 @@
         },
         {
           "id": "gh-1733",
-          "specSha256": "eea21274655a9781a48ff2d246242b79ac5710ffdcd4a491682f6ee25091f801",
+          "specSha256": "cf699f25895dc8c845540167067788d2656714c0fd5131a5e3a35da3a4c93876",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1682",
@@ -3148,7 +3148,7 @@
         },
         {
           "id": "gh-1752",
-          "specSha256": "490de1a9ed51219672b3c1fe2741989094c9ddc0b90c2613391badcc34ae4580",
+          "specSha256": "b4831ec482bb9e72f92125f6d8a1119e14998a7cbbce7137409f293bd7a860cc",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1733"
@@ -3157,7 +3157,7 @@
         },
         {
           "id": "gh-1740",
-          "specSha256": "b09720f77ad414bea0182b37cb156788693361ac14d2ea3e3c6e132726d81345",
+          "specSha256": "b614289c31f77bf9795f25e137722d4411fb80dd2a8c7d1ff3f54fc515a9481f",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1733"
@@ -3166,7 +3166,7 @@
         },
         {
           "id": "gh-1643",
-          "specSha256": "78c1d9e24303381d5458a92932b0a71c40d5a61497e4eb306115481ed424b388",
+          "specSha256": "f523989e49cad998f5ee81f921ffb872f5600b830f12bd662c3768185a0b0dbb",
           "parent": "gh-1331",
           "dependencies": [
             "gh-1615"
@@ -3175,7 +3175,7 @@
         },
         {
           "id": "gh-1623",
-          "specSha256": "0783954c42c757992f0ffd44efcf186802ee6041e37ca987fcc4bb3e70c4c46c",
+          "specSha256": "434f709f0f93281e2c3a52a115eb76f8206cbbb72842475abf48df451168eb6c",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1523"
@@ -3184,7 +3184,7 @@
         },
         {
           "id": "gh-1649",
-          "specSha256": "31e41990f305d6e92334377bebe261a99c5336bda2c631606db1429d57633b71",
+          "specSha256": "06d0317e46dc2970523a639ca5f56074dde959e9aee7e228cb01e4015de0cb61",
           "parent": "gh-1331",
           "dependencies": [
             "gh-1434",
@@ -3203,7 +3203,7 @@
         },
         {
           "id": "gh-1734",
-          "specSha256": "5915ecc7239352cda8ba02a029d202b35727d8f1e91a2c6e911923059cd3988e",
+          "specSha256": "62d7a6ceb1846ee70471df258add427792d48f4f269a412d4d2cb8c924a84a71",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1396",
@@ -3220,7 +3220,7 @@
       "status": "proposed",
       "title": "[backend-delivery 33/74] Implement data/calendar, data/chokePoint, data/views changes",
       "bodyCharacters": 59788,
-      "specSha256": "4865c3d143c224682dd513950063b7967d157cb71197ea285d02c9f63b8940f8",
+      "specSha256": "798aedbf694c55f633bd31d10953fd26aa6882341b06f0e883bcc735c1dd1aa2",
       "members": [
         {
           "id": "gh-1588",
@@ -3233,7 +3233,7 @@
         },
         {
           "id": "gh-1594",
-          "specSha256": "77e86e2de2d4ee0d8b2622b6cf2984d7d4c7616131ddaa0591555122d6ce3dcc",
+          "specSha256": "4164192fe867e5ea41465937c15e86d12731a35c67397114eb8733094d9f9c24",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1524",
@@ -3243,7 +3243,7 @@
         },
         {
           "id": "gh-1597",
-          "specSha256": "c673d02163075ed897f4cbdc360805b5413bb5038e27d9d21cc60dd839380616",
+          "specSha256": "1bf74cbb0f883ab03b2449fc51fd6684c04392ed75ff9beee734a2994858727d",
           "parent": "gh-1300",
           "dependencies": [
             "gh-1526",
@@ -3253,7 +3253,7 @@
         },
         {
           "id": "gh-1598",
-          "specSha256": "b81053edfc3242879b6902c92a244bed216856b8f86314fcfd41a44713e6af52",
+          "specSha256": "69b86e269272fb1e9fe4b602d4b9457951ac91bbb45fdb4e276c60526a13039c",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1536",
@@ -3264,7 +3264,7 @@
         },
         {
           "id": "gh-1599",
-          "specSha256": "442c06ceb8f40ecc9a0b80267abe44c4293a1ed6dbe390d2f87dba9711a4fab0",
+          "specSha256": "782eda6d6e64fafa4d74dfd1b5ef4687ce7fbba70036951f4eb266d6933a46e1",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1594",
@@ -3284,7 +3284,7 @@
         },
         {
           "id": "gh-1601",
-          "specSha256": "b1125c5e6209aaf09bee77fa549030f8db7445d9c0ede6ab2929bae8f45ff815",
+          "specSha256": "b5d9d42a9669fdd59948ce66c3d350303cb9f36f6e395f79ac36ebd17faa4a25",
           "parent": "gh-1330",
           "dependencies": [
             "gh-1599"
@@ -3293,7 +3293,7 @@
         },
         {
           "id": "gh-1562",
-          "specSha256": "3a8c57b887453264e7fe6defe7bdbe902b814c6c45fc27e30ef176828c6cbaf2",
+          "specSha256": "564a0369629f7800a6083256683ab46cdd29c2a3110a7da32960525303e1bd6a",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1543",
@@ -3309,11 +3309,11 @@
       "status": "proposed",
       "title": "[backend-delivery 34/74] Implement data/tasks, data/journal, data/chokePoint changes",
       "bodyCharacters": 57426,
-      "specSha256": "7ee93420137bbe26b74587a77ebe3f70ace4215c6b4b272e7d23ac3a741632a7",
+      "specSha256": "29182c92ec9860719dd7ad82c7a0fab38fed6dca05cf4b6306762872c9a2e421",
       "members": [
         {
           "id": "gh-1605",
-          "specSha256": "0bb245731ba7d0b72f3c73afe143603920f1664160f17605279c1e10833d069d",
+          "specSha256": "8ddbde1d8d3dde65d75424f9622e57bb1f634fb95069384f73f0b438a36141fc",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1600"
@@ -3350,7 +3350,7 @@
         },
         {
           "id": "gh-1609",
-          "specSha256": "c2737a49bff8ddd65aa02cfa8c2aa74dd5d44c3b8f381ef810e28673cc3240ff",
+          "specSha256": "5d570b907e66932fcddc2bbca52930071ffb1fcac9ae866326327804302ec1d3",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1605"
@@ -3359,7 +3359,7 @@
         },
         {
           "id": "gh-2016",
-          "specSha256": "7471dfd634849fa688a4664d2386f0dc612981cb6b581bb6fbc9b4030ef59c78",
+          "specSha256": "377ed478bead462abdecba295ae3f86c963736d2a8eefab7a2e71e3459bedec1",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1609",
@@ -3398,7 +3398,7 @@
         },
         {
           "id": "gh-1622",
-          "specSha256": "dba7ad8bf6006751b255530c67be845e138f7da17fd66863feadd638f904e296",
+          "specSha256": "f8ac5432a68d76c2a7d81f126327cf686b8b530d9bc2353492b6b27eec740ab0",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1619"
@@ -3413,11 +3413,11 @@
       "status": "proposed",
       "title": "[backend-delivery 35/74] Implement data/chokePoint, data/transcription, data/mail changes",
       "bodyCharacters": 59975,
-      "specSha256": "9f3cc1ad97aa2258c28e8a714b7a8e13d84d739f3745d56616bff9476d75205d",
+      "specSha256": "265c9efaa4e36bd7be35e982ceecf696cc4bef9f7e7173fa4e97189b612fc9df",
       "members": [
         {
           "id": "gh-1630",
-          "specSha256": "45ddd9766db77c5f651b40d9b989983c5c39f613b3e505163271dbd4a1b27f0e",
+          "specSha256": "9af79ca089800c41e26cd01e5e2086bdbad71b154788a89914bf844abb10724a",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1598",
@@ -3427,7 +3427,7 @@
         },
         {
           "id": "gh-1631",
-          "specSha256": "ddb08d76581fd8c6f82eca4e3ac2ff453b621d5ffe763f8450f782fcfd94a495",
+          "specSha256": "8c76cee76be174243e1d9a36afca6b71dfcd267ddae5ffc4b9a4382d2e324e8d",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1630"
@@ -3436,7 +3436,7 @@
         },
         {
           "id": "gh-1632",
-          "specSha256": "7185b677ec0cd66770754dfed3c85a26e42afdaf733ba30b854fb027013f7128",
+          "specSha256": "9cfc7ccf26c366bf1927287b86072f0ad50a2c1c4226866f0c30de931f177796",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1631"
@@ -3445,7 +3445,7 @@
         },
         {
           "id": "gh-1635",
-          "specSha256": "f8df6e30316b57318a96a0a737eff226a2bf81bc69e83475b702226d73cae5aa",
+          "specSha256": "d84a341d1bf3c1d8a49ec8b9b5081aad4d84c7e3de33be968b5016cdb6e6c25f",
           "parent": "gh-1318",
           "dependencies": [
             "gh-1632"
@@ -3454,7 +3454,7 @@
         },
         {
           "id": "gh-1636",
-          "specSha256": "f40765eaefccb3d8b659184aa3574e0fa39c82f3bbef9b331160128b8e7a619f",
+          "specSha256": "0a53ead72f8ce129d3dc4eacbb7248aa99fc0f432b9745c4b3f6ceec0f70465f",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1635"
@@ -3473,7 +3473,7 @@
         },
         {
           "id": "gh-1642",
-          "specSha256": "0d36db0981d9d5a7b6446561ef89d43d288200afb4bdfe1852d723afe8301202",
+          "specSha256": "2eb6314de9882e21fbd75f32636370e3d684612dadbe54c4a3e10e94b70ee3d0",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1421",
@@ -3485,7 +3485,7 @@
         },
         {
           "id": "gh-1695",
-          "specSha256": "809d8b236ab466be953185c2efb442525eccf25a35561dc20f24571cdc7eca6b",
+          "specSha256": "df328432d979034938326875d1ff52f0508404087d79a14f24f8472fcf141fd0",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1636"
@@ -3519,7 +3519,7 @@
       "status": "proposed",
       "title": "[backend-delivery 36/74] Implement data/manifest, data/auth, data/library changes",
       "bodyCharacters": 57952,
-      "specSha256": "cf9272739f982e2c1d23abe2d7f13c98297d5a97c81d33ed840b4e8c489efd17",
+      "specSha256": "ea829a9631e43101936f126e3b9c4031ef98d3c5fd9f543a7786c31e70d4cfd3",
       "members": [
         {
           "id": "gh-1660",
@@ -3543,7 +3543,7 @@
         },
         {
           "id": "gh-1995",
-          "specSha256": "fc1232784de553edf5dfc0e71822e7f5fbf4b23bdd962cd31dc73704c1587fe1",
+          "specSha256": "f5210732c7960b8ebc5adfd974072e494b83615fc402f31d75b1a3f98d16c420",
           "parent": "gh-1298",
           "dependencies": [
             "gh-1647"
@@ -3552,7 +3552,7 @@
         },
         {
           "id": "gh-1645",
-          "specSha256": "b477d1b4854e4b75aadb2ee86c6bc8c4d675fc8952453944a4405c69e05e7797",
+          "specSha256": "df30c0eb9a112a278b70440be58bd488860801bae755a4c907b8ec6debef695a",
           "parent": "gh-1346",
           "dependencies": [
             "gh-1642"
@@ -3561,7 +3561,7 @@
         },
         {
           "id": "gh-1654",
-          "specSha256": "b0f55a677d931357556b22980b2193b94e31c38e96551f5999a47d578f490819",
+          "specSha256": "3fe6e7f4f1b61ad42a475724a5215aa8fd17df6d2b5fa6c933d356505ea0fb6e",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1645"
@@ -3570,7 +3570,7 @@
         },
         {
           "id": "gh-1739",
-          "specSha256": "e94ba78ec6b909b2a7fb7855a63c24de335153a6b7d495e0b0f1dc268f4feef4",
+          "specSha256": "630f9028ea0051e50c701c4483ccff41fece99986ee000db39033a964c2585a7",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1454",
@@ -3580,7 +3580,7 @@
         },
         {
           "id": "gh-1745",
-          "specSha256": "28ccbaf9aecf3a7f1608931a7845384828f280aab7da24eed902be43e5f6a061",
+          "specSha256": "49903e3d5613b134addfb54026c406614b68f86e1573ff4eb872529bcb6f5e95",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1739"
@@ -3589,7 +3589,7 @@
         },
         {
           "id": "gh-1650",
-          "specSha256": "4f7281bfe098ffa9f0ed93b15e7eeb0a932c9a8fe4a85c0af3009c63dedf9403",
+          "specSha256": "45ecb155b6c00da4ac0be1dca6b138c583169db09aa82eb9806131e00514d2bd",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1645"
@@ -3604,11 +3604,11 @@
       "status": "proposed",
       "title": "[backend-delivery 37/74] Implement data/tasks, data/calendar, data/chokePoint changes",
       "bodyCharacters": 59967,
-      "specSha256": "8e6d6b7fc887de0e0d3d3d6c61e1e8ccbd2c32512bef180031c0ae2bbe70a050",
+      "specSha256": "6bb1755a01b8e91cb851acdf2dfda0e6421c0a88f2bc290a8aeee383c324dc26",
       "members": [
         {
           "id": "gh-1663",
-          "specSha256": "27ffa0281635740a263f96204f19ed0d3e4c638a203de72a296f51b267661b63",
+          "specSha256": "a5d7d3b046657024da2bfcd8271421616f7bd98480292e2892d4f9bd12ea283d",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1660"
@@ -3626,7 +3626,7 @@
         },
         {
           "id": "gh-1666",
-          "specSha256": "51d7e76e96eaa21fe2561f3631e8cc0b06eeed483ef11154e2a3569ecb1a6ec5",
+          "specSha256": "3b06086b9ad118ff050cac296bf86e2da2128e92b86634d08d9168b21eeb037f",
           "parent": "gh-1320",
           "dependencies": [
             "gh-1663"
@@ -3653,7 +3653,7 @@
         },
         {
           "id": "gh-1665",
-          "specSha256": "caef6d49b67b4257f8e9d006c4fc7747a6a7c0651eba5a5b4a0dac183353f91a",
+          "specSha256": "97402d4adc951c153b5b979c3159d9fa25a795116098dae3224322331f7c12f3",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1605",
@@ -3664,7 +3664,7 @@
         },
         {
           "id": "gh-1667",
-          "specSha256": "ff1fb1070848f5392568332b74b868ab361c603cc9f041137238428e8e8f7fd6",
+          "specSha256": "ee2e2616d3ac5e938d17b3ac447d2821e07beac37fa7a81cd8fc10d1c97fe19b",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1665"
@@ -3673,7 +3673,7 @@
         },
         {
           "id": "gh-1668",
-          "specSha256": "e73f1cbc4c625cd0b3a580d2fe36ab06c6addbc4f37858d60fcaada821f55f79",
+          "specSha256": "cd25a80450bc017ae078723a06f60a61b1af9a024c64a9f07d1d0cd61d37d37e",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1664"
@@ -3682,7 +3682,7 @@
         },
         {
           "id": "gh-2009",
-          "specSha256": "9a21d9a294580585b4ec033855b50a2362a2870ce4f45ee8c1bf05591e2ee10f",
+          "specSha256": "cc38c5554f836fd5de43a63a5a9fa42effe0158a1ebd6cf0fc494d156e79d87c",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1668",
@@ -3692,7 +3692,7 @@
         },
         {
           "id": "gh-1674",
-          "specSha256": "b418428ac37d66f15b85cc9d6f1a256a0635bc1a1536487019181c06dafd0e7d",
+          "specSha256": "80875edbc99d00be4a97bc6fe50c3f57bac4d05c87b8eafbd6bb1961d31ad135",
           "parent": "gh-1345",
           "dependencies": [
             "gh-1602",
@@ -3709,11 +3709,11 @@
       "status": "proposed",
       "title": "[backend-delivery 38/74] Implement data/docs, shared/genericOperations, application changes",
       "bodyCharacters": 58143,
-      "specSha256": "ae78da082de99768836f9c44f175f705237c9854d5f3a518f08122941564627a",
+      "specSha256": "470b52bf7b251f4f4c93cdf195aabe0a9385bd9676782d34cfb3e9f033a2fa47",
       "members": [
         {
           "id": "gh-1676",
-          "specSha256": "f1371617511cd53b95ba3df30f91123121d451d0b125250170e8e85688bb1814",
+          "specSha256": "74051b1e0d7638b690ac8050dbd06221774441b6e6d42b96afd21ddb32f95187",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1393",
@@ -3724,7 +3724,7 @@
         },
         {
           "id": "gh-1678",
-          "specSha256": "8afdbc71ca7390eef439e4f5103359d48106b6655905ef9ed35fdfb4b426e2a8",
+          "specSha256": "00b3d0bc41407ee313465d1b20becf7440b9763b9994e0110eb89e5e48f84a8f",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1676"
@@ -3733,7 +3733,7 @@
         },
         {
           "id": "gh-1679",
-          "specSha256": "4f68969d7177088a2f37e6dff92027e6abb669bcb1baff3b6ab330d2ae6ed134",
+          "specSha256": "8f43a3dc89197a2a7a0d76ac7fc06ab3a38ff097c7b7029db7a7ba2f218b3389",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1678",
@@ -3763,7 +3763,7 @@
         },
         {
           "id": "gh-1680",
-          "specSha256": "904062782d40bf39188f16fe81c7e71c5fdae30e3b1a3ffd6580dae77f9b9fec",
+          "specSha256": "6ddc6423295f19e45ea36b20fa7869fef807633f9f91bdaa8648981ce411534b",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1400",
@@ -3773,7 +3773,7 @@
         },
         {
           "id": "gh-1681",
-          "specSha256": "010ca2ab57c7773229c49d6f4f765551dc708e2a47b4e723c1d120a35d4a9be2",
+          "specSha256": "f70f56fe3e6474a8d62fb151376febc0e18736b8d405fd570c9c89c2e0777414",
           "parent": "gh-1331",
           "dependencies": [
             "gh-1643",
@@ -3783,7 +3783,7 @@
         },
         {
           "id": "gh-1771",
-          "specSha256": "c873f76beeb8a07ee6ac2bdce1f452e5589af13cb422ce6947b245836d7b55a9",
+          "specSha256": "90ec39e9c66e585a09c9d21692a2a5b0ce1621f1b6addbab7edcbd2f96be8f5f",
           "parent": "gh-1341",
           "dependencies": [
             "gh-1605",
@@ -3808,7 +3808,7 @@
       "status": "proposed",
       "title": "[backend-delivery 39/74] Implement data/inbox, data/tasks, data/chokePoint changes",
       "bodyCharacters": 59984,
-      "specSha256": "14a8d549e4cc85a95e3dba602f369ee6f93d8f243cb629838e189e138de52d3a",
+      "specSha256": "348b9c14d872ac47ed10b9283db96ab3e423fc35f8fb18ccfd1a95ea0c666875",
       "members": [
         {
           "id": "gh-1669",
@@ -3839,7 +3839,7 @@
         },
         {
           "id": "gh-2011",
-          "specSha256": "8c786d23b2c5d75ae4d652e33375e1d2fb1f0a06c04525839e2097d6f459ff3b",
+          "specSha256": "aa5ac652c8ed80573550c7e45a76365ec57e18a648be27a31b5bfb8b3f5c2962",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1665",
@@ -3868,7 +3868,7 @@
         },
         {
           "id": "gh-1775",
-          "specSha256": "84c3aed491ccee41a20106c56a0d3d0695b7bc67945eaaa07de0fc9f56a2b19c",
+          "specSha256": "21cf3da17887d5174720a94250bbe343737a9c951f5c94b6be1e9f428e598205",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1731",
@@ -3878,7 +3878,7 @@
         },
         {
           "id": "gh-1685",
-          "specSha256": "e8f0ba38d3d6c7d036c21e2057bded1857cebf37b04d3f812337e136899613c5",
+          "specSha256": "4c94a3174ed6646ea0c355bb5a32d7344b4c0f5253216339704c767a2265b0f0",
           "parent": "gh-1309",
           "dependencies": [
             "gh-1674",
@@ -3888,7 +3888,7 @@
         },
         {
           "id": "gh-1751",
-          "specSha256": "6610f9a9ba2c399f9a19751a1ee253143b3ba2d93402bd50d4f933cec0462d2f",
+          "specSha256": "5673147367e9acad38bdd32fc874af74d2083b6738b9a9f1ed8aaa65f7659cd5",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1678",
@@ -3904,11 +3904,11 @@
       "status": "merged",
       "title": "[backend-delivery 40/74] Implement data/mail, data/transcription, data/manifest changes",
       "bodyCharacters": 57845,
-      "specSha256": "c2bf7e5e9f6204082ce68cb54a87706c0824ddc741de24d1c2c7af2bf0f5d8b6",
+      "specSha256": "b39003041cc2d4dc41e5a1a8bc5d84d2b4420306476c75499a8cc2eeca1e55d9",
       "members": [
         {
           "id": "sp-0ef30642-7659-4424-9527-180d99a33ae9",
-          "specSha256": "6493f483a9aa0ce78418c662a40be461d79597bb19b4212702006ca5c0ceff67",
+          "specSha256": "72dbb4e87d4c5faa8a973f2ca83a711c6c755dfba7b77d04b0d66c8a5b754428",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
@@ -3931,35 +3931,35 @@
         },
         {
           "id": "sp-994caf89-dfb8-465d-983f-5698cdc851af",
-          "specSha256": "77b7524ae8c2477c1e7e410daeadf1a631e8b63bf27187f239a9eabd25a2b7c1",
+          "specSha256": "9e7e81668e57cb9fc3b9a68dbb82a773f6c87ea0388fa8b12e747d890088f4df",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-3d4170a4-0620-4343-83c6-02badea81bd7",
-          "specSha256": "cec23fc0b0adb8b6b2450c5f0721ee42cedab465cebd08877398c89058a00e57",
+          "specSha256": "84e5aa61916f3db5c5b4e542a2d2e956e1307477b4ec84c5da10b6d4928b61e3",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-f255e6c6-e1ef-4adc-a47c-c24746bb4a3b",
-          "specSha256": "1c5046fc28d1513b8828e1527012b3bfe9d3922425a6deac3401d468c5331775",
+          "specSha256": "df15a80674e3e3b624d07b2f00454f7ddac6dd9a97bf1bd42215b9c78acbd6d3",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-6af6e07f-2986-4312-b438-9019cffaa10e",
-          "specSha256": "c4c39b4e6a49423d4ae9c14791c156c45805445628355fd4b39cc62a9fbeeb13",
+          "specSha256": "731ca873773518ac0b291a47739c36ebc34bb3013e687a7d3e9f446e8e40fd00",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-cacad0a7-1069-4832-aff3-180c7f6382a9",
-          "specSha256": "8c1d783a11f6658dbd256b146283d2b217c3a95501820d2ef82226b6a78d1cf1",
+          "specSha256": "583c7ecd1b8af27c17c0d794f3297ebea72209554c02958e8a4106ffca7c04bc",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
@@ -3973,7 +3973,7 @@
         },
         {
           "id": "sp-fb820e36-1ee2-4d87-8b86-501bcc6045ef",
-          "specSha256": "b1e48680f0effe0e9a55b7827ec5080029bcc22dbfc4d753a81f67a61a265571",
+          "specSha256": "c8c7633fe6c4e707f3456eb36acab18893a3202886c2f15cbda72455a703769f",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
@@ -4001,28 +4001,28 @@
         },
         {
           "id": "sp-04496878-7bbb-4cae-94e4-55e4bad15335",
-          "specSha256": "159d3e78acf810935a7d099ae2ca07942c832372c646914fd81f34c5fe62c68b",
+          "specSha256": "2b972879a94a661c4761034b5a0f5e7bea0a46b2af00239eef17dbed97da20b0",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-52589c27-5e1e-4fa2-abca-81af77d583b0",
-          "specSha256": "a15f9c8864caefcffbca5a4396b08b57d782e8abbc9162452d8d81ebd2f53654",
+          "specSha256": "47dafd2efae284750998f5b0ce16eb08c3e24c90519418bc820c02df0aa7a5d6",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "sp-e535699e-2ed4-445a-8a0d-877b0c314190",
-          "specSha256": "b7ed4d5348ee5fc43685b3091532410b216a8fb13c1f83ec576bcf043375b00b",
+          "specSha256": "a07ec6939739ae5cbad34cb16d6d41b781a137a6b5c0182fcde6a1aebf5d0b26",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [],
           "approval": "approved"
         },
         {
           "id": "gh-1686",
-          "specSha256": "bb09cedf468ef67c09742dce3730dcdb1448c9951810dbfcd33bb483e1d3a019",
+          "specSha256": "b89442e2b7dc4b17b58782c04e027c0b17e15effe0451eeed6771e6c545361ed",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1483",
@@ -4034,7 +4034,7 @@
         },
         {
           "id": "gh-1688",
-          "specSha256": "06212f9bcd4bbd920298d73e131f561e39ffed4882b4f15c93ad8bceea495c38",
+          "specSha256": "1713cb8d1afd26e5d165a9ece816460c32b77a6fc14f9d0eca77ac9163a8a8dc",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1633",
@@ -4044,7 +4044,7 @@
         },
         {
           "id": "gh-1689",
-          "specSha256": "bdbc2ac53c90b7e0a5ef126b8495e9b410734b6ef570f31ed779ef0c9014c727",
+          "specSha256": "7d6bda903e2a65cfcdb544e9c9e64354fe7d09f7b31e6be24553f4264afd9027",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1496",
@@ -4054,7 +4054,7 @@
         },
         {
           "id": "gh-1690",
-          "specSha256": "665a6551db9b5ffd7d77d3af455867127f040ae3f20d8d5bea10cc6cdbe623a9",
+          "specSha256": "b8dcd498959960f20681077bb5c87c179ffe230b1f2378a10c0a14c0bc749636",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1473",
@@ -4064,7 +4064,7 @@
         },
         {
           "id": "gh-1692",
-          "specSha256": "c1fc000c7199ce57e4eaa1f40dadf7f3c76a3cc966ea64419a53cee68aad8b1f",
+          "specSha256": "7ebd4f3936a0fc2a15663661b582d018d6f36aaaedf08e5a4bc74658a72ab17b",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1690"
@@ -4083,7 +4083,7 @@
         },
         {
           "id": "gh-2030",
-          "specSha256": "7220033ef08dc6a5ffd1b8a04e040936809ed82fe9184b7c4382c00cce1ad7d5",
+          "specSha256": "4d54f957757bfe0b2fe0c55fc58876f325a2121f03c9a2305fa4ca11ac1859d4",
           "parent": "gh-1336",
           "dependencies": [
             "gh-2029"
@@ -4121,7 +4121,7 @@
         },
         {
           "id": "gh-1693",
-          "specSha256": "fa05b0b9be77e15a69323ef570aa0ca6976ee30868f6c72f14ffeef3eb6e8abf",
+          "specSha256": "6010fc6326e3bc7968f4c4113b7ce85a6c3568b1ecd51d8f63eca6a833e446cb",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1692"
@@ -4130,7 +4130,7 @@
         },
         {
           "id": "gh-1697",
-          "specSha256": "12a91075109c497adcf02040035fc144b5f8839737d7f2ab6bc47f4fc016503b",
+          "specSha256": "3078846b44ea059695f8725a7e7be6ca487224aa037dba40a7b1eb5f55c8a89f",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1470",
@@ -4141,7 +4141,7 @@
         },
         {
           "id": "sp-5419cac1-f4a7-4717-b870-4f244b1ad166",
-          "specSha256": "8740c045ecebcd5d1e3a13b8baf5dc1e8b15feac81ade5f563ea337f05e2f9a1",
+          "specSha256": "16c9b902f97455be2b56ff48f86ddd305aca87b7cd604db5600fd09e1cccc57d",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [
             "gh-1697"
@@ -4159,7 +4159,7 @@
         },
         {
           "id": "sp-b08abab8-34a6-4359-acb6-5d0e249ef45e",
-          "specSha256": "07f87eb49e36d6a21ececa14999101ab5d8e8ed71fd4384dee2de2a017272aa5",
+          "specSha256": "7c62ffc985d61d3499773c90e07dceabbec854bb1e3caf456671dee9f286f7c5",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [
             "sp-994caf89-dfb8-465d-983f-5698cdc851af"
@@ -4168,7 +4168,7 @@
         },
         {
           "id": "sp-8f1c7367-9b5c-4fb9-b55b-7245c2ec92dc",
-          "specSha256": "5b3e05470d5a1cce25c1c903e223648c935ac7960cb9702596474049d189f05b",
+          "specSha256": "bcfcfcb99f341928fad61505eb10fe26a6336ebeaf323d0758cab23ae51bc809",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [
             "sp-3d4170a4-0620-4343-83c6-02badea81bd7"
@@ -4177,7 +4177,7 @@
         },
         {
           "id": "sp-02092440-a57e-4988-be46-883d22cfe3d3",
-          "specSha256": "8dc96cb8f8a42344197013deeb5997cfb6e6deab79e4742b0acf899299f68824",
+          "specSha256": "3423517a9e68f21fc0aa25cf5796b52e8fb837c3c777b51dd8dbeef5650c8f66",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [
             "sp-994caf89-dfb8-465d-983f-5698cdc851af"
@@ -4186,7 +4186,7 @@
         },
         {
           "id": "sp-99cf0a5d-e5b9-4e15-8ec1-2e90f2314d84",
-          "specSha256": "d8a19db717e4f39391905614ed30a0ad7879ea9c3e064f3a9903babac1941dd1",
+          "specSha256": "2ba32d6621cae222228a397644042b329d8010f7470a39f8e3768d9a1910fc9c",
           "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
           "dependencies": [
             "sp-04496878-7bbb-4cae-94e4-55e4bad15335"
@@ -4201,7 +4201,7 @@
       "status": "merged",
       "title": "[backend-delivery 41/74] Implement data/transcription, application, data/chokePoint changes",
       "bodyCharacters": 54345,
-      "specSha256": "01758fdf3368d501b406b305c15033adc9411e5a37053393b4bdbaa7bed4f933",
+      "specSha256": "3bc56269a4297d31597c36ee94cc372c22f8f28823154aaacb19357560fbd54b",
       "members": [
         {
           "id": "gh-1698",
@@ -4241,7 +4241,7 @@
         },
         {
           "id": "gh-1707",
-          "specSha256": "9955c2119b29b63cc6f59304c0e088154acaa576714bdfb93fdb3239837dfb5d",
+          "specSha256": "22ddcb2367586c588c63a191ac447d0eb6a7c2325238f789c45792c16a39af7f",
           "parent": "gh-1325",
           "dependencies": [
             "gh-1409",
@@ -4252,7 +4252,7 @@
         },
         {
           "id": "gh-1712",
-          "specSha256": "74250c6ee9ecc51617d6388808670689d010c4e5297d5a83a3f4e06023ecd4bc",
+          "specSha256": "edd4217484fd42b377252737fecb76a716cafa7b9fe340f39761c2c44c1e737e",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1695",
@@ -4262,7 +4262,7 @@
         },
         {
           "id": "gh-2002",
-          "specSha256": "2f0b8ab7c9f1d990503e9379551601fefe465b1c499893ed1f2fc4daa638ef09",
+          "specSha256": "532c99490499a04bd0991d54f63568936bd12fd1bd36363d7ea3486c6cf6e036",
           "parent": "gh-1325",
           "dependencies": [
             "gh-1528",
@@ -4272,7 +4272,7 @@
         },
         {
           "id": "gh-1699",
-          "specSha256": "c83fd7bd95129dfa28b152f6118ca938b86c3dfbd7dd7734dd0296677c412a83",
+          "specSha256": "14af5b93fa6dac8cabe448332c0fba71e19752dcdcea19d7afd621652c4ef790",
           "parent": "gh-1346",
           "dependencies": [
             "gh-1693"
@@ -4287,11 +4287,11 @@
       "status": "merged",
       "title": "[backend-delivery 42/74] Implement data/notifications, data/push, data/sleep changes",
       "bodyCharacters": 55584,
-      "specSha256": "4602d96c24e6f2e5d65b7bb584ae37b9b63512ff3af83addd5327acc2bb4a966",
+      "specSha256": "c609546cb4927b8b3fdf45bb3a39c37b0ebb4a55f1c07a145c02b227e28cb36d",
       "members": [
         {
           "id": "gh-1776",
-          "specSha256": "77f23d636236ad17f3923450d772f57386576fa6570ea4c25d841fb60157507c",
+          "specSha256": "b01a34910a7e86d75c1718aed66176f59b7007c82080fd2a13de1e558925dc0a",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1707"
@@ -4309,7 +4309,7 @@
         },
         {
           "id": "gh-1794",
-          "specSha256": "3dd15a97d8eb828af8a8d183e48e4161a085b040f24c6aff409a2a4ade72b556",
+          "specSha256": "78e44773b20b955eff810f4f949a4ee5bf9b99220e7d7093b272ce627cbeae56",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1445",
@@ -4382,11 +4382,11 @@
       "status": "merged",
       "title": "[backend-delivery 43/74] Implement data/auth, data/tasks, application changes",
       "bodyCharacters": 57154,
-      "specSha256": "9b0ae0e240969425cb7645f8766c1177a304ce45764f0efdd4f699605e633fba",
+      "specSha256": "000ae2d14d38e71cb89a172eb34aeb3d2634f5a66223e61076adab52f2da44d5",
       "members": [
         {
           "id": "gh-1701",
-          "specSha256": "0a575ea49bd49c367b41caae5201fe3206e41fb91f9b3041b45529229e2654b5",
+          "specSha256": "16548de899ac5a84b989d5c75d983ce9329c99dbc4791036de72e7a80c296123",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1699"
@@ -4395,7 +4395,7 @@
         },
         {
           "id": "gh-1704",
-          "specSha256": "15ffc984b88f35368cc3f99ce76e2419c8d445c8d715e135ee64a1d7bd6d9ae7",
+          "specSha256": "7c9b9865f9a08a3f3dcdcb42b65202fc3fea0c24a4a9aa428324d09ae9719ee8",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1387",
@@ -4405,7 +4405,7 @@
         },
         {
           "id": "gh-1687",
-          "specSha256": "bcd419c5ebdf0a321368a9c13b3a11017f3d6f8d271eaf28fcdf294d2a8d53ad",
+          "specSha256": "28b286b75b499bb507dadd823316444fe2378c7112d9e4c57b942dd54fa94a0f",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1650"
@@ -4425,7 +4425,7 @@
         },
         {
           "id": "gh-1709",
-          "specSha256": "b4b650c2c627a3d79803e31200b9c7ef7331285a742808e4a60083f1b76020ea",
+          "specSha256": "2327e8c47989b7ce9e6ca516c94616adedb3d112c845ece5ba24e0efc54c6127",
           "parent": "gh-1300",
           "dependencies": [
             "gh-1406",
@@ -4436,7 +4436,7 @@
         },
         {
           "id": "gh-1717",
-          "specSha256": "fc6e0fb790ef8c455af16f289f95ec99b578bca560185f5421494977d06d1527",
+          "specSha256": "77933e1966c4a6fc226c7513af4905473a748c0e6845978815b36d4c07f32077",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1663",
@@ -4446,7 +4446,7 @@
         },
         {
           "id": "gh-1720",
-          "specSha256": "978740e14096af54f8a98ead1e6dd49a8b4c184ab0ba1f19cf226b0af7611f91",
+          "specSha256": "ae1d9a67e104bad6e3700eafdcf40f1927f8349e16995109e0b0edf48cd79c88",
           "parent": "gh-1302",
           "dependencies": [
             "gh-1702",
@@ -4471,7 +4471,7 @@
       "status": "merged",
       "title": "[backend-delivery 44/74] Implement data/docs, application, data/journal changes",
       "bodyCharacters": 57389,
-      "specSha256": "75cdc9bc75ea043a882dd0e0359bfb9538fbcfda5b3de879e60a66d9fd3f4913",
+      "specSha256": "4c81e307d7f3e290b6a11ef5d5b62b77120fcec1a649b2a6ff006f79925bd096",
       "members": [
         {
           "id": "gh-1721",
@@ -4512,7 +4512,7 @@
         },
         {
           "id": "gh-1722",
-          "specSha256": "f53a57cd429933a9d1634a4d42030d525157ef698e42a0f39628adbc5f603165",
+          "specSha256": "4414172a3d0c5b5d9788cac3cb65ad447319c4238e2cc758152e7266fb6f763e",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1720"
@@ -4521,7 +4521,7 @@
         },
         {
           "id": "gh-1725",
-          "specSha256": "46cb3cf27a55d6971ce67e41f5afdb7683218b55328daa7ac55370c9a9ef0cca",
+          "specSha256": "ed58a7a54d0441dba8a1faa763e986870c7d63ad7941293988afd1e6d6dba588",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1722",
@@ -4541,7 +4541,7 @@
         },
         {
           "id": "gh-1729",
-          "specSha256": "7926b01c26427a05be073a5340574eaac772ab2e26b6d731136433e8932b987f",
+          "specSha256": "5b56ba50a8e94889b153c391cf7cd7a61a37814f37e2623a3e56c8fd8b1ebca0",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1683",
@@ -4551,7 +4551,7 @@
         },
         {
           "id": "gh-1737",
-          "specSha256": "a2c59edf481cd5b770d3cdc6b52bac174bc97926b89cf8861931fe453150ba6f",
+          "specSha256": "3f7be9722f8569693f519f25adeb6ffd44f226e6170d697f6c1e2ceb33039375",
           "parent": "gh-1304",
           "dependencies": [
             "gh-1729"
@@ -4576,11 +4576,11 @@
       "status": "merged",
       "title": "[backend-delivery 45/74] Implement data/mail, data/agentRuns, data/mcp changes",
       "bodyCharacters": 54554,
-      "specSha256": "37800e27809b02559ffc085f593589edd20c29893a6fab9e48a0b211259fb5c8",
+      "specSha256": "ba1362a8ff05449b42bd7d78a6eef48c7c55cbe4889838ce5f2353792e813159",
       "members": [
         {
           "id": "gh-1766",
-          "specSha256": "db759038104c768a44282f98a13264a74a42229bc5f83da0d2d734457bba12fd",
+          "specSha256": "d536dffbec039b5c1c653b1303691fc29227508f4f2d9b6460a6c81bdb886b5c",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1729"
@@ -4589,7 +4589,7 @@
         },
         {
           "id": "gh-1785",
-          "specSha256": "3cd68471ee588367bb02485229b07d6180b0742cac49534098fe3925403ad093",
+          "specSha256": "4c77a1ade03dd43eff98406a80f56dba749c1cef63e56d7d723e24cdd138b49e",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1766"
@@ -4598,7 +4598,7 @@
         },
         {
           "id": "gh-1788",
-          "specSha256": "6b9afde4066109e5e7c2532bb653f91b49a797c70fc5efba40224b41111f923a",
+          "specSha256": "49a1891a4b24b283a944685dbc3aaabcafb322a673621eba865f118efa1c1458",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1373",
@@ -4608,7 +4608,7 @@
         },
         {
           "id": "gh-1736",
-          "specSha256": "0c4c6e7abf33cd35c5af79fca8856cb50e672d5640e313053ffa81a21ffdc78e",
+          "specSha256": "838b44378a29b362a6e8980aa1d12e8573dcb7089eeda7b9926d901848d26a57",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1510",
@@ -4619,7 +4619,7 @@
         },
         {
           "id": "gh-1742",
-          "specSha256": "97a1eab609353e020c648c9318102eefa6a8ff138000587298d73f3a24599b87",
+          "specSha256": "d1c2b047cf578713115babfffdeb21978883dc57030cc5d74ceb983d088ffa5a",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1736"
@@ -4628,7 +4628,7 @@
         },
         {
           "id": "gh-1747",
-          "specSha256": "2cd7b1c2b3cf81bb7db3980fec720d9d3e1f198677af668122337fb166d193d4",
+          "specSha256": "808663c1726ad2281965d0660805c1b6a5b843701cbb3f3129e841412a3b82a9",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1638",
@@ -4648,7 +4648,7 @@
         },
         {
           "id": "gh-1750",
-          "specSha256": "9bfbabcd2289ec4db6846dbb3119d279278efec7648293ae80ee62eab87388fd",
+          "specSha256": "d82981c2d7f948b02503c5d2592a9162ae1c28e83ac3bf3821f0b8895772c079",
           "parent": "gh-1336",
           "dependencies": [
             "gh-1736"
@@ -4657,7 +4657,7 @@
         },
         {
           "id": "gh-1754",
-          "specSha256": "8695c2298415b0bb180451330dc2e71de1ea8cb1c5c0a0f192b895596e2f0964",
+          "specSha256": "4a816cf5c00efd7a40c99b5f5396ed9a7d993cbdbbacb3b07e16ceafc1493f2e",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1695",
@@ -4685,11 +4685,11 @@
       "status": "merged",
       "title": "[backend-delivery 46/74] Implement data/calendar, application, data/tasks changes",
       "bodyCharacters": 56642,
-      "specSha256": "5691291061793b25bcfd84929e479f107ab57aaf705c5a33691b557e142315b2",
+      "specSha256": "a011c756eb581a23081a9504c9d844d4b09ddfa5b2765b23a42f990c559df999",
       "members": [
         {
           "id": "gh-1757",
-          "specSha256": "314e556a20ceed6b2dcd1810d304764fb4f8e6bbca5837125c8a6483b0aa9bd9",
+          "specSha256": "68aff81b567b17da68c5c1170c6ce4bab4588bc47664af3c5fa01312389d31bb",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1756",
@@ -4708,7 +4708,7 @@
         },
         {
           "id": "gh-1759",
-          "specSha256": "5635db7d52ebffe991a57b0cf70096bcfeaed5fcd70f4a08caeb74a624f3e329",
+          "specSha256": "e6bb4dee07b1cdcdafaac8f61892bb3ffc33815009f2c8e6ca8c492ad44ed8fa",
           "parent": "gh-1300",
           "dependencies": [
             "gh-1757"
@@ -4727,7 +4727,7 @@
         },
         {
           "id": "gh-1760",
-          "specSha256": "e6c0f0e5099acb1940058706a257ad266a04cdea3bb3a71a42b5e13025deb04b",
+          "specSha256": "f7153c85435e30cadc5355101ae44d5ddb5844ac904ba075dfdcf3547fbd1270",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1759"
@@ -4736,7 +4736,7 @@
         },
         {
           "id": "gh-1762",
-          "specSha256": "cafe741348e579c0f9ed69026b4bdbad754fcedf8110201ef598d5b8492284db",
+          "specSha256": "1a6b2f01b9fd6b562a52c8be24fd061b57cb13f3c9364de390122917e3f42b53",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1760"
@@ -4745,7 +4745,7 @@
         },
         {
           "id": "gh-1764",
-          "specSha256": "f18b7fef9f26a334f52659ca619d610a251afb5c3f5d773692f1a4cfdeb6c204",
+          "specSha256": "3ff4b65abad6ba0e637a1e4f281d30709ecbfae8e94df14a293c38266438c7d2",
           "parent": "gh-1342",
           "dependencies": [
             "gh-1762"
@@ -4769,7 +4769,7 @@
       "status": "merged",
       "title": "[backend-delivery 47/74] Implement application, data/mcp, data/docs changes",
       "bodyCharacters": 57697,
-      "specSha256": "1f33349f87057824e6d51b72bd9403121503313856eeb970f90e3edeb8377092",
+      "specSha256": "2100e7756af0a772467499dd93c29e8825507322eec26e56884a7424b84355b5",
       "members": [
         {
           "id": "gh-1763",
@@ -4782,7 +4782,7 @@
         },
         {
           "id": "gh-1765",
-          "specSha256": "f4528cf91ebae569f9edadc2669d9c51eace670040bac7a56112d892e4784325",
+          "specSha256": "7cb95f375009f174a6aee4212af65bfef0273deef93fd7aba8913c6c8accaf6f",
           "parent": "gh-1303",
           "dependencies": [
             "gh-1764",
@@ -4792,7 +4792,7 @@
         },
         {
           "id": "gh-1767",
-          "specSha256": "13cc746c62c3d4ac4862770ba1d05c0ddde412bcc06455c68e6ca09af352b5fd",
+          "specSha256": "fe72fd397d05c9ba17891c30132923afe735eff2692b9fd62474f73a1456e83c",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1765"
@@ -4801,7 +4801,7 @@
         },
         {
           "id": "gh-1770",
-          "specSha256": "b3ff874365349518d8ea9cdcb2e91ff0f319887d5bb64d1284275b235df587b7",
+          "specSha256": "976ce5532c6be99a60125abf7be19d415d114f100cb25509097c535e13741d30",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1767"
@@ -4810,7 +4810,7 @@
         },
         {
           "id": "gh-1786",
-          "specSha256": "ca8859a210c97158250b10b4e642082bfa4c2d6b152cf20437cb9f96189c0e93",
+          "specSha256": "e11357a799c7c3ff6a69c0c3ba5e91bf5b412dea9a4334d2194c95dce10a0a99",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1766",
@@ -4820,7 +4820,7 @@
         },
         {
           "id": "gh-1789",
-          "specSha256": "70fc9e7f467f22234461364e0e650863accae1a9d824f811242d5290beaf87c7",
+          "specSha256": "0f207eb74d1fa7cf21edef3342331b8d3b92eaf5189a14b00d4b3e844329a821",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1395",
@@ -4831,7 +4831,7 @@
         },
         {
           "id": "gh-1758",
-          "specSha256": "ba947616ae743e49a729c41af561567e59c59b47122df76d3aa5a05fe6fe20eb",
+          "specSha256": "587fee1603712ad076662c7575271217222e15984f2d6dd95053a2c0e573bf0c",
           "parent": "gh-1326",
           "dependencies": [
             "gh-1713",
@@ -4847,11 +4847,11 @@
       "status": "merged",
       "title": "[backend-delivery 48/74] Implement data/calendar, data/mcp, data/tasks changes",
       "bodyCharacters": 56954,
-      "specSha256": "d421712f4f46f342d01203dd30088f9173e94447da6125b08dc7154fc86d123c",
+      "specSha256": "d080fc0f56de05e01c639311e1ee84579f0238a3467e6ab831de48a0f19e4ecd",
       "members": [
         {
           "id": "gh-1791",
-          "specSha256": "d396c391a49d5554a3debf224f4002cbe4da6e6e50ffcbc17303e8c3de93e41b",
+          "specSha256": "7e5cb64123d5bc6456c83a70067408a71986fff631e0ae00061e68de025ef67d",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1772",
@@ -4863,7 +4863,7 @@
         },
         {
           "id": "gh-2022",
-          "specSha256": "c5c52864f9b741b637a0caeee3c0a5d92e318a32d3d5fa3fae8b950d587ae36e",
+          "specSha256": "7e4cd3e8ddfc0347ce2fa465b6f2877769b2c94f1ddcd4c0d22c1e4142435e3d",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1786"
@@ -4872,7 +4872,7 @@
         },
         {
           "id": "gh-2021",
-          "specSha256": "fc5121a4fdac054e338947732e3217479bc7857f5cbdd362d013f1c36ef0d593",
+          "specSha256": "017500bfe92d491cdddd84d10ef6bd40d07a3daedab23fff41634e5afee7eed7",
           "parent": "gh-1305",
           "dependencies": [
             "gh-2022"
@@ -4881,7 +4881,7 @@
         },
         {
           "id": "gh-1774",
-          "specSha256": "7982045b646403c9303320532c296676d19192d3dcf08eda5eb8827f607e7b19",
+          "specSha256": "e7e0a3e5354d1c06ffeef309c05fb8e726dd98f4e1764e9001760a708ee89c1b",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1753",
@@ -4892,7 +4892,7 @@
         },
         {
           "id": "gh-1777",
-          "specSha256": "2837d68bc400c5228dc47bd9f523172c8c9638f469b2a7dd94b64327a486c4da",
+          "specSha256": "587728b88491d0edc80cffa842a88b6b442d4da1b5551ad080a4aa0137fb1425",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1774"
@@ -4920,7 +4920,7 @@
         },
         {
           "id": "gh-1790",
-          "specSha256": "f2998177e30f2178d34450c97063b75eb3320a71ebe35ccb7b57ca19c34f9ca5",
+          "specSha256": "143ab670824290eeb964d9b36c7421604b79a4ee4326dc4a4992142244e1de5f",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1780",
@@ -4946,7 +4946,7 @@
       "status": "merged",
       "title": "[backend-delivery 49/74] Implement data/chokePoint, data/sleep, data/tasks changes",
       "bodyCharacters": 57211,
-      "specSha256": "5cbac6061bb03f4cf289f42f7f8a32769234b7ca70824ccb4644593a83c0c823",
+      "specSha256": "2cf3d0e1886a1fb7637ed497347e6482f36c9c4567bbf32b7ad7f50dfcf4e3b6",
       "members": [
         {
           "id": "gh-1781",
@@ -4959,7 +4959,7 @@
         },
         {
           "id": "gh-1784",
-          "specSha256": "ffbaccbdab49a30b35a31997a7e94e9d308afd352da099e4670babe1917ea1ab",
+          "specSha256": "4d91d226bfec9e4cfef8c2f4e20ecddf371af036c08e7de51c9f25a3f13187df",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1776",
@@ -4979,7 +4979,7 @@
         },
         {
           "id": "gh-1793",
-          "specSha256": "0e3e62f97fc1079a7a97d23470e1d627762579fed47e7ee3bba53a266d8aebb7",
+          "specSha256": "41c4cf7d26339c2a24923128f7fa9abd05184918f1c2676e7a9f1f09a9f41d7b",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1768",
@@ -5009,7 +5009,7 @@
         },
         {
           "id": "gh-1808",
-          "specSha256": "36d351f5339bf6c9ace3bbf90fe9ba2612d9529fac28ac5f43dd07a62ea08184",
+          "specSha256": "26ce700bf1a1be73c332909a583be66107f1f0ea02d52ef28bf09700e43f5483",
           "parent": "gh-1349",
           "dependencies": [
             "gh-1798"
@@ -5018,7 +5018,7 @@
         },
         {
           "id": "gh-1799",
-          "specSha256": "7ae4931969bb456f4e6c67a499fcda66dcc0a465d300bcea387a3be36fb10455",
+          "specSha256": "534fbe2f4a9e7a1c1914913b18a918ae287e0019a1d2834104f52c2386a1bfd3",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1795"
@@ -5033,11 +5033,11 @@
       "status": "merged",
       "title": "[backend-delivery 50/74] Implement application, shared/genericOperations, data/agentGrants changes",
       "bodyCharacters": 57255,
-      "specSha256": "0b2127151700f13a1f90479810ef64a6fbeef4bc3decfb113e17a9ee7b8be6ff",
+      "specSha256": "b1b4cd304aef2a5fa10fa38fde1e3874540e30230fc0d8d4229c9b1d3393c183",
       "members": [
         {
           "id": "gh-1810",
-          "specSha256": "d578e55d7fe1e8d8d7f294b40142428dccd416cde87b55c86613f496d6c2346f",
+          "specSha256": "2c9b8f3c014e63b787812f13270b123d4e01d02f015b3c7f898f4835bb76d185",
           "parent": "gh-1349",
           "dependencies": [
             "gh-1808"
@@ -5046,7 +5046,7 @@
         },
         {
           "id": "gh-1849",
-          "specSha256": "0838a79443780140e0f87aa8fe5c995324d8fe8dae45c29e1bd6f88ecf3c980e",
+          "specSha256": "1b1c7c1365cbde3ffd3d85cdacd1ea032e441c835fc1a79153874ed3259863c6",
           "parent": "gh-1349",
           "dependencies": [
             "gh-1733",
@@ -5056,7 +5056,7 @@
         },
         {
           "id": "gh-1998",
-          "specSha256": "f1455623034923121238c26578effa04c1c25d18076c34baea6ead1f8baf3b06",
+          "specSha256": "85ad05563b138f027b6ebe5952dc8bf053fefac77c9ac1baad0d0ea0efe6c064",
           "parent": "gh-1349",
           "dependencies": [
             "gh-1849"
@@ -5065,7 +5065,7 @@
         },
         {
           "id": "gh-1844",
-          "specSha256": "1e7ad625509216ccc9345bc930839d26d03d5664d3409979c12dcb46b0f7c3f5",
+          "specSha256": "a520700e80a6747e222b0ab55e515fd3708892d817c4b8da3b8213af22baddd1",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1810"
@@ -5093,7 +5093,7 @@
         },
         {
           "id": "gh-1853",
-          "specSha256": "b802c48f381ff15b76b50c5d7bdc37ea091970204985aa5c31ad809ad4930174",
+          "specSha256": "2f4bfdb96da1e407dabcbe132ae6b419e19175505e121a0c4cc7f2242ba897c5",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1792",
@@ -5137,7 +5137,7 @@
       "status": "merged",
       "title": "[backend-delivery 51/74] Implement data/calendar, data/tasks changes",
       "bodyCharacters": 56143,
-      "specSha256": "1c84faa18622b0a6dccb5d2bcdecfb5fdad519de8aca18146c7bf497b566bd40",
+      "specSha256": "f61d62c033c9e271a317c35eed6935783eb08e976b7c3fe3fd409862697df501",
       "members": [
         {
           "id": "gh-1803",
@@ -5160,7 +5160,7 @@
         },
         {
           "id": "gh-1796",
-          "specSha256": "c8b7341897fb9323adeba55b4ab111d145aefe7c4dd599eb429643f82340c368",
+          "specSha256": "4108b244f3f89a40080e6697196711135335696d57dc422674b4200ed1b0e348",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1793"
@@ -5169,7 +5169,7 @@
         },
         {
           "id": "gh-1797",
-          "specSha256": "34338c1743b07e57fad391301157b167b7c55a59b09c19aacb05c06a5b3deefa",
+          "specSha256": "09924b899693324538b64df5ad447dd1133b10741c570675cb1653a50fffc629",
           "parent": "gh-1329",
           "dependencies": [
             "gh-1796"
@@ -5197,7 +5197,7 @@
         },
         {
           "id": "gh-1801",
-          "specSha256": "14124a58af6baec1306867a92d6b51f51608a82392211cc0e16713047ef5a1b4",
+          "specSha256": "71c400daac3c948b8a8b11a78de2739fb6bdb9f2fef1b90418e4962fb3b3a01b",
           "parent": "gh-1342",
           "dependencies": [
             "gh-1797"
@@ -5206,7 +5206,7 @@
         },
         {
           "id": "gh-2003",
-          "specSha256": "520668019665a87cc0ec3c45134d8d47ce5578f99fca3a89e20319913d86cc93",
+          "specSha256": "56d83ef9a1d6247444cda3bda79be1eaba1c193b04fc630222b7ba515d02bfbe",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1801",
@@ -5232,11 +5232,11 @@
       "status": "merged",
       "title": "[backend-delivery 52/74] Implement agent-runtime, data/agentRuns, agent-runtime/tools changes",
       "bodyCharacters": 56580,
-      "specSha256": "731e724cac1f70750856177eea206001859630b8c636bd0ce3f0bc38046c6528",
+      "specSha256": "1b5961162b75497e9c497c9ca92600d5c4067cc9f8d80f0fa5aed91c50d64317",
       "members": [
         {
           "id": "gh-1805",
-          "specSha256": "4339748d06d25d8b5af1b59f04f3bf4466a1fe585bb4cca9fd55e8ddfd612f4e",
+          "specSha256": "b0e1cf1669d19eda7d301cf0694391c8a1a82a675bc0fb82cd4455c643d8d8be",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1557",
@@ -5247,7 +5247,7 @@
         },
         {
           "id": "gh-1820",
-          "specSha256": "22b74e1c9bb45f12b5f109b7367d573967df0ded6a381b4d8b65d99f8bdc606a",
+          "specSha256": "26482b68893a877e77999882b51d34248859171812b285b30b57d1fc4f214f06",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1805"
@@ -5256,7 +5256,7 @@
         },
         {
           "id": "gh-1824",
-          "specSha256": "d1a2bb80fc4e8b01fd4b2559607d010b1e0e068ca05ddf0097c5ee72aa14cd6e",
+          "specSha256": "331ecc4612396d39f443ef2716da2cf7e2ef4e2ea81666f022a8a5cac97dd1ee",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1446",
@@ -5303,7 +5303,7 @@
         },
         {
           "id": "gh-2018",
-          "specSha256": "b952bfb0ea0e98f0286191836133043182441b6b470e1f702027a36b1634899f",
+          "specSha256": "b63f40410997dcdfefaa032dd00ac95487570f064017466c8e2bb5740afffa73",
           "parent": "gh-1306",
           "dependencies": [
             "gh-1810",
@@ -5313,7 +5313,7 @@
         },
         {
           "id": "gh-1807",
-          "specSha256": "80183df454d88e8c8f935506a981f8d193554f30c2a68b98fbe4b9769097ade6",
+          "specSha256": "7279532b955c1c610f850072c451d4bf9160cac0a9de827b7ef137df975c9913",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1425",
@@ -5341,11 +5341,11 @@
       "status": "merged",
       "title": "[backend-delivery 53/74] Implement data/transcription, alldots-transcribe, data/inbox changes",
       "bodyCharacters": 53845,
-      "specSha256": "12cb63985a2a9b5a111f2d40ed95cd77d1e6956058241356e24eec062692f753",
+      "specSha256": "a60221c5fd25ce3fa16301897b8e0bd6fcd3e896da203828ee6787ae8b6f86cf",
       "members": [
         {
           "id": "gh-1809",
-          "specSha256": "8186969f988f3c0abe2295b08c1a3492bf361fda7b23bd1cdd0e56c4e2086f53",
+          "specSha256": "ca4f3f0e5b0678fded4f5ab9770e9445434ea67cc9e13a5b8af7cc29921575be",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1792",
@@ -5355,7 +5355,7 @@
         },
         {
           "id": "gh-1813",
-          "specSha256": "aadfdd19e25a550f345b464b8d2a0aa16e60f6dc68bf86d110a6919ca143c935",
+          "specSha256": "03ddcc4bef0fa2efb8038669911d17f302d28fcb4f9b398749cbc0beb4244efb",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1797"
@@ -5364,7 +5364,7 @@
         },
         {
           "id": "gh-1848",
-          "specSha256": "5485e67d21d92c14d65f1d41f3adb1ff8816367fe52dbefb0b25691b1073b777",
+          "specSha256": "813f1dd95bc44a16a3d8872af50638bc9478fd1d146fdffe858a4d664c662680",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1392",
@@ -5374,7 +5374,7 @@
         },
         {
           "id": "gh-1811",
-          "specSha256": "99feaa532117e20e6c124ce25f02a7bec20ccb9d1a362ad27fda3438fc221476",
+          "specSha256": "8f66c823a26b4eaab498905b0015cabfba4cba7627552d2afab5bd8855c812a3",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1485",
@@ -5394,7 +5394,7 @@
         },
         {
           "id": "gh-1830",
-          "specSha256": "a9586e09158e5e824a7e36c80a398e4a623cc33ca747f39b98b3cb2e3f4fae73",
+          "specSha256": "9f1386890235f91190ccb29917d659e62923b8753a284854ffe860c714f96ef5",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1624",
@@ -5405,7 +5405,7 @@
         },
         {
           "id": "gh-1644",
-          "specSha256": "422eda4b9483a53b38524df0ec372300eba0075e2372be17c2ee274375c912e5",
+          "specSha256": "27777c8a92df4adc01c7c121a73de7595cc13603d61616e86a311e8c4f2fad58",
           "parent": "gh-1319",
           "dependencies": [
             "gh-1624"
@@ -5420,11 +5420,11 @@
       "status": "merged",
       "title": "[backend-delivery 54/74] Implement realtime, realtime-client, ai-gateway changes",
       "bodyCharacters": 54873,
-      "specSha256": "798e996c2008c3dbb99b00a4e706d780c531d7c04f6ab53922162d982a1aa33f",
+      "specSha256": "fd21cad23a5c632413f53cbe79fc3c887b14e4775d74151853c9e7591792be96",
       "members": [
         {
           "id": "gh-1816",
-          "specSha256": "b56172caf5fd8cff1427c8527b0259f4d419b075e2080f944f9c4cab6aaf5211",
+          "specSha256": "23ca4963e2bbb4c5355f4db594b1e236ad4de4d78a357b0cc27fca6363acf817",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1811"
@@ -5473,7 +5473,7 @@
         },
         {
           "id": "gh-2020",
-          "specSha256": "467763ec6a6b5c6acb9916999ac8750923054d33ad1afa6b2ce06a775c51507e",
+          "specSha256": "b5d6f67434a7e41087d40ca600c6f593246e7108a1926673cfa4ac4be4f8985a",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1626",
@@ -5493,7 +5493,7 @@
         },
         {
           "id": "gh-1822",
-          "specSha256": "a436f828ace3a43fc58ff42c745a1566f528045600e04e9ac3246b7093b1fe1c",
+          "specSha256": "5ba1b87c90ec18f687df46bf7ebf90f25a3175b6e673be3aeb6d992c33889855",
           "parent": "gh-1310",
           "dependencies": [
             "gh-1442",
@@ -5518,11 +5518,11 @@
       "status": "merged",
       "title": "[backend-delivery 55/74] Implement data/agentRuns, data/mcp, data/semp changes",
       "bodyCharacters": 57805,
-      "specSha256": "c8293c7e970b898d0301bb857685b7af9481ac7fd51a2edfbeaa056f2901ca6a",
+      "specSha256": "5da18aa7f78d2f1fbb0f0e9af0f5c34d2671788525f847c5b12b2a011593377f",
       "members": [
         {
           "id": "gh-1812",
-          "specSha256": "9dab4dafde290db75510aed6a160ce94e3f24fdb5fa9b196ca1b0173d460b855",
+          "specSha256": "d3a67899fbc1c708137f8788ca41cddabecd31eae2196d187a3cfc2fd760026a",
           "parent": "gh-1299",
           "dependencies": [
             "gh-1809"
@@ -5531,7 +5531,7 @@
         },
         {
           "id": "gh-1821",
-          "specSha256": "bab23177fb1eff873a9d15bd9c8b1a7b5b69ed9be1834da076b30ba48385326d",
+          "specSha256": "aa352609b9a55f8922a31f3a6c853a03aecb5e28b2a0358165e5273e3b9c9c34",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1812"
@@ -5540,7 +5540,7 @@
         },
         {
           "id": "gh-1847",
-          "specSha256": "34bd5bba5b845809b149401cda72c0c871530f18eb9953b67c800d642751a04f",
+          "specSha256": "f82bf71b7aeafd20ae9e7689a0b44231011dcb1ae93111c712752438304f782b",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1374",
@@ -5550,7 +5550,7 @@
         },
         {
           "id": "gh-1862",
-          "specSha256": "4a83f5183f09f4f21de8d5febed4f00a99a032738576d472907cbf732d3ec198",
+          "specSha256": "7b59909f749dc4e8718872b44dc0b938a8f94f63cc044b8fe9a597276d2ced9d",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1437",
@@ -5560,7 +5560,7 @@
         },
         {
           "id": "gh-1860",
-          "specSha256": "4c0a0aa5f9208cdf321da1a5e89437763ad449b3f6f6465bfebdb9d8f01ed201",
+          "specSha256": "503fa3d577a3a4a88992fba43a8682787b308ad6a18731ee53f6266bbaf4b0c1",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1444",
@@ -5571,7 +5571,7 @@
         },
         {
           "id": "gh-1890",
-          "specSha256": "547dc48a30deaceb738a98e0b6cbc393c46d731b369f9a01c3ecf1b2a0790bd7",
+          "specSha256": "259acb9a616288e95445cd4cf821e1551d0f60ab35d60c07476f661f8d19bccc",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1820",
@@ -5592,7 +5592,7 @@
         },
         {
           "id": "gh-1887",
-          "specSha256": "66e18dba33b7fe5d44037331685b6d689fd45c42cd9bf4a5735b61c07ecc405e",
+          "specSha256": "017f9c5e317a41a42deeaed6ed22389239f404a90799d768021d5340c838bbdc",
           "parent": "gh-1305",
           "dependencies": [
             "gh-1437",
@@ -5609,11 +5609,11 @@
       "status": "merged",
       "title": "[backend-delivery 56/74] Implement data/semp, alldots-agents, application/projectAgentGuidance changes",
       "bodyCharacters": 54477,
-      "specSha256": "2cf7f19567f1c5ad2283bec8342217cb62438184472ce97b8b34227d7b579844",
+      "specSha256": "b1a5fe8fe92c4b8ee220f345e2a66b99945a07582c86cddde935ae8fe56b859a",
       "members": [
         {
           "id": "gh-1885",
-          "specSha256": "4fddbb3c7bde66a674cb9a29ab1c822aeb64aa18c72724939eeef1e30824ea51",
+          "specSha256": "d9e87941d2e9d1964dfd72bf1623350f58844ce51a9a9608ffe5993bcbf15716",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1860"
@@ -5622,7 +5622,7 @@
         },
         {
           "id": "gh-1907",
-          "specSha256": "fb29c247349fe017cdee59bcffe9f57173fa91e756e0ee2e829a41de483ad3f2",
+          "specSha256": "6cb9d7239fe1a0b9e3ac57f5b473d08b4681715c555a2cbfe255db62b1481498",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1547",
@@ -5632,7 +5632,7 @@
         },
         {
           "id": "gh-2019",
-          "specSha256": "b73229978e16c138573a9402d8ef69a5055126e87094f1b1f66aa95198e4666d",
+          "specSha256": "44bc5b577375f9f49e5199953166d967b4f36979cd9a4895b5737bb575a34a2f",
           "parent": "gh-1307",
           "dependencies": [
             "gh-1568",
@@ -5643,7 +5643,7 @@
         },
         {
           "id": "gh-1915",
-          "specSha256": "6e2bb52feab2619e669458c51cf35633dec39c435cf656cbf3159a9223f5db85",
+          "specSha256": "a2c6b8f789e9cc0ae4d00b8ecb8e2e3966c34dfbfe1553372b2cd275e506a3d2",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1465",
@@ -5662,7 +5662,7 @@
         },
         {
           "id": "gh-1945",
-          "specSha256": "9d44ba11e241d289fa1fe9393d31e8f80aa7969afeae7060ff3ec8f3ec217581",
+          "specSha256": "609d018d06015836eb427c5966ad41c81d30595864fc9bd350378425011c4834",
           "parent": "gh-1311",
           "dependencies": [
             "gh-1919"
@@ -5683,7 +5683,7 @@
         },
         {
           "id": "gh-1888",
-          "specSha256": "b6d7445ee9477295249d9df13ebaa51eca1f1c98d42dbf579dbeef3609bfd208",
+          "specSha256": "9d272ac479a8bc0296ef2fc727c03f5602fd02f43693b1e1c4ce6d89d77185a1",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1684",
@@ -5699,11 +5699,11 @@
       "status": "merged",
       "title": "[backend-delivery 57/74] Implement data/mcp, realtime, realtime-client changes",
       "bodyCharacters": 57344,
-      "specSha256": "e306ab792173013c5d3b683a514dcbfbf82d033d10e1186518bbcf7c880022bc",
+      "specSha256": "6750ceff5acdaf971f4d1a560e1b976daef2e3e1d2164c3df475ee50bfbfc530",
       "members": [
         {
           "id": "gh-1823",
-          "specSha256": "3c6371675b4ef5ef66922b56b655c58242bcb1dc4cbc80ed40878fcfd921856a",
+          "specSha256": "32afebe16d26448bc348f43e15ce2a5dda874ce7dc16f15c6d219d8af5454e41",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1821"
@@ -5731,7 +5731,7 @@
         },
         {
           "id": "gh-1828",
-          "specSha256": "4b50aa458412859aa7206c08cf8194310e29d21ebbad185844322074cba569a2",
+          "specSha256": "e63f0a7c16d971d2ccf44948bc7e850b9826b55b3b8b8ae597b1a264b970c9c5",
           "parent": "gh-1334",
           "dependencies": [
             "gh-1823"
@@ -5805,11 +5805,11 @@
       "status": "merged",
       "title": "[backend-delivery 58/74] Implement data/sleep, data/chokePoint, application changes",
       "bodyCharacters": 53327,
-      "specSha256": "446095541a352146655664358b83fdbe3f5e6138b0072e40e93ae127275e2b1d",
+      "specSha256": "bc91314b03eb0629e13b4efdd469f144d9f4ab81f0f02ba2c1602a19bdcac4b9",
       "members": [
         {
           "id": "gh-1835",
-          "specSha256": "c33e3cd6e8e191a726b6ac2289fa7be31408ba0cabbada502ed78eb714670b93",
+          "specSha256": "fb8cdb328c194ccf580005e93007c0f4b4ad9bb569856f73cd6e1fa756d05902",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1828"
@@ -5839,7 +5839,7 @@
         },
         {
           "id": "gh-1840",
-          "specSha256": "80850b222de554d0b3850f19bd6b9a0fbca8567ae963262b496fcfa797310c44",
+          "specSha256": "eda9591ef5da68c3cba216da7af532426fdd1fa80b44655454b4c128d21774e3",
           "parent": "gh-1335",
           "dependencies": [
             "gh-1791",
@@ -5861,7 +5861,7 @@
         },
         {
           "id": "gh-1837",
-          "specSha256": "ac5a9a45fbe6b1e75fd19d597614c0de8fd8eeb046ff018cbeabb82c28f8a5e7",
+          "specSha256": "edb9062e80a33efc0ec62491e5f31a7dbd510340fc3c39a24314f1dce7b6bdd5",
           "parent": "gh-1350",
           "dependencies": [
             "gh-1798",
@@ -5871,7 +5871,7 @@
         },
         {
           "id": "gh-1839",
-          "specSha256": "6ca4f6f18c1d333d02a2b81460edca8603e1f510795869eff89a224d1a94070d",
+          "specSha256": "ed70d7841b44ff9f7d69d5dab2db9ddad3a8a6a998d8557be721626b99e86e74",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1810",
@@ -5888,11 +5888,11 @@
       "status": "merged",
       "title": "[backend-delivery 59/74] Implement data/calendar, data/chokePoint, data/search changes",
       "bodyCharacters": 55960,
-      "specSha256": "423c25f1c9eb32c6b7453fc0db22c6b13d5c66c5caa6fe6777fa3b8189726a29",
+      "specSha256": "cafd2e5b9bb7fb68760ce91bcc8e461f66873627939c6727aac29a103b1c7467",
       "members": [
         {
           "id": "gh-1841",
-          "specSha256": "f5a96663f29d9b82d7079c95a7ea20e723fabdcd935b9d49ad0b7ab31868f346",
+          "specSha256": "5cd53849ecc2eef91be057682ccbbbdf0dd7bed663297da12b58264eb4e7d615",
           "parent": "gh-1349",
           "dependencies": [
             "gh-1839"
@@ -5901,7 +5901,7 @@
         },
         {
           "id": "gh-1846",
-          "specSha256": "dbf26a65be3d047922186076922f46d371f1979f38e581d2d67a10fc9853384d",
+          "specSha256": "50856c64888d88ee55ee86afb8de8b6baabd3f3dc843c99dc73ca9f1a274a162",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1435",
@@ -5912,7 +5912,7 @@
         },
         {
           "id": "gh-1842",
-          "specSha256": "10e603a9e2a8a5ff9c47c28ea9a59f7d720b4984e2d6cd5bcfbbabf3c6128a1a",
+          "specSha256": "15017fe73d51e020d51a1941b9c53aa1a2e866cc666a713bb41f5894d2c62ce1",
           "parent": "gh-1323",
           "dependencies": [
             "gh-1589",
@@ -5922,7 +5922,7 @@
         },
         {
           "id": "gh-1857",
-          "specSha256": "44505f1fc7a5fb2776250eed800ff76143ee23333cbbb73fed2d5f2e692e5440",
+          "specSha256": "473375e1fb20e92c5ec1244194651d2f45d5ae003d7c099e4e1f3b7f71b42aa4",
           "parent": "gh-1323",
           "dependencies": [
             "gh-1842"
@@ -5941,7 +5941,7 @@
         },
         {
           "id": "gh-1843",
-          "specSha256": "7ca25a01c639024f286fe045a870dcbbcab5bcd620a1f6f222618f1ae645ac3d",
+          "specSha256": "e187f01790deee310d2d900230d07f68913522c5fab5f99b53eb8eab8bc82465",
           "parent": "gh-1348",
           "dependencies": [
             "gh-1832",
@@ -5996,11 +5996,11 @@
       "status": "merged",
       "title": "[backend-delivery 60/74] Implement data/chokePoint, data/inbox, data/transcription changes",
       "bodyCharacters": 57495,
-      "specSha256": "ab3df2f1ad271a9242142be152fbf9f578d472f88556ebe20222d802e5c5249c",
+      "specSha256": "b3db8cc97806b0dfc67d9e6858ccf8b6396f9634d5d516dad0c3f942f34471aa",
       "members": [
         {
           "id": "gh-1845",
-          "specSha256": "fdc710a38cd16ad2f81d3658a858443b359a1327e69c5053a62e98d6c1a77bec",
+          "specSha256": "31684d54d5afb09cfc8dea047f75d328dc67b78265652c816cc64c8afb436a43",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1430",
@@ -6019,7 +6019,7 @@
         },
         {
           "id": "gh-1852",
-          "specSha256": "a811d022df573c416be7b3c54b7fcafd45be318cfb873eb10aec07bd9af2967f",
+          "specSha256": "6aadca5f9fd78f529c4f9fc84b552e14a12084b18aeaa687dccd5176d1017b12",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1845"
@@ -6038,7 +6038,7 @@
         },
         {
           "id": "gh-1851",
-          "specSha256": "bdfdb4cf0d95c9243eb443d380fa47b7278fd6a1a4cedf91ac0ece0e4077d042",
+          "specSha256": "ff9f237451de1a70919c71ca51bc4c33ac9ea7dc66118ad4de4d82df65234121",
           "parent": "gh-1297",
           "dependencies": [
             "gh-1845",
@@ -6048,7 +6048,7 @@
         },
         {
           "id": "gh-1856",
-          "specSha256": "c1455b4bdfd9fde8830ce08006b4e9e303f9dba45aa2eb9e7c7b922c9cfe2106",
+          "specSha256": "7ba88a7285f92aa92813969652c854656cdbbbbcd5cb93761bb9f7caeee26d2e",
           "parent": "gh-1340",
           "dependencies": [
             "gh-1715",
@@ -6067,7 +6067,7 @@
         },
         {
           "id": "gh-1858",
-          "specSha256": "86a09581ba801d0c69da27e5b1e1586593cce4bca0277f9a1b8e124454187287",
+          "specSha256": "77a4d9684bc11a17bcc9494584ad6a2112cb407328698c5e0289c3cd96ecba46",
           "parent": "gh-1347",
           "dependencies": [
             "gh-1719",
@@ -6093,11 +6093,11 @@
       "status": "merged",
       "title": "[backend-delivery 61/74] Implement data/mail, data/search, shared/genericOperations changes",
       "bodyCharacters": 55657,
-      "specSha256": "7e6f403c5e358a6c74d4528c09796d034e92cf30780b69d77fb02047f161bb48",
+      "specSha256": "55c0d05c6f86678253b67c5d3e0672438467a52db1ab06ca8b246f5d8208139b",
       "members": [
         {
           "id": "gh-1859",
-          "specSha256": "ee4206ab65b896ae6823422d08c3eda25fa26e0abb1eb8baf6fd028740e6100d",
+          "specSha256": "5cbfbeedb7fa027170b163d2794b5a8acebba647d7fb178026afb9912fbb6f2a",
           "parent": "gh-1323",
           "dependencies": [
             "gh-1858"
@@ -6106,7 +6106,7 @@
         },
         {
           "id": "gh-1996",
-          "specSha256": "f10c255aaefd36fb20aedb4e471c7c5116b230ff8775d895748cb80f0143ec44",
+          "specSha256": "f461e3d78bed77fa3af092f7ff235371d87beb789f9d0e64f56559dc55a95524",
           "parent": "gh-1323",
           "dependencies": [
             "gh-1854",
@@ -6116,7 +6116,7 @@
         },
         {
           "id": "gh-1865",
-          "specSha256": "95270678c33063f9e46d47d8fb8a44988cf7b589cdd1081d26cd2ce3d4c067e6",
+          "specSha256": "85a8ac1f1f0afee1a5e094a31638b740841edb0a79290dcd93b619c5424c4024",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1816",
@@ -6127,7 +6127,7 @@
         },
         {
           "id": "gh-1867",
-          "specSha256": "7593fe77aea3e3811e8918ef319b45b2207f1bd7ac4e60b616b230caf1a2bd23",
+          "specSha256": "7963ab08277ba8f519ecb7b7234bfadeeeeddf52b7169832ffc92a73e2db7cfe",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1504",
@@ -6164,7 +6164,7 @@
         },
         {
           "id": "gh-1870",
-          "specSha256": "85ae8dd1459ecf8121a91d1e68fcbecf80912d35a232b6620aaf78df84ec10dd",
+          "specSha256": "1cac37968f9d525b750aee2a96e9f3d190b1ed73072c1d85686d09002383c33d",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1867"
@@ -6173,7 +6173,7 @@
         },
         {
           "id": "gh-1873",
-          "specSha256": "5a4ef86fecabe051f830df1c44d19c857e15d02ebe080d5b384596336b3de731",
+          "specSha256": "805aedc5b732dbe3759444875667f6ca1921fa812f2bf974084fb5e473533dd3",
           "parent": "gh-1297",
           "dependencies": [
             "gh-1870"
@@ -6182,7 +6182,7 @@
         },
         {
           "id": "gh-1876",
-          "specSha256": "d6531ebba3dea6102adb79299817c343d11b9e6bcf97b0f296089fc6028aefbc",
+          "specSha256": "5620ea7a29002115ef4f64252aca436c1aa30a974d298eb419a126416ea7e692",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1873"
@@ -6197,7 +6197,7 @@
       "status": "merged",
       "title": "[backend-delivery 62/74] Implement data/chokePoint, data/calendar, data/trash changes",
       "bodyCharacters": 57775,
-      "specSha256": "6c7d1c2055399833a7db7fb0e159a71940d3833a6138b316339638a8e62b31be",
+      "specSha256": "0f1b56bf56c795b7737fbdccd71378c711b59489e0e5007a96e3df09c29b22ad",
       "members": [
         {
           "id": "gh-1875",
@@ -6219,7 +6219,7 @@
         },
         {
           "id": "gh-1879",
-          "specSha256": "fd9b4a5998eb748f2c6fb66cbfd1e9e64bdb9c5baa29fcb6bd55f51b27a00336",
+          "specSha256": "f79857dc9ffdb53a95a50bef01d806139cb13f9a232aef0e97fbff518959312e",
           "parent": "gh-1347",
           "dependencies": [
             "gh-1838",
@@ -6230,7 +6230,7 @@
         },
         {
           "id": "gh-1883",
-          "specSha256": "98063fabaa6d7d7bbac603f811f2cdeb7b9299dc8db91d570371f307e6283a10",
+          "specSha256": "777151f01e6be346512059bf54d24344f29830364998198e4cff76509ccd72bf",
           "parent": "gh-1324",
           "dependencies": [
             "gh-1614",
@@ -6260,7 +6260,7 @@
         },
         {
           "id": "gh-1889",
-          "specSha256": "131eb7dd13a6a53a52f5fd423cabd73165f12570019233c2653955bb5a768ecf",
+          "specSha256": "1e96250697caebf99c0de1c97c1d94e3abf854304646880d8d4112252ed98147",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1822",
@@ -6271,7 +6271,7 @@
         },
         {
           "id": "gh-1892",
-          "specSha256": "afe65910dd3890f2b2bb7278189fe9b072fe19b5711ca8c26dfda536214b1c10",
+          "specSha256": "e65d2c8070cac4b94c013cae51f682f61102d5613c694acecb9522fd10cc9ca1",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1471",
@@ -6281,7 +6281,7 @@
         },
         {
           "id": "gh-1893",
-          "specSha256": "ce5c9e2f51135808c9af59fca0ccb51bcb688bc953b06c1414844c6adc0104a6",
+          "specSha256": "2277d97adc0e1449edbca89ca4e3b5051893da0f5434b806749c39350a7dbd76",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1874",
@@ -6297,11 +6297,11 @@
       "status": "merged",
       "title": "[backend-delivery 63/74] Implement data/mail, data/inbox, alldots-api/adapter changes",
       "bodyCharacters": 57790,
-      "specSha256": "878686181b5e912960e00b8c650153348d990b8af1fa9841fa5f13f335ec24a6",
+      "specSha256": "a20526dda336a54c0cb5bf4a9285095b897be26b733898d078704679ef7acf46",
       "members": [
         {
           "id": "gh-1895",
-          "specSha256": "e5d04f96b7763c3e664aca73f60d90996898a85ff16fe82078a722277159e4ea",
+          "specSha256": "5eed32e27c86279be3c6eda09e182d9280f1510b785db1bf235244532aabdfbb",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1893"
@@ -6310,7 +6310,7 @@
         },
         {
           "id": "gh-1896",
-          "specSha256": "3f2feb9cf5354c85e4164a0e4c495ceb6bafda88b4c085429636d6753480fa6f",
+          "specSha256": "1c0d6fc4be8bab127419ab0072cd0f0a306190fc57ec10840ab363f8f11bd5bb",
           "parent": "gh-1338",
           "dependencies": [
             "gh-1480",
@@ -6320,7 +6320,7 @@
         },
         {
           "id": "gh-1897",
-          "specSha256": "7de0386c9dad74f21d992608ef024970043136b98a5d96e21f515cfd743b3dd2",
+          "specSha256": "eeb982625438717953d475269f88d2c268a8c7146ace095c2154182bf456109f",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1896"
@@ -6339,7 +6339,7 @@
         },
         {
           "id": "gh-1900",
-          "specSha256": "b0d43f54107d1f4df6a533b2da6588f37d081b3544edb59eef457f8cd5340d2b",
+          "specSha256": "21945c113c2894642487995f876ebd441df7c04f7be07e3a58496758f7cf40da",
           "parent": "gh-1343",
           "dependencies": [
             "gh-1897",
@@ -6386,7 +6386,7 @@
         },
         {
           "id": "gh-1928",
-          "specSha256": "c908fe25c8b5c8449f585f664e98653328b58387ca0ae530ed34e4404195f7e2",
+          "specSha256": "91ccd269393d0c6221e58673627eed353cae92429038b57e536b6bbedd22752e",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1892"
@@ -6410,7 +6410,7 @@
       "status": "merged",
       "title": "[backend-delivery 64/74] Implement data/inbox, data/calendar, data/manifest changes",
       "bodyCharacters": 55053,
-      "specSha256": "94f1923e29f7304bcd304c6a3b0cfe73a39e22d2f72c575d01b2471a2e8c1950",
+      "specSha256": "d90bfa2d19c28446c08dc8d9dd10b795bc715e183213ba1a423b86289d869899",
       "members": [
         {
           "id": "gh-1906",
@@ -6442,7 +6442,7 @@
         },
         {
           "id": "gh-1894",
-          "specSha256": "8ae72e5fb274eabf87c76fd60ce44fc14f2b19664ae490654a99f051bf131af8",
+          "specSha256": "f5d30e5ba56b853508e71470ac3ee1d26b353c06f3f72e13fb062be74f65f70b",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1892"
@@ -6460,7 +6460,7 @@
         },
         {
           "id": "gh-1938",
-          "specSha256": "316e86480c7c2c668cebce0edca686a75342de8b2a25b0d33cb61e2743dc925d",
+          "specSha256": "04a6a6dee5b3e10ca205c934eb11a2eab86f1121eb88d1bbd632db8a853ce838",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1648",
@@ -6470,7 +6470,7 @@
         },
         {
           "id": "gh-1901",
-          "specSha256": "49650db7bff49d23a2ae8786e0a72b0f69082d951a1ebcf5698ef252b5163583",
+          "specSha256": "60bdb8534fa4acee993d9b680e226c9901a97b483142b33ac49e6e0dd7122a3b",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1879",
@@ -6480,7 +6480,7 @@
         },
         {
           "id": "gh-1905",
-          "specSha256": "f01de346366b34ddb30d682f3753042788cd73542cf95434585608ee757c7cba",
+          "specSha256": "52dc312fe39537671a62e4c1dcdbafab05d7d81e2a3de8bc25aa7739653968a7",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1596",
@@ -6497,11 +6497,11 @@
       "status": "merged",
       "title": "[backend-delivery 65/74] Implement data/chokePoint, data/agentRuns, data/scheduler changes",
       "bodyCharacters": 57900,
-      "specSha256": "cd066664ad57945e6885253361ae707ae96a588ff74f36451298d1c8210f4662",
+      "specSha256": "74a048b61e2f598ce5aeb0c8505889f640acb08680f77f1996ca89e2b1a2bf13",
       "members": [
         {
           "id": "gh-1903",
-          "specSha256": "b1f4a0625b3b3e3367e8f5be2d348af6dafefe1073259860c26d04e5c5349e2d",
+          "specSha256": "3cc750a32ed24152555aff0d95a91935f968badbb6b36151f8409600bdf68e9a",
           "parent": "gh-1296",
           "dependencies": [
             "gh-1900"
@@ -6510,7 +6510,7 @@
         },
         {
           "id": "gh-1904",
-          "specSha256": "295ab310f729d17e3f39a8de22b15f8a19f3eac5033fe82e0022d55e627ece88",
+          "specSha256": "a9014754e7c36e51f5b27f99684c44ae2052f9485b441a1dc3249b6d6f3ed5ea",
           "parent": "gh-1297",
           "dependencies": [
             "gh-1903"
@@ -6519,7 +6519,7 @@
         },
         {
           "id": "gh-1908",
-          "specSha256": "ca48843c69536fd73d5d9bf7c24857dbfa7491b122836aa0c1619d0349ba8c9a",
+          "specSha256": "66d69661d62e2b0df7ee20b5bdb3de98f16194e9bd5b54b1011b73a4e7ee03b4",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1458",
@@ -6530,7 +6530,7 @@
         },
         {
           "id": "gh-1909",
-          "specSha256": "e7aa24a8e2a65f002a77dcf6eb1b0a392c38371f8d9bc7f58a616be1e2e2b5e1",
+          "specSha256": "7b6bd6b09ca95b6053ae17e5ad13ecf230036f248d2262a5393fd7c1a5d98d39",
           "parent": "gh-1308",
           "dependencies": [
             "gh-1824",
@@ -6540,7 +6540,7 @@
         },
         {
           "id": "gh-1910",
-          "specSha256": "6f1a9132f2c5b5a25181cafc7ba9670f1219c5811b7936343d70457cfbc43d1b",
+          "specSha256": "8fdd5e76fcee9226cf7865d58a8f3283a8b2ce17aa4aaba5815a2f3507c5c777",
           "parent": "gh-1333",
           "dependencies": [
             "gh-1909"
@@ -6558,7 +6558,7 @@
         },
         {
           "id": "gh-1912",
-          "specSha256": "3a3d5a864f12fb436a2de40e45ef0d833ecdf4ee7bd9337aee69f017c225388c",
+          "specSha256": "ef1c80a108abe33e62050a6b49f4c6d458f7842cff88221cf9832161cdd65115",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1906",
@@ -6568,7 +6568,7 @@
         },
         {
           "id": "gh-1364",
-          "specSha256": "470aa09127f426a92bd68c58f22f940f171ffec0f4e6b67f138fed930dcf4983",
+          "specSha256": "b4a5135abb247756263e15ca4b8ca3d13f86601dee23a34c4154fb88bf2d39eb",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1087"
@@ -6583,7 +6583,7 @@
       "status": "merged",
       "title": "[backend-delivery 66/74] Implement data/mail, data/inbox, data/semp changes",
       "bodyCharacters": 55316,
-      "specSha256": "9c0cd48f08a88ef1bdd80237051b274b06814cacfdae07652b0df391fd74422f",
+      "specSha256": "67b0d7bbf176b1a7863313e8945231bae55d98765e42545b093232a5337e0ac8",
       "members": [
         {
           "id": "gh-1916",
@@ -6598,7 +6598,7 @@
         },
         {
           "id": "gh-1917",
-          "specSha256": "acdefa046e904adf8c52d8e262872815d9f17804d4328b7327e9625f350cee28",
+          "specSha256": "be9488e32a7b6bd7d1c736af08bf8cb9ccc54d359d7208098f14e0c9acc8637b",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1746",
@@ -6608,7 +6608,7 @@
         },
         {
           "id": "gh-2033",
-          "specSha256": "10aebf17c7ab8994af1128cd919998cca3aca1813ed7d590bc70235524c60a39",
+          "specSha256": "cba3253e9f7df8a8ce7eb48ec2a90b0bd217bd2681719ac4b5e3fd949f3e663b",
           "parent": "gh-1317",
           "dependencies": [
             "gh-1917"
@@ -6637,7 +6637,7 @@
         },
         {
           "id": "gh-1922",
-          "specSha256": "24248c1c9fa00d33135e3f30eac977b421ebd84d9024c28797dfdc90910e4836",
+          "specSha256": "e6f825ea879e93824bca40c3c06009b27ec98e2f05ce77059791813feb79d2b2",
           "parent": "gh-1343",
           "dependencies": [
             "gh-2033"
@@ -6675,7 +6675,7 @@
         },
         {
           "id": "gh-1948",
-          "specSha256": "545205dca815a5588f3a275f912737d37139b34c3279db0dbb2d87473470ec4a",
+          "specSha256": "8cc96d97fc2f1ccbfc203a6c213fa10d98983f8cbd0337ecac1ee4719eeaefcf",
           "parent": "gh-1318",
           "dependencies": [
             "gh-1733",
@@ -6685,7 +6685,7 @@
         },
         {
           "id": "gh-1926",
-          "specSha256": "f8e321dae894f53f3fbed489e76733d6ba04ac2c13794f9a3ebf768ddbd56f8d",
+          "specSha256": "c7ec96054d582f9e5552c2ad1112594acd4d0df9af1caf80ba332702110a6458",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1568",
@@ -6702,7 +6702,7 @@
       "status": "merged",
       "title": "[backend-delivery 67/74] Implement data/calendar, data/semp, agent-runtime changes",
       "bodyCharacters": 54126,
-      "specSha256": "f354d5f5d178791558d7f9c21336599a15e194d4efb21c917ae7a4a3d6e56863",
+      "specSha256": "993af1e6c5b12a5abcc27c67040e3cd837733fd33285c895401a351171a70bd0",
       "members": [
         {
           "id": "gh-1925",
@@ -6715,7 +6715,7 @@
         },
         {
           "id": "gh-1929",
-          "specSha256": "60af0299ce4143be94128679ab7ec8c5887e9a539d924f32670a7aa2375598e2",
+          "specSha256": "da4c3e33afecb3ec710a5747e46365fb9f9736403ac1439a5905d8a9a6d373f8",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1925"
@@ -6724,7 +6724,7 @@
         },
         {
           "id": "gh-1930",
-          "specSha256": "fd508bcc171df50bf21537495d1d5071c4b4fbcb647a2b34290794088e6913b3",
+          "specSha256": "bf5bf3ce720e5714fe27f3be1c3b5d7f60c11676fc21a7d80db347be10baa4ce",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1885",
@@ -6734,7 +6734,7 @@
         },
         {
           "id": "gh-1931",
-          "specSha256": "36013b950c7548dbdac4c9bf56e227b025aa7461e9742bc6537152c23269f4a6",
+          "specSha256": "1030e31eefd1da76d65486f54c52fbb36d7b0b138a510641029ed02f0e460176",
           "parent": "gh-1332",
           "dependencies": [
             "gh-1926"
@@ -6752,7 +6752,7 @@
         },
         {
           "id": "gh-1935",
-          "specSha256": "714fbc3d2e119285a9abb9a0d4347a0c93ba386cb5087c91c3bd3590f78992a4",
+          "specSha256": "adac7a0bf5e1f6d07f5a4a03b1f29fe7931bb1634ce9b9e723f5bb4527832222",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1455",
@@ -6762,7 +6762,7 @@
         },
         {
           "id": "gh-1937",
-          "specSha256": "c0529081836399925cb69355b34212700a46401ddee1209297671db78ba281fd",
+          "specSha256": "e2b0113312c79da125a98c23b04fc47f05194ba2f9487907fade7150c76aced2",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1935"
@@ -6777,11 +6777,11 @@
       "status": "merged",
       "title": "[backend-delivery 68/74] Implement data/calendar, data/inbox, data/notifications changes",
       "bodyCharacters": 54226,
-      "specSha256": "c15ccf23eacbe5a82d0a8506a0e99bb5a81f688e796d5256e94291ffe9132407",
+      "specSha256": "41a38d813b92927e415c08b3fe9bfaedd9bceb2581fc66265450efb5fcaf0478",
       "members": [
         {
           "id": "gh-1944",
-          "specSha256": "3d10784a9c41818bf34c182bee3ec656189cc12a9338ee8f384d129afa6524ae",
+          "specSha256": "26350c913dc25ee98dad7654b385731f58f62b94cb9e9d4e5944948c5b04347d",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1929",
@@ -6791,7 +6791,7 @@
         },
         {
           "id": "gh-1954",
-          "specSha256": "8e4848a95884f079b67a36a81855152f4b3fa5f988c2af0ae5e6be5935a7e816",
+          "specSha256": "e380cfaa4ae24c7548db0fd329f3d8c6bf0877d0f5e25ece0f17380583b93da4",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1891",
@@ -6839,7 +6839,7 @@
         },
         {
           "id": "gh-1940",
-          "specSha256": "fc9f995f81b411c77ff8a6f763bd5d619ebe4d995f529cfbb66e640e297fd213",
+          "specSha256": "a24f1042bf25e38f803ae73052a44860cc5bf7054ff20bddd892351b9f3ece49",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1921",
@@ -6855,11 +6855,11 @@
       "status": "merged",
       "title": "[backend-delivery 69/74] Implement data/calendar, queue, data/chokePoint changes",
       "bodyCharacters": 54419,
-      "specSha256": "0fea13ac4c5afe624ecfd4043ba8db075532cdb616dbc241a371bf5c7546800c",
+      "specSha256": "b91f7e45005e2ae4567e0f51656d6832bb8ae917f472df349859e18a559cc6aa",
       "members": [
         {
           "id": "gh-1942",
-          "specSha256": "b7d70de6787c5797d18f2c06a06739b61540efb0f5187f185017feb0a0e59511",
+          "specSha256": "baa11b3ef185176e26ff1cd950f60543271e94ec2fdb0ec3fc48cc69eb675144",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1940"
@@ -6868,7 +6868,7 @@
         },
         {
           "id": "gh-1941",
-          "specSha256": "0870afd0c883e11c67ea4032763420454d798d7199d8532aa3083a3320ddeeec",
+          "specSha256": "a5871d485376b79a96ecf71f166324f7fea3ca40e5da1d283e0e7a939995234d",
           "parent": "gh-1318",
           "dependencies": [
             "gh-1927",
@@ -6878,7 +6878,7 @@
         },
         {
           "id": "gh-1950",
-          "specSha256": "743764a3337d3aa4c575f988ed0862e6ad6a9530cd42316d870689baeeaa96c9",
+          "specSha256": "6433dc29f3c36e297417093a48f756e1e060ad4b8a2581be357ee3eb818463e5",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1941",
@@ -6888,7 +6888,7 @@
         },
         {
           "id": "gh-1952",
-          "specSha256": "2e261d274dd3cbce8f90d21eec37e71fffb4516907ee7496bb8e18bfaf240742",
+          "specSha256": "2799e191a237424022996f7c9d320e592b25ae7189db572d7614e2833e904f9d",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1580",
@@ -6898,7 +6898,7 @@
         },
         {
           "id": "gh-1953",
-          "specSha256": "5ca9cd7edb6bed5dfa416837f826549f20b72d6b3b6345263c33d1cb76503fb8",
+          "specSha256": "b4fd32d4801df24bdfa4bb8d7ddc7ddb0612a83d59026b1aff8393284ea199da",
           "parent": "gh-1344",
           "dependencies": [
             "gh-1952"
@@ -6907,7 +6907,7 @@
         },
         {
           "id": "gh-1957",
-          "specSha256": "ff8acd633ad740556e022c44629e9e8e81da64e212fa68c45c15c4f9b4617f41",
+          "specSha256": "9ec973e6f1aa0e6f5883478a1b822013e4d402362aae1ebdd2eef7f331b9e3b4",
           "parent": "gh-1301",
           "dependencies": [
             "gh-1953"
@@ -6932,7 +6932,7 @@
       "status": "merged",
       "title": "[backend-delivery 70/74] Implement data/inbox, data/blobs, data/docs changes",
       "bodyCharacters": 56413,
-      "specSha256": "83670522dc3b05b22c9154bbf735c0b5bedc578a2db5ecc3d39094cf1503a940",
+      "specSha256": "dc4ef6977d5effc6e8b69845d808351af280e7e04b6abef403c025c0a60553e9",
       "members": [
         {
           "id": "gh-1943",
@@ -6948,7 +6948,7 @@
         },
         {
           "id": "gh-1947",
-          "specSha256": "65be8745ca138dc8eca3dd3ddd3e93913bfd8d01f33e31bc49fe398047382931",
+          "specSha256": "0bb23baba4d0da7ebb611ad639e1fdf37d4fac9b2458c90b61b1f9870a14ce92",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1924",
@@ -6959,7 +6959,7 @@
         },
         {
           "id": "gh-1955",
-          "specSha256": "803a6248e2ad3475b8713f7dbc4fa586288229792145f382002f9c639012052f",
+          "specSha256": "c7d98230956c3dc7a12697bed3032638081aa1a91c6c9c61e6063f1336856893",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1947"
@@ -6977,7 +6977,7 @@
         },
         {
           "id": "gh-1956",
-          "specSha256": "f6bbcd1e795861abaf46afe35d8857110bd7ed3dc58fbdd067427c89a8a4bbf7",
+          "specSha256": "3caddd770ddf285604cd0d51992ceeb3f4a8f1f55e3ae73b50b522f75b3d82a5",
           "parent": "gh-1318",
           "dependencies": [
             "gh-1580",
@@ -6988,7 +6988,7 @@
         },
         {
           "id": "gh-1959",
-          "specSha256": "f57a346d0ef39e4ca24ef45162bd2f0746da789adf71dee024420a62b58487bc",
+          "specSha256": "66537b0e7109ff2125da9314294d6d5cec44382ee16a5e6739c6ad5a9a9e7ab4",
           "parent": "gh-1313",
           "dependencies": [
             "gh-1649",
@@ -6999,7 +6999,7 @@
         },
         {
           "id": "gh-1961",
-          "specSha256": "c2d68fa02b538640780e4808bb25908dc03ecc49937955ecc95a87b78d215e49",
+          "specSha256": "d1c07eac0aa6225e17f9ff5ab6f650a5aaf6b0f5246bd7e4d45995b9ff2c8220",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1959"
@@ -7008,7 +7008,7 @@
         },
         {
           "id": "gh-1963",
-          "specSha256": "c8f84a19fc2ad282cf19cd6fe242f8744e5b18dfccb6c10df0f1e14476b43e9e",
+          "specSha256": "f0a53f3afe351c697fac587e3602c87aeed0906c22d281fca384083f94ddf1c4",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1564",
@@ -7018,7 +7018,7 @@
         },
         {
           "id": "gh-1967",
-          "specSha256": "f6be5b9b25d076eba2539614eb75d2fa71b5a00fe0ea98cfa6f8c35b14227104",
+          "specSha256": "0c1123ef485fb2aa135c930037cfcf183bde28815b5bc520ba7b7362275dcc66",
           "parent": "gh-1312",
           "dependencies": [
             "gh-1659",
@@ -7034,11 +7034,11 @@
       "status": "merged",
       "title": "[backend-delivery 71/74] Implement data/inbox, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 55908,
-      "specSha256": "25d0969d12f10f99a895c6d6cd392db618dab978b16f7ed83e43b424ef189495",
+      "specSha256": "f0cb987118df077f72cbdbe5c6b38ea5884817c5ef0a0eec7e3ee1c753581156",
       "members": [
         {
           "id": "gh-1965",
-          "specSha256": "431816761233841bca0a22ef645f090f1ae80e592f802dac79c1633ed0ab2188",
+          "specSha256": "152fcfd45533f3bae68a2d7d8280699a2c392c721db5fded6afd419e37785a22",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1963",
@@ -7048,7 +7048,7 @@
         },
         {
           "id": "gh-1978",
-          "specSha256": "761cd3f42c11f2ec8db5b6da6681881f78233362ae6142520210bc664c83ff7d",
+          "specSha256": "207b133ec89ae04aa6ecc6cffec0167731100478c403f291ded859a17b47df87",
           "parent": "gh-1337",
           "dependencies": [
             "gh-1696",
@@ -7061,7 +7061,7 @@
         },
         {
           "id": "gh-1986",
-          "specSha256": "112e0c2d5b3b3217fbdb88a99c4b4c4990497427426a525d612dee5733baabdd",
+          "specSha256": "b849a8c21b64584368634d7d7f87337319284b4bcba38b9e29c5b632d63a5f70",
           "parent": "gh-1315",
           "dependencies": [
             "gh-1978"
@@ -7080,7 +7080,7 @@
         },
         {
           "id": "gh-1970",
-          "specSha256": "9c8d12cb3386a782750f1398a75991ab99a15668322f9f753cb4c33d29385454",
+          "specSha256": "e1ede207503a258cd044fdda2f780c1422ba6cc98b3fbb41f7cc079257992a4e",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1381",
@@ -7116,7 +7116,7 @@
       "status": "merged",
       "title": "[backend-delivery 72/74] Implement data/calendar, data/inbox, data/docs changes",
       "bodyCharacters": 58514,
-      "specSha256": "0440c000388b004ede43a946cb6eeb9a6cf0e4d46c044e453ad7a0f70cdf281d",
+      "specSha256": "2301ebf7b71810b8ac396a2eabf3498b419626c487c0b6a12d3195b5608d50f3",
       "members": [
         {
           "id": "gh-1962",
@@ -7130,7 +7130,7 @@
         },
         {
           "id": "gh-2004",
-          "specSha256": "58915ea076dc8ba69b0245d4e0d7fee3a02026b70b5a12f38d022fe2b8acad46",
+          "specSha256": "71e3f3221970e9b389a73efda83e71fb6284b3935c210e985e6562f6605a26e0",
           "parent": "gh-1352",
           "dependencies": [
             "gh-1960",
@@ -7214,11 +7214,11 @@
       "status": "merged",
       "title": "[backend-delivery 73/74] Implement data/inbox, data/mcp, queue changes",
       "bodyCharacters": 57226,
-      "specSha256": "4c6840651f03c7a76dad5afadef154c84056f59186454f9eb203ea9d69d9c308",
+      "specSha256": "dc4131ca79452a6fd12aabafdf394b8e62e044cf37a1516bba297e8b60ceb9e0",
       "members": [
         {
           "id": "gh-1972",
-          "specSha256": "93ddfdb33f853751d52e689399e14fe3cf06dbee0aeb1aa6a9ab95ef0ffb7f11",
+          "specSha256": "5d419e5bd1986ffbbd83343764b069bd0fd3f56df26c03b88b12c345e3937186",
           "parent": "gh-1315",
           "dependencies": [
             "gh-1967"
@@ -7258,7 +7258,7 @@
         },
         {
           "id": "gh-1980",
-          "specSha256": "99468412e2edf9486e8d2f9883c0793c185424e86a16f4040c38f263f5829dde",
+          "specSha256": "66a9ceef8b7802881886f749e737a611dc39e8a08431ba1bca971efa039d0c05",
           "parent": "gh-1314",
           "dependencies": [
             "gh-1965",
@@ -7269,7 +7269,7 @@
         },
         {
           "id": "gh-1987",
-          "specSha256": "d8236ea0ffaeaf2cbf517bc088a6472029128704673b65fbc4cc0ff8ac918a26",
+          "specSha256": "17928cedc168b9c657aba556eff51df486422759eb5d5653547d698582ba8a76",
           "parent": "gh-1316",
           "dependencies": [
             "gh-1980"
@@ -7278,7 +7278,7 @@
         },
         {
           "id": "gh-1982",
-          "specSha256": "e95da431c9324a5c99317658a472879c2838f9fc648d7c4270cefe76f01bf235",
+          "specSha256": "6cb49b0d0f8bac750b7267719d9f7c8f47645ce27b9dc6b5a32499e00a7757dc",
           "parent": "gh-1331",
           "dependencies": [
             "gh-1975"
@@ -7287,7 +7287,7 @@
         },
         {
           "id": "gh-1990",
-          "specSha256": "f2d70913170ab60d1ea3ce06c28c5639fb8eea223e1b0b2e63506aa6f500c79e",
+          "specSha256": "560fd53159cb22737e5b7d8a5e3d437493ec4708d562a52e2fc2de586d3f2ad5",
           "parent": "gh-1346",
           "dependencies": [
             "gh-1814",
@@ -7314,11 +7314,11 @@
       "status": "merged",
       "title": "[backend-delivery 74/74] Implement data/inbox, data/mcp, data/recipes changes",
       "bodyCharacters": 52239,
-      "specSha256": "933c0614d786a98e03abd7ff254205ffc88c6978c5cb6fca01567ad2c7490c5f",
+      "specSha256": "71c789b245aceff7fd2bc2f8061aa300cd6f701c5c224b6cfc086123aa1c4e27",
       "members": [
         {
           "id": "gh-1855",
-          "specSha256": "a5352ad4dc066b590672fdc73537e16e212f8e5eef0b694f8da7c070cf8a452e",
+          "specSha256": "8e5bd80ded4b1e8f11a96010c573f6093c9449e85f682cdb8c6e7a96c6ec8b62",
           "parent": "gh-1322",
           "dependencies": [
             "gh-1715",
@@ -7338,7 +7338,7 @@
         },
         {
           "id": "gh-1974",
-          "specSha256": "976712b1ddf8cf7bb614fa64e70f69e5c9362d3b7ff28ab94b251e07363694fe",
+          "specSha256": "efa363b368602c2eeef3c9ac19e7280a38c6b95ea082d0ec1e510a08878a7c76",
           "parent": "gh-1325",
           "dependencies": [
             "gh-1381",
@@ -7351,7 +7351,7 @@
         },
         {
           "id": "gh-1992",
-          "specSha256": "eb261596471e21923b068833aee0fcc60ec78aed6c29cec67f54273fc1c052f6",
+          "specSha256": "eb8350ec962d96a5d664da34216e62c13fb9b3f61932387dd2b60b8366774f5f",
           "parent": "gh-1315",
           "dependencies": [
             "gh-1987"
@@ -7360,7 +7360,7 @@
         },
         {
           "id": "gh-1993",
-          "specSha256": "d5cd9999776b80804356d04108e9368c9cac34cdd7498f49ff42dd3925b201e2",
+          "specSha256": "716e1ebfe00ce87cee4035c557952fdcd37285d3bd6a3731003765fbac3e9ca6",
           "parent": "gh-1315",
           "dependencies": [
             "gh-1987"
@@ -7387,7 +7387,7 @@
         },
         {
           "id": "gh-1983",
-          "specSha256": "e9c99bc04c42e6b55163e63873e28d8b77763b373cffb5311a8552fc2b38e22b",
+          "specSha256": "a895063ea02eb3138cacba14e18041a72380f1305d9fbec3fe28b261bbdbc577",
           "parent": "gh-1321",
           "dependencies": [
             "gh-1976"
@@ -7396,7 +7396,7 @@
         },
         {
           "id": "gh-1989",
-          "specSha256": "26948e740f0d920e2fc65a886d2f36d35fb10bf2a6b957166510dda3a33c7225",
+          "specSha256": "d90c667aa9d087a65c47ffc11e77a6e6453492dedf3c1b0839126a62b60279fb",
           "parent": "gh-1315",
           "dependencies": [
             "gh-1987"
