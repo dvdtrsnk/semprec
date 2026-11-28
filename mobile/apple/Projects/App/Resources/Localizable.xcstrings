@@ -985,38 +985,6 @@
         }
       }
     },
-    "intent.addToInbox.content" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obsah"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Content"
-          }
-        }
-      }
-    },
-    "intent.addToInbox.content.request" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text, nebo sken?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A text or a scan?"
-          }
-        }
-      }
-    },
     "intent.addToInbox.day" : {
       "localizations" : {
         "cs" : {
@@ -1038,13 +1006,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapíše text nebo naskenovaný dokument do Inboxu v Semprecu, i bez připojení."
+            "value" : "Zapíše text do Inboxu v Semprecu, i bez připojení, nebo do něj naskenuje dokument."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Writes a text or a scanned document into the Semprec Inbox, also without a connection."
+            "value" : "Writes a text into the Semprec Inbox, also without a connection, or scans a document into it."
           }
         }
       }
@@ -1109,6 +1077,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The scan could not be saved on this device."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírám skener."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the scanner."
           }
         }
       }
@@ -1257,54 +1241,6 @@
         }
       }
     },
-    "intent.inboxContent.name" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obsah do Inboxu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inbox content"
-          }
-        }
-      }
-    },
-    "intent.inboxContent.scan" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Naskenovat dokument"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Scan a document"
-          }
-        }
-      }
-    },
-    "intent.inboxContent.text" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text"
-          }
-        }
-      }
-    },
     "intent.inboxType.name" : {
       "localizations" : {
         "cs" : {
@@ -1333,6 +1269,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No type"
+          }
+        }
+      }
+    },
+    "intent.inboxType.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan"
+          }
+        }
+      }
+    },
+    "intent.scanIntoInbox.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat do Inboxu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan into Inbox"
           }
         }
       }

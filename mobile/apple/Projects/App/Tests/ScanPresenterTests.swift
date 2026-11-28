@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Semprec
 
-/// The presenter between `AddToInboxIntent` and the scanner: which scene shows it, and what each way a scan ends
+/// The presenter between `ScanIntoInboxIntent` and the scanner: which scene shows it, and what each way a scan ends
 /// captures and answers, over a capture double and a fixed clock.
 @MainActor
 final class ScanPresenterTests: XCTestCase {
@@ -13,12 +13,11 @@ final class ScanPresenterTests: XCTestCase {
     private let scene = UUID()
 
     // MARK: - Finishing
-    func testAFinishedScanCapturesOnePdfWithTheChosenValuesAndAnswersSaved() async throws {
+    func testAFinishedScanCapturesOnePdfOnTheDayItIsFinishedAndAnswersSaved() async throws {
         let captures = CaptureRecorder()
         let presenter = try presenter(captures)
-        let request = ScanPresenter.Request(typeId: "type-1", text: "Receipt for the bike", day: nil)
 
-        let scan = Task { await presenter.scan(request) }
+        let scan = Task { await presenter.scan(Self.request) }
         try await eventually { presenter.request != nil }
         presenter.claim(scene: scene)
         XCTAssertEqual(presenter.scene, scene)
@@ -30,10 +29,8 @@ final class ScanPresenterTests: XCTestCase {
         XCTAssertEqual(outcome, .saved)
         XCTAssertEqual(captures.calls.count, 1)
         let call = try XCTUnwrap(captures.calls.first)
-        XCTAssertEqual(call.text, "Receipt for the bike")
         XCTAssertEqual(call.day, "2026-11-27", "Without a chosen day the scan is kept on the day it is finished")
         XCTAssertEqual(call.time, "07:45")
-        XCTAssertEqual(call.typeId, "type-1")
         XCTAssertEqual(call.file.filename, "Scan 2026-11-27 07-45.pdf")
         XCTAssertEqual(call.file.mimeType, "application/pdf")
         XCTAssertEqual(call.file.source, .camera)
@@ -43,12 +40,12 @@ final class ScanPresenterTests: XCTestCase {
         XCTAssertEqual(captures.reported, 1, "A kept scan is reported once, so its background sending is scheduled")
     }
 
-    func testAFinishedScanKeepsTheChosenDayAndNoType() async throws {
+    func testAFinishedScanKeepsTheChosenDay() async throws {
         let captures = CaptureRecorder()
         let presenter = try presenter(captures)
         let day = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 20)))
 
-        let scan = Task { await presenter.scan(ScanPresenter.Request(typeId: nil, text: "", day: day)) }
+        let scan = Task { await presenter.scan(ScanPresenter.Request(day: day)) }
         try await eventually { presenter.request != nil }
         presenter.finish(pages: [page()])
         let outcome = await scan.value
@@ -57,8 +54,6 @@ final class ScanPresenterTests: XCTestCase {
         let call = try XCTUnwrap(captures.calls.first)
         XCTAssertEqual(call.day, "2026-11-20")
         XCTAssertEqual(call.time, "07:45")
-        XCTAssertNil(call.typeId)
-        XCTAssertEqual(call.text, "")
     }
 
     func testACaptureTheOutboxRefusesAnswersItsFailure() async throws {
@@ -134,7 +129,7 @@ final class ScanPresenterTests: XCTestCase {
     func testANewScanEndsTheOneThatWaitsAsCancelledAndTakesItsPlace() async throws {
         let captures = CaptureRecorder()
         let presenter = try presenter(captures)
-        let second = ScanPresenter.Request(typeId: "type-2", text: "", day: nil)
+        let second = ScanPresenter.Request(day: nil)
 
         let first = Task { await presenter.scan(Self.request) }
         try await eventually { presenter.request != nil }
@@ -149,7 +144,7 @@ final class ScanPresenterTests: XCTestCase {
         presenter.finish(pages: [page()])
         let nextOutcome = await next.value
         XCTAssertEqual(nextOutcome, .saved)
-        XCTAssertEqual(captures.calls.map(\.typeId), ["type-2"])
+        XCTAssertEqual(captures.calls.count, 1, "Only the scan that took the place of the first one is captured")
     }
 
     // MARK: - Claiming
@@ -170,15 +165,13 @@ final class ScanPresenterTests: XCTestCase {
     }
 
     // MARK: - Private
-    private static let request = ScanPresenter.Request(typeId: "type-1", text: "", day: nil)
+    private static let request = ScanPresenter.Request(day: nil)
 
     private func presenter(_ captures: CaptureRecorder) throws -> ScanPresenter {
         let parts = DateComponents(year: 2026, month: 11, day: 27, hour: 7, minute: 45)
         let now = try XCTUnwrap(Calendar.current.date(from: parts))
         return ScanPresenter(
-            capture: { text, day, time, typeId, file in
-                captures.record(CaptureRecorder.Call(text: text, day: day, time: time, typeId: typeId, file: file))
-            },
+            capture: { day, time, file in captures.record(CaptureRecorder.Call(day: day, time: time, file: file)) },
             captured: { captures.reported += 1 },
             now: { now }
         )
@@ -196,10 +189,8 @@ final class ScanPresenterTests: XCTestCase {
 private final class CaptureRecorder {
 
     struct Call {
-        let text: String
         let day: String
         let time: String
-        let typeId: String?
         let file: InboxShortcutCapture.File
     }
 

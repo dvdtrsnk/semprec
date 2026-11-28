@@ -4,11 +4,11 @@ import DesignSystem
 import Foundation
 import PDFKit
 
-/// Shows the system document scanner for `AddToInboxIntent` and keeps what it scanned: the intent asks for a scan, one
-/// scene of the app shows the scanner full screen (`ScanPresentation`), and the scanner's outcome comes back here. The
-/// presenter itself writes a finished scan to the device's capture outbox, in a task of the app rather than of the
-/// intent's run, so the capture is kept even when the system ends that run first, and then reports it (`captured`),
-/// which schedules its background sending while it waits.
+/// Shows the system document scanner for `ScanIntoInboxIntent` and keeps what it scanned: the intent asks for a scan,
+/// one scene of the app shows the scanner full screen (`ScanPresentation`), and the scanner's outcome comes back here.
+/// The presenter itself writes a finished scan to the device's capture outbox, without a type and without a text, in a
+/// task of the app rather than of the intent's run, so the capture is kept even when the system ends that run first,
+/// and then reports it (`captured`), which schedules its background sending while it waits.
 ///
 /// It is one per process, because the system runs the intent outside any scene; a request is shown by the first
 /// active scene that claims it, so only one window shows the scanner.
@@ -16,12 +16,9 @@ import PDFKit
 final class ScanPresenter: ObservableObject {
 
     // MARK: - Types
-    /// What the intent asks to capture with the scan: the type id (nil for none), the text kept with it (empty for
-    /// none) and the day (nil for the day the scan is finished on).
+    /// A scan the intent asks for, kept on `day` (nil for the day the scan is finished on).
     struct Request: Equatable, Sendable {
         let id = UUID()
-        let typeId: String?
-        let text: String
         let day: Date?
     }
 
@@ -32,14 +29,8 @@ final class ScanPresenter: ObservableObject {
         case failed(Failed)
     }
 
-    /// Keeps a capture of a text on a day (`yyyy-MM-dd`) at a time (`HH:mm`) with a type id and a file; nil once kept.
-    typealias Capture = @MainActor (
-        _ text: String,
-        _ day: String,
-        _ time: String,
-        _ typeId: String?,
-        _ file: InboxShortcutCapture.File
-    ) async -> Failed?
+    /// Keeps a capture of a file on a day (`yyyy-MM-dd`) at a time (`HH:mm`), without a type and a text; nil once kept.
+    typealias Capture = @MainActor (_ day: String, _ time: String, _ file: InboxShortcutCapture.File) async -> Failed?
 
     // MARK: - Shared
     static let shared = ScanPresenter()
@@ -112,13 +103,7 @@ final class ScanPresenter: ObservableObject {
         let capture = capture
         let captured = captured
         Task { @MainActor in
-            let failure = await capture(
-                request.text,
-                IsoDay.string(from: request.day ?? date),
-                ClockTime.string(from: date),
-                request.typeId,
-                file
-            )
+            let failure = await capture(IsoDay.string(from: request.day ?? date), ClockTime.string(from: date), file)
             waiting.resume(returning: failure.map(Outcome.failed) ?? .saved)
             if failure == nil { await captured() }
         }
@@ -136,14 +121,8 @@ final class ScanPresenter: ObservableObject {
     }
 
     // MARK: - Private
-    private static func inbox(
-        text: String,
-        day: String,
-        time: String,
-        typeId: String?,
-        file: InboxShortcutCapture.File
-    ) async -> Failed? {
-        await InboxShortcutCapture.shared.capture(text: text, day: day, time: time, typeId: typeId, file: file)
+    private static func inbox(day: String, time: String, file: InboxShortcutCapture.File) async -> Failed? {
+        await InboxShortcutCapture.shared.capture(text: "", day: day, time: time, typeId: nil, file: file)
     }
 
     /// Ends the request shown now, if any, and answers its waiting continuation with `outcome`.
