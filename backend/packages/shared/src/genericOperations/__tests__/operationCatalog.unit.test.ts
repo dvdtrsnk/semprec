@@ -31,6 +31,7 @@ const EXPECTED_ROWS: Record<
   "property.delete": { schema: schemas.PropertyDeleteInputSchema, method: "deleteProperty" },
   "property.option.add": { schema: schemas.PropertyOptionAddInputSchema, method: "addPropertyOption" },
   "property.option.update": { schema: schemas.PropertyOptionUpdateInputSchema, method: "updatePropertyOption" },
+  "property.option.remove": { schema: schemas.PropertyOptionRemoveInputSchema, method: "removePropertyOption" },
   "view.list": { schema: schemas.ViewListInputSchema, method: "listViews" },
   "view.get": { schema: schemas.ViewGetInputSchema, method: "getView" },
   "view.create": { schema: schemas.ViewCreateInputSchema, method: "createView" },
@@ -166,6 +167,12 @@ const EXPECTED_METADATA: Record<
     requiresApproval: false,
     riskClass: "write",
     reversible: true,
+  },
+  "property.option.remove": {
+    requiresCapability: "core.schema.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: false,
   },
   "view.list": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
   "view.get": { requiresCapability: "core.view.read", requiresApproval: false, riskClass: "read", reversible: true },
@@ -351,15 +358,19 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 51 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(51);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(51);
+  it("has exactly 52 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(52);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(52);
   });
 });
 
 describe("REST_ONLY_OPERATION_NAMES", () => {
-  it("names exactly the two select-option operations", () => {
-    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update"]);
+  it("names exactly the three select-option operations", () => {
+    expect([...REST_ONLY_OPERATION_NAMES]).toEqual([
+      "property.option.add",
+      "property.option.update",
+      "property.option.remove",
+    ]);
   });
 });
 
@@ -436,6 +447,24 @@ describe("select-option input schemas (issue #1699)", () => {
     ["a property id that is not a UUID", { propertyId: "tags", key: "bylinky", label: "Herbs" }, "propertyId"],
   ])("refuses an update with %s", (_label, input, field) => {
     const parsed = schemas.PropertyOptionUpdateInputSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path.join(".")).toBe(field);
+  });
+
+  it("accepts a removal naming any non-empty key", () => {
+    expect(schemas.PropertyOptionRemoveInputSchema.parse({ propertyId, key: "a b/č" })).toEqual({
+      propertyId,
+      key: "a b/č",
+    });
+  });
+
+  it.each([
+    ["an empty key", { propertyId, key: "" }, "key"],
+    ["a missing key", { propertyId }, "key"],
+    ["a property id that is not a UUID", { propertyId: "tags", key: "bylinky" }, "propertyId"],
+    ["a field other than the key", { propertyId, key: "bylinky", label: "Herbs" }, ""],
+  ])("refuses a removal with %s", (_label, input, field) => {
+    const parsed = schemas.PropertyOptionRemoveInputSchema.safeParse(input);
     expect(parsed.success).toBe(false);
     expect(parsed.error?.issues[0]?.path.join(".")).toBe(field);
   });
@@ -563,7 +592,7 @@ describe("page.convertToBlock input (issue #1876)", () => {
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 51 catalog rows and no others", () => {
+  it("has exactly the 52 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

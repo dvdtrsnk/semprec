@@ -92,6 +92,21 @@ final class SharedCollectionMappingTests: XCTestCase {
     }
 
     @MainActor
+    func testCollectionMapsTheFacetBarWithEveryChip() {
+        let bar = SharedCollectionScreenModel.state(fullState()).facetBar
+        XCTAssertEqual(
+            bar,
+            FacetBar(
+                propertyKey: "tags",
+                chips: [
+                    FilterOption(value: "client", label: "Client", color: "#FF9500", count: 3, selected: true),
+                    FilterOption(value: "home", label: "Home", color: nil, count: 1, selected: false)
+                ]
+            )
+        )
+    }
+
+    @MainActor
     func testCollectionMapsAFailureAndTheInitialState() {
         let failed = SharedSDK.CollectionState(
             phase: .error,
@@ -107,6 +122,7 @@ final class SharedCollectionMappingTests: XCTestCase {
             layout: .list,
             sections: [],
             filterSheet: nil,
+            facetBar: nil,
             activeFilterCount: 0,
             hasMore: false,
             loadingMore: false,
@@ -160,6 +176,7 @@ private extension SharedCollectionMappingTests {
                 )
             ],
             filterSheet: sheet(),
+            facetBar: bar(),
             activeFilterCount: 2,
             hasMore: true,
             loadingMore: true,
@@ -169,6 +186,16 @@ private extension SharedCollectionMappingTests {
             creating: true,
             writeFailure: SharedSDK.Failed(kind: nil)
         )
+    }
+
+    func bar() -> SharedSDK.FacetBar {
+        let client = SharedSDK.FilterOption(
+            value: "client", label: "Client", color: "#FF9500", count: KotlinInt(int: 3), selected: true
+        )
+        let home = SharedSDK.FilterOption(
+            value: "home", label: "Home", color: nil, count: KotlinInt(int: 1), selected: false
+        )
+        return SharedSDK.FacetBar(propertyKey: "tags", chips: [client, home])
     }
 
     func sheet() -> SharedSDK.FilterSheet {

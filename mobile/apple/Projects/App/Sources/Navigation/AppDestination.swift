@@ -20,6 +20,10 @@ enum AppDestination: Hashable {
     /// The detail of an item presented as a sheet over the stack of `tab`, for the databases whose items the design
     /// opens in place (companies, files, books, films, recipes, health records); what it opens goes onto that stack.
     case itemSheet(itemId: String, databaseKey: String?, tab: AppTab)
+    /// Every tag of the projects, read through the project `projectId`, whose settings lead to it.
+    case projectTags(projectId: String)
+    /// One tag of the projects, to be renamed, recolored or deleted, read through the project `projectId`.
+    case projectTag(projectId: String, tagKey: String)
     /// The sleep plan sheet; `night` is the evening (`YYYY-MM-DD`) whose ring it shows, or nil.
     case sleepPlan(night: String?)
     /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
@@ -33,9 +37,7 @@ enum AppDestination: Hashable {
     case invitations
     /// The new item sheet, opened for the day `YYYY-MM-DD`.
     case newItem(day: String)
-    /// One area, on the stack of `tab`: what is coming up in it and what is connected to it.
-    case area(areaId: String, tab: AppTab)
-    /// The page of notes of an item (a project, an area or a subpage), on the stack of `tab`. A subpage has the
+    /// The page of notes of an item (a project or a subpage), on the stack of `tab`. A subpage has the
     /// titles of the pages above it in `trail`, outermost first; `focusTitle` when it was just made from an empty
     /// block.
     case notes(itemId: String, tab: AppTab, trail: [String] = [], focusTitle: Bool = false)
@@ -43,7 +45,7 @@ enum AppDestination: Hashable {
     case inbox(tab: AppTab)
 
     // MARK: - Mail
-    /// A thread list on the stack of `tab`: all mail, an area, a project, a folder or a mailbox.
+    /// A thread list on the stack of `tab`: all mail, a project, a folder or a mailbox.
     case mailList(MailListStart, title: String?, tab: AppTab)
     case mailThread(threadId: String, tab: AppTab)
     case mailFolders(tab: AppTab)
@@ -75,7 +77,7 @@ extension AppDestination {
         switch self {
         case .profile, .details, .sleepPlan, .sleepNight, .sleepWakeSettings, .calendars, .invitations, .newItem,
              .mailCompose, .itemSheet: true
-        case .pending, .tasks, .collection, .collectionItem, .area, .notes, .inbox, .mailList,
+        case .pending, .tasks, .collection, .collectionItem, .projectTags, .projectTag, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .projectMailSignals, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false
         }

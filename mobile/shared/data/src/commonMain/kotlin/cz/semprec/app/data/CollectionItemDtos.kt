@@ -116,23 +116,20 @@ internal data class LinkSourceDto(
     fun toDomain(): OriginSource = OriginSource(itemId, databaseKey, title ?: domain.orEmpty(), propertyKey)
 }
 
-/** The values the server computes from an item's projects: its area and its company. */
+/** The value the server computes from an item's projects: its company. */
 @Serializable
-internal data class DerivedDto(val area: DerivedValuesDto? = null, val company: DerivedValuesDto? = null) {
+internal data class DerivedDto(val company: DerivedValuesDto? = null) {
     fun apply(values: MutableMap<String, FieldValue>, database: CollectionDatabase) {
-        area?.let { if (database.property(AREA)?.kind == PropertyKind.RELATION) values[AREA] = it.toTargets("areas") }
         company?.let {
             if (database.property(COMPANY)?.kind == PropertyKind.RELATION) values[COMPANY] = it.toTargets("companies")
         }
     }
 
     fun keysWithSources(): List<Pair<String, List<OriginSource>>> = listOfNotNull(
-        area?.let { AREA to it.sources() },
         company?.let { COMPANY to it.sources() },
     )
 
     private companion object {
-        const val AREA = "area"
         const val COMPANY = "company"
     }
 }

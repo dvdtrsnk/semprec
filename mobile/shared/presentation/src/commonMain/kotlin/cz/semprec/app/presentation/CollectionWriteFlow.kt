@@ -11,7 +11,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
  * Adding to the collection: a new item that is opened at once, or an uploaded file that joins the list. Both are
- * attached to what the collection is scoped to, the area of an area collection or the item of a related one.
+ * attached to the item a related collection is scoped to.
  */
 internal class CollectionWriteFlow(
     private val host: FlowHost<CollectionState, CollectionEffect>,
@@ -38,7 +38,7 @@ internal class CollectionWriteFlow(
         if (title.isEmpty() || job?.isActive == true) return
         host.update { it.copy(creating = true, writeFailure = null) }
         job = host.scope.launch {
-            val created = answer { writes.create(target, title, config.relationFor(target)) }
+            val created = answer { writes.create(target, title, config.relationFor()) }
             ensureActive()
             when (created) {
                 is Answer.Rejected ->
@@ -68,7 +68,7 @@ internal class CollectionWriteFlow(
         }
         host.update { it.copy(creating = true, writeFailure = null) }
         job = host.scope.launch {
-            val saved = answer { writes.upload(action.filename, action.mimeType, bytes, config.relationFor(target)) }
+            val saved = answer { writes.upload(action.filename, action.mimeType, bytes, config.relationFor()) }
             ensureActive()
             when (saved) {
                 is Answer.Rejected ->

@@ -28,8 +28,8 @@ export function isRiskClass(value: string): value is RiskClass {
 
 /**
  * Reads and reversible/non-destructive writes never require approval. The destructive operations that do are
- * `database.archive`, `property.delete`, `view.delete`, `item.delete`, `relation.delete`, `page.restoreVersion`,
- * `page.replace`, `page.mergeJournalDuplicates` and `page.convertToBlock`.
+ * `database.archive`, `property.delete`, `property.option.remove`, `view.delete`, `item.delete`, `relation.delete`,
+ * `page.restoreVersion`, `page.replace`, `page.mergeJournalDuplicates` and `page.convertToBlock`.
  */
 export interface OperationMetadata {
   requiresCapability: CapabilityId;
@@ -77,6 +77,8 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   // Neither removes an option nor changes a key, so every stored value stays valid.
   "property.option.add": nonDestructive("core.schema.write", "write"),
   "property.option.update": nonDestructive("core.schema.write", "write"),
+  // Also removes the key from every item value of the property, which nothing restores.
+  "property.option.remove": destructive("core.schema.write", false),
   "view.list": nonDestructive("core.view.read", "read"),
   "view.get": nonDestructive("core.view.read", "read"),
   "view.query": nonDestructive("core.view.read", "read"),

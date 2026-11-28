@@ -35,9 +35,7 @@ final class SharedDetailsMappingTests: XCTestCase {
                 timeTo: "15:30",
                 lengthMinutes: 90,
                 repeat: .weekdays,
-                project: SharedSDK.ProjectRef(
-                    id: "p1", title: "Účetnictví", color: "#8E8E93", areaId: "a1", areaTitle: "Práce"
-                ),
+                project: SharedSDK.ProjectRef(id: "p1", title: "Účetnictví", color: "#8E8E93"),
                 people: [SharedSDK.EntityRef(id: "u1", title: "Karel", color: nil)],
                 files: [SharedSDK.EntityRef(id: "f1", title: "Faktura.pdf", color: nil)],
                 hostEvents: [SharedSDK.EntityRef(id: "e1", title: "Zubař", color: nil)],
@@ -52,10 +50,7 @@ final class SharedDetailsMappingTests: XCTestCase {
         XCTAssertEqual([state.date, state.timeFrom, state.timeTo], ["2026-10-16", "14:00", "15:30"])
         XCTAssertEqual(state.lengthMinutes, 90)
         XCTAssertEqual(state.repeats, .weekdays)
-        XCTAssertEqual(
-            state.project,
-            CoreKit.ProjectRef(id: "p1", title: "Účetnictví", color: "#8E8E93", areaId: "a1", areaTitle: "Práce")
-        )
+        XCTAssertEqual(state.project, CoreKit.ProjectRef(id: "p1", title: "Účetnictví", color: "#8E8E93"))
         XCTAssertEqual(state.people, [CoreKit.EntityRef(id: "u1", title: "Karel")])
         XCTAssertEqual(state.files, [CoreKit.EntityRef(id: "f1", title: "Faktura.pdf")])
         XCTAssertEqual(state.hostEvents, [CoreKit.EntityRef(id: "e1", title: "Zubař")])
@@ -121,7 +116,7 @@ final class SharedDetailsMappingTests: XCTestCase {
             detailsState(
                 .content,
                 choices: .ready,
-                projectChoices: [SharedSDK.ProjectRef(id: "p1", title: "iOS", color: nil, areaId: nil, areaTitle: nil)],
+                projectChoices: [SharedSDK.ProjectRef(id: "p1", title: "iOS", color: nil)],
                 personChoices: [SharedSDK.EntityRef(id: "u1", title: "Karel", color: "#FF9500")],
                 notice: .unavailable
             )

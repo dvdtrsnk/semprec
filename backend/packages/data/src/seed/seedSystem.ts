@@ -134,7 +134,7 @@ async function prepareSeedRegistries(
   computedKeyRegistry.add(TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY);
 
-  // The systemDatabases manifest describes the ten databases this seed creates;
+  // The systemDatabases manifest describes the core databases this seed creates;
   // `seedTenDatabasesInTransaction` reads its `defaultViewType` projection.
   const moduleRegistry = new ModuleRegistry(() => new Set(["systemDatabases"]));
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
@@ -330,7 +330,7 @@ async function seedSystemInTransaction(
 
   await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
 
-  // Three databases, one settings item, two default plans; `sleepSettings.area` needs Areas.
-  await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
+  // Three databases, one settings item, two default plans.
+  await seedSleepModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
   return "created";
 }

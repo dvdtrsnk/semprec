@@ -17,7 +17,7 @@ final class InboxTextTests: XCTestCase {
     // MARK: - Cards
     func testEveryKindOfCardHasItsOwnChipAndTheRisksTheirOwnText() {
         let types: [InboxCardType] = [
-            .task, .event, .page, .journal, .project, .area, .company, .person, .health, .file, .recording, .mcp,
+            .task, .event, .page, .journal, .project, .company, .person, .health, .file, .recording, .mcp,
             .invalid, .clarify, .transcriptEvent, .speaker, .approval, .unsupported
         ]
         let chips = types.map(\.chipText)

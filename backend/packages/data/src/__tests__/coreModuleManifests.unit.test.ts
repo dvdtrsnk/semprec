@@ -5,7 +5,7 @@ import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
-import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
+import { CORE_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
@@ -78,13 +78,13 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(await registry.getMigrations()).toEqual([]);
   });
 
-  it("loads the ten-system-databases manifest with all ten existing database keys and Journal's view type", async () => {
+  it("loads the system-databases manifest with every core database key and Journal's view type", async () => {
     const registry = new ModuleRegistry(alwaysActive);
     const moduleId = await registry.loadModule(SYSTEM_DATABASES_PATH);
 
     expect(moduleId).toBe("systemDatabases");
     const databases = await registry.getDatabases();
-    expect(databases.map((db) => db.key).sort()).toEqual([...TEN_DATABASE_MODULE_IDS].sort());
+    expect(databases.map((db) => db.key).sort()).toEqual([...CORE_DATABASE_MODULE_IDS].sort());
     expect(await registry.getViewTypes()).toEqual([TEMPORAL_SWITCHER_VIEW_TYPE]);
     const meta = new Map(databases.map((db) => [db.key, db]));
     const pick = (key: string) => {
@@ -104,13 +104,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     expect(pick("companies")).toEqual({ icon: "building", color: "#5AC8FA", overviewOrder: 4, switcherOrder: 6 });
     expect(pick("files")).toEqual({ icon: "document", color: "#8E8E93", overviewOrder: 5, switcherOrder: 7 });
     expect(pick("healthRecords")).toEqual({ icon: "heart", color: "#FF2D55", overviewOrder: 6, switcherOrder: 8 });
-    expect(pick("areas")).toEqual({
-      icon: "compass",
-      color: "#30B0C7",
-      overviewOrder: null,
-      switcherOrder: null,
-      clientVisible: true,
-    });
+    expect(meta.has("areas")).toBe(false);
     expect(pick("transcripts")).toEqual({
       icon: "waveform",
       color: "#8E8E93",
@@ -158,7 +152,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     await registry.loadModule(SYSTEM_DATABASES_PATH);
 
     expect(registry.listModuleIds().sort()).toEqual(["docs", "schemaCore", "systemDatabases", "views"]);
-    expect((await registry.getDatabases()).length).toBe(TEN_DATABASE_MODULE_IDS.length + 1);
+    expect((await registry.getDatabases()).length).toBe(CORE_DATABASE_MODULE_IDS.length + 1);
   });
 });
 
@@ -348,5 +342,12 @@ describe("declared quick filters, default sorts and collection and picker filter
       "projects",
       "tasks",
     ]);
+  });
+});
+
+describe("the declared facet bar property", () => {
+  it("is declared as tags by Projects and by no other database of any loaded manifest", async () => {
+    const declaring = (await loadViewHintManifests()).filter((db) => db.facetBarProperty !== undefined);
+    expect(declaring.map((db) => [db.key, db.facetBarProperty])).toEqual([["projects", "tags"]]);
   });
 });

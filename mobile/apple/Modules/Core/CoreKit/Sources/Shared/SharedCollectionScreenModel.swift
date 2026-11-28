@@ -60,6 +60,7 @@ extension SharedCollectionScreenModel {
             layout: layout(state.layout),
             sections: state.sections.map(section),
             filterSheet: state.filterSheet.map(sheet),
+            facetBar: state.facetBar.map(bar),
             activeFilterCount: Int(state.activeFilterCount),
             hasMore: state.hasMore,
             loadingMore: state.loadingMore,
@@ -117,7 +118,6 @@ extension SharedCollectionScreenModel {
     static func target(_ target: CollectionTarget) -> any SharedSDK.CollectionTarget {
         switch target {
         case .whole(let key, let id): SharedSDK.CollectionTargetWhole(databaseKey: key, databaseId: id)
-        case .ofArea(let key, let areaId): SharedSDK.CollectionTargetOfArea(databaseKey: key, areaId: areaId)
         case .ofItem(let key, let relationKey, let itemId):
             SharedSDK.CollectionTargetOfItem(databaseKey: key, relationKey: relationKey, itemId: itemId)
         case .matching(let key, let id, let filterJson):
@@ -224,17 +224,23 @@ extension SharedCollectionScreenModel {
                     propertyKey: group.propertyKey,
                     name: group.name,
                     kind: FieldKind(group.kind),
-                    options: group.options.map { option in
-                        FilterOption(
-                            value: option.value,
-                            label: option.label,
-                            color: option.color,
-                            count: option.count.map { Int($0.int32Value) },
-                            selected: option.selected
-                        )
-                    }
+                    options: group.options.map(option)
                 )
             }
+        )
+    }
+
+    static func bar(_ bar: SharedSDK.FacetBar) -> FacetBar {
+        FacetBar(propertyKey: bar.propertyKey, chips: bar.chips.map(option))
+    }
+
+    static func option(_ option: SharedSDK.FilterOption) -> FilterOption {
+        FilterOption(
+            value: option.value,
+            label: option.label,
+            color: option.color,
+            count: option.count.map { Int($0.int32Value) },
+            selected: option.selected
         )
     }
 }

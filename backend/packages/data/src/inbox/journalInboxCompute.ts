@@ -12,7 +12,7 @@ import {
   INBOX_ITEM_TYPES_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
 } from "../seed/inboxPipelineKeys.js";
-import { AREAS_MODULE_ID, JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import { listInboxAttachments, type InboxAttachmentSource } from "./inboxAttachmentsStore.js";
@@ -38,8 +38,6 @@ export interface JournalInboxProposalSummary {
   targetItemName: string | null;
   projectItemId: string | null;
   projectName: string | null;
-  areaItemId: string | null;
-  areaName: string | null;
   followUps: JournalInboxFollowUp[];
 }
 
@@ -102,20 +100,18 @@ interface InboxPipelineDatabases {
   processingProposals: DatabaseRow;
   journal: DatabaseRow;
   projects: DatabaseRow;
-  areas: DatabaseRow;
 }
 
 async function resolveInboxPipelineDatabases(client: PoolClient): Promise<InboxPipelineDatabases | null> {
-  const [inbox, inboxItemTypes, processingProposals, journal, projects, areas] = await Promise.all([
+  const [inbox, inboxItemTypes, processingProposals, journal, projects] = await Promise.all([
     databasesStore.getDatabaseByModuleId(client, INBOX_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, INBOX_ITEM_TYPES_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, JOURNAL_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, PROJECTS_MODULE_ID),
-    databasesStore.getDatabaseByModuleId(client, AREAS_MODULE_ID),
   ]);
-  if (!inbox || !inboxItemTypes || !processingProposals || !journal || !projects || !areas) return null;
-  return { inbox, inboxItemTypes, processingProposals, journal, projects, areas };
+  if (!inbox || !inboxItemTypes || !processingProposals || !journal || !projects) return null;
+  return { inbox, inboxItemTypes, processingProposals, journal, projects };
 }
 
 async function resolveJournalDayItemId(
@@ -176,8 +172,6 @@ function emptyProposalSummary(): JournalInboxProposalSummary {
     targetItemName: null,
     projectItemId: null,
     projectName: null,
-    areaItemId: null,
-    areaName: null,
     followUps: [],
   };
 }
@@ -188,8 +182,8 @@ async function databaseKeyOf(client: PoolClient, databaseId: string): Promise<st
 }
 
 /**
- * A multi-step envelope's existing item is its primary step's `itemId` when that step updates or links. Project and
- * area are the primary step's relation targets in the Projects or Areas database, whichever relation key carries them.
+ * A multi-step envelope's existing item is its primary step's `itemId` when that step updates or links. The project
+ * is the primary step's relation target in the Projects database, whichever relation key carries it.
  * Items are read in one batch; a deleted item is unknown.
  */
 async function buildProposalSummary(
@@ -224,7 +218,6 @@ async function buildProposalSummary(
     return item ? [item] : [];
   });
   const project = related.find((item) => item.databaseId === databases.projects.id) ?? null;
-  const area = related.find((item) => item.databaseId === databases.areas.id) ?? null;
 
   const targetItem = targetItemId ? (itemsById.get(targetItemId) ?? null) : null;
   const [targetLabel] = targetItem ? await databasesStore.listDatabaseLabelsByIds(client, [targetItem.databaseId]) : [];
@@ -253,8 +246,6 @@ async function buildProposalSummary(
     targetItemName: targetItem ? (stringOrNull(targetTitle) ?? stringOrNull(targetItem.properties.name)) : null,
     projectItemId: project?.id ?? null,
     projectName: project ? stringOrNull(project.properties.name) : null,
-    areaItemId: area?.id ?? null,
-    areaName: area ? stringOrNull(area.properties.name) : null,
     followUps,
   };
 }

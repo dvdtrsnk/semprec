@@ -10,8 +10,6 @@ import cz.semprec.app.core.ValueLink
 import cz.semprec.app.domain.Schedule
 import cz.semprec.app.domain.WorkItem
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 
 private val STATUSES = mapOf(
     "notDone" to TaskStatus.NOT_DONE,
@@ -67,15 +65,7 @@ private fun List<RelationTargetDto>?.visible(): List<RelationTargetDto> = orEmpt
 
 internal fun RelationTargetDto.toEntity(): EntityRef = EntityRef(id, title, color)
 
-private fun RelationTargetDto.toProject(): ProjectRef {
-    val area = properties?.elements(WorkKeys.AREA)?.firstNotNullOfOrNull { (it as? JsonObject)?.toAreaRef() }
-    return ProjectRef(id, title, color, area?.id, area?.title)
-}
-
-private fun JsonObject.toAreaRef(): EntityRef? {
-    val id = text("id") ?: return null
-    return EntityRef(id, text("title").orEmpty(), text(WorkKeys.COLOR))
-}
+private fun RelationTargetDto.toProject(): ProjectRef = ProjectRef(id, title, color)
 
 private fun JsonObject.repeat(): TaskRepeat {
     val recurrence = this[WorkKeys.RECURRENCE]
@@ -92,7 +82,3 @@ private fun ValueLinkDto.toValueLink(): ValueLink? {
     }
     return ValueLink(state, sources.firstOrNull { it.kind == "item" }?.title, brokenBySemp = brokenBy == "agent")
 }
-
-/** A checkbox property that is on unless it is stored as off. */
-internal fun JsonObject.checkedByDefault(key: String): Boolean =
-    (this[key] as? JsonPrimitive)?.booleanOrNull ?: true

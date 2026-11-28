@@ -6,7 +6,6 @@ public enum SearchGroupType: CaseIterable, Equatable, Sendable {
     case task
     case event
     case project
-    case area
     case contact
     case journal
     case file
@@ -23,12 +22,10 @@ public enum SearchSubtitleKind: Equatable, Sendable {
     case place
     case recurrence
     case project
-    case area
     case people
     case phone
     case relationship
     case status
-    case count
     case sender
     case movedFrom
     case missedInEvent

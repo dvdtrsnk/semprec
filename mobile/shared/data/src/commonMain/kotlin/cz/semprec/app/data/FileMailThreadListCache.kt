@@ -131,7 +131,6 @@ internal fun viewKey(view: MailThreadQuery): String = listOf(
     "box=${view.box.name}",
     "mailbox=${view.mailboxId.orEmpty()}",
     "folder=${view.folderId.orEmpty()}",
-    "area=${view.areaId.orEmpty()}",
     "project=${view.projectId.orEmpty()}",
     "unread=${view.unreadOnly}",
 ).joinToString("&")

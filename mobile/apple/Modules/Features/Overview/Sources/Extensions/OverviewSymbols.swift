@@ -35,13 +35,11 @@ enum OverviewSymbols {
         "companies": "building.2",
         "transcripts": "waveform",
         "journal": "book",
-        "areas": "square.grid.2x2",
         "books": "books.vertical",
         "movies": "film",
         "recipes": "fork.knife"
     ]
 
-    static let areaFallback = "square.grid.2x2"
     static let collectionFallback = "square.stack"
     static let projectFallback = "folder"
 
@@ -49,10 +47,6 @@ enum OverviewSymbols {
     /// The symbol of a stored icon name, or nil for a name that is not known.
     static func symbol(forIcon icon: String?) -> String? {
         icon.flatMap { named[$0.lowercased()] }
-    }
-
-    static func area(icon: String?) -> String {
-        symbol(forIcon: icon) ?? areaFallback
     }
 
     static func collection(icon: String?, ownerModuleId: String) -> String {
@@ -65,7 +59,6 @@ enum OverviewSymbols {
         case .task: "checkmark.circle"
         case .event: "calendar"
         case .project: "folder"
-        case .area: "house"
         case .contact: "person"
         case .journal: "book"
         case .file: "doc"

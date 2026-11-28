@@ -23,15 +23,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Where the Tasks screen starts: a tab and, for the lists an area or a project links to, a filter. */
+/** Where the Tasks screen starts: a tab and, for the list a project links to, a filter. */
 data class TasksStart(
     val tab: TasksTab = TasksTab.TODAY,
     val hideDone: Boolean = false,
-    val areaId: String? = null,
     val projectId: String? = null,
 )
 
-/** What the Tasks screen is made of: the task repository, its writes and the catalogs of areas and projects. */
+/** What the Tasks screen is made of: the task repository, its writes and the catalog of projects. */
 internal class TasksDependencies(
     val tasks: TaskRepository,
     val items: ItemRepository,
@@ -52,7 +51,6 @@ class TasksViewModel internal constructor(
     TasksState(
         tab = start.tab,
         hideDone = start.hideDone,
-        areaId = start.areaId,
         projectId = start.projectId,
     ),
 ) {
@@ -73,8 +71,8 @@ class TasksViewModel internal constructor(
                 update { it.copy(tab = action.tab) }
                 load(silent = false)
             }
-            TasksAction.ToggleHideDone, is TasksAction.SetArea, is TasksAction.SetProject,
-            is TasksAction.SetFlaggedOnly, TasksAction.ClearFilters,
+            TasksAction.ToggleHideDone, is TasksAction.SetProject, is TasksAction.SetFlaggedOnly,
+            TasksAction.ClearFilters,
             -> reshape(action)
             TasksAction.Retry -> load(silent = false)
             TasksAction.Refresh -> load(silent = true)
@@ -87,7 +85,7 @@ class TasksViewModel internal constructor(
     }
 
     private fun reshape(action: TasksAction) {
-        update { shaped(it.after(action, catalog.projects)) }
+        update { shaped(it.after(action)) }
     }
 
     private fun shaped(next: TasksState): TasksState = next.shaped(loaded, catalog, today())
@@ -122,7 +120,7 @@ class TasksViewModel internal constructor(
     }
 
     private suspend fun fetch(tab: TasksTab): RepositoryResult<List<WorkItem>> {
-        val known = catalog.areas.isNotEmpty() || catalog.projects.isNotEmpty()
+        val known = catalog.projects.isNotEmpty()
         val prepared = if (known) RepositoryResult.Content(catalog) else loadCatalog()
         return prepared.then { ready ->
             catalog = ready
@@ -131,9 +129,7 @@ class TasksViewModel internal constructor(
     }
 
     private suspend fun loadCatalog(): RepositoryResult<TasksCatalog> =
-        dependencies.catalog.areas().then { areas ->
-            dependencies.catalog.projects().map { projects -> TasksCatalog(areas, projects) }
-        }
+        dependencies.catalog.projects().map { projects -> TasksCatalog(projects) }
 
     private fun toggleDone(taskId: String) {
         val task = loaded.firstOrNull { it.id == taskId } ?: return

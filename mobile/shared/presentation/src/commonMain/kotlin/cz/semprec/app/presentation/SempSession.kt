@@ -17,7 +17,6 @@ enum class SempTargetKind {
     INBOX,
     JOURNAL,
     PROJECT,
-    AREA,
     PERSON,
     COMPANY,
     FILE,

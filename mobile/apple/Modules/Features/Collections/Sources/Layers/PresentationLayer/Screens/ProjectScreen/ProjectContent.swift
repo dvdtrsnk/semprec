@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The layout of a project over the generic item: its status, title, area and deadline, its notes, the agent that
+/// The layout of a project over the generic item: its status, title, deadline and tags, its notes, the agent that
 /// works in it, its tasks and the collections connected to it. The tasks, the mail, the notes and the agent are
 /// screens of other features, reached through the router.
 struct ProjectContent: View {
@@ -46,6 +46,10 @@ struct ProjectContent: View {
                 state: state,
                 send: send,
                 close: { isShowingSettings = false },
+                openTags: {
+                    isShowingSettings = false
+                    show(.tags)
+                },
                 openMailSignals: {
                     isShowingSettings = false
                     show(.mailSignals)
@@ -68,12 +72,28 @@ private extension ProjectContent {
                 .focused($isEditingTitle)
                 .singleLineTitle($titleDraft) { renameTitle() }
                 .accessibilityIdentifier(CollectionsIdentifiers.itemTitle)
-            HStack(spacing: 6) {
-                areaLink
-                if let deadline { Text("·"); Text(deadline) }
+            if let deadline {
+                Text(deadline)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.Colors.secondaryText)
             }
-            .font(.subheadline)
-            .foregroundStyle(Theme.Colors.secondaryText)
+            tagChips
+        }
+    }
+
+    /// The project's tags as chips; nothing while it has none.
+    @ViewBuilder var tagChips: some View {
+        if case .choices(let tags) = field("tags")?.content {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Spacing.small) {
+                    ForEach(tags, id: \.key) { tag in
+                        let color = Color(hex: tag.color) ?? Theme.Colors.accent
+                        FilterChip(title: tag.label, color: color) { EmptyView() }
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(CollectionsIdentifiers.projectTags)
         }
     }
 
@@ -86,17 +106,6 @@ private extension ProjectContent {
     @ViewBuilder var statusButton: some View {
         if case .choices(let options) = field("status")?.content, let status = options.first {
             Button { isShowingSettings = true } label: { StatusPill(option: status) }.buttonStyle(.plain)
-        }
-    }
-
-    @ViewBuilder var areaLink: some View {
-        if case .targets(let targets) = field("area")?.content, let area = targets.first {
-            Button { send(.navigate(.openTarget(id: area.id, databaseKey: area.databaseKey))) } label: {
-                Label(area.title, systemImage: "circle.fill")
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(Color(hex: area.color) ?? Theme.Colors.accent)
-            }
-            .buttonStyle(.plain)
         }
     }
 

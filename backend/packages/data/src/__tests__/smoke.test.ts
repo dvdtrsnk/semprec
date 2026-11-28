@@ -44,7 +44,6 @@ describe("smoke: choke-point end to end", () => {
     // Hardcoded databases carry a stable key and a null name instead of an English label.
     expect(keyed).toEqual(
       [
-        "areas",
         "books",
         "calendars",
         "companies",

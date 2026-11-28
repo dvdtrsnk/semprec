@@ -14,9 +14,7 @@ extension XCTestCase {
         threads: [SharedSDK.MailThreadItem] = [],
         box: SharedSDK.MailListBox = .inbox,
         filter: SharedSDK.MailListFilter = .all,
-        facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(
-            phase: .idle, areaTotal: 0, projectTotal: 0, areas: [], projects: []
-        ),
+        facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(phase: .idle, projectTotal: 0, projects: []),
         remoteSearch: SharedSDK.MailRemoteSearchSummary? = nil,
         actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadsState {
@@ -32,9 +30,7 @@ extension XCTestCase {
             filter: filter,
             mailboxId: "m1",
             folderId: "f1",
-            areaId: "a1",
             projectId: "p1",
-            areaName: "Práce",
             projectName: "Web",
             mailboxes: [SharedSDK.MailMailboxChip(id: "m1", name: "Gmail")],
             reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],

@@ -295,7 +295,7 @@ private extension SempProjectAgentScreen {
         switch run.display {
         case .error: Theme.Colors.destructive
         case .waitingApproval: Theme.Colors.sempWaiting
-        case .running, .done: run.trigger == .tick ? Theme.Colors.SempKind.area : Theme.Colors.brand
+        case .running, .done: run.trigger == .tick ? Theme.Colors.sempTick : Theme.Colors.brand
         }
     }
 

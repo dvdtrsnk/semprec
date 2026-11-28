@@ -19,9 +19,9 @@ import kotlinx.coroutines.launch
  * One item of any database: its properties with the origin of every value that is not its own, its related
  * collections, its page, a preview of its file and the relation picker. A value that follows another item shows that
  * and is changed, unlinked or taken over again through the item's link endpoints; writing a followed value ends the
- * link, as the server decides. The page, the preview, the picker and the deletion are flows of their own over this
- * ViewModel's state. A newer read supersedes an older one, and an answer that arrives after the ViewModel was closed
- * or superseded is dropped.
+ * link, as the server decides. The page, the preview, the picker, the deletion and the writes of choices are flows
+ * of their own over this ViewModel's state. A newer read supersedes an older one, and an answer that arrives after the
+ * ViewModel was closed or superseded is dropped.
  */
 class ItemViewModel internal constructor(
     private val itemId: String,
@@ -40,6 +40,9 @@ class ItemViewModel internal constructor(
     private val preview = ItemPreviewFlow(host, reads)
     private val deletion = ItemDeletionFlow(host, reads, writes, itemId)
     private val picker = ItemPickerFlow(host, findTargets, writes, itemId, { detail?.database }, ::mutate)
+    private val choices = ItemChoiceFlow(host, reads, writes, { detail }, ::isBlocked) { key, call ->
+        mutate(key, choice = true, call = call)
+    }
 
     init {
         reloadOnChanges(changes) { onAction(ItemAction.Refresh) }
@@ -51,7 +54,7 @@ class ItemViewModel internal constructor(
         when (action) {
             ItemAction.Retry -> load(quiet = false)
             ItemAction.Refresh -> load(quiet = true)
-            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null) }
+            ItemAction.DismissWriteFailure -> update { it.copy(writeFailure = null, choiceFailure = null) }
             is ItemAction.Edit -> edit(action)
             is ItemAction.Picker -> picker.handle(action)
             is ItemAction.Page -> page.handle(action)
@@ -93,6 +96,7 @@ class ItemViewModel internal constructor(
                 write(action.propertyKey, mapOf(action.propertyKey to FieldValue.Flag(action.on)))
             is ItemAction.Edit.SetChoices ->
                 write(action.propertyKey, mapOf(action.propertyKey to choiceValue(action.keys)))
+            is ItemAction.Edit.Choice -> choices.handle(action)
             is ItemAction.Edit.Unlink -> mutate(action.propertyKey) { writes.unlinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.Relink -> mutate(action.propertyKey) { writes.relinkValue(itemId, action.propertyKey) }
             is ItemAction.Edit.RemoveTarget ->
@@ -114,30 +118,39 @@ class ItemViewModel internal constructor(
     private fun write(propertyKey: String?, changes: Map<String, FieldValue?>) {
         val current = detail
         if (current == null || changes.isEmpty()) return
-        val blocked = changes.keys.any { key ->
-            current.database.property(key)?.system != false ||
-                state.value.fields.firstOrNull { it.propertyKey == key }?.editable == false
-        }
-        if (blocked) {
+        if (changes.keys.any { isBlocked(current, it) }) {
             update { it.copy(writeFailure = ItemWriteFailure(propertyKey, FailureKind.REJECTED)) }
         } else {
             mutate(propertyKey) { writes.update(current.database, itemId, current.item.version, changes) }
         }
     }
 
+    /** Whether the person cannot write the property here: it is system-owned, derived, or not in the item's database. */
+    private fun isBlocked(current: ItemDetail, propertyKey: String): Boolean =
+        current.database.property(propertyKey)?.system != false ||
+            state.value.fields.firstOrNull { it.propertyKey == propertyKey }?.editable == false
+
     /**
      * Runs a write, then reads the item again so its values, origins and version are the server's. A refused write
      * reads it again too: the usual refusal is a version another writer (Semp filling in a new book) moved on, and the
      * person's next attempt must carry the version the server has now.
      */
-    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) {
+    private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) =
+        mutate(propertyKey, choice = false, call = call)
+
+    /** [mutate], where the failure of a [choice] write is its [ItemState.choiceFailure]. */
+    private fun mutate(propertyKey: String?, choice: Boolean, call: suspend () -> RepositoryResult<Any?>) {
         if (writeJob?.isActive == true) return
-        update { it.copy(saving = true, writeFailure = null) }
+        update { it.copy(saving = true, writeFailure = null, choiceFailure = null) }
         writeJob = viewModelScope.launch {
             val result = answer(call)
             ensureActive()
             if (result is Answer.Rejected) {
-                update { it.copy(saving = false, writeFailure = ItemWriteFailure(propertyKey, result.kind)) }
+                val failure = ItemWriteFailure(propertyKey, result.kind)
+                update {
+                    if (choice) it.copy(saving = false, choiceFailure = failure)
+                    else it.copy(saving = false, writeFailure = failure)
+                }
             }
             load(quiet = true)
         }

@@ -119,7 +119,7 @@ class ItemFilterMatchTest {
     @Test fun `relation nodes read the targets of the relation`() {
         assertTrue(matches("""{"type":"relation_contains","property":"project","value":"p1"}"""))
         assertFalse(matches("""{"type":"relation_contains","property":"project","value":"p2"}"""))
-        assertFalse(matches("""{"type":"relation_contains","property":"project","value":{"areaValue":true}}"""))
+        assertFalse(matches("""{"type":"relation_contains","property":"project","value":{"placeholder":true}}"""))
         assertTrue(matches("""{"type":"relation_not_contains","property":"project","value":"p2"}"""))
         assertFalse(matches("""{"type":"relation_not_contains","property":"project","value":"p1"}"""))
         assertTrue(matches("""{"type":"relation_is_empty","property":"people"}"""))
@@ -130,7 +130,7 @@ class ItemFilterMatchTest {
 
     @Test fun `a node it does not know and a node without a property match nothing`() {
         assertFalse(matches("""{"type":"contains","property":"name","value":"Wat"}"""))
-        assertFalse(matches("""{"type":"relation_path_contains","path":["project","area"],"value":"a1"}"""))
+        assertFalse(matches("""{"type":"relation_path_contains","path":["project","company"],"value":"c1"}"""))
         assertFalse(matches("""{"type":"equals","value":"notDone"}"""))
     }
 

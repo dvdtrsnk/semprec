@@ -1169,22 +1169,6 @@
         }
       }
     },
-    "inbox.type.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nová oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "New area"
-          }
-        }
-      }
-    },
     "inbox.type.clarify" : {
       "localizations" : {
         "cs" : {

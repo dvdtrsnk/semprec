@@ -4,7 +4,7 @@ import Foundation
 /// Navigation the Collections feature requests. The app implements it on its own navigation stacks.
 ///
 /// The screens of the other features that a collection or an item reaches (the tasks, the mail, the mail signals, the
-/// notes and the agent of a project, the sheet of an event, an area) are not built here: the app maps these requests
+/// notes and the agent of a project, the sheet of an event) are not built here: the app maps these requests
 /// to them.
 @MainActor
 public protocol CollectionsRouting: AnyObject {
@@ -15,10 +15,15 @@ public protocol CollectionsRouting: AnyObject {
     /// Opens a collection, such as the files of a project or a related collection of an item.
     func showCollection(_ target: CollectionTarget)
 
+    // MARK: - Project tags
+    /// Every tag of the projects, reached from the settings of the project `projectId`.
+    func showProjectTags(projectId: String)
+    /// One tag of the projects (`tagKey`), to be renamed, recolored or deleted.
+    func showProjectTag(projectId: String, tagKey: String)
+
     // MARK: - Screens of other features
     /// The shared "Podrobnosti" sheet of an event.
     func showEvent(itemId: String)
-    func showArea(areaId: String)
     func showProjectTasks(projectId: String)
     func showProjectMail(projectId: String)
     /// Which people, domains and keywords mark the project's mail, with the threads they match.
@@ -34,8 +39,9 @@ final class PreviewCollectionsRouter: CollectionsRouting {
     // MARK: - Methods
     func showItem(itemId: String, databaseKey: String?) {}
     func showCollection(_ target: CollectionTarget) {}
+    func showProjectTags(projectId: String) {}
+    func showProjectTag(projectId: String, tagKey: String) {}
     func showEvent(itemId: String) {}
-    func showArea(areaId: String) {}
     func showProjectTasks(projectId: String) {}
     func showProjectMail(projectId: String) {}
     func showProjectMailSignals(projectId: String) {}

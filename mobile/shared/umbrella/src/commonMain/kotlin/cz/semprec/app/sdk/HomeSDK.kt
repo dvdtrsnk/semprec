@@ -178,14 +178,6 @@ class HomeSDK(
     private val work = WorkData(auth.api)
     private val workViewModels = WorkViewModelFactory(work.tasks, work.details, work.catalog, auth.api.changes)
 
-    /** The area screen. */
-    val areas: AreasSDK = AreasSDK.create(
-        collectionReads,
-        HttpCollectionWrites(auth.api, collectionReads),
-        work.tasks,
-        auth.api.changes,
-    )
-
     /** The Tasks screen. [today] is `yyyy-MM-dd`, asked again whenever the screen groups its tasks. */
     fun tasksViewModel(today: () -> String, start: TasksStart): TasksViewModel =
         workViewModels.tasksViewModel(today, start)

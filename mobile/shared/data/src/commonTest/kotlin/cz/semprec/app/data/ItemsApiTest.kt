@@ -101,10 +101,10 @@ class ItemsApiTest {
         val request = ItemQuery(
             filter = Filter.and(
                 Filter.equals("status", "notDone"),
-                RelationFilter.pathContains("project", "area", "a1"),
+                RelationFilter.pathContains("project", "company", "c1"),
             ),
             sort = listOf("date" to "asc"),
-            relations = mapOf("project" to listOf("area")),
+            relations = mapOf("project" to listOf("company")),
             links = true,
             text = "faktura",
             limit = 50,
@@ -123,7 +123,7 @@ class ItemsApiTest {
         val include = sent.getValue("include").jsonObject
         assertEquals("true", include.getValue("links").jsonPrimitive.content)
         val projection = include.getValue("relations").jsonObject.getValue("project").jsonArray
-        assertEquals("area", projection.single().jsonPrimitive.content)
+        assertEquals("company", projection.single().jsonPrimitive.content)
         assertEquals("faktura", sent.getValue("q").jsonPrimitive.content)
         assertEquals("50", sent.getValue("limit").jsonPrimitive.content)
     }

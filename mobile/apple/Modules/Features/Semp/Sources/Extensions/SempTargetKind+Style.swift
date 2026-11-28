@@ -14,7 +14,6 @@ extension SempTargetKind {
         case .inbox: "tray"
         case .journal: "book"
         case .project: "folder"
-        case .area: "house"
         case .person: "person"
         case .company: "building.2"
         case .file: "doc"
@@ -38,7 +37,6 @@ extension SempTargetKind {
         case .inbox: Theme.Colors.SempKind.inbox
         case .journal: Theme.Colors.SempKind.journal
         case .project: Theme.Colors.SempKind.project
-        case .area: Theme.Colors.SempKind.area
         case .person: Theme.Colors.SempKind.person
         case .company: Theme.Colors.SempKind.company
         case .file: Theme.Colors.SempKind.file
@@ -63,7 +61,6 @@ extension SempTargetKind {
         case .inbox: String(localized: "semp.kind.inbox", bundle: .module)
         case .journal: String(localized: "semp.kind.journal", bundle: .module)
         case .project: String(localized: "semp.kind.project", bundle: .module)
-        case .area: String(localized: "semp.kind.area", bundle: .module)
         case .person: String(localized: "semp.kind.person", bundle: .module)
         case .company: String(localized: "semp.kind.company", bundle: .module)
         case .file: String(localized: "semp.kind.file", bundle: .module)
@@ -88,7 +85,6 @@ extension SempTargetKind {
         case .inbox: String(localized: "semp.kind.inbox.with", bundle: .module)
         case .journal: String(localized: "semp.kind.journal.with", bundle: .module)
         case .project: String(localized: "semp.kind.project.with", bundle: .module)
-        case .area: String(localized: "semp.kind.area.with", bundle: .module)
         case .person: String(localized: "semp.kind.person.with", bundle: .module)
         case .company: String(localized: "semp.kind.company.with", bundle: .module)
         case .file: String(localized: "semp.kind.file.with", bundle: .module)

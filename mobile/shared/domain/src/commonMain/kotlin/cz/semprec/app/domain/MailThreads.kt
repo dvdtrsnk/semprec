@@ -3,7 +3,7 @@ package cz.semprec.app.domain
 /** A name and an address as the mail API lists them; [name] is empty when the address has no display name. */
 data class MailAddress(val name: String, val address: String)
 
-/** A project, a company, a mailbox or an area that a mail value points at. */
+/** A project, a company or a mailbox that a mail value points at. */
 data class MailNamedRef(val id: String, val name: String)
 
 /** The boxes the thread list offers; `INBOX` is the default list without drafts and junk. */
@@ -14,7 +14,6 @@ data class MailThreadQuery(
     val box: MailBox = MailBox.INBOX,
     val mailboxId: String? = null,
     val folderId: String? = null,
-    val areaId: String? = null,
     val projectId: String? = null,
     val unreadOnly: Boolean = false,
     val search: String = "",
@@ -71,24 +70,14 @@ data class MailThreadChanges(
     val reset: Boolean,
 )
 
-/** An area or a project of the filter with the number of threads it holds; [areaId] is a project's area. */
-data class MailFacetOption(
-    val id: String,
-    val name: String,
-    val color: String?,
-    val count: Int,
-    val areaId: String?,
-)
+/** A project of the filter with the number of threads it holds. */
+data class MailFacetOption(val id: String, val name: String, val color: String?, val count: Int)
 
-/** The thread counts of the filter: [total] over everything, one option per area and per project. */
+/** The thread counts of the filter: [total] over everything, one option per project. */
 data class MailFacets(
     val total: Int,
-    val areasTotal: Int,
     val projectsTotal: Int,
-    val areas: List<MailFacetOption>,
     val projects: List<MailFacetOption>,
-    val selectedAreaName: String?,
-    val selectedProjectName: String?,
 )
 
 /** The counts of the mail smart boxes and the mailboxes that cannot sync until the person signs in again. */

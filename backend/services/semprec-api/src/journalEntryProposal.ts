@@ -9,7 +9,7 @@ const logger = createLogger("journal-entry-proposal");
  * writes only the entry; the server supplies the Journal database as the target.
  */
 export const JOURNAL_ENTRY_INSTRUCTION =
-  "For a journal-method type, write one entry for a day of the person's Journal. Return 'markdown', the entry's nonempty Markdown body without page blocks or page links. Return 'date' (YYYY-MM-DD) only when the item names a day other than its own date; leave it out otherwise. Return 'projectId' or 'areaId' only when the item clearly belongs to one of the projects or areas of the workspace context, taking the id from that list; never invent one. Do not return a target or a properties object.";
+  "For a journal-method type, write one entry for a day of the person's Journal. Return 'markdown', the entry's nonempty Markdown body without page blocks or page links. Return 'date' (YYYY-MM-DD) only when the item names a day other than its own date; leave it out otherwise. Return 'projectId' only when the item clearly belongs to one of the projects of the workspace context, taking the id from that list; never invent one. Do not return a target or a properties object.";
 
 /**
  * Validated before it leaves this module (`content` is `unknown` at the gateway boundary). Other
@@ -18,7 +18,6 @@ export const JOURNAL_ENTRY_INSTRUCTION =
 const journalEntryAnswerSchema = z.object({
   date: z.string().min(1).optional(),
   markdown: z.string(),
-  areaId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
   reason: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
@@ -32,7 +31,6 @@ export const JOURNAL_ENTRY_RESPONSE_SCHEMA = {
   properties: {
     date: { type: "string", description: "The day of the entry as YYYY-MM-DD. Omit to use the item's own date." },
     markdown: { type: "string", description: "The entry's Markdown body." },
-    areaId: { type: "string", description: "The id of an area of the workspace context. Omit when unsure." },
     projectId: { type: "string", description: "The id of a project of the workspace context. Omit when unsure." },
     reason: { type: "string", description: "A short explanation of the proposal." },
     confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -48,9 +46,9 @@ function listedIds(workspace: ProposalWorkspaceGroup[], moduleId: ProposalWorksp
 }
 
 /**
- * `properties` are `{markdown, date?, areaId?, projectId?}` with no `target`. An area or project
- * the workspace context did not list is dropped, so the envelope never carries an id the model made
- * up. A non-matching answer throws.
+ * `properties` are `{markdown, date?, projectId?}` with no `target`. A project the workspace context
+ * did not list is dropped, so the envelope never carries an id the model made up. A non-matching
+ * answer throws.
  */
 export function parseJournalEntryAnswer(
   content: unknown,
@@ -58,16 +56,10 @@ export function parseJournalEntryAnswer(
 ): ProposalComputationResult {
   const answer = journalEntryAnswerSchema.parse(content);
   const { reason, confidence, ...entry } = answer;
-  let dropped = 0;
-  if (entry.areaId !== undefined && !listedIds(workspace, "areas").has(entry.areaId)) {
-    delete entry.areaId;
-    dropped++;
-  }
   if (entry.projectId !== undefined && !listedIds(workspace, "projects").has(entry.projectId)) {
     delete entry.projectId;
-    dropped++;
+    logger.info("Dropped an unlisted projectId from a journal entry answer");
   }
-  if (dropped > 0) logger.info({ count: dropped }, "Dropped journal entry references");
   return {
     properties: entry,
     ...(reason === undefined ? {} : { reason }),

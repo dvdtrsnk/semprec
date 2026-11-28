@@ -57,11 +57,15 @@ extension SharedItemScreenModel {
             picker: state.picker.map(picker),
             deletion: state.deletion.map(deletion),
             saving: state.saving,
-            writeFailure: state.writeFailure.map {
-                ItemWriteFailure(propertyKey: $0.propertyKey, kind: $0.kind.map(FailureKind.init))
-            },
-            deleted: state.deleted
+            writeFailure: state.writeFailure.map(writeFailure),
+            choiceFailure: state.choiceFailure.map(writeFailure),
+            deleted: state.deleted,
+            swatches: state.swatches.map(CalendarSwatch.init)
         )
+    }
+
+    static func writeFailure(_ failure: SharedSDK.ItemWriteFailure) -> ItemWriteFailure {
+        ItemWriteFailure(propertyKey: failure.propertyKey, kind: failure.kind.map(FailureKind.init))
     }
 
     static func action(_ action: ItemAction) -> any SharedSDK.ItemAction {
@@ -99,6 +103,12 @@ extension SharedItemScreenModel {
             SharedSDK.ItemActionEditSetNumber(propertyKey: key, number: number.map { KotlinDouble(double: $0) })
         case .setFlag(let key, let isOn): SharedSDK.ItemActionEditSetFlag(propertyKey: key, on: isOn)
         case .setChoices(let key, let keys): SharedSDK.ItemActionEditSetChoices(propertyKey: key, keys: keys)
+        case .addChoice(let key, let label): SharedSDK.ItemActionEditAddChoice(propertyKey: key, label: label)
+        case .renameChoice(let property, let key, let label):
+            SharedSDK.ItemActionEditRenameChoice(propertyKey: property, key: key, label: label)
+        case .recolorChoice(let property, let key, let color):
+            SharedSDK.ItemActionEditRecolorChoice(propertyKey: property, key: key, color: color)
+        case .removeChoice(let property, let key): SharedSDK.ItemActionEditRemoveChoice(propertyKey: property, key: key)
         case .unlink(let key): SharedSDK.ItemActionEditUnlink(propertyKey: key)
         case .relink(let key): SharedSDK.ItemActionEditRelink(propertyKey: key)
         case .removeTarget(let key, let targetId):

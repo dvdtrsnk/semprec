@@ -28,7 +28,6 @@ struct ProjectPickerPage: View {
                         ForEach(state.projectChoices) { project in
                             Label {
                                 Text(project.title)
-                                if let area = project.areaTitle { Text(area) }
                             } icon: {
                                 Image(systemName: "square.fill")
                                     .foregroundStyle(Color(hex: project.color) ?? Color.secondary.opacity(0.4))

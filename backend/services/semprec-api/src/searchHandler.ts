@@ -9,7 +9,7 @@ function wholeNumberOrRaw(raw: string | null): number | string | undefined {
 }
 
 /**
- * Matches among the caller's tasks, events, projects, areas, contacts, journal days and files,
+ * Matches among the caller's tasks, events, projects, contacts, journal days and files,
  * grouped by type. `scope` is comma-separated or repeated. The `search` operation's schema
  * validates every value, so invalid input is 400 `validation_failed` naming the field and never
  * repeating the query.

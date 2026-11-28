@@ -39,7 +39,7 @@ private const val WARM_TODAY = "2026-11-23"
 private const val DIARY_ITEM = "day-20"
 private val WARM_SESSION = StoredSession("https://s.example", "tok")
 private val WARM_DATABASES = listOf(
-    "tasks", "areas", "projects", "people", "calendars", "invitations", "events", "sleepSettings", "sleepPlans",
+    "tasks", "projects", "people", "calendars", "invitations", "events", "sleepSettings", "sleepPlans",
 )
 private val WARM_SCHEMA = """{"tenant":{"timezone":"Europe/Prague","today":"$WARM_TODAY"},"databases":[""" +
     WARM_DATABASES.joinToString(",") { """{"databaseId":"db-$it","key":"$it"}""" } + "]}"
@@ -150,8 +150,7 @@ class OfflineWarmupTest {
         val expected = listOf(
             "GET /api/schema",
             "GET /api/databases?limit=200",
-            "POST /api/databases/db-areas/query {\"limit\":200}",
-            "POST /api/databases/db-projects/query {\"include\":{\"relations\":{\"area\":[]}},\"limit\":200}",
+            "POST /api/databases/db-projects/query {\"limit\":200}",
             "POST /api/databases/db-people/query {\"limit\":200}",
             "POST /api/databases/db-calendars/query {\"include\":{\"relations\":{\"account\":[\"addresses\"]}}}",
             "POST /api/databases/db-invitations/query {}",
@@ -166,7 +165,7 @@ class OfflineWarmupTest {
             (21..30).map { "GET /api/journal/periods/day/2026-11-$it" } + listOf(
                 "GET /api/overview",
                 "POST /api/databases/db-projects/query {\"filter\":{\"type\":\"equals\",\"property\":\"pinned\"," +
-                    "\"value\":true},\"include\":{\"relations\":{\"area\":[]}},\"limit\":200}",
+                    "\"value\":true},\"limit\":200}",
                 "POST /api/databases/db-sleepSettings/query {}",
                 "POST /api/databases/db-sleepPlans/query {}",
                 "GET /api/sleep/nights?from=2026-11-23&to=2026-11-23",

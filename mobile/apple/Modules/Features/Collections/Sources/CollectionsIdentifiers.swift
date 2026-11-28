@@ -14,6 +14,9 @@ enum CollectionsIdentifiers {
     static let newItemSheet = "collection.newItemSheet"
     static let newItemSave = "collection.newItemSave"
     static let loadMore = "collection.loadMore"
+    static let facetBar = "collection.facetBar"
+    /// Followed by the value the chip stands for, e.g. `collection.facetBar.chip.client`.
+    static let facetBarChipPrefix = "collection.facetBar.chip."
 
     // MARK: - Item
     static let itemScreen = "item.screen"
@@ -33,4 +36,19 @@ enum CollectionsIdentifiers {
     static let relatedPrefix = "item.related."
     static let projectSettings = "project.settings"
     static let projectMailSignals = "project.settings.mailSignals"
+    static let projectTags = "project.tags"
+    static let projectSettingsTags = "project.settings.tags"
+    static let projectSettingsNewTag = "project.settings.tags.new"
+    static let projectSettingsAddTag = "project.settings.tags.add"
+    static let projectSettingsManageTags = "project.settings.tags.manage"
+    static let projectTagsPage = "project.settings.tags.page"
+    /// Followed by the tag's key, e.g. `project.settings.tags.row.client`.
+    static let projectTagRowPrefix = "project.settings.tags.row."
+    static let projectTagPage = "project.settings.tag"
+    static let projectTagName = "project.settings.tag.name"
+    static let projectTagRename = "project.settings.tag.rename"
+    /// Followed by the swatch's key, e.g. `project.settings.tag.color.green`.
+    static let projectTagColorPrefix = "project.settings.tag.color."
+    static let projectTagDelete = "project.settings.tag.delete"
+    static let projectTagDeleteConfirm = "project.settings.tag.delete.confirm"
 }

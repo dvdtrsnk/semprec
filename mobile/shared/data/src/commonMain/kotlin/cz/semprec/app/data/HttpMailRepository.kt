@@ -5,6 +5,7 @@ import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailNamedRef
 import cz.semprec.app.domain.MailOutcome
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSummary
 import cz.semprec.app.domain.MailThreadChanges
@@ -20,18 +21,17 @@ import io.ktor.http.encodeURLPathPart
 
 private const val PAGE_LIMIT = "50"
 private const val EMPTY_BODY = "{}"
-private const val AREAS_KEY = "areas"
 private const val PROJECTS_KEY = "projects"
 
 /**
  * The mail reads and thread actions of `/api/mail/threads*` (the list's changes since a cursor included), `/api/mail/summary` and `/api/mail/contacts`. The names
- * and colors of the areas and projects in the filter are read as items, because the counts carry only their ids. A
+ * and colors of the projects in the filter are read as items, because the counts carry only their ids. A
  * read mark, flag or move refused with a known code is [MailOutcome.Refused].
  */
 class HttpMailRepository internal constructor(
     private val api: AuthenticatedApi,
     private val items: ItemsApi,
-) : MailRepository, MailThreadChangesRepository {
+) : MailRepository, MailThreadChangesRepository, MailProjectNames {
     constructor(api: AuthenticatedApi) : this(api, ItemsApi(api))
 
     override suspend fun threads(query: MailThreadQuery): RepositoryResult<MailThreadPage> {
@@ -52,17 +52,12 @@ class HttpMailRepository internal constructor(
                 MailThreadChanges(changes.cursor, changes.threads.map { it.toDomain() }, changes.removed, changes.reset)
             }
 
-    override suspend fun facets(areaId: String?, projectId: String?): RepositoryResult<MailFacets> {
-        val parameters = listOfNotNull(areaId?.let { "areaId" to it }, projectId?.let { "projectId" to it })
-        return api.send(HttpMethod.Get, "/api/mail/threads/facets", parameters).decode<MailFacetsDto>()
-            .then { counts ->
-                names(AREAS_KEY).then { areaNames ->
-                    names(PROJECTS_KEY).map { projectNames ->
-                        counts.toDomain(areaNames, projectNames, areaId, projectId)
-                    }
-                }
-            }
-    }
+    override suspend fun facets(): RepositoryResult<MailFacets> =
+        api.send(HttpMethod.Get, "/api/mail/threads/facets").decode<MailFacetsDto>()
+            .then { counts -> names(PROJECTS_KEY).map { projectNames -> counts.toDomain(projectNames) } }
+
+    override suspend fun projectName(projectId: String): RepositoryResult<String?> =
+        names(PROJECTS_KEY).map { projectNames -> projectNames[projectId]?.name }
 
     override suspend fun summary(): RepositoryResult<MailSummary> =
         api.send(HttpMethod.Get, "/api/mail/summary").decode<MailSummaryDto>().map { it.toDomain() }
@@ -106,7 +101,6 @@ private fun MailThreadQuery.viewParameters(): List<Pair<String, String>> = build
     add("box" to box.wire())
     mailboxId?.let { add("mailboxId" to it) }
     folderId?.let { add("folderId" to it) }
-    areaId?.let { add("areaId" to it) }
     projectId?.let { add("projectId" to it) }
     if (unreadOnly) add("unread" to "true")
 }
@@ -122,22 +116,13 @@ private fun MailBox.wire(): String = when (this) {
 }
 
 /** The options of the filter; one whose item is gone or has no name is left out, as it could not be shown. */
-private fun MailFacetsDto.toDomain(
-    areaNames: Map<String, MailNameAndColor>,
-    projectNames: Map<String, MailNameAndColor>,
-    selectedAreaId: String?,
-    selectedProjectId: String?,
-) = MailFacets(
+private fun MailFacetsDto.toDomain(projectNames: Map<String, MailNameAndColor>) = MailFacets(
     total = total,
-    areasTotal = areas.total,
     projectsTotal = projects.total,
-    areas = areas.items.mapNotNull { item -> item.option(areaNames) },
     projects = projects.items.mapNotNull { item -> item.option(projectNames) },
-    selectedAreaName = selectedAreaId?.let { areaNames[it]?.name },
-    selectedProjectName = selectedProjectId?.let { projectNames[it]?.name },
 )
 
 private fun MailFacetItemDto.option(names: Map<String, MailNameAndColor>): MailFacetOption? {
     val known = names[id] ?: return null
-    return known.name?.let { MailFacetOption(id, it, known.color, count, areaId) }
+    return known.name?.let { MailFacetOption(id, it, known.color, count) }
 }

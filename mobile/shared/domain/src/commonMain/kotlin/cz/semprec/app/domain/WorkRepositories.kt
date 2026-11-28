@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.merge
 
 /** The task lists. */
 interface TaskRepository {
-    /** The tasks of [scope] the person may see, each with its project and the area of it. */
+    /** The tasks of [scope] the person may see, each with its project. */
     suspend fun tasks(scope: TaskScope): RepositoryResult<List<WorkItem>>
 
     suspend fun create(task: NewTask): RepositoryResult<WorkItem>
@@ -28,10 +28,8 @@ interface ItemRepository {
     suspend fun delete(kind: ItemKind, id: String): RepositoryResult<Unit>
 }
 
-/** The areas, projects and people a task or an event can be filtered or tied by. */
+/** The projects and people a task or an event can be filtered or tied by. */
 interface CatalogRepository {
-    suspend fun areas(): RepositoryResult<List<EntityRef>>
-
     suspend fun projects(): RepositoryResult<List<ProjectRef>>
 
     suspend fun people(): RepositoryResult<List<EntityRef>>

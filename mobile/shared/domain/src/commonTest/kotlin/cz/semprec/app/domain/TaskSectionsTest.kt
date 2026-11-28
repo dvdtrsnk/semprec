@@ -86,18 +86,20 @@ class TaskSectionsTest {
         assertEquals(listOf("a"), planned.flatMap { section -> section.items.map { it.id } })
     }
 
-    @Test fun `the filter narrows by area project and flag`() {
-        val work = ProjectRef("p1", "Semprec iOS", areaId = "work", areaTitle = "Práce")
-        val home = ProjectRef("p2", "Koupelna", areaId = "home", areaTitle = "Domácnost")
+    @Test fun `the filter narrows by project and flag`() {
+        val work = ProjectRef("p1", "Semprec iOS")
+        val home = ProjectRef("p2", "Koupelna")
         val inWork = task("a", null, project = work, flagged = true)
         val inHome = task("b", null, project = home)
         val none = task("c", null)
+        val all = listOf(inWork, inHome, none)
 
         assertFalse(TaskFilter().isActive)
         assertTrue(TaskFilter().matches(none))
-        assertEquals(listOf(inWork), listOf(inWork, inHome, none).filter(TaskFilter(areaId = "work")::matches))
-        assertEquals(listOf(inHome), listOf(inWork, inHome, none).filter(TaskFilter(projectId = "p2")::matches))
-        assertEquals(listOf(inWork), listOf(inWork, inHome, none).filter(TaskFilter(flaggedOnly = true)::matches))
-        assertTrue(TaskFilter(areaId = "work").isActive)
+        assertEquals(listOf(inHome), all.filter(TaskFilter(projectId = "p2")::matches))
+        assertEquals(listOf(inWork), all.filter(TaskFilter(flaggedOnly = true)::matches))
+        assertEquals(emptyList(), all.filter(TaskFilter(projectId = "p2", flaggedOnly = true)::matches))
+        assertTrue(TaskFilter(projectId = "p2").isActive)
+        assertTrue(TaskFilter(flaggedOnly = true).isActive)
     }
 }

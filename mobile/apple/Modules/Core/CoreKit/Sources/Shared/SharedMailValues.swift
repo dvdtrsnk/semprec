@@ -25,7 +25,6 @@ extension MailListStart {
 
     init(_ start: SharedSDK.MailListStart) {
         self.init(
-            areaId: start.areaId,
             projectId: start.projectId,
             box: MailListBox(start.box),
             mailboxId: start.mailboxId,
@@ -35,7 +34,6 @@ extension MailListStart {
 
     var shared: SharedSDK.MailListStart {
         SharedSDK.MailListStart(
-            areaId: areaId,
             projectId: projectId,
             box: box.shared,
             mailboxId: mailboxId,

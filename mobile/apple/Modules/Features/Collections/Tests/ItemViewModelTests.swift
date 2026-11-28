@@ -46,12 +46,43 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testANewTagOfTheProjectSettingsIsSentAsANewChoiceOfTheTags() {
+        let model = ScriptedItemScreenModel(state: state(databaseKey: "projects"))
+        let viewModel = ItemViewModel(itemId: "i1", model: model, router: RouterSpy())
+        let tags = FieldView(
+            propertyKey: "tags",
+            name: "Tags",
+            kind: .multiSelect,
+            content: .choices([FieldOption(key: "home", label: "Home", color: nil)]),
+            options: [FieldOption(key: "home", label: "Home", color: nil)],
+            editable: true,
+            origin: nil
+        )
+        viewModel.send(ProjectSettingsSheet.newChoice("Client", of: tags))
+        XCTAssertEqual(model.actions, [.edit(.addChoice(propertyKey: "tags", label: "Client"))])
+    }
+
+    @MainActor
+    func testTheTypedTagIsClearedOnlyOnceTheProjectGainedATag() {
+        XCTAssertTrue(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home", "client"]))
+        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home"]))
+        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: nil, now: ["home", "client"]))
+    }
+
+    @MainActor
+    func testANewTagIsSentOnlyWithANameAndNoRunningWrite() {
+        XCTAssertTrue(ProjectSettingsSheet.canAddTag(named: "Client", saving: false))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "Client", saving: true))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "", saving: false))
+        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "  ", saving: false))
+    }
+
+    @MainActor
     func testOpenItemEffectsGoToTheScreenOfTheirKind() async throws {
         let model = ScriptedItemScreenModel(
             state: state(databaseKey: "projects"),
             effects: [
                 .openItem(itemId: "e1", databaseKey: "events"),
-                .openItem(itemId: "a1", databaseKey: "areas"),
                 .openItem(itemId: "c1", databaseKey: "companies"),
                 .openItem(itemId: "u1", databaseKey: nil)
             ]
@@ -60,7 +91,6 @@ final class ItemViewModelTests: XCTestCase {
         let observer = Task { await ItemViewModel(itemId: "i1", model: model, router: router).observe() }
         try await eventually { router.items.count == 2 }
         XCTAssertEqual(router.events, ["e1"])
-        XCTAssertEqual(router.areas, ["a1"])
         XCTAssertEqual(router.items, ["c1:companies", "u1:-"])
         observer.cancel()
     }
@@ -115,12 +145,16 @@ final class ItemViewModelTests: XCTestCase {
         viewModel.showProject(.notes)
         viewModel.showProject(.agent)
         viewModel.showProject(.files)
+        viewModel.showProject(.tags)
+        viewModel.showProject(.tag(key: "client"))
         XCTAssertEqual(router.tasks, ["p1"])
         XCTAssertEqual(router.mail, ["p1"])
         XCTAssertEqual(router.mailSignals, ["p1"])
         XCTAssertEqual(router.notes, ["p1"])
         XCTAssertEqual(router.agents, ["p1"])
         XCTAssertEqual(router.collections, [.ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")])
+        XCTAssertEqual(router.projectTags, ["p1"])
+        XCTAssertEqual(router.projectTag, ["p1:client"])
     }
 
     @MainActor

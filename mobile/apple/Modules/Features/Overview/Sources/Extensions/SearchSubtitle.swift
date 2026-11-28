@@ -37,11 +37,10 @@ private extension SearchSubtitle {
         case .date: date.text(iso: part.value)
         case .time: part.value
         case .timeRange: DisplayDate.time(part.value)
-        case .place, .project, .area, .people, .phone, .sender: part.value
+        case .place, .project, .people, .phone, .sender: part.value
         case .recurrence: recurrence(part.value)
         case .relationship: relationship(part.value)
         case .status: status(part.value)
-        case .count: Int(part.value).map { String(format: localized("search.count"), locale: locale, $0) }
         case .movedFrom:
             date.text(iso: part.value).map { String(format: localized("search.movedFrom"), locale: locale, $0) }
         case .missedInEvent: String(format: localized("search.missedInEvent"), locale: locale, part.value)

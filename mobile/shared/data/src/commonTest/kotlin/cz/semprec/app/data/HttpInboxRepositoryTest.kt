@@ -53,7 +53,7 @@ private const val TASK_CARD = """{"cardId":"$CARD","source":"proposal","cardKind
       "pageCount":null,"thumbnailBlobId":null,"source":"share"},{"attachmentId":"at2","name":"lost.png"}]},
   "context":null,"targets":[{"databaseKey":"tasks","label":"Tasks"}],
   "envelope":{"entityKind":"database","target":"$TASKS_DB",
-    "properties":{"name":"Send the invoice","date":"2026-10-17","timeFrom":"09:00","done":false,"area":{"newOption":"Work"}},
+    "properties":{"name":"Send the invoice","date":"2026-10-17","timeFrom":"09:00","done":false,"category":{"newOption":"Work"}},
     "relations":{"project":["p1"]}},
   "editorSchema":{"baseKind":"task","groups":[
     {"key":"main","fields":[
@@ -111,7 +111,7 @@ class HttpInboxRepositoryTest {
         assertEquals(InboxEntityKind.DATABASE, envelope.entityKind)
         assertEquals(InboxValue.Text("09:00"), envelope.properties["timeFrom"])
         assertEquals(InboxValue.Flag(false), envelope.properties["done"])
-        assertEquals(InboxValue.NewOption("Work"), envelope.properties["area"])
+        assertEquals(InboxValue.NewOption("Work"), envelope.properties["category"])
         assertEquals(listOf("p1"), envelope.relations["project"])
         assertEquals(InboxPropertyType.RELATION, card.properties["project"]?.type)
         assertEquals(InboxPropertyType.SELECT, card.properties["status"]?.type)

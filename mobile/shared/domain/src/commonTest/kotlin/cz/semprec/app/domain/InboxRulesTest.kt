@@ -29,7 +29,7 @@ private val taskSchema = InboxSchema(
             "links",
             listOf(
                 InboxField("project", InboxControl.SELECT, optionsSource = "project"),
-                InboxField("area", InboxControl.SELECT, optionsSource = "area"),
+                InboxField("company", InboxControl.SELECT, optionsSource = "company"),
             ),
         ),
         InboxGroup(
@@ -157,7 +157,7 @@ class InboxRulesTest {
     @Test fun `the groups are the schema and a group without a visible field is dropped`() {
         assertEquals(listOf("main", "links"), card().visibleGroups().map { it.key })
         assertEquals(
-            listOf("name", "date", "allDay", "status", "project", "area"),
+            listOf("name", "date", "allDay", "status", "project", "company"),
             card().visibleFields().map { it.key },
         )
     }
@@ -250,9 +250,9 @@ class InboxRulesTest {
     }
 
     @Test fun `an item select writes the id when the destination has no relation of that key`() {
-        val area = card(properties = relation("project")).edit("area", pick("a1"))
-        assertEquals(mapOf("primary" to mapOf("area" to text("a1"))), area.values)
-        assertTrue(area.relations.isEmpty())
+        val company = card(properties = relation("project")).edit("company", pick("c1"))
+        assertEquals(mapOf("primary" to mapOf("company" to text("c1"))), company.values)
+        assertTrue(company.relations.isEmpty())
     }
 
     @Test fun `a relation the proposal already holds is a relation even when the schema is unknown`() {

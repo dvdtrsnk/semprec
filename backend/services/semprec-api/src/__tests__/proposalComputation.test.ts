@@ -1067,11 +1067,14 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(call.responseSchema).toMatchObject({
         required: ["markdown"],
         additionalProperties: false,
-        properties: { date: {}, markdown: {}, areaId: {}, projectId: {} },
+        properties: { date: {}, markdown: {}, projectId: {} },
       });
-      expect(
-        Object.keys(z.object({ properties: z.record(z.string(), z.unknown()) }).parse(call.responseSchema).properties),
-      ).not.toContain("target");
+      const answerKeys = Object.keys(
+        z.object({ properties: z.record(z.string(), z.unknown()) }).parse(call.responseSchema).properties,
+      );
+      expect(answerKeys).not.toContain("target");
+      expect(answerKeys).not.toContain("areaId");
+      expect(call.system).not.toContain("areaId");
     });
 
     it.each([
@@ -1094,47 +1097,36 @@ describe("createProposalComputation (issue #1434)", () => {
       );
     });
 
-    it("lists the projects and areas of the workspace to the model and keeps listed ones, the project only when both are given", async () => {
-      const areaId = (await createIn("areas", { name: "Health" })).id;
+    it("lists the projects of the workspace to the model, keeps a listed one and drops an areaId the model adds", async () => {
       const projectId = (await createIn("projects", { name: "Marathon", status: "inProgress" })).id;
+      const areaId = randomUUID();
       const gateway = stubGateway({ ...run, areaId, projectId });
 
       await runTick(pool, gateway, await createJournalItem());
 
-      const message = JSON.stringify(gateway.calls[0]?.messages);
-      expect(message).toContain(areaId);
-      expect(message).toContain(projectId);
+      expect(JSON.stringify(gateway.calls[0]?.messages)).toContain(projectId);
       const card = await onlyCard();
-      expect(card).toMatchObject({
-        status: "proposed",
-        proposal: { properties: { date: "2026-10-16", markdown: "Went for a run.", projectId } },
+      expect(card).toMatchObject({ status: "proposed" });
+      expect(card.proposal).toEqual({
+        entityKind: "journalEntry",
+        target: await databaseIdFor("journal"),
+        properties: { date: "2026-10-16", markdown: "Went for a run.", projectId },
       });
       expect(JSON.stringify(card)).not.toContain(areaId);
     });
 
-    it("keeps a listed area when no project is given", async () => {
-      const areaId = (await createIn("areas", { name: "Health" })).id;
-
-      await runTick(pool, stubGateway({ ...run, areaId }), await createJournalItem());
-
-      expect(await onlyCard()).toMatchObject({ status: "proposed", proposal: { properties: { ...run, areaId } } });
-    });
-
-    it("drops an area and a project the context did not list, and logs a count without the ids", async () => {
+    it("drops a project the context did not list, and logs it without the id", async () => {
       const archivedProject = (await createIn("projects", { name: "Done long ago", status: "archived" })).id;
-      const unknownArea = randomUUID();
       const itemId = await createJournalItem();
       observedLogs.chunks.length = 0;
 
-      await runTick(pool, stubGateway({ ...run, areaId: unknownArea, projectId: archivedProject }), itemId);
+      await runTick(pool, stubGateway({ ...run, projectId: archivedProject }), itemId);
 
       const card = await onlyCard();
       expect(card).toMatchObject({ status: "proposed", proposal: { properties: run } });
-      const { output } = loggedRecord("Dropped journal entry references");
-      for (const id of [unknownArea, archivedProject]) {
-        expect(JSON.stringify(card)).not.toContain(id);
-        expect(output).not.toContain(id);
-      }
+      const { output } = loggedRecord("Dropped an unlisted projectId from a journal entry answer");
+      expect(JSON.stringify(card)).not.toContain(archivedProject);
+      expect(output).not.toContain(archivedProject);
     });
 
     it("writes no card and fails the tick when the answer has no markdown or a mistyped field", async () => {
@@ -1152,13 +1144,12 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(await onlyCard()).toMatchObject({ status: "needsClarification", proposal: null });
     });
 
-    it("never discloses or proposes an area or project of another tenant", async () => {
+    it("never discloses or proposes a project of another tenant", async () => {
       await withTwoTenants(
         { name: "Note", emoji: "N", processingMethod: "journal" },
         async ({ cp, idFor }, index) => {
           const name = index === 0 ? "Local" : "Foreign";
           return {
-            area: await cp.createItem({ databaseId: await idFor("areas"), properties: { name: `${name} area` } }),
             project: await cp.createItem({
               databaseId: await idFor("projects"),
               properties: { name: `${name} project`, status: "inProgress" },
@@ -1167,7 +1158,7 @@ describe("createProposalComputation (issue #1434)", () => {
           };
         },
         async ([local, foreign], runtime) => {
-          const gateway = stubGateway({ ...run, areaId: foreign!.extra.area.id, projectId: local!.extra.project.id });
+          const gateway = stubGateway({ ...run, projectId: foreign!.extra.project.id });
 
           const cards = await tickInTenant(runtime, local!, gateway, local!.extra.project.id);
 
@@ -1177,14 +1168,13 @@ describe("createProposalComputation (issue #1434)", () => {
             proposal: {
               entityKind: "journalEntry",
               target: local!.extra.journalId,
-              properties: { ...run, projectId: local!.extra.project.id },
+              properties: run,
             },
           });
-          expect(JSON.stringify(cards[0]?.properties.proposal)).not.toContain(foreign!.extra.area.id);
+          expect(JSON.stringify(cards[0]?.properties.proposal)).not.toContain(foreign!.extra.project.id);
           const sent = JSON.stringify(gateway.calls[0]?.messages);
-          expect(sent).toContain(local!.extra.area.id);
-          for (const hidden of [foreign!.extra.area.id, foreign!.extra.project.id, "Foreign"])
-            expect(sent).not.toContain(hidden);
+          expect(sent).toContain(local!.extra.project.id);
+          for (const hidden of [foreign!.extra.project.id, "Foreign"]) expect(sent).not.toContain(hidden);
         },
       );
     });
@@ -1373,12 +1363,16 @@ describe("createProposalComputation (issue #1434)", () => {
       const projects = await databaseIdFor("projects");
       const cp = createChokePoint(pool);
       const project = await createIn("projects", { name: "Project", status: "inProgress", pinned: true });
-      const oldArea = await createIn("areas", { name: "Old" });
-      const newArea = await createIn("areas", { name: "New" });
-      const areaProperty = (await cp.listProperties(projects)).find((property) => property.key === "area");
-      if (!areaProperty) throw new Error("Missing project area relation");
+      const oldPerson = await createIn("people", { name: "Old" });
+      const newPerson = await createIn("people", { name: "New" });
+      const peopleProperty = (await cp.listProperties(projects)).find((property) => property.key === "people");
+      if (!peopleProperty) throw new Error("Missing project people relation");
       await inTenantZero(() =>
-        cp.createRelation({ relationPropertyId: areaProperty.id, callerItemId: project.id, targetItemId: oldArea.id }),
+        cp.createRelation({
+          relationPropertyId: peopleProperty.id,
+          callerItemId: project.id,
+          targetItemId: oldPerson.id,
+        }),
       );
       // A pinned project without an allocation; a normal write would allocate it.
       await pool.query(
@@ -1388,30 +1382,30 @@ describe("createProposalComputation (issue #1434)", () => {
       const { stub, card } = await tickWithUpdate({
         op: "update",
         itemId: project.id,
-        relations: { area: [newArea.id] },
+        relations: { people: [newPerson.id] },
       });
       const request = JSON.stringify(stub.calls[0]);
-      for (const sent of [project.id, "Project", oldArea.id, "Old"]) expect(request).toContain(sent);
+      for (const sent of [project.id, "Project", oldPerson.id, "Old"]) expect(request).toContain(sent);
       expect(request.split(project.id)).toHaveLength(2);
-      // Twice: the area's own context entry and the `areaId` of the project's entry.
-      expect(request.split(oldArea.id)).toHaveLength(3);
+      // Once: the person's own context entry.
+      expect(request.split(oldPerson.id)).toHaveLength(2);
       expect(userMessage(stub)).not.toContain('"before"');
-      expect(userMessage(stub)).not.toContain(JSON.stringify([oldArea.id]));
+      expect(userMessage(stub)).not.toContain(JSON.stringify([oldPerson.id]));
       expect(card.properties.status).toBe("proposed");
       expect(card.properties.proposal).toMatchObject({
         operations: [
           expect.anything(),
           {
-            before: { properties: { status: "inProgress" }, relations: { area: [oldArea.id] } },
-            after: { properties: {}, relations: { area: [newArea.id] } },
+            before: { properties: { status: "inProgress" }, relations: { people: [oldPerson.id] } },
+            after: { properties: {}, relations: { people: [newPerson.id] } },
           },
         ],
       });
       expect((await cp.getItem(projects, project.id))?.properties.pinnedOrder).toBeNull();
       expect((await confirmByHttp(card.id)).status).toBe(200);
       expect((await cp.getItem(projects, project.id))?.properties.pinnedOrder).toBeNull();
-      expect(await edgeExists(project.id, newArea.id)).toBe(true);
-      expect(await edgeExists(project.id, oldArea.id)).toBe(false);
+      expect(await edgeExists(project.id, newPerson.id)).toBe(true);
+      expect(await edgeExists(project.id, oldPerson.id)).toBe(false);
     });
 
     it.each([
@@ -1870,7 +1864,6 @@ describe("createProposalComputation (issue #1434)", () => {
           for (const name of names) await createIn(moduleId, { name, ...extra });
         };
         await create("projects", ["P1", "P2", "P3"], { status: "inProgress" });
-        await create("areas", ["A1", "A2"]);
         await create("people", ["Eva", "Jan", "Petr"]);
         await create("companies", ["C1", "C2", "C3", "C4"]);
         await create("events", ["E1", "E2", "E3"], { date: "2026-08-29" });
@@ -1898,7 +1891,7 @@ describe("createProposalComputation (issue #1434)", () => {
         await seedWorkspace();
         const small = await contextWithText(10);
         const full = counts(small);
-        expect(full).toEqual({ projects: 3, areas: 3, people: 3, companies: 4, events: 3 });
+        expect(full).toEqual({ projects: 3, people: 3, companies: 4, events: 3 });
         expect(bytes(small)).toBeLessThan(REQUEST_BUDGET_BYTES);
 
         // The length at which the context is 10 bytes over budget once every event is gone, so one company goes too.

@@ -3,14 +3,9 @@ import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
-import {
-  getRelationDefinitionByPropertyId,
-  listLiveRelationTargets,
-  listRelationsForItems,
-  otherSide,
-} from "../chokePoint/relationsStore.js";
+import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 
-const MODULES = ["projects", "areas", "people", "companies", "events"] as const;
+const MODULES = ["projects", "people", "companies", "events"] as const;
 const ACTIVE_PROJECT_STATUSES = ["inProgress", "longTerm"];
 
 /** The longest text the context carries for one value: a name, a status, a relationship, a registration number. */
@@ -22,8 +17,6 @@ export interface ProposalWorkspaceEntry {
 }
 export interface ProposalWorkspaceProject extends ProposalWorkspaceEntry {
   status: string;
-  /** Absent when none or the Areas database is closed to the project. */
-  areaId?: string;
 }
 export interface ProposalWorkspacePerson extends ProposalWorkspaceEntry {
   relationship?: string;
@@ -38,7 +31,6 @@ export interface ProposalWorkspaceEvent extends ProposalWorkspaceEntry {
 /** One kind of the context. A kind whose database the project may not read is absent, not an empty group. */
 export type ProposalWorkspaceGroup =
   | { moduleId: "projects"; databaseId: string; items: ProposalWorkspaceProject[] }
-  | { moduleId: "areas"; databaseId: string; items: ProposalWorkspaceEntry[] }
   | { moduleId: "people"; databaseId: string; items: ProposalWorkspacePerson[] }
   | { moduleId: "companies"; databaseId: string; items: ProposalWorkspaceCompany[] }
   | { moduleId: "events"; databaseId: string; items: ProposalWorkspaceEvent[] };
@@ -139,37 +131,6 @@ const ITEM_COLUMNS_SQL = `id, left(properties->>'name', ${MAX_VALUE_LENGTH}) AS 
   ${textValueSql("type")} AS type,
   ${textValueSql("date", 10)} AS date`;
 
-/** The area of each project, for live areas in a database the reader may read. */
-async function readProjectAreaIds(
-  client: PoolClient,
-  projectsDatabaseId: string,
-  projectIds: readonly string[],
-  unreadable: ReadonlySet<string>,
-): Promise<Map<string, string>> {
-  const areaIds = new Map<string, string>();
-  const areaProperty = (await listPropertiesByDatabase(client, projectsDatabaseId)).find(
-    (property) => property.key === "area" && property.type === "relation",
-  );
-  const definition = areaProperty ? await getRelationDefinitionByPropertyId(client, areaProperty.id) : null;
-  if (!definition) return areaIds;
-  const projects = new Set(projectIds);
-  const edgeAreas = (await listRelationsForItems(client, definition.id, [...projectIds]))
-    .map((edge) => {
-      const projectId = projects.has(edge.itemA) ? edge.itemA : edge.itemB;
-      return { projectId, areaId: otherSide(edge, projectId) };
-    })
-    .sort((a, b) => (a.areaId < b.areaId ? -1 : a.areaId > b.areaId ? 1 : 0));
-  const readable = new Set(
-    (await listLiveRelationTargets(client, [...new Set(edgeAreas.map((edge) => edge.areaId))]))
-      .filter((target) => !unreadable.has(target.databaseId))
-      .map((target) => target.id),
-  );
-  for (const { projectId, areaId } of edgeAreas) {
-    if (readable.has(areaId) && !areaIds.has(projectId)) areaIds.set(projectId, areaId);
-  }
-  return areaIds;
-}
-
 export interface ReadProposalWorkspaceContextInput {
   /** A database this project may not read contributes nothing. */
   projectItemId: string;
@@ -231,26 +192,16 @@ export async function readProposalWorkspaceContext(
     };
     switch (database.owner_module_id) {
       case "projects": {
-        const areaIds = await readProjectAreaIds(
-          client,
-          database.id,
-          items.map((item) => item.id),
-          unreadable,
-        );
         result.push({
           moduleId: "projects",
           databaseId: database.id,
           items: items.map((item) => ({
             ...entry(item),
             status: required(item.status),
-            ...(areaIds.has(item.id) ? { areaId: areaIds.get(item.id) } : {}),
           })),
         });
         break;
       }
-      case "areas":
-        result.push({ moduleId: "areas", databaseId: database.id, items: items.map(entry) });
-        break;
       case "people":
         result.push({
           moduleId: "people",

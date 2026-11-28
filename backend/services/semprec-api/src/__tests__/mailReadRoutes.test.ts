@@ -224,21 +224,18 @@ describe("mail reads through the dispatcher", () => {
         if (!found) throw new Error(`Missing ${key}`);
         return found.id;
       };
-      const area = await cp.createItem({ databaseId: db("areas"), properties: { name: "Area" } });
       const project = await cp.createItem({ databaseId: db("projects"), properties: { name: "Project" } });
       const person = await cp.createItem({
         databaseId: db("people"),
         properties: { name: "Sender", emails: "sender@example.test" },
       });
       const projectProperty = (await cp.listProperties(db("threads"))).find((property) => property.key === "project");
-      const areaProperty = (await cp.listProperties(db("projects"))).find((property) => property.key === "area");
-      if (!projectProperty || !areaProperty) throw new Error("Missing project/area relation");
+      if (!projectProperty) throw new Error("Missing the thread project relation");
       await cp.createRelation({
         relationPropertyId: projectProperty.id,
         callerItemId: b.threadItemId,
         targetItemId: project.id,
       });
-      await cp.createRelation({ relationPropertyId: areaProperty.id, callerItemId: project.id, targetItemId: area.id });
       await createPersonEmailReindexAction(runtime)(
         { peopleDatabaseId: db("people") },
         { heartbeatId: "fixture", projectItemId: "fixture", itemId: person.id },
@@ -252,11 +249,11 @@ describe("mail reads through the dispatcher", () => {
           envelope: { from: { address: "sender@example.test" } },
         }),
       );
-      return { projectId: project.id, areaId: area.id, personId: person.id };
+      return { projectId: project.id, personId: person.id };
     });
     const combined = await get(
       authB,
-      `/api/mail/threads?mailboxId=${b.mailboxId}&q=proposal&projectId=${filters.projectId}&areaId=${filters.areaId}&personId=${filters.personId}`,
+      `/api/mail/threads?mailboxId=${b.mailboxId}&q=proposal&projectId=${filters.projectId}&personId=${filters.personId}`,
     );
     expect(combined.status).toBe(200);
     expect(await combined.text()).toContain(b.threadId);

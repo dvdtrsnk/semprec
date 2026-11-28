@@ -72,10 +72,15 @@ internal fun CollectionDatabase.axisOf(spec: SortSpec): SortAxis? = when {
     else -> null
 }
 
-/** The properties the filter sheet offers: status-like selects, multi-selects and the context relations. */
+/**
+ * The properties the filter sheet offers: status-like selects, multi-selects and the context relations. The property
+ * of the facet bar is offered even while the schema read with the screen knew none of its choices, so that a chip
+ * chosen in the bar is always in the sheet too.
+ */
 internal fun CollectionDatabase.filterProperties(): List<CollectionProperty> = properties.filter { property ->
     when (property.kind) {
-        PropertyKind.SELECT, PropertyKind.MULTI_SELECT -> property.filterable && property.options.isNotEmpty()
+        PropertyKind.SELECT, PropertyKind.MULTI_SELECT ->
+            property.filterable && (property.options.isNotEmpty() || property.key == facetBarProperty)
         PropertyKind.RELATION -> property.filterable && property.key in CONTEXT_RELATIONS
         PropertyKind.DATE -> property.filterable && property == dateProperty()
         else -> false

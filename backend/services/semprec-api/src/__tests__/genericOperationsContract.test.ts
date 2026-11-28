@@ -427,6 +427,15 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(updated).toEqual({ key: "herbs", label: "Fresh herbs" });
     expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([{ key: "herbs", label: "Fresh herbs" }]);
   },
+  "property.option.remove": async (fx, api) => {
+    const tags = await createTags(fx);
+    const item = await chokePoint.createItem({ databaseId: fx.database.id, properties: { tags: ["herbs"] } });
+    const res = await api(`/api/properties/${tags.id}/options/herbs`, "DELETE");
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe("");
+    expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([]);
+    expect((await chokePoint.getItem(fx.database.id, item.id))?.properties.tags).toEqual([]);
+  },
   "property.delete": async (fx, api) => {
     const scratch = await chokePoint.createProperty({
       databaseId: fx.database.id,
@@ -947,21 +956,23 @@ describe("generic operation REST contract", () => {
     await expectConflict(); // no live source
   });
 
-  it("filters the system area from database.query and refuses its deletion", async () => {
-    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
-    if (!areas) throw new Error("Areas missing");
-    const system = (await chokePoint.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
-    if (!system) throw new Error("System area missing");
-    const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+  it("filters a system project from database.query and refuses its deletion", async () => {
+    const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+    if (!projects) throw new Error("Projects missing");
+    const system = (await chokePoint.listItems(projects.id)).items.find(
+      (item) => item.properties.systemActive === true,
+    );
+    if (!system) throw new Error("System project missing");
+    const user = await chokePoint.createItem({ databaseId: projects.id, properties: { name: "User project" } });
     expect(await read(api(`/api/items/${system.id}`, "DELETE"), 403)).toMatchObject({
       error: { details: { field: "systemActive" } },
     });
     const result = await read(
-      api(`/api/databases/${areas.id}/query`, "POST", { filter: { type: "is_empty", property: "systemActive" } }),
+      api(`/api/databases/${projects.id}/query`, "POST", { filter: { type: "is_empty", property: "systemActive" } }),
     );
-    expect(result).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(result).toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ id: user.id })]) });
     expect(JSON.stringify(result)).not.toContain(system.id);
-    expect(await chokePoint.getItem(areas.id, system.id)).toEqual(system);
+    expect(await chokePoint.getItem(projects.id, system.id)).toEqual(system);
   });
 
   it("rejects nonempty and non-object item DELETE bodies before dispatch", async () => {
@@ -1236,53 +1247,45 @@ describe("generic operation REST contract", () => {
     );
   });
 
-  it("expands a tenant's real person, project and area through authenticated REST under RLS", async () => {
+  it("expands a tenant's real person, project and company through authenticated REST under RLS", async () => {
     await withRuntimeRest(
       async (cp, runtime) => {
-        const [people, projects, areas, companies, files] = await Promise.all(
-          ["people", "projects", "areas", "companies", "files"].map((moduleId) => findDatabase(cp, moduleId)),
+        const [people, projects, companies, events] = await Promise.all(
+          ["people", "projects", "companies", "events"].map((moduleId) => findDatabase(cp, moduleId)),
         );
-        if (!people || !projects || !areas || !companies || !files) throw new Error("Missing module database");
+        if (!people || !projects || !companies || !events) throw new Error("Missing module database");
         const create = (databaseId: string, name: string) => cp.createItem({ databaseId, properties: { name } });
         const person = await create(people.id, "Person");
         const project = await create(projects.id, "Project");
-        const secondProject = await create(projects.id, "Second project");
-        const area = await create(areas.id, "Area");
-        const otherArea = await create(areas.id, "Other area");
         const company = await create(companies.id, "Company");
-        const file = await create(files.id, "File");
+        const otherCompany = await create(companies.id, "Other company");
+        const event = await cp.createItem({ databaseId: events.id, properties: { name: "Event", date: "2026-10-16" } });
         for (const [databaseId, callerItemId, key, targetItemId] of [
           [people.id, person.id, "projects", project.id],
           [people.id, person.id, "companies", company.id],
-          [projects.id, project.id, "area", area.id],
-          [projects.id, secondProject.id, "area", area.id],
-          [files.id, file.id, "projects", project.id],
-          [files.id, file.id, "projects", secondProject.id],
+          [projects.id, project.id, "company", company.id],
+          [events.id, event.id, "project", project.id],
         ] as const) {
           const property = await findProperty(cp, databaseId, key);
           await cp.createRelation({ relationPropertyId: property.id, callerItemId, targetItemId });
         }
         await withTransaction(runtime, (client) =>
           insertValueLink(client, {
-            itemId: file.id,
-            propertyKey: "area",
+            itemId: event.id,
+            propertyKey: "company",
             ruleKey: "existingLink",
-            sources: [{ kind: "item", sourceItemId: project.id, sourcePropertyKey: "area" }],
+            sources: [{ kind: "item", sourceItemId: project.id, sourcePropertyKey: "company" }],
           }),
         );
-        return { person, project, secondProject, area, otherArea, company, file, files, projects };
+        return { person, project, company, otherCompany, event, events, projects };
       },
       async ({ runtime, cp, tenants, own, foreign, tokens, as, defer }) => {
         const [ownTenant, foreignTenant] = tenants;
         const api = as(tokens[0]);
-        const bothProjects = [own.project.id, own.secondProject.id].sort();
         const derivedLinks = {
-          area: {
+          company: {
             valueKind: "derived",
-            sources: expect.arrayContaining([
-              expect.objectContaining({ itemId: own.project.id }),
-              expect.objectContaining({ itemId: own.secondProject.id }),
-            ]),
+            sources: [expect.objectContaining({ itemId: own.project.id, propertyKey: "company" })],
           },
         };
         for (const [query, hasLinks, hasDerived] of [
@@ -1291,29 +1294,29 @@ describe("generic operation REST contract", () => {
           ["?include=derived", false, true],
           ["?include=path,links,derived", true, true],
         ] as const) {
-          const body = await read(api(`/api/items/${own.file.id}${query}`));
+          const body = await read(api(`/api/items/${own.event.id}${query}`));
           if (hasDerived)
             expect(body).toMatchObject({
-              derived: { area: { values: [{ id: own.area.id }], projectIds: bothProjects } },
+              derived: { company: { values: [{ id: own.company.id }], projectIds: [own.project.id] } },
             });
           else expect(body).not.toHaveProperty("derived");
           if (hasLinks && hasDerived) expect(body).toMatchObject({ links: derivedLinks });
           else if (hasLinks)
             expect(body).toMatchObject({
               links: {
-                area: {
+                company: {
                   valueKind: "inherited",
-                  sources: [expect.objectContaining({ itemId: own.project.id, propertyKey: "area" })],
+                  sources: [expect.objectContaining({ itemId: own.project.id, propertyKey: "company" })],
                 },
               },
             });
           else expect(body).not.toHaveProperty("links");
         }
 
-        // The derived projection reads the file's projects once and serves it even when a project's area changes
+        // The derived projection reads the event's project once and serves it even when the project's company changes
         // right after that read committed.
-        const { fileProjects, projectArea } = await runInTenant(ownTenant, async () => {
-          const property = await findProperty(cp, own.files.id, "projects");
+        const { eventProject, projectCompany } = await runInTenant(ownTenant, async () => {
+          const property = await findProperty(cp, own.events.id, "project");
           const result = await withTransaction(runtime, (client) =>
             client.query<{ id: string }>(
               "SELECT id FROM relation_definitions WHERE tenant_id = app_tenant_default() AND $1 IN (property_id_a, property_id_b)",
@@ -1321,14 +1324,17 @@ describe("generic operation REST contract", () => {
             ),
           );
           if (result.rows.length !== 1 || !result.rows[0]) throw new Error("Missing project definition");
-          return { fileProjects: result.rows[0].id, projectArea: (await findProperty(cp, own.projects.id, "area")).id };
+          return {
+            eventProject: result.rows[0].id,
+            projectCompany: (await findProperty(cp, own.projects.id, "company")).id,
+          };
         });
         const writer = await createRuntimeRolePool(pool, "semprec_data");
         defer(() => writer.end());
         const writerCp = createChokePoint(writer);
-        const setSecondProjectArea = (targetItemId: string | null) =>
+        const setProjectCompany = (targetItemId: string | null) =>
           runInTenant(ownTenant, () =>
-            writerCp.setRelation({ relationPropertyId: projectArea, callerItemId: own.secondProject.id, targetItemId }),
+            writerCp.setRelation({ relationPropertyId: projectCompany, callerItemId: own.project.id, targetItemId }),
           );
         const originals = new Map<PoolClient, PoolClient["query"]>();
         const projectionClients = new Set<PoolClient>();
@@ -1350,7 +1356,7 @@ describe("generic operation REST contract", () => {
                 sql.includes("FROM item_relations") &&
                 sql.includes("relation_definition_id = $1") &&
                 Array.isArray(params) &&
-                params[0] === fileProjects
+                params[0] === eventProject
               ) {
                 projectionReads++;
                 projectionClients.add(client);
@@ -1360,7 +1366,7 @@ describe("generic operation REST contract", () => {
                 if (!(result instanceof Promise)) throw new Error("Expected asynchronous commit");
                 changedDuringRead = true;
                 return result.then(async (value: unknown) => {
-                  await setSecondProjectArea(null);
+                  await setProjectCompany(own.otherCompany.id);
                   return value;
                 });
               }
@@ -1371,7 +1377,7 @@ describe("generic operation REST contract", () => {
         runtime.on("acquire", observe);
         let pathBody: unknown;
         try {
-          pathBody = await read(api(`/api/items/${own.file.id}?include=path,links,derived`));
+          pathBody = await read(api(`/api/items/${own.event.id}?include=path,links,derived`));
         } finally {
           runtime.off("acquire", observe);
           for (const [client, original] of originals)
@@ -1379,27 +1385,20 @@ describe("generic operation REST contract", () => {
         }
         expect(changedDuringRead).toBe(true);
         expect(projectionReads).toBe(1);
-        expect(pathBody).toMatchObject({ derived: { area: { projectIds: bothProjects } }, links: derivedLinks });
-        expect(await read(api(`/api/items/${own.file.id}?include=derived`))).toMatchObject({
-          derived: { area: { projectIds: [own.project.id] } },
+        expect(pathBody).toMatchObject({
+          derived: { company: { values: [{ id: own.company.id }], projectIds: [own.project.id] } },
+          links: derivedLinks,
         });
-        await setSecondProjectArea(own.area.id);
-        await runInTenant(ownTenant, () =>
-          cp.setRelation({
-            relationPropertyId: projectArea,
-            callerItemId: own.secondProject.id,
-            targetItemId: own.otherArea.id,
-          }),
-        );
-        expect(await read(api(`/api/items/${own.file.id}?include=derived`))).toMatchObject({
-          derived: { area: { values: [{ id: own.area.id }, { id: own.otherArea.id }], projectIds: bothProjects } },
+        expect(await read(api(`/api/items/${own.event.id}?include=derived`))).toMatchObject({
+          derived: { company: { values: [{ id: own.otherCompany.id }], projectIds: [own.project.id] } },
         });
-        expect((await api(`/api/items/${foreign.file.id}?include=derived`)).status).toBe(404);
+        await setProjectCompany(own.company.id);
+        expect((await api(`/api/items/${foreign.event.id}?include=derived`)).status).toBe(404);
         expect((await api(`/api/items/${randomUUID()}?include=derived`)).status).toBe(404);
 
-        // Each tenant expands its own person's relations, nested area included.
+        // Each tenant expands its own person's relations, nested company included.
         const fetchPerson = (token: string, id: string) =>
-          as(token)(`/api/items/${id}?include=relations&relations.projects=area&relations.companies=`);
+          as(token)(`/api/items/${id}?include=relations&relations.projects=company&relations.companies=`);
         const decorated = (id: string, title: string) => ({
           id,
           title,
@@ -1417,7 +1416,7 @@ describe("generic operation REST contract", () => {
               projects: [
                 expect.objectContaining({
                   ...decorated(expected.project.id, "Project"),
-                  properties: { area: [expect.objectContaining(decorated(expected.area.id, "Area"))] },
+                  properties: { company: [expect.objectContaining(decorated(expected.company.id, "Company"))] },
                 }),
               ],
             },

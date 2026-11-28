@@ -92,9 +92,7 @@ final class FormattingTests: XCTestCase {
         for key in statuses { XCTAssertFalse(subtitle([part(.status, key)]).isEmpty, key) }
     }
 
-    func testCountsAndTheMovedAndMissedNotesAreComposed() {
-        XCTAssertEqual(subtitle([part(.count, "6")]), "Projects: 6")
-        XCTAssertEqual(subtitle([part(.count, "many")]), "")
+    func testTheMovedAndMissedNotesAreComposed() {
         XCTAssertEqual(subtitle([part(.movedFrom, "2026-10-15")]), "moved from Yesterday")
         XCTAssertEqual(subtitle([part(.movedFrom, "soon")]), "")
         XCTAssertEqual(subtitle([part(.missedInEvent, "Dentist")]), "missed in Dentist")
@@ -103,7 +101,7 @@ final class FormattingTests: XCTestCase {
     func testPlainValuesAreShownAsTheyAre() {
         XCTAssertEqual(
             subtitle([
-                part(.area, "Work"), part(.people, "Petr, Jana"), part(.phone, "777 123 456"), part(.sender, "Petr")
+                part(.project, "Work"), part(.people, "Petr, Jana"), part(.phone, "777 123 456"), part(.sender, "Petr")
             ]),
             "Work \u{00B7} Petr, Jana \u{00B7} 777 123 456 \u{00B7} Petr"
         )
@@ -140,8 +138,7 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(OverviewSymbols.symbol(forIcon: "Checkmark-Circle"), "checkmark.circle")
         XCTAssertNil(OverviewSymbols.symbol(forIcon: "unheard-of"))
         XCTAssertNil(OverviewSymbols.symbol(forIcon: nil))
-        XCTAssertEqual(OverviewSymbols.area(icon: "briefcase"), "briefcase")
-        XCTAssertEqual(OverviewSymbols.area(icon: "unheard-of"), OverviewSymbols.areaFallback)
+        XCTAssertEqual(OverviewSymbols.collection(icon: "briefcase", ownerModuleId: "events"), "briefcase")
         XCTAssertEqual(OverviewSymbols.collection(icon: "calendar", ownerModuleId: "events"), "calendar")
         XCTAssertEqual(OverviewSymbols.collection(icon: nil, ownerModuleId: "movies"), "film")
         XCTAssertEqual(

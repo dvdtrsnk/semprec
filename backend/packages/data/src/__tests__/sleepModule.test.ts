@@ -57,7 +57,6 @@ const EXPECTED_SHAPE = {
     property("alarmSound", "select", {
       options: [{ key: "morning" }, { key: "birds" }, { key: "piano" }, { key: "vibrateOnly" }],
     }),
-    property("area", "relation", { targetModuleId: "areas" }),
     property("enabled", "checkbox"),
     property("goalMinutes", "number"),
     property("muteSemp", "checkbox"),

@@ -73,10 +73,10 @@ class FileMailThreadListCacheTest {
     @Test
     fun theViewIgnoresTheSearchAndThePageCursor() = runTest {
         val cache = cache()
-        cache.write(MailThreadQuery(areaId = "ar1"), list("t1"))
+        cache.write(MailThreadQuery(projectId = "pr1"), list("t1"))
 
-        assertEquals(list("t1"), cache.read(MailThreadQuery(areaId = "ar1", search = "faktura", cursor = "x")))
-        assertNull(cache.read(MailThreadQuery(areaId = "ar1", unreadOnly = true)))
+        assertEquals(list("t1"), cache.read(MailThreadQuery(projectId = "pr1", search = "faktura", cursor = "x")))
+        assertNull(cache.read(MailThreadQuery(projectId = "pr1", unreadOnly = true)))
     }
 
     @Test

@@ -14,7 +14,6 @@ import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
 import type { DatabaseRow } from "../types.js";
 import {
-  AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
   EVENTS_MODULE_ID,
   FILES_MODULE_ID,
@@ -24,9 +23,8 @@ import {
   PROJECTS_MODULE_ID,
   TASKS_MODULE_ID,
   TRANSCRIPTS_MODULE_ID,
-  type TenDatabaseModuleId,
+  type CoreDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
-import { ensureUnplannedArea } from "./seedUnplannedArea.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
@@ -41,7 +39,7 @@ import {
 } from "../calendar/syncedEventKeys.js";
 import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
-export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
+export type TenDatabases = Record<CoreDatabaseModuleId, DatabaseRow>;
 
 /** `name` is the canonical label as documentation only: every property here is stored with a null name. */
 function createBuiltInProps(
@@ -57,7 +55,7 @@ function createBuiltInProps(
 }
 
 /** `key` is both `databases.key` and `owner_module_id`; the `name` of a system database is null (labels come from the catalog). */
-async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<DatabaseRow> {
+async function createDb(client: PoolClient, key: CoreDatabaseModuleId): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, {
     name: null,
     key,
@@ -68,7 +66,7 @@ async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<D
 }
 
 /**
- * Creates the ten hardcoded databases, their properties, relations and default views in the caller's
+ * Creates the hardcoded core databases, their properties, relations and default views in the caller's
  * transaction: unlocked, own properties then relations, locked once complete. Not idempotent.
  */
 export async function seedTenDatabasesInTransaction(
@@ -91,19 +89,6 @@ export async function seedTenDatabasesInTransaction(
     );
 
   // ---- phase 1: each database and its own (non-relation) properties ----
-  const areas = await createDb(client, AREAS_MODULE_ID);
-  await createBuiltInProps(client, areas.id, [
-    { key: "name", name: "Name", type: "title", owner: "user" },
-    { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
-    { key: "systemActive", name: null, type: "checkbox", owner: "user", locked: true },
-    { key: "note", name: "Note", type: "text", owner: "user" },
-    { key: "icon", name: null, type: "text", owner: "user" },
-    { key: "color", name: null, type: "color", owner: "user" },
-    { key: "position", name: null, type: "number", owner: "user" },
-  ]);
-
-  await ensureUnplannedArea(client, areas.id);
-
   const projects = await createDb(client, PROJECTS_MODULE_ID);
   await createBuiltInProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
@@ -127,6 +112,8 @@ export async function seedTenDatabasesInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "completedAt", name: null, type: "date", owner: "system", ownerProcess: PROJECTS_OWNER_PROCESS },
     { key: "color", name: "Color", type: "color", owner: "user" },
+    // No shipped options: a person adds each tag through the option operations.
+    { key: "tags", name: "Tags", type: "multi_select", owner: "user", config: selectConfig([]) },
     // An AGENT.md equivalent; `sections` names the fixed structure a client renders as fields within one
     // longText value.
     {
@@ -420,41 +407,6 @@ export async function seedTenDatabasesInTransaction(
     { ownerProcess: TASKS_MODULE_ID },
   );
 
-  // Areas <-> Projects ("Hub"): Areas.projects is property A (the "one" side) so the `one_to_many`
-  // constraint lands on the single-valued Projects.area.
-  await relate({
-    sourceDatabaseId: areas.id,
-    key: "projects",
-    name: "Projects",
-    targetDatabaseId: projects.id,
-    cardinality: "one_to_many",
-    inverse: { key: "area", name: "Hub" },
-  });
-  await relate({
-    sourceDatabaseId: areas.id,
-    key: "events",
-    name: "Events",
-    targetDatabaseId: events.id,
-    cardinality: "one_to_many",
-    inverse: { key: "area", name: "Area" },
-  });
-  // Areas <-> Companies: an area can contain several companies.
-  await relate({
-    sourceDatabaseId: areas.id,
-    key: "company",
-    name: "Company",
-    targetDatabaseId: companies.id,
-    cardinality: "one_to_many",
-    inverse: { key: "area", name: "Area" },
-  });
-  await relate({
-    sourceDatabaseId: areas.id,
-    key: "healthRecord",
-    name: "Health record",
-    targetDatabaseId: healthRecords.id,
-    cardinality: "one_to_many",
-    inverse: { key: "area", name: "Area" },
-  });
   // Projects <-> Companies (N:1): Companies.projects is property A; Projects.company is single-valued.
   await relate({
     sourceDatabaseId: companies.id,
@@ -491,15 +443,6 @@ export async function seedTenDatabasesInTransaction(
     targetDatabaseId: companies.id,
     cardinality: "many_to_many",
     inverse: { key: "people", name: "People" },
-  });
-  // Files -> Areas: one-directional. `many_to_many`: Files.area is single-valued and there is no inverse,
-  // so `one_to_many` would cap each Area to one File.
-  await relate({
-    sourceDatabaseId: files.id,
-    key: "area",
-    name: "Area",
-    targetDatabaseId: areas.id,
-    cardinality: "many_to_many",
   });
   // Files -> Projects (hub backlink).
   await relate({
@@ -639,15 +582,6 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "transcripts", name: "Transcripts" },
   });
-  // Journal -> Areas: optional, one-directional, no default. `many_to_many` for the same reason as Files.area.
-  await relate({
-    sourceDatabaseId: journal.id,
-    key: "area",
-    name: "Area",
-    targetDatabaseId: areas.id,
-    cardinality: "many_to_many",
-  });
-
   await relate({
     sourceDatabaseId: journal.id,
     key: "project",
@@ -672,7 +606,6 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 3: lock every schema (system DBs are not user-editable) ----
   const all: TenDatabases = {
-    [AREAS_MODULE_ID]: areas,
     [PROJECTS_MODULE_ID]: projects,
     [TASKS_MODULE_ID]: tasks,
     [PEOPLE_MODULE_ID]: people,
@@ -691,7 +624,7 @@ export async function seedTenDatabasesInTransaction(
   registerTemporalSwitcherViewType(viewTypeRegistry);
   // `databases.name` is null for these, so the view's required `name` comes from the manifest label.
   const manifestDatabaseByKey = new Map((await moduleRegistry.getDatabases()).map((db) => [db.key, db]));
-  for (const [moduleId, database] of Object.entries(all) as [TenDatabaseModuleId, DatabaseRow][]) {
+  for (const [moduleId, database] of Object.entries(all) as [CoreDatabaseModuleId, DatabaseRow][]) {
     const manifestDatabase = manifestDatabaseByKey.get(moduleId);
     const type = manifestDatabase?.defaultViewType ?? "table";
     await viewsStore.createView(

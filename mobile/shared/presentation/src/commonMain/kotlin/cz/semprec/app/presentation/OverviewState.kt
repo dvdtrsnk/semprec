@@ -4,20 +4,11 @@ import cz.semprec.app.core.FailureKind
 
 enum class OverviewPhase { LOADING, CONTENT, ERROR }
 
-/** An area row: [icon] and [color] are the stored values, which the app maps to a symbol and a tile color. */
-data class OverviewAreaItem(
-    val id: String,
-    val name: String,
-    val color: String?,
-    val icon: String?,
-)
-
 /** A pinned project row; [status] is the stored key (`inProgress`, `longTerm`, `done`, `archived`). */
 data class OverviewProjectItem(
     val id: String,
     val name: String,
     val color: String?,
-    val areaName: String?,
     val status: String?,
 )
 
@@ -45,7 +36,6 @@ data class OverviewState(
     val inboxPending: Int = 0,
     val mailUnread: Int = 0,
     val problemCount: Int = 0,
-    val areas: List<OverviewAreaItem> = emptyList(),
     val projects: List<OverviewProjectItem> = emptyList(),
     val collections: List<OverviewCollectionItem> = emptyList(),
 )

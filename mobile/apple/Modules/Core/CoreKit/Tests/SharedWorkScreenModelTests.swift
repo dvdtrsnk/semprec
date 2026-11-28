@@ -9,11 +9,10 @@ final class SharedWorkScreenModelTests: XCTestCase {
     // MARK: - Tasks
     @MainActor
     func testTasksStartWhereTheStartSaysAndFailAsUnauthorizedWithoutASession() async throws {
-        let start = TasksStart(tab: .all, hideDone: true, areaId: "a1", projectId: "p1")
+        let start = TasksStart(tab: .all, hideDone: true, projectId: "p1")
         let model = isolatedFactory().makeTasks(start: start)
         XCTAssertEqual(model.state.tab, .all)
         XCTAssertTrue(model.state.hideDone)
-        XCTAssertEqual(model.state.areaId, "a1")
         XCTAssertEqual(model.state.projectId, "p1")
         let state = await waitForState(model) { $0.phase != .loading }
         XCTAssertEqual(state?.phase, .failure(.unauthorized))

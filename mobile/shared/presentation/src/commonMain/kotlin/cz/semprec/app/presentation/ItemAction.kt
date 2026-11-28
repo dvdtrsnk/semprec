@@ -22,6 +22,26 @@ sealed interface ItemAction {
         /** Writes a select (one key or none) or multi-select (any number of keys). */
         data class SetChoices(val propertyKey: String, val keys: List<String>) : Edit
 
+        /** Writes a choice of the select or multi-select [propertyKey] itself, for every item of the database. */
+        sealed interface Choice : Edit {
+            val propertyKey: String
+        }
+
+        /**
+         * Adds a new choice named [label] to a select or multi-select and sets it on the item, a multi-select keeping
+         * the choices it holds; a blank name changes nothing.
+         */
+        data class AddChoice(override val propertyKey: String, val label: String) : Choice
+
+        /** Renames the choice [key] to [label]; a blank name changes nothing. */
+        data class RenameChoice(override val propertyKey: String, val key: String, val label: String) : Choice
+
+        /** Gives the choice [key] the [color] (`#RRGGBB`). */
+        data class RecolorChoice(override val propertyKey: String, val key: String, val color: String) : Choice
+
+        /** Removes the choice [key], and with it the key from every item that holds it. */
+        data class RemoveChoice(override val propertyKey: String, val key: String) : Choice
+
         /** Ends the link that makes a value follow its source; the value stays as the item's own. */
         data class Unlink(val propertyKey: String) : Edit
 

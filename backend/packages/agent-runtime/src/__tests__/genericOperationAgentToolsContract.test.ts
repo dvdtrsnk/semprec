@@ -78,7 +78,7 @@ async function createProjectItem(): Promise<string> {
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
-  /** A multi_select property with one option, the target of the two REST-only option operations. */
+  /** A multi_select property with one option, the target of the three REST-only option operations. */
   optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
@@ -202,6 +202,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "property.option.update": {
     args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
   },
+  "property.option.remove": { args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs" }) },
   "view.list": { args: () => ({}) },
   "view.get": { args: (fx) => ({ viewId: fx.view.id }) },
   "view.create": { args: (fx) => ({ databaseId: fx.database.id, type: "table", name: "All rows" }) },
@@ -497,37 +498,13 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     expect(refused.result).toMatch(/^validation_failed:/);
   });
 
-  it("validates Areas writes through the actual agent tools", async () => {
-    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
-    if (!database) throw new Error("Areas not seeded");
-    const projectItemId = await createProjectItem();
-    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "validate Areas" });
-    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
-    for (const [field, value] of [
-      ["icon", "rocket123"],
-      ["color", "#123456"],
-    ] as const) {
-      const result = await tools["item.create"](run.id, {
-        databaseId: database.id,
-        properties: { name: "Invalid", [field]: value },
-      });
-      expect(result.error).toBe(true);
-      expect(result.result).toContain(field);
-    }
-    const result = await tools["item.create"](run.id, {
-      databaseId: database.id,
-      properties: { name: "Valid", icon: "briefcase", color: "#5856D6" },
-    });
-    expect(result.error).toBeFalsy();
-  });
-
-  it("refuses deletion of the system area and filters it through actual agent tools", async () => {
+  it("refuses deletion of a system project and filters it through actual agent tools", async () => {
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
     let cleanupFailure: { error: unknown } | undefined;
     try {
       const tenant = await createTestTenant(pool);
-      const user = await runAsSystem("test:system-area-agent", () =>
+      const user = await runAsSystem("test:system-project-agent", () =>
         createPersistedUser(pool, {
           tenantId: tenant,
           email: `${randomUUID()}@example.test`,
@@ -537,33 +514,34 @@ describe("generic operation AgentTools contract (issue #220)", () => {
       await runInTenant(tenant, async () => {
         await seedSystem(runtime, createViewTypeRegistry());
         const cp = createChokePoint(runtime);
-        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
         const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
-        if (!areas || !projects) throw new Error("System databases missing");
+        if (!projects) throw new Error("System databases missing");
         const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
         const run = await createAgentRun(runtime, {
           projectItemId: project.id,
           userId: user.id,
           triggeredBy: "user",
-          task: "query Areas",
+          task: "query Projects",
         });
-        const system = (await cp.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
-        if (!system) throw new Error("System area missing");
-        const userArea = await cp.createItem({ databaseId: areas.id, properties: { name: "User area" } });
+        const system = (await cp.listItems(projects.id)).items.find((item) => item.properties.systemActive === true);
+        if (!system) throw new Error("System project missing");
+        const userProject = await cp.createItem({ databaseId: projects.id, properties: { name: "User project" } });
         const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
         const query = await tools["database.query"](run.id, {
-          databaseId: areas.id,
+          databaseId: projects.id,
           filter: { type: "is_empty", property: "systemActive" },
         });
         expect(query.error).toBe(false);
         const result: unknown = JSON.parse(query.result);
-        expect(result).toMatchObject({ items: [expect.objectContaining({ id: userArea.id })] });
+        expect(result).toMatchObject({
+          items: expect.arrayContaining([expect.objectContaining({ id: userProject.id })]),
+        });
         expect(query.result).not.toContain(system.id);
         const refused = await tools["item.delete"](run.id, { itemId: system.id });
         expect(refused.error).toBe(true);
         expect(refused.result).toMatch(/^forbidden:.*system-active/);
         expect(refused.approvalRequestId).toBeUndefined();
-        expect(await cp.getItem(areas.id, system.id)).toEqual(system);
+        expect(await cp.getItem(projects.id, system.id)).toEqual(system);
         const approvals = await runtime.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM approval_requests WHERE agent_run_id = $1",
           [run.id],
@@ -580,71 +558,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
       }
     }
     if (failure) {
-      if (cleanupFailure) console.error("System area agent fixture cleanup also failed");
-      throw failure.error;
-    }
-    if (cleanupFailure) throw cleanupFailure.error;
-  });
-
-  it("validates Areas item.patch through the AgentTool under tenant RLS", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let failure: { error: unknown } | undefined;
-    let cleanupFailure: { error: unknown } | undefined;
-    try {
-      const tenant = await createTestTenant(pool);
-      const user = await runAsSystem("test:create-area-agent", () =>
-        createPersistedUser(pool, {
-          tenantId: tenant,
-          email: `${randomUUID()}@example.test`,
-          passwordHash: "unused-test-hash",
-        }),
-      );
-      await runInTenant(tenant, async () => {
-        await seedSystem(runtime, createViewTypeRegistry());
-        const cp = createChokePoint(runtime);
-        const areas = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "areas"));
-        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
-        if (!areas || !projects) throw new Error("System databases missing");
-        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Agent" } });
-        const run = await createAgentRun(runtime, {
-          projectItemId: project.id,
-          userId: user.id,
-          triggeredBy: "user",
-          task: "update Areas",
-        });
-        const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Area" } });
-        const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
-        const patch = async (properties: Record<string, unknown>) => {
-          const current = await cp.getItem(areas.id, item.id);
-          if (!current) throw new Error("Area missing");
-          return tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: current.version });
-        };
-        expect((await patch({ icon: "briefcase", color: "#5856D6" })).error).toBe(false);
-        const before = await cp.getItem(areas.id, item.id);
-        expect(before?.properties).toMatchObject({ icon: "briefcase", color: "#5856D6" });
-        for (const [field, value] of [
-          ["icon", "rocket123"],
-          ["color", "#123456"],
-        ] as const) {
-          const outcome = await patch({ [field]: value });
-          expect(outcome.error).toBe(true);
-          expect(outcome.result).toContain(field);
-          expect(await cp.getItem(areas.id, item.id)).toEqual(before);
-        }
-        expect((await patch({ icon: null, color: null })).error).toBe(false);
-        expect((await cp.getItem(areas.id, item.id))?.properties).toMatchObject({ icon: null, color: null });
-      });
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await runtime.end();
-      } catch (error) {
-        cleanupFailure = { error };
-      }
-    }
-    if (failure) {
-      if (cleanupFailure) console.error("Area AgentTool fixture cleanup also failed");
+      if (cleanupFailure) console.error("System project agent fixture cleanup also failed");
       throw failure.error;
     }
     if (cleanupFailure) throw cleanupFailure.error;

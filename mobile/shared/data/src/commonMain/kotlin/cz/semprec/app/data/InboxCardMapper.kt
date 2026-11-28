@@ -37,7 +37,6 @@ private val KINDS = mapOf(
     "page" to InboxCardKind.PAGE,
     "journal" to InboxCardKind.JOURNAL,
     "project" to InboxCardKind.PROJECT,
-    "area" to InboxCardKind.AREA,
     "company" to InboxCardKind.COMPANY,
     "person" to InboxCardKind.PERSON,
     "health" to InboxCardKind.HEALTH,

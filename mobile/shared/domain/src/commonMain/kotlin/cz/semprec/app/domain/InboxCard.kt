@@ -2,7 +2,7 @@ package cz.semprec.app.domain
 
 /** The canonical kind of a card, which decides how it is presented; the server derives it. */
 enum class InboxCardKind {
-    TASK, EVENT, PAGE, JOURNAL, PROJECT, AREA, COMPANY, PERSON, HEALTH, FILE, RECORDING, MCP,
+    TASK, EVENT, PAGE, JOURNAL, PROJECT, COMPANY, PERSON, HEALTH, FILE, RECORDING, MCP,
     INVALID, CLARIFY, TRANSCRIPT_EVENT, SPEAKER, APPROVAL,
 
     /** A kind this version of the app does not know; such a card can only be discarded. */

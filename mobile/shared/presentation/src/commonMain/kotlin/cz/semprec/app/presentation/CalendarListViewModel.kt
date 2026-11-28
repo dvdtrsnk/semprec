@@ -17,7 +17,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
-/** The colours a calendar can take, in the order the sheet shows them. */
+/** The colours a calendar or a choice of a property can take, in the order they are offered. */
 internal val CALENDAR_SWATCHES: List<CalendarSwatch> = listOf(
     CalendarSwatch("red", "#FF3B30"),
     CalendarSwatch("orange", "#FF9500"),

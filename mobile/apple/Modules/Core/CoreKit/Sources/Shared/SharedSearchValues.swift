@@ -8,7 +8,6 @@ extension SearchGroupType {
         case .task: self = .task
         case .event: self = .event
         case .project: self = .project
-        case .area: self = .area
         case .contact: self = .contact
         case .journal: self = .journal
         case .file: self = .file
@@ -22,7 +21,6 @@ extension SearchGroupType {
         case .task: .task
         case .event: .event
         case .project: .project
-        case .area: .area
         case .contact: .contact
         case .journal: .journal
         case .file: .file
@@ -43,12 +41,10 @@ extension SearchSubtitleKind {
         case .place: self = .place
         case .recurrence: self = .recurrence
         case .project: self = .project
-        case .area: self = .area
         case .people: self = .people
         case .phone: self = .phone
         case .relationship: self = .relationship
         case .status: self = .status
-        case .count: self = .count
         case .sender: self = .sender
         case .movedFrom: self = .movedFrom
         case .missedInEvent: self = .missedInEvent

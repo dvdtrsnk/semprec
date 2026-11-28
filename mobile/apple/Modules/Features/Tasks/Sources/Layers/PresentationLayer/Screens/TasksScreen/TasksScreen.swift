@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The Tasks screen: three lists (today, planned, all), a filter by area, project and flag, grouped rows that tick
+/// The Tasks screen: three lists (today, planned, all), a filter by project and flag, grouped rows that tick
 /// off, rename in place and open Podrobnosti, and a row to add a task. It is the one screen for every start: the
 /// model it is made over carries the tab and the filter.
 struct TasksScreen: View {
@@ -105,7 +105,13 @@ private extension TasksScreen {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.small) {
                 ForEach(chips) { chip in
-                    FilterChip(title: chip.title, color: chip.color, clearLabel: chip.title, clear: chip.clear)
+                    FilterChip(title: chip.title, color: Color(hex: chip.color) ?? Theme.Colors.accent) {
+                        Button(action: chip.clear) {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.Colors.secondaryText)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(removeLabel(chip.title))
+                    }
                 }
                 Button { filterOpen = true } label: {
                     Label {
@@ -231,14 +237,6 @@ private extension TasksScreen {
     var chips: [Chip] {
         let state = viewModel.state
         var chips: [Chip] = []
-        if let areaId = state.areaId {
-            let option = state.areaOptions.first { $0.id == areaId }
-            chips.append(
-                Chip(id: "area", title: chipTitle("tasks.chip.area", option?.title ?? areaId), color: option?.color) {
-                    viewModel.send(.setArea(nil))
-                }
-            )
-        }
         if let projectId = state.projectId {
             let option = state.projectOptions.first { $0.id == projectId }
             chips.append(
@@ -259,6 +257,10 @@ private extension TasksScreen {
             )
         }
         return chips
+    }
+
+    func removeLabel(_ title: String) -> String {
+        String(format: String(localized: "tasks.chip.remove", bundle: .module), locale: .current, title)
     }
 
     func chipTitle(_ key: String.LocalizationValue, _ name: String) -> String {

@@ -338,7 +338,7 @@ extension ItemDetailsState {
             timeFrom: "14:00",
             timeTo: "15:30",
             lengthMinutes: 90,
-            project: ProjectRef(id: "p1", title: "Účetnictví a faktury", areaTitle: "Práce"),
+            project: ProjectRef(id: "p1", title: "Účetnictví a faktury"),
             people: [EntityRef(id: "u1", title: "Karel Zlatý")],
             files: [EntityRef(id: "f1", title: "Faktura_2026-10.pdf")],
             projectLink: ValueLink(state: .inherited, sourceTitle: "Schůzka s účetní")
@@ -355,7 +355,7 @@ extension ItemDetailsState {
             timeFrom: "10:00",
             timeTo: "11:30",
             lengthMinutes: 90,
-            project: ProjectRef(id: "p2", title: "Web pro klienta", areaTitle: "Práce"),
+            project: ProjectRef(id: "p2", title: "Web pro klienta"),
             people: [EntityRef(id: "u2", title: "Petr Novák")],
             company: EntityRef(id: "c1", title: "Novák Web s.r.o.")
         )

@@ -4,7 +4,6 @@ import cz.semprec.app.core.SearchGroupType
 import cz.semprec.app.domain.InMemoryRecentSearches
 import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.Overview
-import cz.semprec.app.domain.OverviewArea
 import cz.semprec.app.domain.OverviewCollection
 import cz.semprec.app.domain.OverviewProject
 import cz.semprec.app.domain.OverviewRepository
@@ -83,18 +82,13 @@ fun searchCall(query: String, scope: SearchGroupType?, limit: Int) = Triple(quer
 
 val overviewSummary = OverviewSummary(9, 5, 2)
 
-/** Deliberately out of order and with an inactive area, an unpinned project and a hidden collection. */
+/** Deliberately out of order and with an unpinned project and a hidden collection. */
 val overviewData = Overview(
     summary = overviewSummary,
-    areas = listOf(
-        OverviewArea("health", "Health", "#FF2D55", "heart", 2.0, true),
-        OverviewArea("work", "Work", "#5856D6", "briefcase", 1.0, true),
-        OverviewArea("old", "Old", null, null, 3.0, false),
-    ),
     projects = listOf(
-        OverviewProject("p2", "Půlmaraton", "#FF3B30", "Health", "inProgress", true, 2.0),
-        OverviewProject("p1", "Semprec iOS", "#007AFF", "Work", "inProgress", true, 1.0),
-        OverviewProject("p3", "Not pinned", null, null, null, false, null),
+        OverviewProject("p2", "Půlmaraton", "#FF3B30", "inProgress", true, 2.0),
+        OverviewProject("p1", "Semprec iOS", "#007AFF", "inProgress", true, 1.0),
+        OverviewProject("p3", "Not pinned", null, null, false, null),
     ),
     collections = listOf(
         OverviewCollection("d2", "people", "People", "person", "#30B0C7", 2, true, false),

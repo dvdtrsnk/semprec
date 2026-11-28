@@ -337,22 +337,6 @@
         }
       }
     },
-    "overview.section.areas" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblasti"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Areas"
-          }
-        }
-      }
-    },
     "overview.section.collections" : {
       "localizations" : {
         "cs" : {
@@ -449,22 +433,6 @@
         }
       }
     },
-    "search.count" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Projekty: %lld"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Projects: %lld"
-          }
-        }
-      }
-    },
     "search.empty" : {
       "localizations" : {
         "cs" : {
@@ -502,13 +470,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Úkolech, kalendáři, projektech, oblastech, lidech, firmách, denících, souborech, poště a chatech se Sempem."
+            "value" : "Úkolech, kalendáři, projektech, lidech, firmách, denících, souborech, poště a chatech se Sempem."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tasks, calendar, projects, areas, people, companies, journals, files, mail and chats with Semp."
+            "value" : "Tasks, calendar, projects, people, companies, journals, files, mail and chats with Semp."
           }
         }
       }
@@ -845,22 +813,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "All"
-          }
-        }
-      }
-    },
-    "search.scope.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblasti"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Areas"
           }
         }
       }

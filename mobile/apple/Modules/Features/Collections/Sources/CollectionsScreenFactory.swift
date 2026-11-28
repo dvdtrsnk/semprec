@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// There is one collection screen and one item screen. The concrete screens of the design are those two over
 /// different data: `projects`, `people`, `companies`, `events` and `files` name the collection of each database,
-/// narrowed to an area or to the item it hangs on; `item` shows any item, with the layout of a project for a project.
+/// or narrowed to the item it hangs on; `item` shows any item, with the layout of a project for a project.
 @MainActor
 public enum CollectionsScreenFactory {
 
@@ -20,31 +20,29 @@ public enum CollectionsScreenFactory {
         CollectionScreen(viewModel: CollectionViewModel(model: makeModel(target), router: router))
     }
 
-    /// The collection of the projects, of every area or of one (Family, Health, Home and Work projects).
-    public static func projects(areaId: String? = nil) -> CollectionTarget {
-        areaTarget(DatabaseKey.projects, areaId: areaId)
+    public static func projects() -> CollectionTarget {
+        .whole(databaseKey: DatabaseKey.projects, databaseId: nil)
     }
 
     public static func people() -> CollectionTarget {
         .whole(databaseKey: DatabaseKey.people, databaseId: nil)
     }
 
-    /// The collection of the companies, of every area or of one (Work companies).
-    public static func companies(areaId: String? = nil) -> CollectionTarget {
-        areaTarget(DatabaseKey.companies, areaId: areaId)
+    public static func companies() -> CollectionTarget {
+        .whole(databaseKey: DatabaseKey.companies, databaseId: nil)
     }
 
-    /// The collection of the events, of every area or of one (Work events). It is not the calendar.
-    public static func events(areaId: String? = nil) -> CollectionTarget {
-        areaTarget(DatabaseKey.events, areaId: areaId)
+    /// The collection of the events. It is not the calendar.
+    public static func events() -> CollectionTarget {
+        .whole(databaseKey: DatabaseKey.events, databaseId: nil)
     }
 
-    /// The collection of the files: of every area (Home, Health and Work files), of one project, or of all.
-    public static func files(areaId: String? = nil, projectId: String? = nil) -> CollectionTarget {
+    /// The collection of the files: of one project, or of all.
+    public static func files(projectId: String? = nil) -> CollectionTarget {
         if let projectId {
             return .ofItem(databaseKey: DatabaseKey.files, relationKey: DatabaseKey.projects, itemId: projectId)
         }
-        return areaTarget(DatabaseKey.files, areaId: areaId)
+        return .whole(databaseKey: DatabaseKey.files, databaseId: nil)
     }
 
     // MARK: - Items
@@ -69,15 +67,27 @@ public enum CollectionsScreenFactory {
             ItemScreen(viewModel: ItemViewModel(itemId: itemId, model: makeModel(), router: router))
         }
     }
-}
 
-// MARK: - Private
-private extension CollectionsScreenFactory {
+    // MARK: - Project tags
+    /// Every tag of the projects, read through the project `projectId` (a model of that project's item).
+    public static func projectTags(
+        projectId: String,
+        makeModel: @escaping @MainActor () -> any ItemScreenModel,
+        router: any CollectionsRouting
+    ) -> some View {
+        ProjectTagsScreen(viewModel: ItemViewModel(itemId: projectId, model: makeModel(), router: router))
+    }
 
-    static func areaTarget(_ key: String, areaId: String?) -> CollectionTarget {
-        if let areaId {
-            return .ofArea(databaseKey: key, areaId: areaId)
-        }
-        return .whole(databaseKey: key, databaseId: nil)
+    /// One tag of the projects (`tagKey`), renamed, recolored or deleted through the project `projectId`.
+    public static func projectTag(
+        projectId: String,
+        tagKey: String,
+        makeModel: @escaping @MainActor () -> any ItemScreenModel,
+        router: any CollectionsRouting
+    ) -> some View {
+        ProjectTagScreen(
+            tagKey: tagKey,
+            viewModel: ItemViewModel(itemId: projectId, model: makeModel(), router: router)
+        )
     }
 }

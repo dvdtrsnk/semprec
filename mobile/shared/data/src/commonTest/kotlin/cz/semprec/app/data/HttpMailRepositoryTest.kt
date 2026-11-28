@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.MailRefusal
 import cz.semprec.app.core.MailRefusal.NO_RECEIVED_MESSAGE
 import cz.semprec.app.domain.MailBox
+import cz.semprec.app.domain.MailFacetOption
 import cz.semprec.app.domain.MailFacets
 import cz.semprec.app.domain.MailLinkBreaker
 import cz.semprec.app.domain.MailLinkKind
@@ -26,7 +27,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val THREAD = "11111111-1111-4111-8111-111111111111"
-private const val AREAS_DB = "aaaaaaaa-0000-4000-8000-00000000000a"
 private const val PROJECTS_DB = "aaaaaaaa-0000-4000-8000-00000000000b"
 
 private const val THREADS = """{"threads":[{"threadId":"$THREAD","subject":"Re: Nabídka","lastMessageAt":"2026-10-20T12:41:00.000000Z",
@@ -37,18 +37,15 @@ private const val THREADS = """{"threads":[{"threadId":"$THREAD","subject":"Re: 
     "project":{"id":"pr1","name":"Web"},"company":{"id":"c1","name":"Novák Web"},"hasSempDraft":true,"links":{}}],
     "nextCursor":"abc"}"""
 
-private const val FACETS = """{"total":9,"areas":{"total":9,"items":[{"id":"ar1","count":4},{"id":"gone","count":1}]},
-    "projects":{"total":7,"items":[{"id":"pr1","areaId":"ar1","count":3},{"id":"nameless","areaId":null,"count":2}]}}"""
-
-private const val AREAS = """{"items":[{"id":"ar1","databaseId":"$AREAS_DB",
-    "properties":{"name":"Práce","color":"#5856D6"}}]}"""
+private const val FACETS = """{"total":9,
+    "projects":{"total":7,"items":[{"id":"pr1","count":3},{"id":"nameless","count":2},{"id":"gone","count":1}]}}"""
 
 private const val PROJECTS = """{"items":[
     {"id":"pr1","databaseId":"$PROJECTS_DB","properties":{"name":"Web","color":"#FF9500"}},
-    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}}]}"""
+    {"id":"nameless","databaseId":"$PROJECTS_DB","properties":{}},
+    {"id":"quiet","databaseId":"$PROJECTS_DB","properties":{"name":"Zahrada"}}]}"""
 
-private const val DATABASES = """{"databases":[{"id":"$AREAS_DB","key":"areas","name":"Areas"},
-    {"id":"$PROJECTS_DB","key":"projects","name":"Projects"}]}"""
+private const val DATABASES = """{"databases":[{"id":"$PROJECTS_DB","key":"projects","name":"Projects"}]}"""
 
 private const val SUMMARY = """{"unreadInbox":5,"flagged":2,"sempDrafts":1,"accounts":2,
     "accountsNeedingReauth":[{"id":"m1","name":"Gmail"}]}"""
@@ -85,7 +82,6 @@ class HttpMailRepositoryTest {
         "/api/mail/threads" -> ok(THREADS)
         "/api/mail/threads/facets" -> ok(FACETS)
         "/api/databases" -> ok(DATABASES)
-        "/api/databases/$AREAS_DB/query" -> ok(AREAS)
         "/api/databases/$PROJECTS_DB/query" -> ok(PROJECTS)
         "/api/mail/summary" ->
             ok(SUMMARY)
@@ -107,7 +103,6 @@ class HttpMailRepositoryTest {
             box = MailBox.FLAGGED,
             mailboxId = "m1",
             folderId = "f1",
-            areaId = "ar1",
             projectId = "pr1",
             unreadOnly = true,
             search = "  from:petr  ",
@@ -120,7 +115,7 @@ class HttpMailRepositoryTest {
         val sent = server.requests.single()
         assertEquals(HttpMethod.Get, sent.method)
         val expected = mapOf(
-            "box" to "flagged", "limit" to "50", "mailboxId" to "m1", "folderId" to "f1", "areaId" to "ar1",
+            "box" to "flagged", "limit" to "50", "mailboxId" to "m1", "folderId" to "f1",
             "projectId" to "pr1", "unread" to "true", "q" to "from:petr", "cursor" to "c0",
         )
         expected.forEach { (name, value) -> assertEquals(value, sent.query(name), name) }
@@ -158,7 +153,6 @@ class HttpMailRepositoryTest {
             box = MailBox.SEMP_DRAFTS,
             mailboxId = "m1",
             folderId = "f1",
-            areaId = "ar1",
             projectId = "pr1",
             unreadOnly = true,
             search = "ignored",
@@ -171,7 +165,7 @@ class HttpMailRepositoryTest {
         val sent = server.requests.single()
         assertEquals(HttpMethod.Get, sent.method)
         val expected = mapOf(
-            "box" to "sempDrafts", "mailboxId" to "m1", "folderId" to "f1", "areaId" to "ar1", "projectId" to "pr1",
+            "box" to "sempDrafts", "mailboxId" to "m1", "folderId" to "f1", "projectId" to "pr1",
             "unread" to "true", "since" to "k1",
         )
         assertEquals(expected, sent.url.parameters.names().associateWith { sent.query(it).orEmpty() })
@@ -205,7 +199,7 @@ class HttpMailRepositoryTest {
 
         val sent = server.requests.single()
         assertEquals("inbox", sent.query("box"))
-        listOf("mailboxId", "folderId", "areaId", "projectId", "unread", "q", "cursor").forEach {
+        listOf("mailboxId", "folderId", "projectId", "unread", "q", "cursor").forEach {
             assertNull(sent.query(it), it)
         }
     }
@@ -231,23 +225,33 @@ class HttpMailRepositoryTest {
     }
 
     @Test
-    fun theFacetsGetTheirNamesFromTheItemsAndDropWhatHasNone() = runTest {
+    fun theFacetsAskWithoutParametersAndGetTheirNamesFromTheItemsDroppingWhatHasNone() = runTest {
         val server = server(::routes)
 
-        val answer = server.mail().facets("ar1", "pr1")
+        val answer = server.mail().facets()
         val facets = assertIs<RepositoryResult.Content<MailFacets>>(answer).value
 
         val sent = server.requests.first { it.url.encodedPath == "/api/mail/threads/facets" }
-        assertEquals("ar1", sent.query("areaId"))
-        assertEquals("pr1", sent.query("projectId"))
-        assertEquals(9, facets.total)
-        assertEquals(7, facets.projectsTotal)
-        assertEquals(listOf("Práce"), facets.areas.map { it.name })
-        assertEquals("#5856D6", facets.areas.single().color)
-        assertEquals(listOf("Web"), facets.projects.map { it.name })
-        assertEquals("ar1", facets.projects.single().areaId)
-        assertEquals("Práce", facets.selectedAreaName)
-        assertEquals("Web", facets.selectedProjectName)
+        assertTrue(sent.url.parameters.isEmpty())
+        assertEquals(MailFacets(9, 7, listOf(MailFacetOption("pr1", "Web", "#FF9500", 3))), facets)
+        assertEquals(
+            listOf("/api/mail/threads/facets", "/api/databases", "/api/databases/$PROJECTS_DB/query"),
+            server.requests.map { it.url.encodedPath },
+        )
+    }
+
+    @Test
+    fun aProjectIsNamedFromTheProjectsWithoutAskingTheFacets() = runTest {
+        val expected = mapOf("pr1" to "Web", "quiet" to "Zahrada", "nameless" to null, "gone" to null)
+        for ((projectId, name) in expected) {
+            val server = server(::routes)
+
+            assertEquals(RepositoryResult.Content(name), server.mail().projectName(projectId), projectId)
+            assertEquals(
+                listOf("/api/databases", "/api/databases/$PROJECTS_DB/query"),
+                server.requests.map { it.url.encodedPath },
+            )
+        }
     }
 
     @Test

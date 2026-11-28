@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.CollectionDatabase
+import cz.semprec.app.domain.CollectionProperty
 import cz.semprec.app.domain.FacetResult
 import cz.semprec.app.domain.FacetSelection
 import cz.semprec.app.domain.PropertyKind
@@ -53,15 +54,35 @@ internal fun filterGroups(
     val options = if (property.kind == PropertyKind.DATE) {
         DATE_PRESETS.map { FilterOption(it, it, null, null, selections.presets[property.key] == it) }
     } else {
-        val chosen = selections.values[property.key].orEmpty()
-        facets.firstOrNull { it.propertyKey == property.key }?.values.orEmpty()
-            .filter { it.value != null && it.count > 0 }
-            .map { facet ->
-                val key = facet.value.orEmpty()
-                val label = facet.label ?: property.options.firstOrNull { it.key == key }?.label ?: key
-                val color = facet.color ?: property.options.firstOrNull { it.key == key }?.color
-                FilterOption(key, label, color, facet.count, key in chosen)
-            }
+        facetOptions(property, facets.firstOrNull { it.propertyKey == property.key }, selections)
     }
     if (options.isEmpty()) null else FilterGroup(property.key, property.name, kind, options)
+}
+
+/**
+ * The chips above the list: the values of the database's facet bar property that items hold, from the bar's own
+ * facet, each selected when the filter sheet's selection holds it. `null` when the database declares no bar, or when
+ * no item holds any of its values.
+ */
+internal fun facetBar(database: CollectionDatabase, facet: FacetResult?, selections: Selections): FacetBar? {
+    val property = database.facetBarProperty?.let(database::property) ?: return null
+    val chips = facetOptions(property, facet, selections)
+    return if (chips.isEmpty()) null else FacetBar(property.key, chips)
+}
+
+/** The choices of [facet] that items hold, labelled by the server or else by the property's own options. */
+private fun facetOptions(
+    property: CollectionProperty,
+    facet: FacetResult?,
+    selections: Selections,
+): List<FilterOption> {
+    val chosen = selections.values[property.key].orEmpty()
+    return facet?.values.orEmpty()
+        .filter { it.value != null && it.count > 0 }
+        .map { value ->
+            val key = value.value.orEmpty()
+            val label = value.label ?: property.options.firstOrNull { it.key == key }?.label ?: key
+            val color = value.color ?: property.options.firstOrNull { it.key == key }?.color
+            FilterOption(key, label, color, value.count, key in chosen)
+        }
 }

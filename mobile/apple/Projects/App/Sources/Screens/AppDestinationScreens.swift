@@ -1,5 +1,5 @@
-import AreasFeature
 import CalendarFeature
+import CollectionsFeature
 import InboxFeature
 import JournalFeature
 import NotesFeature
@@ -50,22 +50,6 @@ struct NewItemSheet: View {
     }
 }
 
-/// One area, on the stack of `tab`.
-struct AreaDestination: View {
-
-    let areaId: String
-    let tab: AppTab
-    let composition: AppComposition
-
-    var body: some View {
-        AreasScreenFactory.area(
-            areaId: areaId,
-            makeModel: { composition.models.makeArea(areaId: areaId) },
-            router: composition.areasRouter(in: tab)
-        )
-    }
-}
-
 /// The page of notes of an item, on the stack of `tab`.
 struct NotesDestination: View {
 
@@ -100,6 +84,38 @@ struct InboxDestination: View {
             makeModel: { composition.models.makeInbox() },
             makeNote: { composition.models.makeNoteEditor(source: $0) },
             router: composition.inboxRouter(in: tab)
+        )
+    }
+}
+
+/// Every tag of the projects, over a model of the project `projectId` it was reached from.
+struct ProjectTagsDestination: View {
+
+    let projectId: String
+    let composition: AppComposition
+
+    var body: some View {
+        CollectionsScreenFactory.projectTags(
+            projectId: projectId,
+            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+            router: composition.collectionsRouter
+        )
+    }
+}
+
+/// One tag of the projects (`tagKey`), over a model of the project `projectId` it was reached from.
+struct ProjectTagDestination: View {
+
+    let projectId: String
+    let tagKey: String
+    let composition: AppComposition
+
+    var body: some View {
+        CollectionsScreenFactory.projectTag(
+            projectId: projectId,
+            tagKey: tagKey,
+            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+            router: composition.collectionsRouter
         )
     }
 }
