@@ -187,6 +187,17 @@ class CollectionFacetBarTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `the refresh on returning to the collection drops the chip of a removed tag`() = runTest(dispatcher) {
+        answerFacets()
+        val vm = open()
+        val removed = FacetResult("tags", listOf(FacetValue("b", null, null, 1), FacetValue(null, null, null, 8)))
+        answerFacets(bar = RepositoryResult.Content(listOf(removed)))
+        vm.onAction(CollectionAction.Refresh)
+        runCurrent()
+        assertEquals(listOf("b"), vm.state.value.facetBar?.chips?.map { it.value })
+        vm.close()
+    }
+
     @Test fun `a later query reads the bar again and an older bar answer is dropped`() = runTest(dispatcher) {
         val slow = CompletableDeferred<RepositoryResult<List<FacetResult>>>()
         fake.facetsAnswer = { slow.await() }

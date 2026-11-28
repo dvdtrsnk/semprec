@@ -91,4 +91,18 @@ interface CollectionWrites : PropertyWrites {
 interface PropertyWrites {
     /** Adds a choice with [label] to a select or multi-select [property]; the server makes its key. */
     suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption>
+
+    /**
+     * Writes a new [label], a new [color] (`#RRGGBB`) or both of the choice [key] of [property]; a `null` leaves that
+     * part as it is, and the key itself never changes.
+     */
+    suspend fun updateOption(
+        property: CollectionProperty,
+        key: String,
+        label: String?,
+        color: String?,
+    ): RepositoryResult<PropertyOption>
+
+    /** Removes the choice [key] of [property], and with it the key from the value of every item that holds it. */
+    suspend fun removeOption(property: CollectionProperty, key: String): RepositoryResult<Unit>
 }

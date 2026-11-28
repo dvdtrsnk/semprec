@@ -93,12 +93,24 @@ class HttpCollectionWrites(private val api: AuthenticatedApi, private val reads:
 
     override suspend fun addOption(property: CollectionProperty, label: String): RepositoryResult<PropertyOption> {
         val body = buildJsonObject { put("label", label) }
-        val path = "/api/properties/${property.id.encodeURLPathPart()}/options"
-        return when (val result = api.send(HttpMethod.Post, path, body = body.toString()).decode<OptionDto>()) {
-            is RepositoryResult.Failure -> result
-            is RepositoryResult.Content -> RepositoryResult.Content(result.value.toDomain())
-        }
+        return decodeOption(api.send(HttpMethod.Post, optionsPath(property), body = body.toString()))
     }
+
+    override suspend fun updateOption(
+        property: CollectionProperty,
+        key: String,
+        label: String?,
+        color: String?,
+    ): RepositoryResult<PropertyOption> {
+        val body = buildJsonObject {
+            if (label != null) put("label", label)
+            if (color != null) put("color", color)
+        }
+        return decodeOption(api.send(HttpMethod.Patch, optionPath(property, key), body = body.toString()))
+    }
+
+    override suspend fun removeOption(property: CollectionProperty, key: String): RepositoryResult<Unit> =
+        api.send(HttpMethod.Delete, optionPath(property, key)).ignoreBody()
 
     override suspend fun replacePage(itemId: String, markdown: String, etag: String): RepositoryResult<PageContent> {
         val response = api.send(
@@ -141,6 +153,18 @@ class HttpCollectionWrites(private val api: AuthenticatedApi, private val reads:
             is RepositoryResult.Content -> result.value.decodeIn(schema)
         }
     }
+
+    private fun decodeOption(response: ApiResponse): RepositoryResult<PropertyOption> =
+        when (val result = response.decode<OptionDto>()) {
+            is RepositoryResult.Failure -> result
+            is RepositoryResult.Content -> RepositoryResult.Content(result.value.toDomain())
+        }
+
+    private fun optionsPath(property: CollectionProperty) = "/api/properties/${property.id.encodeURLPathPart()}/options"
+
+    /** An option key may hold a space, non-ASCII or `/`, so it is one encoded path segment. */
+    private fun optionPath(property: CollectionProperty, key: String) =
+        "${optionsPath(property)}/${key.encodeURLPathPart()}"
 
     private fun itemPath(itemId: String) = "/api/items/${itemId.encodeURLPathPart()}"
 

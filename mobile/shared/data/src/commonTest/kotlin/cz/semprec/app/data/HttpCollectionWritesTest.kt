@@ -244,4 +244,56 @@ class HttpCollectionWritesTest {
             assertIs<RepositoryResult.Failure>(unreadable.writes.addOption(tags, "A")).kind,
         )
     }
+    @Test
+    fun aRenameOrRecolorPatchesOnlyThePartsGivenOnTheEncodedKeyOfTheOption() = runTest {
+        val f = fixture { json("""{"key":"a/b c","label":"Customer","color":"#34C759"}""") }
+        val tags = assertNotNull(projects(f).property("tags"))
+        val renamed = f.writes.updateOption(tags, "a/b c", "Customer", null).content()
+        val rename = f.recorder.requests.last()
+        assertEquals(HttpMethod.Patch, rename.method)
+        assertEquals("/api/properties/p7/options/a%2Fb%20c", rename.url.encodedPath)
+        val renameBody = f.recorder.bodyJson(f.recorder.bodies.lastIndex)
+        assertEquals("Customer", renameBody.getValue("label").jsonPrimitive.content)
+        assertEquals(setOf("label"), renameBody.keys)
+        assertEquals(PropertyOption("a/b c", "Customer", "#34C759"), renamed)
+
+        f.writes.updateOption(tags, "a/b c", null, "#34C759").content()
+        val recolorBody = f.recorder.bodyJson(f.recorder.bodies.lastIndex)
+        assertEquals(setOf("color"), recolorBody.keys)
+        assertEquals("#34C759", recolorBody.getValue("color").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aRefusedOrMissingOptionChangeIsATypedFailure() = runTest {
+        val refused = fixture { json("""{"error":"validation_failed"}""", HttpStatusCode.BadRequest) }
+        val tags = assertNotNull(projects(refused).property("tags"))
+        assertEquals(
+            FailureKind.REJECTED,
+            assertIs<RepositoryResult.Failure>(refused.writes.updateOption(tags, "a", "A", null)).kind,
+        )
+        assertEquals(
+            FailureKind.REJECTED,
+            assertIs<RepositoryResult.Failure>(refused.writes.removeOption(tags, "a")).kind,
+        )
+        val gone = fixture { respond("", HttpStatusCode.NotFound) }
+        assertEquals(
+            FailureKind.NOT_FOUND,
+            assertIs<RepositoryResult.Failure>(gone.writes.removeOption(tags, "a")).kind,
+        )
+        val unreadable = fixture { json("""{"label":"A"}""") }
+        assertEquals(
+            FailureKind.INVALID_DATA,
+            assertIs<RepositoryResult.Failure>(unreadable.writes.updateOption(tags, "a", "A", null)).kind,
+        )
+    }
+
+    @Test
+    fun aRemovedOptionIsDeletedOnItsKeyAndItsEmptyAnswerIsASuccess() = runTest {
+        val f = fixture { respond("", HttpStatusCode.NoContent) }
+        val tags = assertNotNull(projects(f).property("tags"))
+        f.writes.removeOption(tags, "client").content()
+        val request = f.recorder.requests.last()
+        assertEquals(HttpMethod.Delete, request.method)
+        assertEquals("/api/properties/p7/options/client", request.url.encodedPath)
+    }
 }

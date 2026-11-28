@@ -54,6 +54,7 @@ final class SharedItemMappingTests: XCTestCase {
         XCTAssertTrue(mapped.deleted)
         XCTAssertEqual(mapped.writeFailure, ItemWriteFailure(propertyKey: "status", kind: .rejected))
         XCTAssertEqual(mapped.choiceFailure, ItemWriteFailure(propertyKey: "tags", kind: .unavailable))
+        XCTAssertEqual(mapped.swatches, [CalendarSwatch(key: "green", hex: "#34C759")])
     }
 
     @MainActor
@@ -100,13 +101,15 @@ final class SharedItemMappingTests: XCTestCase {
             saving: false,
             writeFailure: SharedSDK.ItemWriteFailure(propertyKey: nil, kind: nil),
             choiceFailure: nil,
-            deleted: false
+            deleted: false,
+            swatches: []
         )
         let mapped = SharedItemScreenModel.state(state)
         XCTAssertEqual(mapped.phase, .error)
         XCTAssertEqual(mapped.failure, .notFound)
         XCTAssertEqual(mapped.writeFailure, ItemWriteFailure(propertyKey: nil, kind: nil))
         XCTAssertNil(mapped.choiceFailure)
+        XCTAssertEqual(mapped.swatches, [])
         XCTAssertEqual(mapped.page.status, .loading)
     }
 
@@ -129,9 +132,9 @@ final class SharedItemMappingTests: XCTestCase {
 // MARK: - Helpers
 private extension SharedItemMappingTests {
 
-    func fullState() -> SharedSDK.ItemState {
+    func statusField() -> SharedSDK.FieldView {
         let option = SharedSDK.OptionView(key: "done", label: "Done", color: nil)
-        let field = SharedSDK.FieldView(
+        return SharedSDK.FieldView(
             propertyKey: "status",
             name: "Status",
             kind: .select,
@@ -140,7 +143,10 @@ private extension SharedItemMappingTests {
             editable: false,
             origin: nil
         )
-        return SharedSDK.ItemState(
+    }
+
+    func fullState() -> SharedSDK.ItemState {
+        SharedSDK.ItemState(
             phase: .content,
             failure: nil,
             header: SharedSDK.ItemHeader(
@@ -152,7 +158,7 @@ private extension SharedItemMappingTests {
                 color: "#AF52DE",
                 title: "Semprec"
             ),
-            fields: [field],
+            fields: [statusField()],
             related: [
                 SharedSDK.RelatedView(
                     databaseId: "f", databaseKey: "files", name: "Files", icon: "doc", color: nil, count: 3
@@ -178,7 +184,8 @@ private extension SharedItemMappingTests {
             saving: true,
             writeFailure: SharedSDK.ItemWriteFailure(propertyKey: "status", kind: .rejected),
             choiceFailure: SharedSDK.ItemWriteFailure(propertyKey: "tags", kind: .unavailable),
-            deleted: true
+            deleted: true,
+            swatches: [SharedSDK.CalendarSwatch(key: "green", hex: "#34C759")]
         )
     }
 
