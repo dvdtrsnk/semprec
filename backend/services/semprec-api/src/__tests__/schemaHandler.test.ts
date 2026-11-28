@@ -875,7 +875,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(res.headers.get("Allow")).toBe("GET");
   });
 
-  it("resolves the ten hardcoded system databases' names in cs, including ones with no project owner", async () => {
+  it("resolves the hardcoded system databases' names in cs, including ones with no project owner", async () => {
     const res = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader("cs") });
     expect(res.status).toBe(200);
     const body = (await res.json()) as SchemaProjectionBody;

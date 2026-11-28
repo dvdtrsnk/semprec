@@ -5,7 +5,7 @@ import { sortSpecSchema } from "../views/sortSpec.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
-import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
+import { CORE_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 
 /**
@@ -84,7 +84,7 @@ describe("core module manifests (module-contract issue #226)", () => {
 
     expect(moduleId).toBe("systemDatabases");
     const databases = await registry.getDatabases();
-    expect(databases.map((db) => db.key).sort()).toEqual([...TEN_DATABASE_MODULE_IDS].sort());
+    expect(databases.map((db) => db.key).sort()).toEqual([...CORE_DATABASE_MODULE_IDS].sort());
     expect(await registry.getViewTypes()).toEqual([TEMPORAL_SWITCHER_VIEW_TYPE]);
     const meta = new Map(databases.map((db) => [db.key, db]));
     const pick = (key: string) => {
@@ -152,7 +152,7 @@ describe("core module manifests (module-contract issue #226)", () => {
     await registry.loadModule(SYSTEM_DATABASES_PATH);
 
     expect(registry.listModuleIds().sort()).toEqual(["docs", "schemaCore", "systemDatabases", "views"]);
-    expect((await registry.getDatabases()).length).toBe(TEN_DATABASE_MODULE_IDS.length + 1);
+    expect((await registry.getDatabases()).length).toBe(CORE_DATABASE_MODULE_IDS.length + 1);
   });
 });
 

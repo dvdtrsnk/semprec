@@ -142,7 +142,7 @@ const EVENTS_QUICK_FILTERS: QuickFilters = [
 const DATE_ASCENDING = { property: "date", direction: "asc" } as const;
 
 /**
- * Describes the ten hardcoded databases `seedTenDatabases.ts` creates (plus `task_recurrence` and `blobs`);
+ * Describes the hardcoded core databases `seedTenDatabases.ts` creates (plus `task_recurrence` and `blobs`);
  * loading it creates nothing. Journal's `defaultViewType` is read by the seed; others default to `"table"`.
  */
 export const manifest: ModuleManifest = {
