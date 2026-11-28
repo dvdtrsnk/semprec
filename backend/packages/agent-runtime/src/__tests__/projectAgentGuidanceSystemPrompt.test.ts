@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { writeBlock } from "@semprec/block-model";
+import { writeBlock } from "@alldots/block-model";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createChokePoint,
   createProjectAgentGuidanceSaveRouteHandler,
@@ -13,14 +13,14 @@ import {
   mutateYDoc,
   seedSystem,
   withTransaction,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
   resetDatabase,
   writePageTextBlocks,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import { createProjectAgentGuidanceSystemPromptOverride } from "../projectAgentGuidanceSystemPrompt.js";
 
 let admin: Pool;
@@ -28,7 +28,7 @@ let pool: Pool;
 describe("saved guidance reaches the next agent prompt", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -72,14 +72,14 @@ describe("saved guidance reaches the next agent prompt", () => {
         (id) => withTransaction(pool, (tx) => readProjectNotes(tx, id)),
       );
       const prompt = override("Base");
-      expect(prompt).toContain(`[First title](semprec://page/${first})`);
+      expect(prompt).toContain(`[First title](alldots://page/${first})`);
       expect(prompt).toContain(
         JSON.stringify([
           { id: first, title: "First title" },
           { id: second, title: "Second title" },
         ]),
       );
-      expect(prompt).not.toContain(`[Second title](semprec://page/${second})`);
+      expect(prompt).not.toContain(`[Second title](alldots://page/${second})`);
     });
   });
 

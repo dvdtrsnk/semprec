@@ -271,9 +271,9 @@ nothing updates, so it goes stale as soon as the first issue closes. The epic:
 - does not appear in any `Blocked by:` line,
 - gets every implementation issue linked to it as a GitHub sub-issue as soon as
   that issue is created:
-  `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`
+  `gh api -X POST repos/dvdtrsnk/alldots/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`
   — `<child-id>` is the child issue's numeric `id`, not its issue number; get it
-  with `gh api repos/dvdtrsnk/semprec/issues/<n> --jq .id`.
+  with `gh api repos/dvdtrsnk/alldots/issues/<n> --jq .id`.
 
 ### Closing
 

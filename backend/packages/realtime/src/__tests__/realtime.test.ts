@@ -18,16 +18,16 @@ import {
   notifyInvalidation,
   notifyNotificationCreated,
   notifySessionRevoked,
-} from "@semprec/data";
-import { createChokePoint, createDocStore, createPool, withTransaction } from "@semprec/data";
+} from "@alldots/data";
+import { createChokePoint, createDocStore, createPool, withTransaction } from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { wireRealtimeHooks } from "../wireHooks.js";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer } from "../syncServer.js";
@@ -69,7 +69,7 @@ describe("realtime", () => {
   it("delivers a document write to an unsubscribed tenant socket and never to another tenant", async () => {
     const owner = getTenantZeroId();
     const foreign = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const api = createChokePoint(runtime);
     const docs = createDocStore(runtime);
     const fixture = await runInTenant(owner, async () => {
@@ -140,7 +140,7 @@ describe("realtime", () => {
       const listener = await pool.connect();
       const arrivals: number[] = [];
       try {
-        await listener.query("LISTEN semprec_events");
+        await listener.query("LISTEN alldots_events");
         listener.on("notification", (notification) => {
           if (!notification.payload) return;
           const value: unknown = JSON.parse(notification.payload);
@@ -261,7 +261,7 @@ describe("realtime", () => {
 
   it("bounds relation notifications while retaining the PostgreSQL tenant envelope and user restriction", async () => {
     const tenant = await createTestTenant(pool);
-    const scoped = await createRuntimeRolePool(pool, "semprec_data");
+    const scoped = await createRuntimeRolePool(pool, "alldots_data");
     const listener = await pool.connect();
     const base = {
       type: "invalidation",
@@ -279,8 +279,8 @@ describe("realtime", () => {
           "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
         ),
       );
-      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
-      await listener.query("LISTEN semprec_events");
+      expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
+      await listener.query("LISTEN alldots_events");
       for (const key of ["normal", "a".repeat(remaining), "a".repeat(remaining + 1), 'ě\\"'.repeat(4000)]) {
         const received = new Promise<{ payload?: string }>((resolve) => listener.once("notification", resolve));
         await runInTenant(tenant, () => publishRealtimeMessage(scoped, { ...base, propertyKey: key }));
@@ -302,7 +302,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -338,7 +338,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -367,7 +367,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received: Array<{ channel: string; payload?: string }> = [];
       listenClient.on("notification", (notification) => received.push(notification));
 
@@ -396,7 +396,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received: Array<{ channel: string; payload?: string }> = [];
       listenClient.on("notification", (notification) => received.push(notification));
 
@@ -443,7 +443,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -471,7 +471,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -499,7 +499,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -526,7 +526,7 @@ describe("realtime", () => {
 
     const listenClient = await pool.connect();
     try {
-      await listenClient.query("LISTEN semprec_events");
+      await listenClient.query("LISTEN alldots_events");
       const received = new Promise<{ channel: string; payload?: string }>((resolve) => {
         listenClient.once("notification", resolve);
       });
@@ -564,7 +564,7 @@ describe("realtime", () => {
     });
 
     async function listen(client: PoolClient): Promise<() => Promise<unknown>> {
-      await client.query("LISTEN semprec_events");
+      await client.query("LISTEN alldots_events");
       const received = new Promise<{ payload?: string }>((resolve) => client.once("notification", resolve));
       return async () => JSON.parse((await received).payload ?? "{}");
     }

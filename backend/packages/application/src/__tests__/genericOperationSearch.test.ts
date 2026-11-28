@@ -6,7 +6,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -17,8 +17,8 @@ import {
   withTransaction,
   type ChokePoint,
   type CollectionMetadataResolver,
-} from "@semprec/data";
-import { CAPABILITY_IDS, runInTenant, SearchOutputSchema, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, runInTenant, SearchOutputSchema, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 
 const metadataResolver: CollectionMetadataResolver = {
@@ -67,7 +67,7 @@ const mcpHumanSession = (): AuthenticatedActor => ({ userId });
 describe("the search operation through the generic operation gateway (issue #1842)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(pool);
   }, 120_000);
 

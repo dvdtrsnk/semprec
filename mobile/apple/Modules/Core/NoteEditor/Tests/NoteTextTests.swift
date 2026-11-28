@@ -18,10 +18,10 @@ final class NoteTextTests: XCTestCase {
 
     func testAnAddressPutOverASelectionLinksIt() {
         XCTAssertEqual(
-            NoteTextChange.between("See docs here", "See https://semprec.cz here", softBreak: false),
-            .linked(start: 4, end: 8, address: "https://semprec.cz")
+            NoteTextChange.between("See docs here", "See https://alldots.cz here", softBreak: false),
+            .linked(start: 4, end: 8, address: "https://alldots.cz")
         )
-        XCTAssertEqual(NoteTextChange.between("See docs", "See semprec", softBreak: false), .typed)
+        XCTAssertEqual(NoteTextChange.between("See docs", "See alldots", softBreak: false), .typed)
     }
 
     func testRunsKeepTheirFormatsAndLinksAndNothingElse() {
@@ -29,7 +29,7 @@ final class NoteTextTests: XCTestCase {
             NoteEditorRun("Hello "),
             NoteEditorRun("bold", bold: true),
             NoteEditorRun(" code", italic: true, code: true),
-            NoteEditorRun(" link", link: "https://semprec.cz")
+            NoteEditorRun(" link", link: "https://alldots.cz")
         ]
         var text = NoteText.attributed(runs)
         text.foregroundColor = .cyan

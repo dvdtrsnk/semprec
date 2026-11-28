@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError, type PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import type { RelationEdgeChangedHook } from "../chokePoint/hooks.js";
 import { appendHistoryEntry } from "../inbox/proposalHistory.js";

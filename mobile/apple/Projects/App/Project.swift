@@ -6,14 +6,14 @@ let app = ProjectConfiguration.appName
 let project = Project(
     name: "App",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.appSettings,
+    settings: AlldotsProject.appSettings,
     targets: [
         .target(
             name: app,
-            destinations: SemprecProject.destinations,
+            destinations: AlldotsProject.destinations,
             product: .app,
             bundleId: ProjectConfiguration.appleBundleId,
-            deploymentTargets: SemprecProject.deploymentTargets,
+            deploymentTargets: AlldotsProject.deploymentTargets,
             // Tuist's default app plist mixes iOS and macOS keys (a Main storyboard, an armv7 requirement), so the
             // app lists its keys itself. macOS ignores the UIKit keys; Xcode adds the platform keys of each SDK.
             infoPlist: .dictionary([
@@ -26,37 +26,37 @@ let project = Project(
                 "CFBundleName": "$(PRODUCT_NAME)",
                 "CFBundlePackageType": "$(PRODUCT_BUNDLE_PACKAGE_TYPE)",
                 "CFBundleShortVersionString": "$(MARKETING_VERSION)",
-                // The scheme a browser sign-in returns to (`semprec://oauth`), caught by the sign-in's own session;
+                // The scheme a browser sign-in returns to (`alldots://oauth`), caught by the sign-in's own session;
                 // the app reads no URL it is opened with.
                 "CFBundleURLTypes": [
                     [
                         "CFBundleURLName": "$(PRODUCT_BUNDLE_IDENTIFIER).oauth",
-                        "CFBundleURLSchemes": ["semprec"],
+                        "CFBundleURLSchemes": ["alldots"],
                     ],
                 ],
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 // AlarmKit asks for this when the first sleep alarm is scheduled; macOS has no AlarmKit and ignores it.
-                "NSAlarmKitUsageDescription": "Semprec rings your alarms even in silent mode and through a Focus.",
+                "NSAlarmKitUsageDescription": "Alldots rings your alarms even in silent mode and through a Focus.",
                 // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS.
-                "NSCameraUsageDescription": "Semprec reads the barcodes and QR codes that stop your wake-up alarm.",
-                "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
+                "NSCameraUsageDescription": "Alldots reads the barcodes and QR codes that stop your wake-up alarm.",
+                "NSMicrophoneUsageDescription": "Alldots records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 // `remote-notification` lets a silent push wake the app to read its reminders again.
                 "UIBackgroundModes": ["audio", "remote-notification"],
                 // The APNs environment the device token is registered for, by build configuration.
-                "SemprecApnsEnvironment": "$(SEMPREC_APNS_ENVIRONMENT)",
+                "AlldotsApnsEnvironment": "$(ALLDOTS_APNS_ENVIRONMENT)",
                 "UILaunchScreen": [:],
                 // The type a drag of a calendar item carries within the app and between its windows; other apps take
                 // the iCalendar and plain-text forms the same drag also offers.
                 "UTExportedTypeDeclarations": [
                     [
-                        "UTTypeIdentifier": "cz.semprec.calendar-item",
-                        "UTTypeDescription": "Semprec calendar item",
+                        "UTTypeIdentifier": "cz.alldots.calendar-item",
+                        "UTTypeDescription": "Alldots calendar item",
                         "UTTypeConformsTo": ["public.data"],
                     ],
                 ],
-                "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
+                "AlldotsDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",
                 ],
@@ -69,7 +69,7 @@ let project = Project(
             ]),
             sources: ["Sources/**"],
             resources: ["Resources/**"],
-            scripts: [SemprecProject.kotlinFrameworkScript(.embed)],
+            scripts: [AlldotsProject.kotlinFrameworkScript(.embed)],
             dependencies: [
                 .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
@@ -90,9 +90,9 @@ let project = Project(
                 .external(name: "NavigatorUI"),
             ],
             // A Debug build is signed for the APNs sandbox, a Release build (App Store, TestFlight, Ad Hoc) for
-            // production; `aps-environment` of the iOS entitlements and `SemprecApnsEnvironment` follow it.
+            // production; `aps-environment` of the iOS entitlements and `AlldotsApnsEnvironment` follow it.
             settings: .settings(
-                base: SemprecProject.kotlinFrameworkScriptSettings
+                base: AlldotsProject.kotlinFrameworkScriptSettings
                     .merging([
                         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": "Entitlements/\(app).entitlements",
                         "CODE_SIGN_ENTITLEMENTS[sdk=iphone*]": "Entitlements/\(app)-iOS.entitlements",
@@ -100,17 +100,17 @@ let project = Project(
                 configurations: [
                     .debug(
                         name: .debug,
-                        settings: ["SEMPREC_APS_ENVIRONMENT": "development", "SEMPREC_APNS_ENVIRONMENT": "sandbox"]
+                        settings: ["ALLDOTS_APS_ENVIRONMENT": "development", "ALLDOTS_APNS_ENVIRONMENT": "sandbox"]
                     ),
                     .release(
                         name: .release,
-                        settings: ["SEMPREC_APS_ENVIRONMENT": "production", "SEMPREC_APNS_ENVIRONMENT": "production"]
+                        settings: ["ALLDOTS_APS_ENVIRONMENT": "production", "ALLDOTS_APNS_ENVIRONMENT": "production"]
                     ),
                 ]
             )
         ),
         // The app's tests drive its NavigatorUI stacks directly.
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "\(app)Tests",
             for: app,
             dependencies: [

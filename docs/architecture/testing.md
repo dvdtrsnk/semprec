@@ -44,7 +44,7 @@ runs them, and `pnpm run verify` runs all three plus lint, build and the static 
 
 - Unit files must not import anything that reaches Postgres, directly or through
   `testSupport/testDb.ts`.
-- E2e scenarios load real modules through `@semprec/module-registry` and wire them into the
+- E2e scenarios load real modules through `@alldots/module-registry` and wire them into the
   real queue and database as a composition root does; they assert cross-module behaviour no
   single package's suite exercises.
 - All tiers resolve workspace packages to their TypeScript source through the config aliases.
@@ -56,17 +56,17 @@ runs them, and `pnpm run verify` runs all three plus lint, build and the static 
 `backend/packages/data/src/testSupport/globalSetup.ts` provisions the database for the
 integration and e2e tiers:
 
-- starts one `embedded-postgres` instance on a free port (`SEMPREC_TEST_PG_PORT` pins one),
+- starts one `embedded-postgres` instance on a free port (`ALLDOTS_TEST_PG_PORT` pins one),
   UTF8 encoding, `max_locks_per_transaction=1024`, `max_connections=500`, durability off
   (`fsync`, `synchronous_commit`, `full_page_writes`: the cluster is discarded after the run),
-  and sweeps stale `semprec-pg-*` directories;
-- creates and migrates `semprec_test`, exports `TEST_DATABASE_URL` (used directly by e2e),
+  and sweeps stale `alldots-pg-*` directories;
+- creates and migrates `alldots_test`, exports `TEST_DATABASE_URL` (used directly by e2e),
   `TEST_TEMPLATE_DATABASE`, `TEST_ADMIN_DATABASE_URL`, one runtime-role password for the run
   (`TEST_RUNTIME_ROLE_PASSWORD`, applied by `createRuntimeRolePool`) and a deterministic
   test-only `CREDENTIALS_MASTER_KEY`;
 - runs the same schema steps, in the same order, as `backend/packages/data/src/db/runMigrationsCli.ts`
   (migrations, host-asset activation, queue schema and grants, tenant-scoped steps on a
-  `semprec_data` pool). A step added to the CLI is added here too;
+  `alldots_data` pool). A step added to the CLI is added here too;
 - exports `TEST_TENANT_ZERO_ID` (the tenant the migrations create) and drops the single-tenant
   guard index so the two-tenant harness can create more tenants;
 - refuses to run when workspace roots do not resolve to source modules.
@@ -78,21 +78,21 @@ except tenant zero, which keeps its id for the whole run.
 
 `testSupport/workerDatabase.ts` is the first integration `setupFiles` entry:
 
-- each worker (`VITEST_POOL_ID`) clones `semprec_test_w<id>` from the migrated template once
+- each worker (`VITEST_POOL_ID`) clones `alldots_test_w<id>` from the migrated template once
   and points `TEST_DATABASE_URL` at it, so files in different workers never share tables;
   files within one worker still share its database and call `resetDatabase` as before;
 - every file holds a cluster-wide advisory lock for its whole run: shared normally, exclusive
   for the files in `testSupport/clusterExclusiveFiles.json`, which change roles or role
   passwords every worker sees. `workerDatabaseConfig.unit.test.ts` keeps that list equal to the
   integration files that contain such a statement;
-- `SEMPREC_TEST_WORKERS` pins the worker count; the default is half the cores, at most 6.
+- `ALLDOTS_TEST_WORKERS` pins the worker count; the default is half the cores, at most 6.
 
 A file that changes other cluster-wide state (a role, `ALTER SYSTEM`) belongs on the exclusive
 list; scratch databases with unique names and terminating one's own backends do not.
 
 ### Tenant scope mode per file
 
-Production runs `SEMPREC_TENANT_SCOPE=strict`: a data call outside a tenant scope throws
+Production runs `ALLDOTS_TENANT_SCOPE=strict`: a data call outside a tenant scope throws
 `TenantScopeMissingError`. The integration tier matches that per file:
 
 - `testSupport/tenantScopeMode.ts` (a `setupFiles` entry) sets `strict` for every file, and
@@ -133,7 +133,7 @@ header comment is the reference. No test builds its own tenant or role setup.
 
 - `createTestTenant(pool, { status })` creates a tenant; a cross-tenant test needs two tenants,
   not two users in one tenant.
-- Isolation is asserted through `createRuntimeRolePool(adminPool, "semprec_data" | "semprec_side")`.
+- Isolation is asserted through `createRuntimeRolePool(adminPool, "alldots_data" | "alldots_side")`.
   The superuser pool from `getTestPool()` bypasses row-level security, so an isolation assertion
   on it proves nothing.
 - Test SQL runs inside `withTenantTransaction(pool, tenantId, fn)`; production code runs inside
@@ -152,7 +152,7 @@ header comment is the reference. No test builds its own tenant or role setup.
 ## Fixtures
 
 - Test state is built with the functions production uses: the choke point, the owning store's
-  functions and the helpers exported from `@semprec/data/testSupport`
+  functions and the helpers exported from `@alldots/data/testSupport`
   (`backend/packages/data/src/testSupport/testDb.ts` and the `*Fixtures.ts` files beside it).
 - Raw SQL `INSERT` / `UPDATE` is used only for a state the write path cannot produce, with a
   one-line comment saying why. A raw fixture skips hooks, ownership checks and derived fields,
@@ -171,15 +171,15 @@ through two services composes them as processes:
 
 - The owning service's test spawns a **compiled fixture child** of the other service, kept under
   that service's `src/__tests__/fixtures/` (for example
-  `services/semprec-ai-gateway/src/__tests__/fixtures/*Gateway.ts`,
-  `services/semprec-agents/src/__tests__/fixtures/liveVoiceWorker.ts`), built by that service's
+  `services/alldots-ai-gateway/src/__tests__/fixtures/*Gateway.ts`,
+  `services/alldots-agents/src/__tests__/fixtures/liveVoiceWorker.ts`), built by that service's
   existing build. The child composes the real production owners of its own service.
 - Only **outbound provider transport** is replaced: the provider's fixed URL is redirected to an
   owned loopback listener that returns bounded synthetic protocol responses, and every
   unexpected destination is refused. Synthetic responses prove protocol composition, not model
   quality, and are labelled as such.
 - Compiled workspace packages resolve through the test-only allowlisting resolver
-  `services/semprec-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs` (wrapped, never
+  `services/alldots-transcribe/src/__tests__/fixtures/workspaceDistResolver.mjs` (wrapped, never
   widened, by a service-specific resolver where needed). It maps declared public workspace
   entries to built JavaScript and fails on anything else; it never falls back to source.
   Missing or stale builds fail the test.
@@ -213,6 +213,6 @@ through two services composes them as processes:
 
 - `web/` runs every `*.test.ts` / `*.test.tsx` with Vitest.
 - `mobile/` tests sit beside the code they test (`commonTest`, Android `src/test` and
-  `src/androidTest`, Swift XCTest bundles, `SemprecUITests`) and run through
+  `src/androidTest`, Swift XCTest bundles, `AlldotsUITests`) and run through
   `mobile/scripts/verify`; the policy above applies except for the database and vitest rules.
   Which layer tests what is defined by the mobile skills.

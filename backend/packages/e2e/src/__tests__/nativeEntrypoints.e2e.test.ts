@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { DRIFT_CHECK_ACTION_ID } from "@semprec/data";
+import { DRIFT_CHECK_ACTION_ID } from "@alldots/data";
 
 /**
  * The compiled entries of the units, the scripts and the restore runbook, run as plain
@@ -16,7 +16,7 @@ import { DRIFT_CHECK_ACTION_ID } from "@semprec/data";
  * (docs/architecture/edges-io-and-errors.md#service-entrypoints-and-packaging), which no source-level test can show.
  *
  * Case (d) starts the API with the other three services, and cases (d) and (e) run under strict tenant scope: the test
- * process has `SEMPREC_TENANT_SCOPE=warn` from `vitest.e2e.config.ts`, so each child's environment is built from a
+ * process has `ALLDOTS_TENANT_SCOPE=warn` from `vitest.e2e.config.ts`, so each child's environment is built from a
  * list of names and never carries the variable.
  */
 
@@ -253,7 +253,7 @@ function runChecker(args: readonly string[], deadlineMs: number, extraEnv: Reado
 
 /** The checker's table, read the way an operator reads it: the entries it names when pointed at an empty root. */
 async function readCheckerTable(): Promise<string[]> {
-  const emptyRoot = mkdtempSync(join(tmpdir(), "semprec-native-empty-"));
+  const emptyRoot = mkdtempSync(join(tmpdir(), "alldots-native-empty-"));
   try {
     const run = await runChecker(["--root", emptyRoot], FAST_CHECKER_DEADLINE_MS);
     expect(run.failure).toBeUndefined();
@@ -310,7 +310,7 @@ describe("native entrypoints: the table and the checker", () => {
     expect(table).toHaveLength(11);
     const files = deployFiles();
     expect(files.map((file) => file.name)).toEqual(
-      expect.arrayContaining(["deploy.sh", "README.md", "systemd/semprec-api.service"]),
+      expect.arrayContaining(["deploy.sh", "README.md", "systemd/alldots-api.service"]),
     );
     expect(coverageGaps(table, files)).toEqual({ unlisted: [], unnamed: [] });
   }, 30_000);
@@ -318,12 +318,12 @@ describe("native entrypoints: the table and the checker", () => {
   it("(a) a named entry that the table lacks, or a table entry that nothing names, is reported", () => {
     const gaps = coverageGaps(table, [
       {
-        name: "semprec-new.service",
-        text: "ExecStart=/usr/bin/env node /opt/semprec/current/backend/services/semprec-new/dist/serve.js",
+        name: "alldots-new.service",
+        text: "ExecStart=/usr/bin/env node /opt/alldots/current/backend/services/alldots-new/dist/serve.js",
       },
       { name: "deploy.sh", text: "node packages/data/dist/db/runSeedCli.js" },
     ]);
-    expect(gaps.unlisted).toEqual(["services/semprec-new/dist/serve.js (named by semprec-new.service)"]);
+    expect(gaps.unlisted).toEqual(["services/alldots-new/dist/serve.js (named by alldots-new.service)"]);
     expect(gaps.unnamed).toEqual(table.filter((path) => path !== "packages/data/dist/db/runSeedCli.js"));
   }, 30_000);
 
@@ -343,7 +343,7 @@ describe("native entrypoints: the table and the checker", () => {
 
   /** The eleven tiny scripts of a fake backend root; `overrides` replaces the source of some of them. */
   function fakeRoot(overrides: Readonly<Record<string, string>> = {}): string {
-    const root = mkdtempSync(join(tmpdir(), "semprec-native-fake-"));
+    const root = mkdtempSync(join(tmpdir(), "alldots-native-fake-"));
     writeFileSync(join(root, "package.json"), '{"type":"module"}\n');
     for (const path of table) {
       const refusal = path.endsWith("validateRestoreLedgerCli.js")
@@ -363,7 +363,7 @@ describe("native entrypoints: the table and the checker", () => {
   it(
     "(c) names exactly the one entry that imports a missing module and exits 1",
     async () => {
-      const broken = "services/semprec-agents/dist/serve.js";
+      const broken = "services/alldots-agents/dist/serve.js";
       const root = fakeRoot({ [broken]: 'import "./missing.js";\n' });
       try {
         const run = await runChecker(["--root", root], FAST_CHECKER_DEADLINE_MS);
@@ -403,15 +403,15 @@ describe("native entrypoints: the table and the checker", () => {
         pick("db/runSeedCli.js"),
         pick("db/verifyTenancyCli.js"),
         pick("tenancy/replayTenantDeletionsCli.js"),
-        pick("semprec-api/dist/serve.js"),
-        pick("semprec-agents/dist/serve.js"),
+        pick("alldots-api/dist/serve.js"),
+        pick("alldots-agents/dist/serve.js"),
       ];
       // Its own refusal is a fixed text, so another entry's "is not set" must not pass for it.
       const wrong = pick("tenancy/validateRestoreLedgerCli.js");
       const silent = pick("tenancy/restoreTenantKeysCli.js");
       const flood = pick("observability/restoreTestResultCli.js");
-      const hang = pick("semprec-ai-gateway/dist/serve.js");
-      const fine = pick("semprec-transcribe/dist/serve.js");
+      const hang = pick("alldots-ai-gateway/dist/serve.js");
+      const fine = pick("alldots-transcribe/dist/serve.js");
       const overrides: Record<string, string> = {};
       // Each marker is printed next to a matching refusal, so a marker alone must fail the entry.
       markerEntries.forEach((path, index) => {
@@ -466,7 +466,7 @@ describe("native entrypoints: the table and the checker", () => {
         const run = await runChecker(["--root", root], FAST_CHECKER_DEADLINE_MS, {
           NODE_OPTIONS: "--no-warnings",
           NODE_PATH: "/nonexistent",
-          SEMPREC_CANARY: "must-not-reach-the-entries",
+          ALLDOTS_CANARY: "must-not-reach-the-entries",
           DATABASE_URL: "postgres://must-not-reach-the-entries",
         });
         expect(run.failure).toBeUndefined();
@@ -489,7 +489,7 @@ describe("native entrypoints: the table and the checker", () => {
         expect(run.output).toContain("Usage:");
         expect(run.output).not.toMatch(/^(ok|FAIL) /m);
       }
-      const missing = join(tmpdir(), `semprec-native-missing-${randomUUID()}`);
+      const missing = join(tmpdir(), `alldots-native-missing-${randomUUID()}`);
       const run = await runChecker(["--root", missing], FAST_CHECKER_DEADLINE_MS);
       expect(run.failure).toBeUndefined();
       expect(run.code).toBe(1);
@@ -536,7 +536,7 @@ async function withScratchDatabase<T>(
   baseUrl: string,
   fn: (db: ScratchDatabase) => Promise<T>,
 ): Promise<T> {
-  const name = `semprec_native_${randomUUID().replaceAll("-", "")}`;
+  const name = `alldots_native_${randomUUID().replaceAll("-", "")}`;
   // The identifier is a fixed prefix and the hexadecimal digits of a generated UUID, so it cannot break out of
   // the quoted name; CREATE and DROP DATABASE accept no bind parameters.
   const identifier = `"${name}"`;
@@ -569,7 +569,7 @@ async function withScratchDatabase<T>(
 }
 
 /** `url` with the login of a runtime role. */
-function asRole(url: string, role: "semprec_data" | "semprec_side", password: string): string {
+function asRole(url: string, role: "alldots_data" | "alldots_side", password: string): string {
   const next = new URL(url);
   next.username = role;
   next.password = password;
@@ -600,12 +600,12 @@ const PLACEHOLDER_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
 
 const SERVICES: readonly ServiceCase[] = [
   {
-    name: "semprec-ai-gateway",
-    entry: "services/semprec-ai-gateway/dist/serve.js",
-    started: /semprec-ai-gateway listening/,
-    stopped: /semprec-ai-gateway shutdown complete/,
+    name: "alldots-ai-gateway",
+    entry: "services/alldots-ai-gateway/dist/serve.js",
+    started: /alldots-ai-gateway listening/,
+    stopped: /alldots-ai-gateway shutdown complete/,
     config: (config) => ({
-      SEMPREC_SIDE_DATABASE_URL: config.sideUrl,
+      ALLDOTS_SIDE_DATABASE_URL: config.sideUrl,
       AI_GATEWAY_PORT: String(config.port),
       AI_GATEWAY_INTERNAL_TOKEN: PLACEHOLDER_TOKEN,
       AI_GATEWAY_STRUCTURED_PROVIDER: "anthropic",
@@ -625,12 +625,12 @@ const SERVICES: readonly ServiceCase[] = [
     }),
   },
   {
-    name: "semprec-agents",
-    entry: "services/semprec-agents/dist/serve.js",
-    started: /semprec-agents queue runtime started/,
-    stopped: /semprec-agents shutdown complete/,
+    name: "alldots-agents",
+    entry: "services/alldots-agents/dist/serve.js",
+    started: /alldots-agents queue runtime started/,
+    stopped: /alldots-agents shutdown complete/,
     config: (config) => ({
-      SEMPREC_API_DATABASE_URL: config.dataUrl,
+      ALLDOTS_API_DATABASE_URL: config.dataUrl,
       CREDENTIALS_MASTER_KEY: PLACEHOLDER_MASTER_KEY,
       AI_GATEWAY_INTERNAL_TOKEN: PLACEHOLDER_TOKEN,
       AI_GATEWAY_BASE_URL: `http://127.0.0.1:${config.port}/internal/pi`,
@@ -640,12 +640,12 @@ const SERVICES: readonly ServiceCase[] = [
     }),
   },
   {
-    name: "semprec-api",
-    entry: "services/semprec-api/dist/serve.js",
-    started: /semprec-api listening/,
-    stopped: /semprec-api shutdown complete/,
+    name: "alldots-api",
+    entry: "services/alldots-api/dist/serve.js",
+    started: /alldots-api listening/,
+    stopped: /alldots-api shutdown complete/,
     config: (config) => ({
-      SEMPREC_API_DATABASE_URL: config.dataUrl,
+      ALLDOTS_API_DATABASE_URL: config.dataUrl,
       SETUP_TOKEN: "placeholder-setup-token",
       AI_GATEWAY_INTERNAL_TOKEN: PLACEHOLDER_TOKEN,
       CREDENTIALS_MASTER_KEY: PLACEHOLDER_MASTER_KEY,
@@ -665,12 +665,12 @@ const SERVICES: readonly ServiceCase[] = [
     },
   },
   {
-    name: "semprec-transcribe",
-    entry: "services/semprec-transcribe/dist/serve.js",
-    started: /semprec-transcribe queue runtime started/,
-    stopped: /semprec-transcribe shutdown complete/,
+    name: "alldots-transcribe",
+    entry: "services/alldots-transcribe/dist/serve.js",
+    started: /alldots-transcribe queue runtime started/,
+    stopped: /alldots-transcribe shutdown complete/,
     config: (config) => ({
-      SEMPREC_API_DATABASE_URL: config.dataUrl,
+      ALLDOTS_API_DATABASE_URL: config.dataUrl,
       AI_GATEWAY_INTERNAL_TOKEN: PLACEHOLDER_TOKEN,
       FILES_STORAGE_DIR: config.filesDir,
       MAIL_ATTACHMENTS_DIR: config.attachmentsDir,
@@ -713,7 +713,7 @@ describe("native entrypoints: an owned database and the compiled services", () =
    */
   async function runCli(cli: string, db: ScratchDatabase): Promise<ChildResult> {
     const env = explicitEnv({ DATABASE_URL: db.ownerUrl });
-    expect(Object.keys(env)).not.toContain("SEMPREC_TENANT_SCOPE");
+    expect(Object.keys(env)).not.toContain("ALLDOTS_TENANT_SCOPE");
     return runNode([`packages/data/dist/db/${cli}`], env, SETUP_CLI_DEADLINE_MS);
   }
 
@@ -734,8 +734,8 @@ describe("native entrypoints: an owned database and the compiled services", () =
     "(d) $name starts from its compiled serve.js as the runtime role and exits 0 on SIGTERM",
     async (service) => {
       const scratchDirs = [
-        mkdtempSync(join(tmpdir(), "semprec-native-files-")),
-        mkdtempSync(join(tmpdir(), "semprec-native-mail-")),
+        mkdtempSync(join(tmpdir(), "alldots-native-files-")),
+        mkdtempSync(join(tmpdir(), "alldots-native-mail-")),
       ];
       try {
         await withScratchDatabase(admin, baseUrl, async (db) => {
@@ -743,20 +743,20 @@ describe("native entrypoints: an owned database and the compiled services", () =
           // `ALTER ROLE` accepts no bind parameters: the role names are fixed literals and the password a UUID.
           // The roles belong to the whole test server, and every createRuntimeRolePool call sets its own password again.
           const password = randomUUID();
-          await admin.query(`ALTER ROLE semprec_data WITH PASSWORD '${password}'`);
-          await admin.query(`ALTER ROLE semprec_side WITH PASSWORD '${password}'`);
+          await admin.query(`ALTER ROLE alldots_data WITH PASSWORD '${password}'`);
+          await admin.query(`ALTER ROLE alldots_side WITH PASSWORD '${password}'`);
           const config: ServiceConfig = {
-            dataUrl: asRole(db.ownerUrl, "semprec_data", password),
-            sideUrl: asRole(db.ownerUrl, "semprec_side", password),
+            dataUrl: asRole(db.ownerUrl, "alldots_data", password),
+            sideUrl: asRole(db.ownerUrl, "alldots_side", password),
             port: await freePort(),
             filesDir: scratchDirs[0] ?? "",
             attachmentsDir: scratchDirs[1] ?? "",
           };
-          // This process has SEMPREC_TENANT_SCOPE=warn, which would hide a start-up call outside any tenant scope, so the
+          // This process has ALLDOTS_TENANT_SCOPE=warn, which would hide a start-up call outside any tenant scope, so the
           // child's environment must not carry it.
-          expect(process.env.SEMPREC_TENANT_SCOPE).toBeDefined();
+          expect(process.env.ALLDOTS_TENANT_SCOPE).toBeDefined();
           const env = explicitEnv(service.config(config));
-          expect(Object.keys(env)).not.toContain("SEMPREC_TENANT_SCOPE");
+          expect(Object.keys(env)).not.toContain("ALLDOTS_TENANT_SCOPE");
           const run = startNode([service.entry], env, START_WAIT_MS + SHUTDOWN_WAIT_MS + CASE_SLACK_MS);
           const reached = await waitForOutput(run, service.started, START_WAIT_MS);
           if (!reached) {

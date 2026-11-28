@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/110",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/110",
   "id": 5289604123,
   "node_id": "I_kwDOUFuQ4c8AAAABO0j0Gw",
   "number": 110,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/107",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/107",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #109\n\n## Context\n\nSome module workers scale per active database row, but process hosting belongs to operations/runtime composition.\n\n## Task\n\nConsume `workers()` descriptors and relevant active module rows to derive a deterministic desired set of worker instance identities, including forms such as `semprec-mailsync@<mailboxId>`. Reconcile activation/deactivation changes into registration/start-stop intents through an injected supervisor port. Keep this layer free of systemd commands and queue Runner ownership. Validate that every desired instance names one active descriptor and stable row id.\n\n## Scope\n\n### In scope\n\n- Desired-state derivation, reconciliation, per-row scaling, and supervisor port.\n\n### Out of scope\n\n- systemd unit files and actual API/agents graphile-worker composition roots.\n\n## Acceptance criteria\n\n- Activating/deactivating a row adds/removes exactly its instance intent.\n- Reconciliation is idempotent and stable across ordering.\n- Inactive modules produce no worker instances.\n",
+  "body": "**Blocked by:** #109\n\n## Context\n\nSome module workers scale per active database row, but process hosting belongs to operations/runtime composition.\n\n## Task\n\nConsume `workers()` descriptors and relevant active module rows to derive a deterministic desired set of worker instance identities, including forms such as `alldots-mailsync@<mailboxId>`. Reconcile activation/deactivation changes into registration/start-stop intents through an injected supervisor port. Keep this layer free of systemd commands and queue Runner ownership. Validate that every desired instance names one active descriptor and stable row id.\n\n## Scope\n\n### In scope\n\n- Desired-state derivation, reconciliation, per-row scaling, and supervisor port.\n\n### Out of scope\n\n- systemd unit files and actual API/agents graphile-worker composition roots.\n\n## Acceptance criteria\n\n- Activating/deactivating a row adds/removes exactly its instance intent.\n- Reconciliation is idempotent and stable across ordering.\n- Inactive modules produce no worker instances.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/110/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/110/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

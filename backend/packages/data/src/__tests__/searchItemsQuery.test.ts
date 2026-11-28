@@ -8,7 +8,7 @@ import {
   type SearchItemGroup,
   type SearchItemResult,
   type SearchOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -41,7 +41,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 }, 120_000);
 beforeEach(async () => {

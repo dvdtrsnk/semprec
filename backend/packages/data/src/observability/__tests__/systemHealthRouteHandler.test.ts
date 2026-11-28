@@ -1,6 +1,6 @@
 import { describe, expect, it, afterAll, beforeAll, beforeEach } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { upsertProcessHeartbeat } from "../../health/processHeartbeats.js";
 import { createSystemHealthRouteHandler } from "../systemHealthRouteHandler.js";
@@ -22,7 +22,7 @@ const REPORT_KEYS = [
 describe("system health custom route handler (issue #170, per-tenant since #1052)", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   beforeEach(async () => {

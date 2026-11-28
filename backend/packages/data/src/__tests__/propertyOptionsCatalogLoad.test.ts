@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import * as registryLoader from "../manifest/fullModuleRegistry.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -16,7 +16,7 @@ describe("the catalog load of the select option writes (issue #1699)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
   });
   beforeEach(async () => {

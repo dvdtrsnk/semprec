@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/245",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/245",
   "id": 5328433029,
   "node_id": "I_kwDOUFuQ4c8AAAABPZlvhQ",
   "number": 245,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/179",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/179",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #181, #176\n\n## Context\n\nThis is the first of three parts that together deliver the recording-preparation and paid-stage checkpointing slice of the `batch-transcription` batch (approved behavior in #179). It builds on #180 (Transcriptions catalog with declared computed keys, the Files `onItemEvent` producer, `POST /api/transcriptions`, and the `TASK_NAMES.transcriptionJob` / `jobKey: transcription-job:${fileItemId}` enqueue contract) and on #181 (gateway `diarize()`/`transcribe()` and audio metering).\n\nThis part establishes the `semprec-transcribe` process as the single owner of the transcription task handler and implements step 0 of the pipeline: idempotent creation or reuse of the Transcriptions row. #246 adds the ffmpeg/ffprobe preparation step on top of the step runner delivered here, and #182 adds diarization, chunked ASR, and per-stage checkpoint/resume. #183 and later issues append the merge, summary, matching, and retry behavior.\n\n## Task\n\n- Make `semprec-transcribe` the sole transcription task owner: `registerTask(TASK_NAMES.transcriptionJob, ...)` is registered only inside `semprec-transcribe` (one handler owner per task name). Producers (the `onItemEvent` handler in `semprec-agents` and the action routes in `semprec-api` from #180) keep enqueueing only and perform no item writes.\n- `semprec-transcribe` writes through the choke-point package in-process with the identity of the system process. It is the only process that writes the `owner: 'system'` fields `status`/`date`/`link` of Transcriptions rows and the only process that will call `ffmpeg`/`ffprobe` (#246 adds the calls; nothing else may call them).\n- Implement step 0 (`create`) of the pipeline: a choke-point create of the Transcriptions row with the derived `Idempotency-Key transcription:<fileItemId>`, so that a repeated run gets the same row and never a second one. The created row has `name` derived from the source file's name, `status = processing`, `link` pointing at the Files row, and `item_automation` set to `pending`.\n- Implement the step runner that the later parts extend: the job handler executes the pipeline steps in order and, after each step, persists that step's intermediate result into the declared `items.computed` checkpoint keys from #180 before continuing; on a repeated run the handler reads the checkpoints and skips every step whose checkpoint already exists. In this part only step 0 exists; the handler ends after step 0 and leaves the row in `status = processing` / `item_automation = pending` for the steps that #246 and #182 append.\n- Register the process in the topology so that `semprec-transcribe` runs as its own systemd unit / composition root using the affinity-safe graphile-worker runtime from #91.\n\n## Scope\n\n### In scope\n\n- `semprec-transcribe` composition root, sole `registerTask(TASK_NAMES.transcriptionJob, ...)` registration, and the in-process choke-point writer with system identity.\n- Step 0 with the `Idempotency-Key transcription:<fileItemId>` row creation/reuse and the initial `name`/`status`/`link`/`item_automation` values.\n- The ordered step runner with checkpoint read/skip semantics over the declared computed keys.\n- Tests, integration, and necessary documentation for the above.\n\n### Out of scope\n\n- ffmpeg/ffprobe normalization, duration/creation-time persistence, and the provisioning dependency — #246.\n- Diarization, chunked ASR, and the paid-stage checkpoints themselves — #182.\n- Merge, summary, `done` finalization — #183; Event matching — #184; retry, rerun, notifications — #186.\n\n## Acceptance criteria\n\n- Duplicate delivery of the same job (same `jobKey`, or the handler re-run after a crash) reuses exactly one Transcriptions row for the file; no second row and no second `Idempotency-Key` is ever created.\n- The created row carries `name` from the filename, `status = processing`, `link` to the Files row, and `item_automation = pending`.\n- Only `semprec-transcribe` registers the transcription task handler and only it writes the `owner: 'system'` fields of Transcriptions rows; the `owner_process` drift check does not fire for producers.\n- Re-running the handler on a row whose step-0 checkpoint exists skips step 0 and continues with the next step (none yet in this part) without performing any additional write.\n",
+  "body": "**Blocked by:** #181, #176\n\n## Context\n\nThis is the first of three parts that together deliver the recording-preparation and paid-stage checkpointing slice of the `batch-transcription` batch (approved behavior in #179). It builds on #180 (Transcriptions catalog with declared computed keys, the Files `onItemEvent` producer, `POST /api/transcriptions`, and the `TASK_NAMES.transcriptionJob` / `jobKey: transcription-job:${fileItemId}` enqueue contract) and on #181 (gateway `diarize()`/`transcribe()` and audio metering).\n\nThis part establishes the `alldots-transcribe` process as the single owner of the transcription task handler and implements step 0 of the pipeline: idempotent creation or reuse of the Transcriptions row. #246 adds the ffmpeg/ffprobe preparation step on top of the step runner delivered here, and #182 adds diarization, chunked ASR, and per-stage checkpoint/resume. #183 and later issues append the merge, summary, matching, and retry behavior.\n\n## Task\n\n- Make `alldots-transcribe` the sole transcription task owner: `registerTask(TASK_NAMES.transcriptionJob, ...)` is registered only inside `alldots-transcribe` (one handler owner per task name). Producers (the `onItemEvent` handler in `alldots-agents` and the action routes in `alldots-api` from #180) keep enqueueing only and perform no item writes.\n- `alldots-transcribe` writes through the choke-point package in-process with the identity of the system process. It is the only process that writes the `owner: 'system'` fields `status`/`date`/`link` of Transcriptions rows and the only process that will call `ffmpeg`/`ffprobe` (#246 adds the calls; nothing else may call them).\n- Implement step 0 (`create`) of the pipeline: a choke-point create of the Transcriptions row with the derived `Idempotency-Key transcription:<fileItemId>`, so that a repeated run gets the same row and never a second one. The created row has `name` derived from the source file's name, `status = processing`, `link` pointing at the Files row, and `item_automation` set to `pending`.\n- Implement the step runner that the later parts extend: the job handler executes the pipeline steps in order and, after each step, persists that step's intermediate result into the declared `items.computed` checkpoint keys from #180 before continuing; on a repeated run the handler reads the checkpoints and skips every step whose checkpoint already exists. In this part only step 0 exists; the handler ends after step 0 and leaves the row in `status = processing` / `item_automation = pending` for the steps that #246 and #182 append.\n- Register the process in the topology so that `alldots-transcribe` runs as its own systemd unit / composition root using the affinity-safe graphile-worker runtime from #91.\n\n## Scope\n\n### In scope\n\n- `alldots-transcribe` composition root, sole `registerTask(TASK_NAMES.transcriptionJob, ...)` registration, and the in-process choke-point writer with system identity.\n- Step 0 with the `Idempotency-Key transcription:<fileItemId>` row creation/reuse and the initial `name`/`status`/`link`/`item_automation` values.\n- The ordered step runner with checkpoint read/skip semantics over the declared computed keys.\n- Tests, integration, and necessary documentation for the above.\n\n### Out of scope\n\n- ffmpeg/ffprobe normalization, duration/creation-time persistence, and the provisioning dependency — #246.\n- Diarization, chunked ASR, and the paid-stage checkpoints themselves — #182.\n- Merge, summary, `done` finalization — #183; Event matching — #184; retry, rerun, notifications — #186.\n\n## Acceptance criteria\n\n- Duplicate delivery of the same job (same `jobKey`, or the handler re-run after a crash) reuses exactly one Transcriptions row for the file; no second row and no second `Idempotency-Key` is ever created.\n- The created row carries `name` from the filename, `status = processing`, `link` to the Files row, and `item_automation = pending`.\n- Only `alldots-transcribe` registers the transcription task handler and only it writes the `owner: 'system'` fields of Transcriptions rows; the `owner_process` drift check does not fire for producers.\n- Re-running the handler on a row whose step-0 checkpoint exists skips step 0 and continues with the next step (none yet in this part) without performing any additional write.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/245/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/245/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

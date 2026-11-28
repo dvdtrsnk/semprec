@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import type { ModuleLinkRuleEndpoint } from "@semprec/module-registry";
+import type { ModuleLinkRuleEndpoint } from "@alldots/module-registry";
 import type { ValueLinkSourceInput } from "../chokePoint/valueLinksStore.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
 import { logger } from "../mail/logger.js";
@@ -95,7 +95,7 @@ const gmailEvidence = (messageId: string, labels: { inTrash?: boolean; inInbox?:
 /** The provider adapters must run outside any database transaction held by the move worker. */
 async function assertNoMoveTransaction(): Promise<void> {
   const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
-    "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+    "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'alldots_data'",
   );
   expect(activity.rows.length).toBeGreaterThan(0);
   expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
@@ -543,7 +543,7 @@ describe("mail move intent store", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

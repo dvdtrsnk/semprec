@@ -1,4 +1,4 @@
-import type { LabeledSempMessageRef } from "@semprec/shared";
+import type { LabeledSempMessageRef } from "@alldots/shared";
 
 export type AgentMessageKind =
   "turn_start" | "message" | "tool_use" | "tool_result" | "turn_end" | "run_status" | "message_update" | "user_message";

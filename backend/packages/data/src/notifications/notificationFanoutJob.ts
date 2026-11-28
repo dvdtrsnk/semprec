@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { enqueueJob, CORE_TASK_NAMES } from "@semprec/queue";
+import { enqueueJob, CORE_TASK_NAMES } from "@alldots/queue";
 import { withTransaction } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { getNotificationById, type NotificationRow } from "./notificationsStore.js";

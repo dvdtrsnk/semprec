@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runOnce } from "@semprec/queue";
-import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { AiGatewayFailedError, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   getTenantZeroId,
@@ -19,11 +19,11 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createActionRegistry, type ActionRegistry } from "../scheduler/actions.js";
 import { createHeartbeat, heartbeatFireJobKey } from "../scheduler/schedulerStore.js";
 import {
-  createSemprecTickAction,
-  semprecTickActionConfigSchema,
-  SEMPREC_TICK_ACTION_ID,
-  SEMPREC_TICK_QUEUE_NAME,
-  type ComputeSemprecProposalFn,
+  createAlldotsTickAction,
+  alldotsTickActionConfigSchema,
+  ALLDOTS_TICK_ACTION_ID,
+  ALLDOTS_TICK_QUEUE_NAME,
+  type ComputeAlldotsProposalFn,
 } from "../inbox/inboxTickAction.js";
 import { createCoreTaskList } from "../worker.js";
 
@@ -60,25 +60,25 @@ async function drainQueue(registry: ActionRegistry = createActionRegistry()): Pr
 }
 
 /** Dispatch-only tests never reach a recognized-type item, so this is never invoked. */
-const unusedComputeProposal: ComputeSemprecProposalFn = async () => {
+const unusedComputeProposal: ComputeAlldotsProposalFn = async () => {
   throw new Error("computeProposal should not be called by these tests");
 };
 
 function countingTickRegistry(calls: string[]): ActionRegistry {
   const registry = createActionRegistry();
-  const real = createSemprecTickAction(pool, unusedComputeProposal);
-  registry.set(SEMPREC_TICK_ACTION_ID, async (actionConfig, context) => {
+  const real = createAlldotsTickAction(pool, unusedComputeProposal);
+  registry.set(ALLDOTS_TICK_ACTION_ID, async (actionConfig, context) => {
     calls.push(context.itemId!);
     await real(actionConfig, context);
   });
   return registry;
 }
 
-/** Captures the item state the tick action observed, mirroring createSemprecTickAction's own re-read. */
+/** Captures the item state the tick action observed, mirroring createAlldotsTickAction's own re-read. */
 function capturingTickRegistry(captured: Array<Record<string, unknown> | null>): ActionRegistry {
   const registry = createActionRegistry();
-  registry.set(SEMPREC_TICK_ACTION_ID, async (actionConfig, context) => {
-    const config = semprecTickActionConfigSchema.parse(actionConfig);
+  registry.set(ALLDOTS_TICK_ACTION_ID, async (actionConfig, context) => {
+    const config = alldotsTickActionConfigSchema.parse(actionConfig);
     await withTransaction(pool, async (client) => {
       const item = await itemsStore.getItemById(client, config.inboxDatabaseId, context.itemId!);
       captured.push(item ? item.properties : null);
@@ -118,14 +118,14 @@ describe("Inbox item event dispatch (issue #103)", () => {
     );
   }
 
-  it("registers one onItemEvent heartbeat per create/update/delete, all dispatching semprec.tick", async () => {
+  it("registers one onItemEvent heartbeat per create/update/delete, all dispatching alldots.tick", async () => {
     const inboxId = await databaseIdFor("inbox");
     const { rows } = await pool.query<{ rule: { event: string }; action_id: string }>(
       `SELECT rule, action_id FROM project_heartbeats WHERE rule ->> 'databaseId' = $1`,
       [inboxId],
     );
     expect(rows.map((r) => r.rule.event).sort()).toEqual(["create", "delete", "update"]);
-    for (const row of rows) expect(row.action_id).toBe(SEMPREC_TICK_ACTION_ID);
+    for (const row of rows) expect(row.action_id).toBe(ALLDOTS_TICK_ACTION_ID);
   });
 
   it("create enqueues a heartbeat-fire job scoped to that item, transactionally", async () => {
@@ -213,7 +213,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(jobs).toHaveLength(0);
   });
 
-  it("inside a tenant scope the tick job lands on the tenant's semprec-tick lane", async () => {
+  it("inside a tenant scope the tick job lands on the tenant's alldots-tick lane", async () => {
     const inboxId = await databaseIdFor("inbox");
     const tenantZero = getTenantZeroId();
 
@@ -221,12 +221,12 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.queue_name).toBe(`${SEMPREC_TICK_QUEUE_NAME}:${tenantZero}`);
+    expect(jobs[0]!.queue_name).toBe(`${ALLDOTS_TICK_QUEUE_NAME}:${tenantZero}`);
   });
 
-  it("routes the heartbeat-fire job to the queue affinity registered for the semprec.tick handler", async () => {
+  it("routes the heartbeat-fire job to the queue affinity registered for the alldots.tick handler", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const queueAffinity = new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
+    const queueAffinity = new Map([[ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME]]);
 
     const item = await withTransaction(pool, (client) =>
       createInboxItemWithClient(client, {
@@ -240,19 +240,19 @@ describe("Inbox item event dispatch (issue #103)", () => {
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.payload.payload.itemId).toBe(item.id);
-    expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
+    expect(jobs[0]!.queue_name).toBe(ALLDOTS_TICK_QUEUE_NAME);
   });
 
-  it("with no queue affinity supplied, the job runs on the production semprec-tick queue", async () => {
+  it("with no queue affinity supplied, the job runs on the production alldots-tick queue", async () => {
     const inboxId = await databaseIdFor("inbox");
     await createItem(inboxId);
 
     const jobs = await pendingTickJobs();
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]!.queue_name).toBe(SEMPREC_TICK_QUEUE_NAME);
+    expect(jobs[0]!.queue_name).toBe(ALLDOTS_TICK_QUEUE_NAME);
   });
 
-  it("createChokePoint(pool) with defaults routes update and delete ticks to semprec-tick", async () => {
+  it("createChokePoint(pool) with defaults routes update and delete ticks to alldots-tick", async () => {
     const inboxId = await databaseIdFor("inbox");
     const defaultChokePoint = createChokePoint(pool, undefined, viewTypeRegistry);
     const item = await createItem(inboxId);
@@ -264,16 +264,16 @@ describe("Inbox item event dispatch (issue #103)", () => {
     });
     const afterUpdate = await pendingTickJobs();
     expect(afterUpdate).toHaveLength(2);
-    expect(afterUpdate.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+    expect(afterUpdate.every((j) => j.queue_name === ALLDOTS_TICK_QUEUE_NAME)).toBe(true);
 
     await defaultChokePoint.softDeleteItem(inboxId, item.id);
     const afterDelete = await pendingTickJobs();
     expect(afterDelete).toHaveLength(3);
-    expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+    expect(afterDelete.every((j) => j.queue_name === ALLDOTS_TICK_QUEUE_NAME)).toBe(true);
   });
 
   it("rejects a misconfigured heartbeat instead of silently no-op'ing", async () => {
-    const handler = createSemprecTickAction(pool, unusedComputeProposal);
+    const handler = createAlldotsTickAction(pool, unusedComputeProposal);
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
     await expect(
       handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" }),
@@ -281,7 +281,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
   });
 
   it("capturingTickRegistry's handler rejects a malformed actionConfig exactly like production", async () => {
-    const handler = capturingTickRegistry([]).get(SEMPREC_TICK_ACTION_ID)!;
+    const handler = capturingTickRegistry([]).get(ALLDOTS_TICK_ACTION_ID)!;
     await expect(handler({}, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" })).rejects.toThrow();
     await expect(
       handler({ inboxDatabaseId: "not-a-uuid" }, { heartbeatId: "hb", projectItemId: "proj", itemId: "item" }),
@@ -290,7 +290,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
 
   it("routes the update and soft-delete paths' heartbeat-fire jobs to the same queue affinity as create", async () => {
     const inboxId = await databaseIdFor("inbox");
-    const queueAffinity = new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
+    const queueAffinity = new Map([[ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME]]);
     const affinitizedChokePoint = createChokePoint(pool, undefined, viewTypeRegistry, queueAffinity);
 
     const item = await withTransaction(pool, (client) =>
@@ -309,12 +309,12 @@ describe("Inbox item event dispatch (issue #103)", () => {
     });
     const afterUpdate = await pendingTickJobs();
     expect(afterUpdate).toHaveLength(2); // create's pending job plus update's
-    expect(afterUpdate.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+    expect(afterUpdate.every((j) => j.queue_name === ALLDOTS_TICK_QUEUE_NAME)).toBe(true);
 
     await affinitizedChokePoint.softDeleteItem(inboxId, item.id);
     const afterDelete = await pendingTickJobs();
     expect(afterDelete).toHaveLength(3);
-    expect(afterDelete.every((j) => j.queue_name === SEMPREC_TICK_QUEUE_NAME)).toBe(true);
+    expect(afterDelete.every((j) => j.queue_name === ALLDOTS_TICK_QUEUE_NAME)).toBe(true);
   });
 
   it("retries two timeouts and records a failure card on the third worker attempt (issue #1485)", async () => {
@@ -352,16 +352,16 @@ describe("Inbox item event dispatch (issue #103)", () => {
     expect(updateHeartbeats).toHaveLength(1);
     await pool.query("SELECT graphile_worker.remove_job($1)", [heartbeatFireJobKey(updateHeartbeats[0]!.id, item.id)]);
 
-    retryRuntimePool = await createRuntimeRolePool(pool, "semprec_data");
+    retryRuntimePool = await createRuntimeRolePool(pool, "alldots_data");
     const runtime = retryRuntimePool;
     const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
       "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
     );
-    expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+    expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
     const registry = createActionRegistry();
     registry.set(
-      SEMPREC_TICK_ACTION_ID,
-      createSemprecTickAction(runtime, async () => {
+      ALLDOTS_TICK_ACTION_ID,
+      createAlldotsTickAction(runtime, async () => {
         throw new AiGatewayFailedError("timeout");
       }),
     );
@@ -418,14 +418,14 @@ describe("Inbox item event dispatch (issue #103)", () => {
   });
 
   // Restoring an Inbox item is a change of it: its `update` heartbeat re-runs the tick.
-  function tickRegistry(compute: ComputeSemprecProposalFn): ActionRegistry {
+  function tickRegistry(compute: ComputeAlldotsProposalFn): ActionRegistry {
     const registry = createActionRegistry();
-    registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, compute));
+    registry.set(ALLDOTS_TICK_ACTION_ID, createAlldotsTickAction(pool, compute));
     return registry;
   }
 
   /** Records each source it is asked to recompute, then fails the test by throwing. */
-  function refusingCompute(calls: string[]): ComputeSemprecProposalFn {
+  function refusingCompute(calls: string[]): ComputeAlldotsProposalFn {
     return async (input) => {
       calls.push(input.sourceItem.id);
       throw new Error("computeProposal must not be called when the source fingerprint is unchanged");
@@ -511,7 +511,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
     const other = await inTenantZero(() => chokePoint.createDatabase({ name: "Other" }));
     const { rows } = await pool.query<{ project_item_id: string }>(
       "SELECT DISTINCT project_item_id FROM project_heartbeats WHERE action_id = $1",
-      [SEMPREC_TICK_ACTION_ID],
+      [ALLDOTS_TICK_ACTION_ID],
     );
     expect(rows).toHaveLength(1);
     const projectItemId = rows[0]?.project_item_id;
@@ -523,7 +523,7 @@ describe("Inbox item event dispatch (issue #103)", () => {
             projectItemId,
             name: "Update",
             rule: { kind: "onItemEvent", databaseId, event: "update" },
-            actionId: SEMPREC_TICK_ACTION_ID,
+            actionId: ALLDOTS_TICK_ACTION_ID,
           });
         return [await create(watched.id), await create(other.id)] as const;
       }),

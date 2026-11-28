@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { hashPassword } from "../../auth/passwordHash.js";
 import { provisionTenant } from "../provisionTenant.js";
@@ -74,7 +74,7 @@ async function untilIdle(pool: Pool): Promise<void> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 
 beforeEach(async () => {

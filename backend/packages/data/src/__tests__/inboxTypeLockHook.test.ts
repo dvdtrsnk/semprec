@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { listRelationsForItem, getRelationDefinitionByPropertyId, otherSide } from "../chokePoint/relationsStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -11,7 +11,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { reserveInboxTypeCards } from "../inbox/inboxTypeCardReservation.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { createInboxTypeWithClient, deleteInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import { getItemById, insertItem, softDeleteItem } from "../chokePoint/itemsStore.js";
@@ -143,7 +143,7 @@ describe("Inbox type lock", () => {
     const unsafe = raceDiagnostic();
     if (unsafe) throw unsafe;
     admin ??= getTestPool();
-    pool ??= await createRuntimeRolePool(admin, "semprec_data");
+    pool ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(pool, createViewTypeRegistry()));
@@ -660,7 +660,7 @@ describe("Inbox type lock", () => {
   it("refuses a type change racing a real confirmation that holds the card", async () =>
     runInTenant(tenant, async () => {
       const { edge, targets, proposals, inbox, types } = await fixture();
-      await createSemprecTickAction(pool, async () => ({ properties: { name: "Race task" } }))(
+      await createAlldotsTickAction(pool, async () => ({ properties: { name: "Race task" } }))(
         { inboxDatabaseId: inbox, inboxItemTypesDatabaseId: types, processingProposalsDatabaseId: proposals },
         { heartbeatId: "hb", projectItemId: "proj", itemId: edge.callerItemId },
       );

@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579263175",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/126#issuecomment-5579263175",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/126",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579263175",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/126#issuecomment-5579263175",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/126",
     "id": 5579263175,
     "node_id": "IC_kwDOUFuQ4c8AAAABTIzMxw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579263175/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579263175/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579430997",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/126#issuecomment-5579430997",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/126",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579430997",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/126#issuecomment-5579430997",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/126",
     "id": 5579430997,
     "node_id": "IC_kwDOUFuQ4c8AAAABTI9cVQ",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-08T04:51:02Z",
     "updated_at": "2026-09-08T04:51:02Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #332\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-126-mcp-integration-05-07-project-granted-thr_t6vd2txmt5`.\n\n## Summary\n\nImplements issue #126: adapts active MCP tool registrations into a project's agent-tool availability, extending `generatePermissionManifest`'s permission facts with MCP as a fourth source.\n\n- Added `getGrantedMcpAgentTools` (`backend/packages/data/src/mcp/mcpAgentTools.ts`): joins active `mcpServers` items, active `mcp_tool_registrations`, and `project_mcp_grants.granted = true` for a given project, returning each tool's synchronized schema/description snapshot along with its `requiresApproval`/`riskClass`.\n- Wired this into `PermissionManifest` as a new `agentTools` field (`backend/packages/data/src/manifest/permissionManifest.ts`), computed fresh on every call — deactivating a server/registration or revoking a grant removes a tool immediately, without touching its audit history.\n- Exported the new type/function from `@semprec/data`'s public surface (the user-only grant mutations remain intentionally unexported, per #124's grant-write restriction).\n- Added integration tests covering: granted tool inclusion with correct approval metadata, exclusion when ungranted/inactive-registration/inactive-server, and two projects exposing different subsets of the same server — plus an end-to-end case through `generatePermissionManifest`.\n\nVerified: full monorepo build, dependency-boundary check, and the full unit/integration/e2e test suites all pass (build clean; boundaries clean; 83 unit + 572 integration + 5 e2e tests passing, including the new MCP tests).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #332\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-126-mcp-integration-05-07-project-granted-thr_t6vd2txmt5`.\n\n## Summary\n\nImplements issue #126: adapts active MCP tool registrations into a project's agent-tool availability, extending `generatePermissionManifest`'s permission facts with MCP as a fourth source.\n\n- Added `getGrantedMcpAgentTools` (`backend/packages/data/src/mcp/mcpAgentTools.ts`): joins active `mcpServers` items, active `mcp_tool_registrations`, and `project_mcp_grants.granted = true` for a given project, returning each tool's synchronized schema/description snapshot along with its `requiresApproval`/`riskClass`.\n- Wired this into `PermissionManifest` as a new `agentTools` field (`backend/packages/data/src/manifest/permissionManifest.ts`), computed fresh on every call — deactivating a server/registration or revoking a grant removes a tool immediately, without touching its audit history.\n- Exported the new type/function from `@alldots/data`'s public surface (the user-only grant mutations remain intentionally unexported, per #124's grant-write restriction).\n- Added integration tests covering: granted tool inclusion with correct approval metadata, exclusion when ungranted/inactive-registration/inactive-server, and two projects exposing different subsets of the same server — plus an end-to-end case through `generatePermissionManifest`.\n\nVerified: full monorepo build, dependency-boundary check, and the full unit/integration/e2e test suites all pass (build clean; boundaries clean; 83 unit + 572 integration + 5 e2e tests passing, including the new MCP tests).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579430997/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579430997/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579565465",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/126#issuecomment-5579565465",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/126",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579565465",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/126#issuecomment-5579565465",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/126",
     "id": 5579565465,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJFpmQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-08T05:06:26Z",
     "updated_at": "2026-09-08T05:06:26Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #332\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-126-mcp-integration-05-07-project-granted-thr_t6vd2txmt5`.\n\n## Summary\n\nImplements issue #126: adapts active MCP tool registrations into a project's agent-tool availability, extending `generatePermissionManifest`'s permission facts with MCP as a fourth source.\n\n- Added `getGrantedMcpAgentTools` (`backend/packages/data/src/mcp/mcpAgentTools.ts`): joins active `mcpServers` items, active `mcp_tool_registrations`, and `project_mcp_grants.granted = true` for a given project, returning each tool's synchronized schema/description snapshot along with its `requiresApproval`/`riskClass`.\n- Wired this into `PermissionManifest.agentTools` (`backend/packages/data/src/manifest/permissionManifest.ts`), typed directly as `McpAgentToolProjection[]`, computed fresh on every call — deactivating a server/registration or revoking a grant removes a tool immediately, without touching its audit history.\n- Exported the new type/function from `@semprec/data`'s public surface (the user-only grant mutations remain intentionally unexported).\n- Added integration tests covering: granted tool inclusion with correct approval metadata, exclusion when ungranted/inactive-registration/inactive-server, two projects exposing different subsets of the same server, and an end-to-end case through `generatePermissionManifest`.\n- Addressed code review feedback from PR #332: removed a speculative `ManifestAgentTool` type alias that anticipated a future native-tool union not required by this issue.\n\nVerified: full monorepo build, dependency-boundary check, and the full unit/integration/e2e test suites all pass (build clean; boundaries clean; 83 unit + 572 integration + 5 e2e tests passing).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #332\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-126-mcp-integration-05-07-project-granted-thr_t6vd2txmt5`.\n\n## Summary\n\nImplements issue #126: adapts active MCP tool registrations into a project's agent-tool availability, extending `generatePermissionManifest`'s permission facts with MCP as a fourth source.\n\n- Added `getGrantedMcpAgentTools` (`backend/packages/data/src/mcp/mcpAgentTools.ts`): joins active `mcpServers` items, active `mcp_tool_registrations`, and `project_mcp_grants.granted = true` for a given project, returning each tool's synchronized schema/description snapshot along with its `requiresApproval`/`riskClass`.\n- Wired this into `PermissionManifest.agentTools` (`backend/packages/data/src/manifest/permissionManifest.ts`), typed directly as `McpAgentToolProjection[]`, computed fresh on every call — deactivating a server/registration or revoking a grant removes a tool immediately, without touching its audit history.\n- Exported the new type/function from `@alldots/data`'s public surface (the user-only grant mutations remain intentionally unexported).\n- Added integration tests covering: granted tool inclusion with correct approval metadata, exclusion when ungranted/inactive-registration/inactive-server, two projects exposing different subsets of the same server, and an end-to-end case through `generatePermissionManifest`.\n- Addressed code review feedback from PR #332: removed a speculative `ManifestAgentTool` type alias that anticipated a future native-tool union not required by this issue.\n\nVerified: full monorepo build, dependency-boundary check, and the full unit/integration/e2e test suites all pass (build clean; boundaries clean; 83 unit + 572 integration + 5 e2e tests passing).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579565465/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579565465/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579631393",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/126#issuecomment-5579631393",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/126",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579631393",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/126#issuecomment-5579631393",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/126",
     "id": 5579631393,
     "node_id": "IC_kwDOUFuQ4c8AAAABTJJrIQ",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5579631393/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5579631393/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -63,7 +63,7 @@ describe("link rule schema drift", () => {
       ownerProcess: "unknown",
     });
     const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
-    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    const runtime = await createRuntimeRolePool(pool, "alldots_side");
     try {
       for (const clientPool of [runtime, pool]) {
         await withTenantTransaction(clientPool, tenantB, async (client) => {
@@ -190,7 +190,7 @@ describe("link rule schema drift", () => {
       .mockResolvedValue([
         { ...rule, valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "selfPerson" } } },
       ]);
-    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    const runtime = await createRuntimeRolePool(pool, "alldots_side");
     try {
       // Tenant B was never seeded: tenant zero's System settings must not satisfy its filter.
       const findings = await withTenantTransaction(runtime, tenantB, (client) =>

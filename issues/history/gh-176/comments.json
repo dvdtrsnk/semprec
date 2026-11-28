@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5749697974",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/176#issuecomment-5749697974",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5749697974",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/176#issuecomment-5749697974",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176",
     "id": 5749697974,
     "node_id": "IC_kwDOUFuQ4c8AAAABVrVttg",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-09-20T12:08:06Z",
     "updated_at": "2026-09-20T14:28:25Z",
-    "body": "<!-- relay-run-log -->\n**Relay run log** — issue #176\n\n- 2026-09-20 12:08Z — Relay picked up this issue for a BB worker run.\n- 2026-09-20 12:43Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Pushed commit `cd0d284` to branch `bb/relay-176-operations-06-08-install-the-semprec-s-thr_a4bxb55ubh`. Relay-Step-Status: pass\n- 2026-09-20 13:01Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Branch `bb/relay-176-operations-06-08-install-the-semprec-s-thr_a4bxb55ubh` is pushed and up to date at `ea0acf1`. Relay-Step-Status: pass\n- 2026-09-20 13:56Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Branch `bb/relay-176-operations-06-08-install-the-semprec-s-thr_a4bxb55ubh` is pushed and up to date at `ea0acf1`. Relay-Step-Status: pass\n- 2026-09-20 14:28Z — Relay BB run failed. Reason: Step reported failure Relay-Step-Status: fail The second Code Review retry reproduced the integration failure: - CI passed. - Setup, repository checkout, private bot checkout, and Claude CLI installation passed. - `Run review` remained active for 53 minutes with no bot output, no live log blob, and no check output. - The resulting `code-review` check was not independently orphaned; it was blocked by the active `review` job. I cancelled the stuck run. Its workflow finalizer correctly completed the external `code-review` check as `cancelled` with `<!-- crb-outcome:v1:infra-failure -->`, so no required check was fabricated as passing. Required manual action: the Code Review/Relay broker integration owner must inspect `code-review-bot/scripts/run-review-github.sh` and the configured `RELAY_BROKER_URL` / `RELAY_BROKER_SECRET` service path for this repository, specifically the broker call made by `Run review`. Restore a bounded response/error path, then rerun the Code Review workflow on PR #452.",
+    "body": "<!-- relay-run-log -->\n**Relay run log** — issue #176\n\n- 2026-09-20 12:08Z — Relay picked up this issue for a BB worker run.\n- 2026-09-20 12:43Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Pushed commit `cd0d284` to branch `bb/relay-176-operations-06-08-install-the-alldots-s-thr_a4bxb55ubh`. Relay-Step-Status: pass\n- 2026-09-20 13:01Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Branch `bb/relay-176-operations-06-08-install-the-alldots-s-thr_a4bxb55ubh` is pushed and up to date at `ea0acf1`. Relay-Step-Status: pass\n- 2026-09-20 13:56Z — Relay BB run pushed an update. Pull request: #452 Tokens: 0 · Cost: $0.0000 Branch `bb/relay-176-operations-06-08-install-the-alldots-s-thr_a4bxb55ubh` is pushed and up to date at `ea0acf1`. Relay-Step-Status: pass\n- 2026-09-20 14:28Z — Relay BB run failed. Reason: Step reported failure Relay-Step-Status: fail The second Code Review retry reproduced the integration failure: - CI passed. - Setup, repository checkout, private bot checkout, and Claude CLI installation passed. - `Run review` remained active for 53 minutes with no bot output, no live log blob, and no check output. - The resulting `code-review` check was not independently orphaned; it was blocked by the active `review` job. I cancelled the stuck run. Its workflow finalizer correctly completed the external `code-review` check as `cancelled` with `<!-- crb-outcome:v1:infra-failure -->`, so no required check was fabricated as passing. Required manual action: the Code Review/Relay broker integration owner must inspect `code-review-bot/scripts/run-review-github.sh` and the configured `RELAY_BROKER_URL` / `RELAY_BROKER_SECRET` service path for this repository, specifically the broker call made by `Run review`. Restore a bounded response/error path, then rerun the Code Review workflow on PR #452.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5749697974/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5749697974/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

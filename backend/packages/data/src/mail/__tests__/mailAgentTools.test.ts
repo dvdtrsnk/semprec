@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -447,9 +447,9 @@ async function userDraft(t: MailTenant, overrides: { threadId?: string | null } 
 describe("the mail agent tools", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     registry = await loadFullModuleRegistry();
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-agent-tools-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-agent-tools-"));
   });
 
   afterAll(async () => {
@@ -523,7 +523,7 @@ describe("the mail agent tools", () => {
       const inbox = await inTenant(tenant, () =>
         withTransaction(runtime, (client) => databasesStore.getDatabaseByModuleId(client, "inbox")),
       );
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Alldots project");
       const { runId } = await runOf(tenant, { projectItemId: inbox.ownerProjectItemId });
 
       const names = (await toolsFor(tenant, runId, inbox.ownerProjectItemId)).map((tool) => tool.name);

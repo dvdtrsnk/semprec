@@ -1,4 +1,4 @@
-import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { BlockInputError, parseMarkdown } from "@alldots/block-model";
 import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";

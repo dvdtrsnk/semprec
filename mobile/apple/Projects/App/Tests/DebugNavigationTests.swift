@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The debug menu and its alarm tool: pages of the profile sheet's own stack, which the app's router pushes, opened
 /// from the profile's toolbar and from the menu's row, and shown by the real scene.

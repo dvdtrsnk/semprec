@@ -379,7 +379,7 @@ jobs:
         working-directory: backend
         run: pnpm install --frozen-lockfile
 
-      # `semprec-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
+      # `alldots-transcribe` shells out to ffmpeg/ffprobe (#246), and the integration
       # tier exercises that for real rather than mocking the binaries away. They are a
       # system dependency, not an npm one, and the GitHub-hosted runner image does not
       # carry them — without this step the tier fails with `spawn ffmpeg ENOENT`.
@@ -437,7 +437,7 @@ jobs:
         # Two workers on the two-core runner: the files mostly wait on Postgres, and each worker has its own
         # database (`testSupport/workerDatabase.ts`).
         env:
-          SEMPREC_TEST_WORKERS: "2"
+          ALLDOTS_TEST_WORKERS: "2"
         run: pnpm run test:integration --shard=${{ matrix.shard }}/14
 
   # Exists so the required context keeps the name `integration` while the work runs in

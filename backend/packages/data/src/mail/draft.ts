@@ -41,7 +41,7 @@ export interface CreateEmailDraftInput {
   date?: Date;
   /**
    * When given, the `mail_drafts` row is written on the same client, so the caller must run in one
-   * transaction. Without it the draft stays a plain Email, read-only for Semprec.
+   * transaction. Without it the draft stays a plain Email, read-only for Alldots.
    */
   metadata?: Omit<InsertMailDraftInput, "emailItemId">;
   /** Defaults to the system writer. */
@@ -136,7 +136,7 @@ export class MailDraftsFolderMissingError extends ChokePointError {
 /** No `mail_drafts` row: a provider-held draft is read-only here, like any other message. */
 export class MailDraftNotEditableError extends ChokePointError {
   constructor() {
-    super(409, "mail_draft_not_editable", "The draft has no Semprec draft row and cannot be changed");
+    super(409, "mail_draft_not_editable", "The draft has no Alldots draft row and cannot be changed");
     this.name = "MailDraftNotEditableError";
   }
 }
@@ -321,7 +321,7 @@ async function assertLiveEmail(client: PoolClient, emailsDatabaseId: string, ite
   if (!email || email.deletedAt) throw new NotFoundError("Source message not found");
 }
 
-/** Missing, foreign-tenant and non-Semprec (no `mail_drafts` row) drafts all give the same 404. */
+/** Missing, foreign-tenant and non-Alldots (no `mail_drafts` row) drafts all give the same 404. */
 export async function readEmailDraft(client: PoolClient, draftItemId: string): Promise<EmailDraftView> {
   const ids = await resolveMailModuleIds(client);
   const item = await getItemById(client, ids.emailsDatabaseId, draftItemId);

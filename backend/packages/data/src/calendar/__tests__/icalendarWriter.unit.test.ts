@@ -8,7 +8,7 @@ import {
 } from "../icalendarWriter.js";
 
 const TIMED: ItipEventInput = {
-  uid: "0b4c1f1e-0000-4000-8000-000000000001@semprec",
+  uid: "0b4c1f1e-0000-4000-8000-000000000001@alldots",
   sequence: 2,
   stamp: new Date("2026-11-12T10:15:30.000Z"),
   title: "Client meeting",
@@ -43,10 +43,10 @@ describe("iTIP REQUEST and CANCEL serialization (issue #1774)", () => {
     expect(unfolded(message)).toEqual([
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
-      "PRODID:-//Semprec//Calendar//EN",
+      "PRODID:-//Alldots//Calendar//EN",
       "METHOD:REQUEST",
       "BEGIN:VEVENT",
-      "UID:0b4c1f1e-0000-4000-8000-000000000001@semprec",
+      "UID:0b4c1f1e-0000-4000-8000-000000000001@alldots",
       "SEQUENCE:2",
       "DTSTAMP:20261112T101530Z",
       "DTSTART:20261116T080000Z",
@@ -71,7 +71,7 @@ describe("iTIP REQUEST and CANCEL serialization (issue #1774)", () => {
   it("writes a CANCEL with the same UID, the sequence it was given and STATUS:CANCELLED, and no STATUS in a REQUEST", () => {
     const cancel = unfolded(buildItipCancel({ ...TIMED, sequence: 3 }));
     expect(cancel).toContain("METHOD:CANCEL");
-    expect(cancel).toContain("UID:0b4c1f1e-0000-4000-8000-000000000001@semprec");
+    expect(cancel).toContain("UID:0b4c1f1e-0000-4000-8000-000000000001@alldots");
     expect(cancel).toContain("SEQUENCE:3");
     expect(cancel).toContain("STATUS:CANCELLED");
     expect(cancel).toContain("ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:petr@example.com");
@@ -154,7 +154,7 @@ describe("iTIP REPLY serialization (issue gh-1953)", () => {
     expect(unfolded(message)).toEqual([
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
-      "PRODID:-//Semprec//Calendar//EN",
+      "PRODID:-//Alldots//Calendar//EN",
       "METHOD:REPLY",
       "BEGIN:VEVENT",
       "UID:sprint-review@example.test",

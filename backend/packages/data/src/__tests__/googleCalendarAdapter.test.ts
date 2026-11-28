@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
@@ -267,7 +267,7 @@ async function renameEvent(eventItemId: string, name: string) {
 describe("Google Calendar adapter", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   afterAll(async () => {
@@ -642,19 +642,19 @@ describe("Google Calendar adapter", () => {
     it("a new Event is inserted with its iCalendar UID and no guest notification", async () => {
       google.on("POST", `/calendars/${PRIMARY}/events`, () => ({
         status: 200,
-        body: { kind: "calendar#event", id: "newid", etag: '"e-new"', status: "confirmed", iCalUID: "0f4c@semprec" },
+        body: { kind: "calendar#event", id: "newid", etag: '"e-new"', status: "confirmed", iCalUID: "0f4c@alldots" },
       }));
       const run = adapterIn(await createGoogleAccount(GRANT));
 
       const ref = await run((adapter) =>
-        adapter.putEvent(calendar, { ref: null, fields, icalUid: "0f4c@semprec" }, signal()),
+        adapter.putEvent(calendar, { ref: null, fields, icalUid: "0f4c@alldots" }, signal()),
       );
       expect(ref).toEqual({ remoteId: "newid", href: null, etag: '"e-new"' });
       const [insert] = google.requests;
       expect(insert?.query.get("sendUpdates")).toBe("none");
       expect(insert?.headers.get("if-match")).toBeNull();
       expect(insert?.body).toEqual({
-        iCalUID: "0f4c@semprec",
+        iCalUID: "0f4c@alldots",
         summary: "Standup",
         location: "Room 4",
         description: null,
@@ -710,7 +710,7 @@ describe("Google Calendar adapter", () => {
     });
 
     it("a create with both an iCalendar UID and a local key names only the UID, and restores its own deleted event", async () => {
-      const icalUid = `${randomUUID()}@semprec`;
+      const icalUid = `${randomUUID()}@alldots`;
       const createKey = randomUUID();
       let taken: { status: "confirmed" | "cancelled"; createKey: string | undefined } | null = null;
       google.on("POST", `/calendars/${PRIMARY}/events`, (request) => {
@@ -724,7 +724,7 @@ describe("Google Calendar adapter", () => {
         // Google's rule: an insert naming both is refused; it derives the id from the iCalUID.
         if (sent.id !== undefined && sent.iCalUID !== undefined) return { status: 400 };
         if (taken !== null) return { status: 409 };
-        taken = { status: "confirmed", createKey: sent.extendedProperties?.private.semprecCreateKey };
+        taken = { status: "confirmed", createKey: sent.extendedProperties?.private.alldotsCreateKey };
         return { status: 200, body: { id: "uidid", etag: '"e-1"', status: "confirmed", iCalUID: icalUid } };
       });
       google.on("GET", `/calendars/${PRIMARY}/events`, (request) => ({
@@ -739,7 +739,7 @@ describe("Google Calendar adapter", () => {
                     status: taken.status,
                     iCalUID: icalUid,
                     ...(taken.createKey
-                      ? { extendedProperties: { private: { semprecCreateKey: taken.createKey } } }
+                      ? { extendedProperties: { private: { alldotsCreateKey: taken.createKey } } }
                       : {}),
                   },
                 ]
@@ -759,7 +759,7 @@ describe("Google Calendar adapter", () => {
       expect(google.requests[0]?.body).toMatchObject({
         iCalUID: icalUid,
         summary: "Standup",
-        extendedProperties: { private: { semprecCreateKey: createKey } },
+        extendedProperties: { private: { alldotsCreateKey: createKey } },
       });
       expect(google.requests[0]?.body).not.toHaveProperty("id");
 

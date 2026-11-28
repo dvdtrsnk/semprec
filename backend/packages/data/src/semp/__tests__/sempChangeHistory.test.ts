@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -100,7 +100,7 @@ describe("changed-item cards in the Semp thread history (issue #1888)", () => {
   beforeAll(async () => {
     const admin = getTestPool();
     await resetDatabase(admin);
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

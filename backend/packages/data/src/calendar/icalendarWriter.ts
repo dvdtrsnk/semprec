@@ -111,7 +111,7 @@ function buildItipMessage(method: "REQUEST" | "CANCEL", input: ItipEventInput): 
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Semprec//Calendar//EN",
+    "PRODID:-//Alldots//Calendar//EN",
     `METHOD:${method}`,
     "BEGIN:VEVENT",
     `UID:${escapeText(input.uid)}`,
@@ -179,7 +179,7 @@ export function buildItipReply(input: ItipReplyInput): string {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Semprec//Calendar//EN",
+    "PRODID:-//Alldots//Calendar//EN",
     "METHOD:REPLY",
     "BEGIN:VEVENT",
     `UID:${escapeText(input.uid)}`,

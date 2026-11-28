@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1506",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1506",
   "id": 6022394923,
   "node_id": "I_kwDOUFuQ4c8AAAABZvZ0Kw",
   "number": 1506,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1336",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1336",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1459, #1503\n**Model tier:** medium\n\n## Context\n\nModel tier rationale: Raising and resolving one deduplicated problem from two existing failure points in the same transactions, using an already-defined problem store, with some ordering and deduplication care.\n\nA failing mailbox should appear in the Semp status as one problem per mailbox, merged from repeated reports, and disappear when the mailbox syncs again. The storage and merge behavior of problems is #1459; this issue connects mail to it. Failure facts (`failing_since`, failure kind) come from #1497.\n\nToday the failure points are in `backend/packages/data/src/mail/mailSyncJob.ts` (a failed pass writes `mail_sync_error` once per job and sets `syncStatus` `error` or `needsReauthorization`) and in the `mail:<mailboxItemId>` observability check (`observabilityCheckSystem.ts`, `mail_sync_stalled`). A successful pass writes `syncStatus` `ok` in `mailSyncJob.ts`, and the check returns to `ok` on its next tick.\n\nDecision: the problem source key is `mail:<mailboxId>`; its start time is `failing_since`, and each report increments the occurrence count. A revoked credential (`needsReauthorization`) is raised as critical; other failures use the problem store's non-critical level for background failures.\n\nDecision: `needsReauthorization` produces only the problem; no additional notification kind is created.\n\n## Task\n\nLoad `state-writes` and `testing`.\n\n1. In `mailSyncJob.ts`, in the same transaction that records the failure, raise the problem for `mail_sync_error` and for `needsReauthorization` (critical) using the problem store from #1459, with `since = failing_since`.\n2. In the `mail:<mailboxItemId>` check, raise the problem when the check transitions to alerting for `mail_sync_stalled`, with the same source key, so it merges with the sync job's report.\n3. Resolve the problem in the transaction in which `mailSyncJob.ts` writes `syncStatus` `ok` after a successful pass, and when the check returns to `ok`; resolving an absent problem is a no-op.\n4. A connection-limit rejection does not raise a problem on its own; it is raised only if the mailbox stays failing and the stall check alerts.\n\n## Touches\n\n- backend/packages/data/src/mail/mailSyncJob.ts\n- backend/packages/data/src/observability/observabilityCheckSystem.ts\n- backend/packages/data/src/__tests__/mailSyncJob.test.ts\n- backend/packages/data/src/__tests__/observabilityCheckSystem.test.ts\n\n## Scope\n\n### In scope\n\n- Calling raise and resolve for the per-mailbox problem from the sync job and the stall check.\n\n### Out of scope\n\n- The problem store and merging (#1459), serving problems and their actions, and push notifications for problems.\n- The provider text removal from notifications (#1503).\n- The mailbox list and detail API (#1572).\n\n## Acceptance criteria\n\n- When a mailbox fails several times, then exactly one problem exists with the key `mail:<mailboxId>`, since equal to `failing_since` and the occurrence count equal to the number of reports.\n- When the token is revoked, then the problem is critical.\n- When the next pass succeeds, then the problem is resolved in the same transaction as `syncStatus` `ok`.\n- A retried job with the same job id does not add an occurrence twice.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1506/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1506/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

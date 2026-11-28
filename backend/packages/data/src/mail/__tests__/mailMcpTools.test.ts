@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -253,9 +253,9 @@ async function countOf(table: "mail_drafts" | "approval_requests", t: MailTenant
 describe("the mail tools of a human /mcp session and of a run credential (issue gh-1956)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     registry = await loadFullModuleRegistry();
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-mcp-tools-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-mcp-tools-"));
   });
 
   afterAll(async () => {
@@ -345,7 +345,7 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
         [tenant.tenantId],
       );
       const inboxProjectId = inbox.rows[0]?.owner_project_item_id;
-      if (!inboxProjectId) throw new Error("Missing the Semprec project");
+      if (!inboxProjectId) throw new Error("Missing the Alldots project");
       const inboxRunId = await runOf(tenant, inboxProjectId);
 
       expect(await mailNames(tenant, inboxRunId, inboxProjectId, ["mail.read", "mail.draft", "mail.send"])).toEqual([]);

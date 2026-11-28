@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { computeDestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
@@ -161,7 +161,7 @@ async function invalidationsOf(itemId: string, run: () => Promise<unknown>): Pro
 describe("the Mailboxes item delete hook (gh-2031)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
   });
 

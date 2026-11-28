@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";

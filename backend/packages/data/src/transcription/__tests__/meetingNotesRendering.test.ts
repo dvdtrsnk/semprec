@@ -1,5 +1,5 @@
 import "../../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -24,7 +24,7 @@ const SEGMENTS = [
   { speaker: "SPEAKER_02", text: "Pošlu smlouvu zítra.", startsAt: 4.5, endsAt: 7 },
 ];
 
-/** The notes step 5 stored for the recording (the pipeline's own production is covered in semprec-transcribe). */
+/** The notes step 5 stored for the recording (the pipeline's own production is covered in alldots-transcribe). */
 const STORED_NOTES = {
   title: "Smlouva",
   summary: "{SPEAKER_02} pošle smlouvu, {SPEAKER_00} ji schválí.",
@@ -55,7 +55,7 @@ const renderedSchema = z
 describe("meeting notes rendered at read time (issue #1695)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify notes rendering role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

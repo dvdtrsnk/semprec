@@ -5,8 +5,8 @@
 // is made.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@alldots/shared";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";

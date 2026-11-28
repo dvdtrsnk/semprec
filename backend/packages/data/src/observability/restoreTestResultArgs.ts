@@ -1,5 +1,5 @@
 /**
- * Must match the steps of `deploy/systemd/scripts/semprec-restore-test.sh`; anything else is a
+ * Must match the steps of `deploy/systemd/scripts/alldots-restore-test.sh`; anything else is a
  * script/list mismatch and is rejected rather than stored.
  */
 export const RESTORE_TEST_FAILED_CHECKS = [

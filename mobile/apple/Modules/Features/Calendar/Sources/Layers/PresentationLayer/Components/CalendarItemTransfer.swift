@@ -2,14 +2,14 @@ import CoreKit
 import Foundation
 import SwiftUI
 
-/// An event or a task as a drag carries it, as the system Calendar's events travel: within Semprec, and to another
-/// Semprec window, by its id; to other apps as an iCalendar file (an event, or a to-do for a task) and as plain text,
+/// An event or a task as a drag carries it, as the system Calendar's events travel: within Alldots, and to another
+/// Alldots window, by its id; to other apps as an iCalendar file (an event, or a to-do for a task) and as plain text,
 /// whichever the app that takes it reads. Times are minutes of the day in `timezone`, the zone of the server.
 struct CalendarItemTransfer: Codable, Transferable {
 
     // MARK: - Constants
-    /// The type of the drag's own representation, declared by the app; read only by Semprec.
-    static let typeIdentifier = "cz.semprec.calendar-item"
+    /// The type of the drag's own representation, declared by the app; read only by Alldots.
+    static let typeIdentifier = "cz.alldots.calendar-item"
 
     // MARK: - Properties
     let id: String
@@ -109,10 +109,10 @@ extension CalendarItemTransfer {
         var lines = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
-            "PRODID:-//Semprec//Calendar//EN",
+            "PRODID:-//Alldots//Calendar//EN",
             "CALSCALE:GREGORIAN",
             "BEGIN:VEVENT",
-            "UID:\(id)@semprec",
+            "UID:\(id)@alldots",
             "DTSTAMP:\(Self.utc(Date()))",
             "SUMMARY:\(Self.escaped(title))"
         ]

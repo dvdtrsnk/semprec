@@ -2,7 +2,7 @@ import { createGithubReleaseHost } from "./githubReleaseHost.js";
 import { ReleaseRefusedError, releaseTag } from "./releaseTag.js";
 
 /**
- * `pnpm --filter @semprec/release run release-tag <vMAJOR.MINOR.PATCH> <main-commit-sha>` —
+ * `pnpm --filter @alldots/release run release-tag <vMAJOR.MINOR.PATCH> <main-commit-sha>` —
  * see `docs/operations/releases.md`. Exit code 2 is a refusal (nothing was tagged), 1 an
  * operational failure (git, `gh`, or the network).
  */

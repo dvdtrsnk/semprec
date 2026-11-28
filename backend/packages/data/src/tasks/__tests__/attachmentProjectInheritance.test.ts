@@ -1,8 +1,8 @@
 import "../../domainWriteHooks.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import type { WriterIdentity } from "../../chokePoint/writerKind.js";
@@ -239,7 +239,7 @@ async function buildWorld(): Promise<World> {
 describe("a file attached to a task takes over the task's project (issue #1702)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { logger } from "./logger.js";
 
 /**

@@ -13,7 +13,7 @@ import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { randomUUID } from "node:crypto";
 import { inTenantZero } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -303,7 +303,7 @@ describe("notificationsStore (issue #152)", () => {
     const user = await createTestUser("en");
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -460,7 +460,7 @@ describe("notificationsStore (issue #152)", () => {
     const user = await createTestUser("en");
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       await runInTenant(tenant, () => seedSystem(runtime));
@@ -544,7 +544,7 @@ describe("notificationsStore (issue #152)", () => {
     const user = await createTestUser("en");
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     runtime.options.max = 1;
     const events: NotificationCreatedEvent[] = [];
     let primary: { error: unknown } | undefined;
@@ -666,7 +666,7 @@ describe("notificationsStore (issue #152)", () => {
     const user = await createTestUser();
     const tenant = tenantOfUser.get(user);
     if (!tenant) throw new Error("Missing tenant");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       await runInTenant(tenant, async () => {
@@ -716,11 +716,11 @@ describe("notificationsStore (issue #152)", () => {
     const foreignUser = await createTestUser();
     const tenant = tenantOfUser.get(user)!;
     const foreignTenant = tenantOfUser.get(foreignUser)!;
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const failures: unknown[] = [];
     try {
       const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'semprec_data'",
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'alldots_data'",
       );
       expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
       const seed = async (tenantId: string, userId: string, count: number) =>
@@ -1105,7 +1105,7 @@ describe("notificationsStore (issue #152)", () => {
       const userId = await createTestUser();
       const request = await createApprovalWithNotification(userId);
       const tenant = getTenantZeroId();
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       const events: NotificationReadStateEvent[] = [];
       setNotificationReadStateHook((event) => events.push(event));
       let releaseHolder: () => void = () => {};
@@ -1238,7 +1238,7 @@ describe("notificationsStore (issue #152)", () => {
       const tenantA = tenantOfUser.get(userA);
       const tenantB = tenantOfUser.get(userB);
       if (!tenantA || !tenantB) throw new Error("Missing tenant fixture");
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const write = (tenant: string, userId: string, sourceId: string) =>
           withTenantTransaction(runtimePool, tenant, (client) =>

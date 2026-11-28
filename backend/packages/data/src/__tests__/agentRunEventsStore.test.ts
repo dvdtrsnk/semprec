@@ -9,7 +9,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { runInTenant, runAsSystem } from "@semprec/shared";
+import { runInTenant, runAsSystem } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
@@ -121,7 +121,7 @@ describe("agentRunEventsStore", () => {
   });
 
   it("bounds cursor reads before materialization while preserving unlimited and tenant-scoped reads", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runAsSystem("test:role", () =>
         runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -153,7 +153,7 @@ describe("agentRunEventsStore", () => {
   });
 
   it("scopes successive Semp messages on the same run in the event query snapshot", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const tenant = getTenantZeroId();
     try {
       const role = await runAsSystem("test:role", () =>

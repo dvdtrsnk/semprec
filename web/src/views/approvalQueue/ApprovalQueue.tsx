@@ -108,7 +108,7 @@ function PendingRow({
 }
 
 /**
- * Semprec's single global approval queue (issue #132): every still-pending approval request
+ * Alldots's single global approval queue (issue #132): every still-pending approval request
  * across every project, in one list, with explicit Approve/Reject actions. A decided row (this
  * client's own action, or another actor's — a race on the same request) is rendered with the
  * authoritative decided state (`DecidedBadge`) instead of being silently removed or treated as

@@ -160,7 +160,7 @@ the exact source and propagated aggregate with updated specification hashes.
 Gh-1463 AC1 names connected clients. An injected data-layer callback and a
 separate synthetic NOTIFY test do not establish the composed decision path.
 Add exactly
-`backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts`
+`backend/services/alldots-api/src/__tests__/tenantIsolationRealtime.test.ts`
 to gh-1463 and aggregate Touches. That existing runtime-role, two-tenant socket
 harness composes the actual dispatcher, sync server and realtime hooks.
 

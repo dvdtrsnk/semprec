@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The navigation of a shown `AppScene` on its real NavigatorUI stacks: each tab registers its own stack, a route
 /// reaches the stack of its tab with its presentation, and the scene provides each destination's screen.

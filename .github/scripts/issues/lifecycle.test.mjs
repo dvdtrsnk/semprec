@@ -12,9 +12,9 @@ import { localFollowups } from "./followups.mjs";
 
 const body = "**Blocked by:** none\n**Model tier:** low\n\n## Context\nModel tier rationale: One mechanism.\n\n## Task\nDeliver it.\n\n## Touches\n- example.txt\n\n## Scope\n### In scope\nThe mechanism.\n### Out of scope\nOther work.\n\n## Acceptance criteria\nThe mechanism works.\n";
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "semprec-local-lifecycle-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "alldots-local-lifecycle-")); t.after(() => rm(root, { recursive: true, force: true }));
   for (const path of ["items", "handovers", "migration"]) await mkdir(join(root, "issues", path), { recursive: true });
-  await writeFile(join(root, "issues/migration/state.json"), JSON.stringify({ schemaVersion: 1, repository: "dvdtrsnk/semprec", authority: "repository" }));
+  await writeFile(join(root, "issues/migration/state.json"), JSON.stringify({ schemaVersion: 1, repository: "dvdtrsnk/alldots", authority: "repository" }));
   const save = issue => writeFile(join(root, `issues/items/${issue.metadata.id}.md`), serializeRecord(issue));
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   return { root, save, git };
@@ -84,7 +84,7 @@ test("only unchanged imported records may retain their recorded historical diagn
 test("local issue comment routing keeps PR review conversations on their native endpoint", async t => {
   const { listIssueComments } = await import("../review-followups/github.mjs");
   const { root } = await fixture(t); const requests = [];
-  const client = { issueRoot: root, repository: "dvdtrsnk/semprec", async paginate(path) { requests.push(path); return []; } };
+  const client = { issueRoot: root, repository: "dvdtrsnk/alldots", async paginate(path) { requests.push(path); return []; } };
   assert.deepEqual(await listIssueComments(client, 999, "pull-request"), []);
   assert.equal(requests.length, 1);
   await assert.rejects(listIssueComments(client, 999), /missing/);

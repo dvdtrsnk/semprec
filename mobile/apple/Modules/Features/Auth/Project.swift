@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "AuthFeature",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "AuthFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
@@ -14,7 +14,7 @@ let project = Project(
             ],
             resources: ["Resources/**"]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "AuthFeatureTests",
             for: "AuthFeature",
             dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")]

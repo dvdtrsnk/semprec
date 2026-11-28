@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { openSecret, sealSecret } from "@semprec/credentials";
+import { openSecret, sealSecret } from "@alldots/credentials";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getOrCreateTenantDataKey, getTenantDataKey } from "../credentials/tenantKeysStore.js";
 import type { Queryable } from "../db/pool.js";
@@ -22,7 +22,7 @@ const READ = { actorType: "sync_worker", purpose: "test" } as const;
 
 /** The associated-data bytes the tenant scheme is documented to use: both ids as lowercase canonical UUID text. */
 function associatedData(tenantId: string, itemId: string): Buffer {
-  return Buffer.from(`semprec:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
+  return Buffer.from(`alldots:external-credential:v1:${tenantId.toLowerCase()}:${itemId.toLowerCase()}`, "utf8");
 }
 
 /**
@@ -95,7 +95,7 @@ async function expectNoCode(promise: Promise<unknown>): Promise<void> {
 describe("external credentials store, tenant scheme only", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterAll(async () => {

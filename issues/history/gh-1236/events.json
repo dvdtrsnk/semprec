@@ -2,7 +2,7 @@
   {
     "id": 33917104752,
     "node_id": "LE_lADOUFuQ4c8AAAABZA4FJM8AAAAH5Z3ycA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917104752",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917104752",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -38,7 +38,7 @@
   {
     "id": 33917117854,
     "node_id": "RTE_lADOUFuQ4c8AAAABZA4FJM8AAAAH5Z4lng",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917117854",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917117854",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -102,14 +102,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJ-aDyQ",
         "number": 1238,
         "title": "[ci-stability-followup 01/02] Find why lifecycleAdapter announces agent run events out of id order (#1236)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1238",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1238",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1238",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1238",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1238.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1238.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1238",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1238",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1238.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1238.patch",
           "merged_at": "2026-10-22T08:34:01Z"
         },
         "bodySha256": "f32a6841f31c8ccfda52c0795151de3fccd1ca8339cf4b0b4ef1090ea4c406f8"
@@ -119,7 +119,7 @@
   {
     "id": 33929246726,
     "node_id": "RTE_lADOUFuQ4c8AAAABZA4FJM8AAAAH5lc4Bg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33929246726",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33929246726",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -154,7 +154,7 @@
   {
     "id": 33929912239,
     "node_id": "REFE_lADOUFuQ4c8AAAABZA4FJM8AAAAH5mFfrw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33929912239",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33929912239",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -178,14 +178,14 @@
     },
     "event": "referenced",
     "commit_id": "2f3b1f7933559c42d7a5dbfb9922185b7af78400",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/2f3b1f7933559c42d7a5dbfb9922185b7af78400",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/2f3b1f7933559c42d7a5dbfb9922185b7af78400",
     "created_at": "2026-10-22T08:34:02Z",
     "performed_via_github_app": null
   },
   {
     "id": 33929912373,
     "node_id": "CE_lADOUFuQ4c8AAAABZA4FJM8AAAAH5mFgNQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33929912373",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33929912373",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

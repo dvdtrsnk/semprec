@@ -1,4 +1,4 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -9,7 +9,7 @@ import {
   registerRelationEdgeWriteHook,
   resetDatabase,
   createTenantZeroUser,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -19,8 +19,8 @@ import {
   withTransaction,
   type ChokePoint,
   type WriterIdentity,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 import { writerIdentityOf } from "../genericApplicationService.js";
 

@@ -16,7 +16,7 @@ import { LOCKED_PROPOSAL_STATUSES, PROCESSING_METHODS } from "./inboxTypesStore.
 import { appendHistoryEntry } from "./proposalHistory.js";
 import { parseUserOverrides, retainOverridesForEnvelope, type RetainedOverrides } from "./proposalOverrides.js";
 import { assertProposalVersion } from "./proposalPreconditions.js";
-import type { ProposalEnvelope, SemprecTickActionConfig } from "./proposalEnvelope.js";
+import type { ProposalEnvelope, AlldotsTickActionConfig } from "./proposalEnvelope.js";
 
 /** Names no type, because the type's name is user content. */
 const TYPE_CHOSEN_MESSAGE = "The user chose another type for the source item; the proposal is being recomputed.";
@@ -120,7 +120,7 @@ function retainForDestination(
  */
 async function replaceTypeEdges(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   input: ChangeInboxItemTypeInput,
 ): Promise<void> {
   const property = await propertiesStore.getPropertyByKey(client, config.inboxDatabaseId, "type");
@@ -189,7 +189,7 @@ async function sendCardBack(
  */
 export async function changeInboxItemTypeWithClient(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   input: ChangeInboxItemTypeInput,
 ): Promise<ChangeInboxItemTypeResult> {
   await lockInboxSource(client, input.itemId);

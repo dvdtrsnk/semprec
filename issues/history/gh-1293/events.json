@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZoImVg",
         "number": 1294,
         "title": "[mobile-gates 02/02] Run mobile/scripts/verify in the Relay workflows for changes under mobile/",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1294",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1294",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c06a50d8c8f7363777682005d5705b1a4a894fe4dc8892d9275dd57a411b7577"
       }
@@ -70,14 +70,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABKdXQNg",
         "number": 1292,
         "title": "Add the native mobile platform with CI and Relay verification",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1292",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1292",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1292",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1292",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1292.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1292.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1292",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1292",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1292.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1292.patch",
           "merged_at": "2026-10-26T09:40:35Z"
         },
         "bodySha256": "2905348382597ef26e7211d580230cad7231bd6a0e58406e705925ae418459a3"
@@ -87,7 +87,7 @@
   {
     "id": 34244135227,
     "node_id": "CE_lADOUFuQ4c8AAAABZoIaVc8AAAAH-RwJOw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/34244135227",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/34244135227",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

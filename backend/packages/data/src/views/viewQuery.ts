@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { NotFoundError, ValidationError } from "../errors.js";
-import { SEARCH_MAX_QUERY_LENGTH } from "@semprec/shared";
+import { SEARCH_MAX_QUERY_LENGTH } from "@alldots/shared";
 import type { ItemRow, PropertyRow, ViewItemRow, ViewRow } from "../types.js";
 import {
   countItems,

@@ -2,7 +2,7 @@
 // recorded in the transaction that records the send and appended by a queue job, at least once and without a
 // duplicate.
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@alldots/queue";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getTenantUserId } from "../auth/usersStore.js";

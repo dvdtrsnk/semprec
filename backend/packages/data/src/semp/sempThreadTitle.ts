@@ -1,10 +1,10 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { createLogger, currentTenantScope, type AiGatewayClientPort } from "@semprec/shared";
+import { createLogger, currentTenantScope, type AiGatewayClientPort } from "@alldots/shared";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { requireManagedTransaction, withTransaction } from "../db/pool.js";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 
 const titleSchema = z.object({ title: z.string() });
 const logger = createLogger("semp-thread-title");

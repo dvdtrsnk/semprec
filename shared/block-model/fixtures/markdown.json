@@ -26,9 +26,9 @@
     },
     {
       "name": "inline page link is text",
-      "markdown": "[Title](<semprec://page/p1>)",
+      "markdown": "[Title](<alldots://page/p1>)",
       "blocks": [
-        { "type": "text", "text": [{ "insert": "Title", "attributes": { "link": { "href": "semprec://page/p1" } } }] }
+        { "type": "text", "text": [{ "insert": "Title", "attributes": { "link": { "href": "alldots://page/p1" } } }] }
       ]
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "name": "project notes sample",
-      "markdown": "## Project notes\n\nBuild `0.4 (52)` is out, see [the spec](https://example.com/spec)\n\n- Release checklist\n  - Tag the build\n- [x] Ship build `0.4 (52)`\n\n> Keep the scope small\n\n[Roadmap](semprec://page/page-roadmap)",
+      "markdown": "## Project notes\n\nBuild `0.4 (52)` is out, see [the spec](https://example.com/spec)\n\n- Release checklist\n  - Tag the build\n- [x] Ship build `0.4 (52)`\n\n> Keep the scope small\n\n[Roadmap](alldots://page/page-roadmap)",
       "pageTitles": { "page-roadmap": "Roadmap" },
       "blocks": [
         { "type": "h2", "text": [{ "insert": "Project notes" }] },
@@ -108,12 +108,12 @@
     },
     {
       "name": "unknown block type is preserved by a comment",
-      "markdown": "<!-- semprec:block id=u1 type=callout indent=2 -->\nHeads up",
+      "markdown": "<!-- alldots:block id=u1 type=callout indent=2 -->\nHeads up",
       "blocks": [{ "id": "u1", "type": "callout", "indent": 2, "text": [{ "insert": "Heads up" }] }]
     },
     {
       "name": "indent on a non-list block is preserved by a comment",
-      "markdown": "<!-- semprec:block id=h1 type=h2 indent=3 -->\n## Title\n\n<!-- semprec:block id=q1 type=quote indent=1 -->\n> Quoted",
+      "markdown": "<!-- alldots:block id=h1 type=h2 indent=3 -->\n## Title\n\n<!-- alldots:block id=q1 type=quote indent=1 -->\n> Quoted",
       "blocks": [
         { "id": "h1", "type": "h2", "indent": 3, "text": [{ "insert": "Title" }] },
         { "id": "q1", "type": "quote", "indent": 1, "text": [{ "insert": "Quoted" }] }
@@ -121,13 +121,13 @@
     },
     {
       "name": "empty text block is carried by a comment",
-      "markdown": "<!-- semprec:block id=e1 type=text indent=0 -->",
+      "markdown": "<!-- alldots:block id=e1 type=text indent=0 -->",
       "blocks": [{ "id": "e1", "type": "text", "text": [] }]
     },
     {
       "name": "ids mode writes a comment before every block",
       "withIds": true,
-      "markdown": "<!-- semprec:block id=a1 type=text indent=0 -->\nHello\n\n<!-- semprec:block id=a2 type=bullet indent=0 -->\n- one\n<!-- semprec:block id=a3 type=bullet indent=1 -->\n  - two",
+      "markdown": "<!-- alldots:block id=a1 type=text indent=0 -->\nHello\n\n<!-- alldots:block id=a2 type=bullet indent=0 -->\n- one\n<!-- alldots:block id=a3 type=bullet indent=1 -->\n  - two",
       "blocks": [
         { "id": "a1", "type": "text", "text": [{ "insert": "Hello" }] },
         { "id": "a2", "type": "bullet", "text": [{ "insert": "one" }] },
@@ -252,13 +252,13 @@
     {
       "name": "page link with a title is read as its id",
       "direction": "parse",
-      "markdown": "[Some title](semprec://page/p-1)",
-      "canonical": "[](semprec://page/p-1)",
+      "markdown": "[Some title](alldots://page/p-1)",
+      "canonical": "[](alldots://page/p-1)",
       "blocks": [{ "type": "page", "pageId": "p-1" }]
     },
     {
       "name": "item link round trip",
-      "markdown": "Meeting: [Standup](semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10) at 9",
+      "markdown": "Meeting: [Standup](alldots://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10) at 9",
       "blocks": [
         {
           "type": "text",
@@ -266,7 +266,7 @@
             { "insert": "Meeting: " },
             {
               "insert": "Standup",
-              "attributes": { "link": { "href": "semprec://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10" } }
+              "attributes": { "link": { "href": "alldots://items/3f2b8c1e-5a47-4d0b-9c61-7e2a1b9d4f10" } }
             },
             { "insert": " at 9" }
           ]
@@ -275,7 +275,7 @@
     },
     {
       "name": "inline page href line feed uses destination token",
-      "markdown": "[Page](<semprec://page/a&#xa;b>)",
+      "markdown": "[Page](<alldots://page/a&#xa;b>)",
       "blocks": [
         {
           "type": "text",
@@ -284,7 +284,7 @@
               "insert": "Page",
               "attributes": {
                 "link": {
-                  "href": "semprec://page/a\nb"
+                  "href": "alldots://page/a\nb"
                 }
               }
             }
@@ -294,7 +294,7 @@
     },
     {
       "name": "angle href preserves literal line feed reference",
-      "markdown": "[Page](<semprec://page/\\&#xa;&#xa;b>)",
+      "markdown": "[Page](<alldots://page/\\&#xa;&#xa;b>)",
       "blocks": [
         {
           "type": "text",
@@ -303,7 +303,7 @@
               "insert": "Page",
               "attributes": {
                 "link": {
-                  "href": "semprec://page/&#xa;\nb"
+                  "href": "alldots://page/&#xa;\nb"
                 }
               }
             }
@@ -313,7 +313,7 @@
     },
     {
       "name": "page block encodes opaque identifier and resolver line feed",
-      "markdown": "[First<br>Second](semprec://page/a\\u0020b)",
+      "markdown": "[First<br>Second](alldots://page/a\\u0020b)",
       "blocks": [
         {
           "type": "page",
@@ -326,7 +326,7 @@
     },
     {
       "name": "comment preserves unsafe id and unknown type",
-      "markdown": "<!-- semprec:block id=a\\u0020b type=we\\u0020ird indent=0 -->\nx",
+      "markdown": "<!-- alldots:block id=a\\u0020b type=we\\u0020ird indent=0 -->\nx",
       "blocks": [
         {
           "id": "a b",
@@ -509,7 +509,7 @@
     },
     {
       "name": "toggle block and its more-indented children",
-      "markdown": "<!-- semprec:block id=t type=toggle indent=0 -->\nToggle ~~item~~\n\n<!-- semprec:block id=c type=text indent=1 -->\nchild\n\n  - list child",
+      "markdown": "<!-- alldots:block id=t type=toggle indent=0 -->\nToggle ~~item~~\n\n<!-- alldots:block id=c type=text indent=1 -->\nchild\n\n  - list child",
       "blocks": [
         {
           "id": "t",
@@ -522,17 +522,17 @@
     },
     {
       "name": "toggle block content is escaped like a text line",
-      "markdown": "<!-- semprec:block id=t type=toggle indent=2 -->\n\\# not a heading",
+      "markdown": "<!-- alldots:block id=t type=toggle indent=2 -->\n\\# not a heading",
       "blocks": [{ "id": "t", "type": "toggle", "indent": 2, "text": [{ "insert": "# not a heading" }] }]
     },
     {
       "name": "empty toggle block",
-      "markdown": "<!-- semprec:block id=t type=toggle indent=0 -->",
+      "markdown": "<!-- alldots:block id=t type=toggle indent=0 -->",
       "blocks": [{ "id": "t", "type": "toggle", "text": [] }]
     },
     {
       "name": "toggle headings",
-      "markdown": "<!-- semprec:block id=a type=h1 indent=0 toggle=true -->\n# One\n\n<!-- semprec:block id=b type=h3 indent=0 toggle=true -->\n###\n\n## Plain",
+      "markdown": "<!-- alldots:block id=a type=h1 indent=0 toggle=true -->\n# One\n\n<!-- alldots:block id=b type=h3 indent=0 toggle=true -->\n###\n\n## Plain",
       "blocks": [
         { "id": "a", "type": "h1", "toggle": true, "text": [{ "insert": "One" }] },
         { "id": "b", "type": "h3", "toggle": true, "text": [] },
@@ -543,8 +543,8 @@
       "name": "toggle=true is ignored on non-headings",
       "direction": "parse",
       "withIds": true,
-      "markdown": "<!-- semprec:block id=x type=text indent=0 toggle=true -->\nplain\n\n<!-- semprec:block id=t type=toggle indent=0 toggle=true -->\nitem\n\n<!-- semprec:block id=d type=todo indent=0 toggle=true -->\n- [ ] task",
-      "canonical": "<!-- semprec:block id=x type=text indent=0 -->\nplain\n\n<!-- semprec:block id=t type=toggle indent=0 -->\nitem\n\n<!-- semprec:block id=d type=todo indent=0 -->\n- [ ] task",
+      "markdown": "<!-- alldots:block id=x type=text indent=0 toggle=true -->\nplain\n\n<!-- alldots:block id=t type=toggle indent=0 toggle=true -->\nitem\n\n<!-- alldots:block id=d type=todo indent=0 toggle=true -->\n- [ ] task",
+      "canonical": "<!-- alldots:block id=x type=text indent=0 -->\nplain\n\n<!-- alldots:block id=t type=toggle indent=0 -->\nitem\n\n<!-- alldots:block id=d type=todo indent=0 -->\n- [ ] task",
       "blocks": [
         { "id": "x", "type": "text", "text": [{ "insert": "plain" }] },
         { "id": "t", "type": "toggle", "text": [{ "insert": "item" }] },
@@ -555,7 +555,7 @@
   "rejections": [
     {
       "name": "page link is rejected when pages are not allowed",
-      "markdown": "Intro\n\n[Roadmap](semprec://page/page-roadmap)",
+      "markdown": "Intro\n\n[Roadmap](alldots://page/page-roadmap)",
       "parseOptions": { "allowPage": false },
       "path": "line 3",
       "code": "page_not_allowed"

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/75",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/75",
   "id": 5282712584,
   "node_id": "I_kwDOUFuQ4c8AAAABOt_MCA",
   "number": 75,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -45,7 +45,7 @@
     {
       "id": 11979305248,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWxIA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/agent:done",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/agent:done",
       "name": "agent:done",
       "color": "5319e7",
       "default": false,
@@ -76,7 +76,7 @@
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** none\n\n## Context\n\nThis is a deliberately trivial, standalone issue used to verify the generalized\nmulti-project agent dispatch pipeline (`dispatch-host.sh` / `dispatch.sh` /\n`run-agent.sh` on the VPS, plus its run-lifecycle reporting to home-api and the\ndashboard) end-to-end, after its recent generalization from a semprec-only\nhardcoded pipeline to a multi-project harness. It is not part of the founding\n`[NN/22]` batch and has no relationship to any other issue.\n\n## Task\n\nCreate a new file `docs/pipeline-smoke-test.md` containing exactly this content\n(one line, plus a trailing newline):\n\n```\nSemprec agent pipeline smoke test — verified working.\n```\n\n## Scope\n\n### In scope\n- Creating the single file `docs/pipeline-smoke-test.md` with the exact content\n  specified above.\n\n### Out of scope\n- Any other file, schema, dependency, or code change.\n\n## Acceptance criteria\n\n- `docs/pipeline-smoke-test.md` exists on `develop` after merge.\n- Its content is exactly the single line `Semprec agent pipeline smoke test — verified working.` (plus a trailing newline).\n- No other files are modified by this issue's PR.\n",
+  "body": "**Blocked by:** none\n\n## Context\n\nThis is a deliberately trivial, standalone issue used to verify the generalized\nmulti-project agent dispatch pipeline (`dispatch-host.sh` / `dispatch.sh` /\n`run-agent.sh` on the VPS, plus its run-lifecycle reporting to home-api and the\ndashboard) end-to-end, after its recent generalization from a alldots-only\nhardcoded pipeline to a multi-project harness. It is not part of the founding\n`[NN/22]` batch and has no relationship to any other issue.\n\n## Task\n\nCreate a new file `docs/pipeline-smoke-test.md` containing exactly this content\n(one line, plus a trailing newline):\n\n```\nAlldots agent pipeline smoke test — verified working.\n```\n\n## Scope\n\n### In scope\n- Creating the single file `docs/pipeline-smoke-test.md` with the exact content\n  specified above.\n\n### Out of scope\n- Any other file, schema, dependency, or code change.\n\n## Acceptance criteria\n\n- `docs/pipeline-smoke-test.md` exists on `develop` after merge.\n- Its content is exactly the single line `Alldots agent pipeline smoke test — verified working.` (plus a trailing newline).\n- No other files are modified by this issue's PR.\n",
   "closed_by": {
     "login": "dvdtrsnk-agent[bot]",
     "id": 321888475,
@@ -99,7 +99,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -110,7 +110,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/75/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/75/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

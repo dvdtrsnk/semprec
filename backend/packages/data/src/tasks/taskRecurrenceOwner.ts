@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { isDeepStrictEqual } from "node:util";

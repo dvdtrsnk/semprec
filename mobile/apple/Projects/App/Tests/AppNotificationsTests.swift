@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the app carries between the shared layer and the system: the permission, the registration, the reminders it
 /// schedules, the icon's number and where a tapped notification leads, over a scripted service and notification center.
@@ -71,10 +71,10 @@ final class AppNotificationsTests: XCTestCase {
         let file = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Entitlements/Semprec-iOS.entitlements")
+            .appendingPathComponent("Entitlements/Alldots-iOS.entitlements")
         let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: file), format: nil)
         let entitlements = try XCTUnwrap(plist as? [String: Any])
-        XCTAssertEqual(entitlements["aps-environment"] as? String, "$(SEMPREC_APS_ENVIRONMENT)")
+        XCTAssertEqual(entitlements["aps-environment"] as? String, "$(ALLDOTS_APS_ENVIRONMENT)")
     }
 
     // MARK: - Reminders

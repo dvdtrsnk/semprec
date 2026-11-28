@@ -46,7 +46,7 @@ describe("LocalFsBlobStorageWriter.writeStream attaches to its source before it 
   const uncaught = vi.fn();
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "semprec-blob-attach-"));
+    root = await mkdtemp(join(tmpdir(), "alldots-blob-attach-"));
     storage = new LocalFsBlobStorageWriter(root);
     uncaught.mockClear();
     process.on("uncaughtException", uncaught);

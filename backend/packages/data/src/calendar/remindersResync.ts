@@ -2,8 +2,8 @@
 // the job only wakes the device.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { currentTenantScope } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
+import { currentTenantScope } from "@alldots/shared";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { sendApnsBackgroundPush } from "../push/apnsAdapter.js";

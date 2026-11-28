@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";

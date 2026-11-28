@@ -157,13 +157,13 @@ export function parseStoredProposalEnvelope(
 }
 
 /** `action_config` is a raw JSONB column (a module boundary): validated, not just cast. */
-export const semprecTickActionConfigSchema = z.object({
+export const alldotsTickActionConfigSchema = z.object({
   inboxDatabaseId: z.string().uuid(),
   inboxItemTypesDatabaseId: z.string().uuid(),
   processingProposalsDatabaseId: z.string().uuid(),
 });
 
-export type SemprecTickActionConfig = z.infer<typeof semprecTickActionConfigSchema>;
+export type AlldotsTickActionConfig = z.infer<typeof alldotsTickActionConfigSchema>;
 
 /**
  * The `aiProposal` and next `aiVersion` (previous + 1, missing counts as 0) an automated writer stores.

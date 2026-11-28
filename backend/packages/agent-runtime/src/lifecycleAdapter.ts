@@ -16,9 +16,9 @@ import {
   type AgentRunUnit,
   type TriggeredBy,
   withTransaction,
-} from "@semprec/data";
-import { publishAgentRunDelta } from "@semprec/realtime";
-import { withTraceContext } from "@semprec/shared";
+} from "@alldots/data";
+import { publishAgentRunDelta } from "@alldots/realtime";
+import { withTraceContext } from "@alldots/shared";
 import type { AgentMessage, CreateAgentSession } from "./types.js";
 import { logger } from "./logger.js";
 import { findDanglingToolUses, syntheticToolResult } from "./danglingToolCalls.js";

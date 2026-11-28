@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -12,7 +12,7 @@ import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js"
 import { findOrCreateBlob, lockBlobById } from "../blobs/blobsStore.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { disposeLibraryCover, prepareLibraryCover, type DownloadedLibraryCover } from "./libraryCoverStorage.js";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 
 import { assertSupportedLibraryMetadataSource, LibraryMetadataConfigurationError } from "./libraryMetadataConfig.js";
 import { notifyInvalidation } from "../realtimeHook.js";

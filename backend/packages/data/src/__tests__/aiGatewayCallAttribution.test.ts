@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
@@ -63,7 +63,7 @@ describe("reserveGatewayCall attribution guard", () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
     tenantZero = getTenantZeroId();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
     await runInTenant(tenantZero, () => seedSystem(pool));
   });
 
@@ -160,7 +160,7 @@ describe("reserveGatewayCall attribution guard", () => {
     );
     expect(projectRows).toEqual([{ tenant_id: tenantB, database_tenant_id: tenantB }]);
 
-    const sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+    const sidePool = await createRuntimeRolePool(adminPool, "alldots_side");
     try {
       const unknownRun = await expectRefused(
         runInTenant(tenantZero, () => reserveGatewayCall(sidePool, { ...RESERVATION, agentRunId: randomUUID() })),
@@ -193,7 +193,7 @@ describe("assertGatewayTenantActive", () => {
   beforeEach(async () => {
     await resetDatabase(adminPool);
     tenantZero = getTenantZeroId();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterEach(async () => {

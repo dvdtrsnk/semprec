@@ -16,7 +16,7 @@ import { applyRollupConfig } from "../rollup/config.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import { assertRelationDeletable, assertSourceDeletable, assertSourceRetypeAllowed } from "../rollup/mirror.js";
 import { enqueuePropertyTypeMigration, isConversionSupported } from "../migrationJob/propertyTypeMigration.js";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { enqueueItemSearchBackfill } from "../search/itemSearchBackfill.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import {

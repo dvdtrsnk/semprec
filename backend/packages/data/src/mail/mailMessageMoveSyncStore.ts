@@ -3,7 +3,7 @@ import { updateRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { requireAffectedRows } from "../db/pool.js";
 import { lockMailThreadMutation } from "./mailThreadMutationGuard.js";
 

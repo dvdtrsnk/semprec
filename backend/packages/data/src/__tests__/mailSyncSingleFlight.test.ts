@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, registerTask, runWorker, type Runner } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runWorker, type Runner } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
@@ -69,7 +69,7 @@ function observedAccount(account: FakeImapAccount) {
 describe("one mail sync pass per mailbox", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -459,7 +459,7 @@ describe("one mail sync pass per mailbox", () => {
       const { account, mailbox } = await syncedAccount();
       const { observed, createImapClient } = observedAccount(account);
       // The pool's statement timeout ends the claim before its own wait does, as a slow database would.
-      const shortTimeout = await createRuntimeRolePool(admin, "semprec_data", { statementTimeoutMs: 1_500 });
+      const shortTimeout = await createRuntimeRolePool(admin, "alldots_data", { statementTimeoutMs: 1_500 });
       try {
         const holder = await holdSyncStateRow(mailbox.mailboxId);
         const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));

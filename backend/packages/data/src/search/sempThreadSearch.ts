@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { SearchThreadResult } from "@semprec/shared";
+import type { SearchThreadResult } from "@alldots/shared";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getCalendarClock } from "../calendarTime.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";

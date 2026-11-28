@@ -18,7 +18,7 @@ import PackageDescription
 #endif
 
 let package = Package(
-    name: "SemprecDependencies",
+    name: "AlldotsDependencies",
     dependencies: [
         .package(url: "https://github.com/hmlongco/Factory", exact: "2.5.1"),
         .package(url: "https://github.com/hmlongco/Navigator", exact: "1.4.6"),

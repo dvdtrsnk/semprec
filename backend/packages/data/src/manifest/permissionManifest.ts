@@ -1,10 +1,10 @@
 import type { PoolClient } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
-import { CAPABILITY_IDS } from "@semprec/shared";
+import type { ModuleRegistry } from "@alldots/module-registry";
+import { CAPABILITY_IDS } from "@alldots/shared";
 import { visibleDatabaseIds } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { parseHeartbeatRule, type AnyHeartbeatRule } from "../scheduler/rule.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { ALLDOTS_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { getGrantedMcpAgentTools, type McpAgentToolProjection } from "../mcp/mcpAgentTools.js";
 import { createCatalogResolver, resolveDatabaseName, resolveProperty } from "./catalogResolution.js";
 import type { ManifestLocale } from "./catalogResolution.js";
@@ -30,7 +30,7 @@ export interface ManifestDatabase {
   name: string;
   schemaLocked: boolean;
   /**
-   * `false` for Inbox and Inbox item types: Semprec owns them but they are user content the agent
+   * `false` for Inbox and Inbox item types: Alldots owns them but they are user content the agent
    * only reads. Databases without a project owner never appear in a grant at all.
    */
   writable: boolean;
@@ -118,7 +118,7 @@ export async function generatePermissionManifest(
       databaseId: db.id,
       name: dbName,
       schemaLocked: db.schema_locked,
-      writable: !(db.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
+      writable: !(db.owner_module_id && ALLDOTS_READ_ONLY_MODULE_IDS.includes(db.owner_module_id)),
       properties: manifestProperties,
     });
   }
@@ -171,7 +171,7 @@ export async function generatePermissionManifest(
           return (
             row !== undefined &&
             visible.has(row.id) &&
-            !(row.owner_module_id && SEMPREC_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
+            !(row.owner_module_id && ALLDOTS_READ_ONLY_MODULE_IDS.includes(row.owner_module_id))
           );
         });
       for (const capability of declaration.capabilities) {

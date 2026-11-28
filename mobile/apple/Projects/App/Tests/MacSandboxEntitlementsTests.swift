@@ -25,7 +25,7 @@ private extension MacSandboxEntitlementsTests {
         let file = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Entitlements/Semprec.entitlements")
+            .appendingPathComponent("Entitlements/Alldots.entitlements")
         let data = try Data(contentsOf: file)
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
         return try XCTUnwrap(plist as? [String: Any])

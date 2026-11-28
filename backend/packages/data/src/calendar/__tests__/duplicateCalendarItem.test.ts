@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -65,7 +65,7 @@ async function waitForTransactionWaiter(): Promise<void> {
 describe("duplicate a calendar item (issue gh-1796)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

@@ -10,9 +10,9 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { AgentRunError, createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { AgentRunError, createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import {
   BUSY_ERROR_MESSAGE,
   DelegationRegistry,
@@ -1182,7 +1182,7 @@ describe("DelegationRegistry", () => {
     let runtimePool: Pool;
 
     beforeAll(async () => {
-      runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     });
 
     afterAll(async () => {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "../nextDueDate.js";
 import type { TaskRecurrenceMode, TaskRecurrenceRule } from "../taskRecurrenceRule.js";
@@ -10,7 +10,7 @@ let runtime: Pool;
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 afterAll(async () => {
   const results = await Promise.allSettled([runtime?.end(), admin?.end()]);

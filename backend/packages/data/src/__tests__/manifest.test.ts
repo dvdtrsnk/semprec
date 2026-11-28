@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry, type ModuleDatabaseProjection } from "@semprec/module-registry";
-import { runInTenant } from "@semprec/shared";
+import { ModuleRegistry, type ModuleDatabaseProjection } from "@alldots/module-registry";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -132,7 +132,7 @@ describe("permission manifest and drift check", () => {
   it("projects each runtime tenant's own timezone after a settings change", async () => {
     const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let primary: { value: unknown } | undefined;
     try {
       for (const tenant of [tenantA, tenantB]) {
@@ -254,14 +254,14 @@ describe("permission manifest and drift check", () => {
     expect(relationQueries).toBe(1);
   });
 
-  it("scopes Semprec's own grant to Processing proposals only, per issue #105's grant separation", async () => {
+  it("scopes Alldots's own grant to Processing proposals only, per issue #105's grant separation", async () => {
     const viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry();
     await seedSystem(pool, viewTypeRegistry);
 
-    const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Semprec'`);
-    const semprecProjectItemId = rows[0]!.id;
+    const { rows } = await pool.query<{ id: string }>(`SELECT id FROM items WHERE properties ->> 'name' = 'Alldots'`);
+    const alldotsProjectItemId = rows[0]!.id;
 
-    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, semprecProjectItemId));
+    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, alldotsProjectItemId));
 
     const byName = new Map(manifest.databases.map((db) => [db.name, db]));
     expect(byName.get("Processing proposals")?.writable).toBe(true);
@@ -571,7 +571,7 @@ describe("drift check locale in a tenant (issue #1018)", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "alldots_data"));
   });
 
   beforeEach(async () => {
@@ -632,7 +632,7 @@ describe("number filter presets in the schema projection (issue #1622)", () => {
 
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(pool);
@@ -804,7 +804,7 @@ describe("quick filters, default sorts and collection and picker filters (issue 
 
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     registry = await loadFullModuleRegistry();
   });
   beforeEach(async () => {

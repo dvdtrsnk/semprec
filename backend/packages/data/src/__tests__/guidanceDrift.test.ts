@@ -12,8 +12,8 @@ import {
   guidanceDriftHeartbeatStore,
 } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { agentGuidanceDriftFindingsStore } from "../guidanceDrift/agentGuidanceDriftFindingsStore.js";
-import type { GuidanceDriftContradiction } from "@semprec/shared";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import type { GuidanceDriftContradiction } from "@alldots/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
@@ -51,7 +51,7 @@ describe("guidanceDrift stores (issue #85)", () => {
   });
 
   it("groups typed generic and MCP events by distinct run inside the runtime tenant", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runAsSystem("test:role", () =>
         runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -200,7 +200,7 @@ describe("guidanceDrift stores (issue #85)", () => {
   });
 
   it.each(["many events", "large event"])("retains valid groups with %s in the window", async (scenario) => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runAsSystem("test:role", () =>
         runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(

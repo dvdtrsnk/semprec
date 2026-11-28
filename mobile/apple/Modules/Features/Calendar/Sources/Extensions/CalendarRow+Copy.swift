@@ -9,7 +9,7 @@ extension CalendarRow {
         systemKey == "sleep"
     }
 
-    /// What fills a calendar Semprec keeps itself, under its name; `nil` for the others.
+    /// What fills a calendar Alldots keeps itself, under its name; `nil` for the others.
     var subtitle: String? {
         switch systemKey {
         case "tasks": String(localized: "calendars.sub.tasks", table: "Sheets", bundle: .module)

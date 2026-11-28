@@ -3,7 +3,7 @@ import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { ValidationError } from "../../errors.js";
 import { withTransaction } from "../../db/pool.js";
@@ -318,7 +318,7 @@ async function createRunWithReply(projectItemId: string, toolEvents: EventSpec[]
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

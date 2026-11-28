@@ -3,7 +3,7 @@
 // (docs/architecture/transactions-and-side-effects.md#staleness-checked-brackets).
 import type { Pool } from "pg";
 import { z } from "zod";
-import { AiGatewayFailedError, type AiGatewayClientPort } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayClientPort } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { logger } from "./logger.js";
 import type { McpToolDisplayLabel } from "./mcpToolRegistrationsStore.js";

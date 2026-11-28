@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -10,7 +10,7 @@ import {
   getTestPool,
   inTenantZero,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   ApprovalRequiredError,
   ApprovalRequiredForWrite,
@@ -30,14 +30,14 @@ import {
   withTransaction,
   type ApprovalRequest,
   type ChokePoint,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   CAPABILITY_IDS,
   runInTenant,
   type AuthenticatedActor,
   type GenericOperationName,
   type InputByOperation,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 /** An agent write that would end a value link waits for approval, and the replay revalidates the link. */
@@ -706,7 +706,7 @@ describe("agent writes that would end a value link wait for approval (issue #175
   });
 
   it("keeps each tenant's requests and link names to itself, through the runtime role", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const gateway = createGenericOperationGateway(runtime, metadataResolver);
       const tenants = [await createTestTenant(pool), await createTestTenant(pool)] as const;

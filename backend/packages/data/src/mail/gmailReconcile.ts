@@ -1,7 +1,7 @@
 import type { GmailMoveResult } from "./mailMoveProviderAdapters.js";
 import { hasUnsettledMailMove, protectedMailMovesForPass, type MailMoveBaseline } from "./mailMessageMoveSyncStore.js";
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
@@ -114,7 +114,7 @@ export const GMAIL_SYSTEM_FOLDERS: readonly ProviderFolder[] = Object.entries(GM
 );
 
 /** Provider id of the synthetic Archive folder (Gmail has no archive label: archived mail is mail without INBOX). */
-export const GMAIL_ARCHIVE_PROVIDER_ID = "semprec:archive";
+export const GMAIL_ARCHIVE_PROVIDER_ID = "alldots:archive";
 
 /** Provider ids of the five system labels; a message carrying none of them is archived. */
 export const GMAIL_PLACEMENT_LABEL_IDS: readonly string[] = Object.keys(GMAIL_SYSTEM_FOLDER_PURPOSES);

@@ -2,7 +2,7 @@ import Combine
 import NavigatorUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 final class NavigationTests: XCTestCase {
 

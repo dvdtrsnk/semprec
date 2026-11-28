@@ -6,7 +6,7 @@ import {
   type EditorFieldControl,
   type EditorFieldDescriptor,
   type EditorFieldInputType,
-} from "@semprec/module-registry";
+} from "@alldots/module-registry";
 import { dateWithoutTimeOfDay } from "../calendar/eventTime.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";

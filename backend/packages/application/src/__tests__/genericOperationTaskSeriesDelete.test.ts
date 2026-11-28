@@ -9,7 +9,7 @@ import {
   inTenantZero,
   resetDatabase,
   startTaskSeries,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   buildDestructiveApprovalDescription,
   createAgentRun,
@@ -27,8 +27,8 @@ import {
   type ChokePoint,
   type CollectionMetadataResolver,
   type GenericOperationApprovalRequestPayload,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {

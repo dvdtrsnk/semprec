@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { AGENT_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
 export async function enqueueSempMessage(

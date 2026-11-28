@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "CalendarFeature",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "CalendarFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
@@ -14,7 +14,7 @@ let project = Project(
             ],
             resources: ["Resources/**"]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "CalendarFeatureTests",
             for: "CalendarFeature",
             dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")]

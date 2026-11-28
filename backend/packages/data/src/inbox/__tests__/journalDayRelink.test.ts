@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
 import "../../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
@@ -127,7 +127,7 @@ describe("re-linking a trashed day's Inbox items to its new Journal entry (issue
 
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

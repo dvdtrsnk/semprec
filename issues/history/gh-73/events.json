@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvCJg",
         "number": 81,
         "title": "[implementation-audit-fixes] Close severe gaps from completed implementation audit — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/81",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/81",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "1b9baa131514e711f47e237321203f6ca60694046731d8aa21ace0694f22cbc2"
       }
@@ -70,8 +70,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kHCw",
         "number": 200,
         "title": "[mail-sync-hardening] Inbound mail hardening — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/200",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/200",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "0c007991ea500056df3571cd9ece04dc7baac82723cc3c32a5af47baec81b1ca"
       }
@@ -109,8 +109,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kHQw",
         "number": 201,
         "title": "[mail-sync-hardening 01/04] Fall back to bounded IMAP partial fetches",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/201",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/201",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "3b4bb37dbfa16c798c58b613bb26deb217810feb37a236afbb3d852d16452d82"
       }
@@ -148,8 +148,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kHbw",
         "number": 202,
         "title": "[mail-sync-hardening 02/04] Preserve Gmail Drive replacement links in message content",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/202",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/202",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "ab464ab19f553b50e7d46cef9744b5972b496565a5a24be6c8b0690803af63e6"
       }
@@ -187,8 +187,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kHmw",
         "number": 203,
         "title": "[mail-sync-hardening 03/04] Surface Graph item and reference attachments",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/203",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/203",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f83216d5abedc2b0699ffbd7c1183943a66aa8d12a2ab67e15a3564ebc98b6c7"
       }
@@ -226,17 +226,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kH0w",
         "number": 204,
         "title": "[mail-sync-hardening 04/04] Converge provider_message_id uniqueness conflicts",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/204",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/204",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c5c395bbb8b2ccda8973bcc1617385f1391198bd06b7e3365610538ce6130971"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854861",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/73#issuecomment-5465854861",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/73",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854861",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/73#issuecomment-5465854861",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/73",
     "id": 5465854861,
     "node_id": "IC_kwDOUFuQ4c8AAAABRcpTjQ",
     "user": {
@@ -266,7 +266,7 @@
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854861/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854861/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -305,7 +305,7 @@
   {
     "id": 30224401766,
     "node_id": "CE_lADOUFuQ4c8AAAABOt8wgs8AAAAHCYPFZg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30224401766",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30224401766",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

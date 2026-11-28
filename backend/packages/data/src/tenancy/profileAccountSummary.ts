@@ -1,7 +1,7 @@
 // Assembles the profile screen's account summary by calling each figure's owning function; it counts
 // nothing itself.
 import type { Pool } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { getAiUsageSummary } from "../aiGateway/aiUsageSummary.js";
 import { listActiveSessionsForUser } from "../auth/sessionsStore.js";
 import { withTransaction } from "../db/pool.js";

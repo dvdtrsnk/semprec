@@ -7,7 +7,7 @@ import { inflateRawSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -359,7 +359,7 @@ async function expectExportWithoutSecrets(mailboxId: string, secrets: readonly s
 }
 
 async function exportEntries(who: Caller): Promise<Array<{ name: string; content: Buffer }>> {
-  const root = await mkdtemp(join(tmpdir(), "semprec-mail-oauth-export-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-mail-oauth-export-"));
   try {
     const files = new LocalFsBlobStorageWriter(join(root, "files"));
     const mailAttachments = new LocalFsBlobStorageWriter(join(root, "mail"));
@@ -399,7 +399,7 @@ async function exportEntries(who: Caller): Promise<Array<{ name: string; content
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 
 beforeEach(async () => {
@@ -2017,7 +2017,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     }
 
     /**
-     * The root as `semprec-api` composes it for Gmail: the watch lifecycle reads the stored credential in
+     * The root as `alldots-api` composes it for Gmail: the watch lifecycle reads the stored credential in
      * `start()`.
      */
     function gmailWatchRoot(transport: GmailWatchTransport) {
@@ -2151,7 +2151,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       }),
       modifyMessageLabels: async () => undefined,
     };
-    const root = await mkdtemp(join(tmpdir(), "semprec-mail-reauth-sync-"));
+    const root = await mkdtemp(join(tmpdir(), "alldots-mail-reauth-sync-"));
     try {
       await runInTenant(caller.tenantId, async () => {
         const moduleIds = await withTransaction(runtime, resolveMailModuleIds);

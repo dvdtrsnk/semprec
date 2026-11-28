@@ -15,8 +15,8 @@ import type {
   ProjectAgentGuidance,
   ProjectAgentGuidanceStore,
   TransactionRunner,
-} from "@semprec/shared";
-import { fingerprintGuidanceDriftSubject, validateGuidanceDriftContradiction } from "@semprec/shared";
+} from "@alldots/shared";
+import { fingerprintGuidanceDriftSubject, validateGuidanceDriftContradiction } from "@alldots/shared";
 import { createAgentGuidanceDriftAction } from "../driftAction.js";
 import { GuidanceChangedError, GuidanceContextChangedError, GuidanceMissingError } from "../driftErrors.js";
 

@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
-    id("semprec.kmp")
+    id("alldots.kmp")
     // Generates the serializers of the wire DTOs in this module.
     alias(libs.plugins.kotlin.serialization)
 }

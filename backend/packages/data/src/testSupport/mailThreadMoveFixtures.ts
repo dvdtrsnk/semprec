@@ -26,7 +26,7 @@ const FOLDER_PROVIDER_IDS: Record<"gmail" | "imap", Record<MoveFolderKey, string
     drafts: "DRAFT",
     junk: "SPAM",
     trash: "TRASH",
-    archive: "semprec:archive",
+    archive: "alldots:archive",
   },
   imap: { inbox: "INBOX", sent: "Sent", drafts: "Drafts", junk: "Junk", trash: "Trash", archive: "Archive" },
 };

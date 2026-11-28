@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";

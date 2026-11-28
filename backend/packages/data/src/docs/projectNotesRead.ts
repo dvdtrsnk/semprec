@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { readPageBlocks, serializeBlocks } from "@semprec/block-model";
+import { readPageBlocks, serializeBlocks } from "@alldots/block-model";
 import { loadDocWithClient } from "./docPersistence.js";
 import { getDocByItemId } from "./docsStore.js";
 

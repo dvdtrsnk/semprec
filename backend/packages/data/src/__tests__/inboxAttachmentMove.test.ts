@@ -4,9 +4,9 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { runOnce, CORE_TASK_NAMES } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
@@ -35,7 +35,7 @@ import {
   listInboxAttachments,
   recordInboxAttachmentMetadata,
 } from "../inbox/inboxAttachmentsStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn, type ProposalStep } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
 import {
@@ -329,7 +329,7 @@ async function runHeldBlobOverlap<T>(
   rollbackFirst = false,
   assertCompetitor?: (result: Outcome<T>) => void,
 ): Promise<Outcome<T>> {
-  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  const runtime = await createRuntimeRolePool(pool, "alldots_data");
   let release = () => {};
   let firstReady = (_pid: number) => {};
   let secondReady = (_pid: number) => {};
@@ -480,8 +480,8 @@ async function inboxItemWithCard(text: string): Promise<{ inboxItemId: string; c
       type: taskType.id,
     }),
   );
-  const compute: ComputeSemprecProposalFn = async () => ({ properties: { name: text } });
-  const tick = createSemprecTickAction(pool, compute);
+  const compute: ComputeAlldotsProposalFn = async () => ({ properties: { name: text } });
+  const tick = createAlldotsTickAction(pool, compute);
   await tick(
     { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
     { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
@@ -933,7 +933,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       steps: (attachmentId: string) => ProposalStep[],
       body: (photo: { cardId: string; blobId: string; keys: string[]; directory: string }) => Promise<void>,
     ): Promise<void> {
-      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
+      const directory = await mkdtemp(join(tmpdir(), "alldots-move-derived-"));
       for (const [name, value] of Object.entries(env(directory))) vi.stubEnv(name, value);
       try {
         const { inboxItemId, cardId } = await inboxItemWithCard(text);
@@ -1017,7 +1017,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
   });
 
   it("keeps the original physical bytes through a move and later Files purge", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "semprec-move-bytes-"));
+    const directory = await mkdtemp(join(tmpdir(), "alldots-move-bytes-"));
     const storage = new LocalFsBlobStorageWriter(directory);
     const bytes = Buffer.from("owned photo attachment bytes");
     const storageKey = `blobs/${randomUUID()}`;
@@ -1122,7 +1122,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
       await attach(trashed, blobId);
       await storeSteps(source.cardId, [taskPrimary(), fileStep(attachment)]);
       await createChokePoint(pool).softDeleteItem(inboxId, trashed);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let purgePid: number | undefined;
       let confirmPid: number | undefined;
       let purgeAttempted = false;

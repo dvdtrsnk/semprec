@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { CreateGuidanceNotificationInput, GuidanceNotificationWriter } from "@semprec/shared";
+import type { CreateGuidanceNotificationInput, GuidanceNotificationWriter } from "@alldots/shared";
 import { createNotification } from "./createNotification.js";
 
 /**

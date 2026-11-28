@@ -27,10 +27,10 @@ export function isClusterExclusive(testPath: string, exclusiveFiles: ReadonlySet
   return exclusiveFiles.has(relative);
 }
 
-/** `semprec_test_w<pool id>`; the pool id is vitest's worker slot, stable for the run. */
+/** `alldots_test_w<pool id>`; the pool id is vitest's worker slot, stable for the run. */
 export function workerDatabaseName(poolId: string | undefined): string {
   if (poolId === undefined || !/^\d{1,4}$/.test(poolId)) {
     throw new Error(`workerDatabase: VITEST_POOL_ID is not a worker slot number (got ${JSON.stringify(poolId)})`);
   }
-  return `semprec_test_w${poolId}`;
+  return `alldots_test_w${poolId}`;
 }

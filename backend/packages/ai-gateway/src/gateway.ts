@@ -14,8 +14,8 @@ import {
   settleTokenGatewayCall,
   withTransaction,
   type AiGatewayCallRow,
-} from "@semprec/data";
-import { currentTenantScope } from "@semprec/shared";
+} from "@alldots/data";
+import { currentTenantScope } from "@alldots/shared";
 import { logger } from "./logger.js";
 import { announceTenantRefusal, type TenantRefusalNotice } from "./tenantRefusalAnnouncement.js";
 import type { AudioCallResult, GatewayCallContext, GlobalAiCaps, TokenCallResult } from "./types.js";

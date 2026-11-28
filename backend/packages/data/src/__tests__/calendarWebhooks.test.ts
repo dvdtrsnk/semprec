@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
@@ -32,8 +32,8 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 const GOOGLE_API = "https://www.googleapis.com/calendar/v3";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GRAPH_SUBSCRIPTIONS = "https://graph.microsoft.com/v1.0/subscriptions";
-const GOOGLE_WEBHOOK = "https://semprec.example.test/api/calendar/google/webhook";
-const GRAPH_WEBHOOK = "https://semprec.example.test/api/calendar/graph/webhook";
+const GOOGLE_WEBHOOK = "https://alldots.example.test/api/calendar/google/webhook";
+const GRAPH_WEBHOOK = "https://alldots.example.test/api/calendar/graph/webhook";
 const REFRESH_TOKEN = "1//refresh-token-of-the-account";
 const CLIENT = { clientId: "client-id", clientSecret: "client-secret" };
 const GOOGLE_GRANT = [
@@ -251,7 +251,7 @@ async function switchCalendarsOff(accountId: string) {
 describe("calendar push channels and webhooks", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   afterAll(async () => {
@@ -283,14 +283,14 @@ describe("calendar push channels and webhooks", () => {
 
   describe("router functions", () => {
     it.each(["route_google_calendar_channel", "route_graph_calendar_subscription"])(
-      "%s is a SECURITY DEFINER function of semprec_router returning tenant ids, run by semprec_data only",
+      "%s is a SECURITY DEFINER function of alldots_router returning tenant ids, run by alldots_data only",
       async (name) => {
         const signature = `${name}(text)`;
         const { rows } = await admin.query<Record<string, unknown>>(
           `SELECT p.prosecdef AS secdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config,
                   pg_get_function_result(p.oid) AS result,
-                  has_function_privilege('semprec_data', $2, 'EXECUTE') AS data,
-                  has_function_privilege('semprec_side', $2, 'EXECUTE') AS side,
+                  has_function_privilege('alldots_data', $2, 'EXECUTE') AS data,
+                  has_function_privilege('alldots_side', $2, 'EXECUTE') AS side,
                   has_function_privilege('public', $2, 'EXECUTE') AS pub
              FROM pg_proc p WHERE p.proname = $1`,
           [name, signature],
@@ -298,7 +298,7 @@ describe("calendar push channels and webhooks", () => {
         expect(rows).toEqual([
           {
             secdef: true,
-            owner: "semprec_router",
+            owner: "alldots_router",
             config: ["search_path=pg_catalog, public, pg_temp"],
             result: "TABLE(tenant_id uuid)",
             data: true,
@@ -309,19 +309,19 @@ describe("calendar push channels and webhooks", () => {
       },
     );
 
-    it("limits semprec_router to SELECT on the three columns the functions read", async () => {
+    it("limits alldots_router to SELECT on the three columns the functions read", async () => {
       const columns = ["tenant_id", "provider", "channel_id", "secret", "account_item_id", "resource_id"];
       const { rows } = await admin.query<{ table_select: boolean; columns: boolean[] }>(
-        `SELECT has_table_privilege('semprec_router', 'calendar_push_channels', 'SELECT') AS table_select,
-                array(SELECT has_column_privilege('semprec_router', 'calendar_push_channels', c, 'SELECT')
+        `SELECT has_table_privilege('alldots_router', 'calendar_push_channels', 'SELECT') AS table_select,
+                array(SELECT has_column_privilege('alldots_router', 'calendar_push_channels', c, 'SELECT')
                         FROM unnest($1::text[]) WITH ORDINALITY AS t(c, n) ORDER BY n) AS columns`,
         [columns],
       );
       expect(rows[0]).toEqual({ table_select: false, columns: [true, true, true, false, false, false] });
     });
 
-    it("semprec_side cannot call them", async () => {
-      const side = await createRuntimeRolePool(admin, "semprec_side");
+    it("alldots_side cannot call them", async () => {
+      const side = await createRuntimeRolePool(admin, "alldots_side");
       try {
         await expect(
           runAsSystem("test", () => side.query("SELECT tenant_id FROM route_google_calendar_channel('x')")),

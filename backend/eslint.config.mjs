@@ -64,16 +64,16 @@ export default tseslint.config(
   },
   {
     // Admin code runs in system scope and never enters a tenant. dependency-cruiser rules are
-    // file-level and @semprec/shared resolves to one entry file, so only ESLint can forbid the
+    // file-level and @alldots/shared resolves to one entry file, so only ESLint can forbid the
     // single named export (docs/adr/2026-10-17-admin-role-without-content-access.md).
-    files: ["services/semprec-api/src/adminHandler.ts", "packages/data/src/tenancy/accountsAdminStore.ts"],
+    files: ["services/alldots-api/src/adminHandler.ts", "packages/data/src/tenancy/accountsAdminStore.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           paths: [
             {
-              name: "@semprec/shared",
+              name: "@alldots/shared",
               importNames: ["runInTenant"],
               message:
                 "Admin code runs in system scope and never enters a tenant (docs/adr/2026-10-17-admin-role-without-content-access.md).",
@@ -84,7 +84,7 @@ export default tseslint.config(
     },
   },
   {
-    // Production backend code logs through `createLogger` (@semprec/shared), which redacts secret
+    // Production backend code logs through `createLogger` (@alldots/shared), which redacts secret
     // fields and error text and binds the trace context and tenantId. A `console.*` call gets none
     // of that. Exempt: test code; `*Cli.ts` files, whose stdout and stderr are their interface;
     // `packages/release`, a developer tool; and `packages/realtime-client`, a client library whose

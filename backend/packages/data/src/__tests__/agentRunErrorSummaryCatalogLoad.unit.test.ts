@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleCatalogs } from "@alldots/module-registry";
 
 const loadModuleCatalogs = vi.hoisted(() => vi.fn<(modulePath: string) => Promise<ModuleCatalogs>>());
 
-vi.mock("@semprec/module-registry", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@semprec/module-registry")>()),
+vi.mock("@alldots/module-registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@alldots/module-registry")>()),
   loadModuleCatalogs,
 }));
 

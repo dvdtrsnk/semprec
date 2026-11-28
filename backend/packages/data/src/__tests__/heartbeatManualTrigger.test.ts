@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
@@ -93,7 +93,7 @@ async function forceJobState(key: string, state: { attempts: number; locked: boo
   );
 }
 
-async function semprecProjectItemId(): Promise<string> {
+async function alldotsProjectItemId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
     "SELECT id FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'projects') LIMIT 1",
   );
@@ -103,7 +103,7 @@ async function semprecProjectItemId(): Promise<string> {
 }
 
 async function createAgentHeartbeat(): Promise<string> {
-  const projectItemId = await semprecProjectItemId();
+  const projectItemId = await alldotsProjectItemId();
   const heartbeat = await withTransaction(pool, (client) =>
     createHeartbeat(client, {
       projectItemId,
@@ -448,7 +448,7 @@ describe("manual heartbeat trigger over HTTP (issue #1453)", () => {
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'");
     const database = rows[0];
     if (!database) throw new Error("the seeded projects database is missing");
-    const projectItemId = await semprecProjectItemId();
+    const projectItemId = await alldotsProjectItemId();
     const heartbeat = await withTransaction(pool, (client) =>
       createHeartbeat(client, {
         projectItemId,
@@ -477,7 +477,7 @@ describe("manual heartbeat trigger over HTTP (issue #1453)", () => {
 
   it("the agent tool keeps its earlier results: it enqueues while a run is running and merges a repeat into a waiting job", async () => {
     const heartbeatId = await createAgentHeartbeat();
-    const projectItemId = await semprecProjectItemId();
+    const projectItemId = await alldotsProjectItemId();
     await createAgentRun(pool, { projectItemId, heartbeatId, triggeredBy: "heartbeat", task: "running now" });
     const firstCaller = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "trigger" });
     const secondCaller = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "trigger again" });

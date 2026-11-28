@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@semprec/queue";
+import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@alldots/queue";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 let pool: Pool;
@@ -17,7 +17,7 @@ interface ProbeRun {
  */
 const UNAFFINITIZED_OVERLAP_WAIT_MS = 5_000;
 
-describe("production concurrency: semprec-tick serializes, unaffinitized jobs run in parallel (issue #705)", () => {
+describe("production concurrency: alldots-tick serializes, unaffinitized jobs run in parallel (issue #705)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
@@ -33,7 +33,7 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
     await pool?.end();
   });
 
-  it("serializes jobs on the semprec-tick queue but runs unaffinitized jobs concurrently", async () => {
+  it("serializes jobs on the alldots-tick queue but runs unaffinitized jobs concurrently", async () => {
     delete process.env.QUEUE_CONCURRENCY;
 
     const tickRuns: ProbeRun[] = [];
@@ -67,7 +67,7 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
         ) {
           throw new Error(`probe payload must be an object with a string queue, got ${JSON.stringify(payload)}`);
         }
-        if (payload.queue === "semprec-tick") {
+        if (payload.queue === "alldots-tick") {
           const start = Date.now();
           await new Promise((resolve) => setTimeout(resolve, 300));
           tickRuns.push({ start, end: Date.now() });
@@ -81,8 +81,8 @@ describe("production concurrency: semprec-tick serializes, unaffinitized jobs ru
 
     runner = await runWorker({ pgPool: pool, taskList, noHandleSignals: true });
 
-    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" }));
-    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "semprec-tick" }, { queueName: "semprec-tick" }));
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "alldots-tick" }, { queueName: "alldots-tick" }));
+    await inTenantZero(() => enqueueJob(pool, "probe", { queue: "alldots-tick" }, { queueName: "alldots-tick" }));
     await inTenantZero(() => enqueueJob(pool, "probe", { queue: "none" }));
     await inTenantZero(() => enqueueJob(pool, "probe", { queue: "none" }));
 

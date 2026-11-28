@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { AiGatewayFailedError } from "@semprec/shared";
+import { AiGatewayFailedError } from "@alldots/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -15,7 +15,7 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { publishInboxCardChange } from "../inboxCardsRealtime.js";
 import { confirmProposalWithClient, rejectProposalWithClient } from "../proposalActions.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inboxTickAction.js";
 
 let pool: Pool;
 
@@ -84,8 +84,8 @@ describe("inboxCards invalidations from the writers of Processing proposals card
     return item.id;
   }
 
-  function tick(itemId: string, computeProposal: ComputeSemprecProposalFn, isFinalAttempt = false): Promise<void> {
-    return createSemprecTickAction(pool, computeProposal)(
+  function tick(itemId: string, computeProposal: ComputeAlldotsProposalFn, isFinalAttempt = false): Promise<void> {
+    return createAlldotsTickAction(pool, computeProposal)(
       {
         inboxDatabaseId: inboxId,
         inboxItemTypesDatabaseId: typesId,
@@ -95,8 +95,8 @@ describe("inboxCards invalidations from the writers of Processing proposals card
     );
   }
 
-  const proposes: ComputeSemprecProposalFn = async () => ({ properties: { name: "Buy milk" } });
-  const failsWithBudget: ComputeSemprecProposalFn = async () => {
+  const proposes: ComputeAlldotsProposalFn = async () => ({ properties: { name: "Buy milk" } });
+  const failsWithBudget: ComputeAlldotsProposalFn = async () => {
     throw new AiGatewayFailedError("budget_exceeded");
   };
 

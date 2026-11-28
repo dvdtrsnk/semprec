@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Pool } from "pg";
-import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runAsSystem, runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { listItems } from "../chokePoint/itemsStore.js";
 import {

@@ -1,5 +1,5 @@
 import type { Readable } from "node:stream";
-import { BlobReadCleanupError, settleBlobReadStream, type BlobReadCleanupBudget } from "@semprec/shared";
+import { BlobReadCleanupError, settleBlobReadStream, type BlobReadCleanupBudget } from "@alldots/shared";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 
 export type BlobRootName = "files" | "mailAttachments";

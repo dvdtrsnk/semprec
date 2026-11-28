@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 
 export type AuthMailKind = "passwordReset" | "invite";

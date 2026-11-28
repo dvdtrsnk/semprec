@@ -21,7 +21,7 @@ Transactions and side effects are in [transactions-and-side-effects.md](transact
   trusts the type. It does not re-check states the types exclude and has no defensive "cannot
   happen" branches. A check that guards a write against persisted state belongs in the write's own
   transaction (see [Application port](#application-port)), not in a second validation layer.
-- Shared validators live in `backend/services/semprec-api/src/adapter/requestValidation.ts`
+- Shared validators live in `backend/services/alldots-api/src/adapter/requestValidation.ts`
   (`assertUuid`, `requireJsonObjectBody`, …) and in the catalog's Zod schemas
   (`GENERIC_OPERATION_BINDINGS`, `parseOperationInput`).
 
@@ -71,7 +71,7 @@ same generic catalog.
   `single-consumer-read`, and may raise the route's body cap with `maxBodyBytes`. CRUD over module data belongs on the generic endpoints instead. A custom
   route still writes item and database state only through the choke point.
 - `ModuleRegistry` refuses, at startup, two modules that claim the same method and path text.
-  `semprec-api` mounts the active set (`getCustomRouteDefinitions()`) through the shared adapter.
+  `alldots-api` mounts the active set (`getCustomRouteDefinitions()`) through the shared adapter.
 - Matching follows declaration order: modules in load order, then each module's routes in manifest
   order, and the first match wins (`mountRoutes`, `adapter/routeTable.ts`). Routes are not ranked by
   specificity. When two routes of one method in one manifest overlap, the narrower is declared
@@ -133,7 +133,7 @@ same generic catalog.
 
 ### Channels and tenant envelope
 
-- `semprec_events` and `semprec_agent_stream` (`backend/packages/realtime/src/pgNotifyPublisher.ts`)
+- `alldots_events` and `alldots_agent_stream` (`backend/packages/realtime/src/pgNotifyPublisher.ts`)
   carry `{ "tenantId": <uuid>, "message": … }`. Postgres builds the envelope with
   `app_tenant_default()` in the publishing statement, never from the message body. `session_revoked`
   takes the tenant of the session's user instead.
@@ -208,7 +208,7 @@ feature can avoid taking a URL at all, it does.
   permanent failure and revokes the subscription.
 - `allowLoopbackOutboundForTests()` throws unless `NODE_ENV=test` and is exported only from test
   support.
-- Host egress filtering by service uid (`deploy/README.md`, "Egress of uid semprec") stays the second
+- Host egress filtering by service uid (`deploy/README.md`, "Egress of uid alldots") stays the second
   layer.
 
 ### Timeouts, caps and release
@@ -281,7 +281,7 @@ Test it through the real route, not a shared test transaction.
 
 ## Shutdown
 
-- A process stops in dependency order. In `semprec-api` (`src/shutdown.ts`) the order is:
+- A process stops in dependency order. In `alldots-api` (`src/shutdown.ts`) the order is:
   1. the tenant deactivation listener, bounded by `LISTENER_CLOSE_TIMEOUT_MS`;
   2. the sync server (1012 to every client, `LISTEN` released);
   3. the HTTP drain (`SHUTDOWN_DRAIN_TIMEOUT_MS`, then `closeAllConnections`);
@@ -302,9 +302,9 @@ Test it through the real route, not a shared test transaction.
 - A workspace package that a compiled entry reaches has `main: dist/index.js`, `types: src/index.ts`,
   and a root export with the ordered conditions `types: ./src/index.ts`, `browser: ./src/index.ts`,
   `default: ./dist/index.js`. Plain Node loads the build, and type checking and browser consumers
-  use source. Subpaths get an entry only where they already exist (`@semprec/queue` and
-  `@semprec/data` `./testSupport`).
-- The three backend Vitest configs alias each such root, spelled exactly `^@semprec/<name>$`, to its
+  use source. Subpaths get an entry only where they already exist (`@alldots/queue` and
+  `@alldots/data` `./testSupport`).
+- The three backend Vitest configs alias each such root, spelled exactly `^@alldots/<name>$`, to its
   `src/index.ts`, so the test tiers run against source.
 - `backend/scripts/check-native-entrypoints.mjs`, run by `deploy/deploy.sh` after the build and
   before migrations or promotion, starts every compiled entry with only `PATH` and `HOME` set. Each

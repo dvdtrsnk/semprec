@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
-import { currentTenantScope, type HiddenRelationTarget, type SempMessageRef } from "@semprec/shared";
+import { currentTenantScope, type HiddenRelationTarget, type SempMessageRef } from "@alldots/shared";
 import { requireManagedTransaction } from "../db/pool.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { projectItemsForRead } from "../chokePoint/itemReadProjection.js";

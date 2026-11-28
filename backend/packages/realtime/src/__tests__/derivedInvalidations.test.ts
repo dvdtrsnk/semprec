@@ -25,7 +25,7 @@ import {
   updateItemWithClient,
   upsertMcpToolRegistration,
   withTransaction,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -34,9 +34,9 @@ import {
   getTestPool,
   resetDatabase,
   tenantForNextTestUser,
-} from "@semprec/data/testSupport";
-import { allowLoopbackOutboundForTests, startHttpContractServer } from "@semprec/data/testSupport/mcpContractServers";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { allowLoopbackOutboundForTests, startHttpContractServer } from "@alldots/data/testSupport/mcpContractServers";
+import { runInTenant } from "@alldots/shared";
 import { publishRealtimeMessage } from "../pgNotifyPublisher.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
 import { wireRealtimeHooks } from "../wireHooks.js";
@@ -44,8 +44,8 @@ import { wireRealtimeHooks } from "../wireHooks.js";
 const { realtimeWarn } = vi.hoisted(() => ({ realtimeWarn: vi.fn() }));
 
 // Only the realtime package's own logger is replaced so its warnings can be asserted.
-vi.mock("@semprec/shared", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/shared")>();
+vi.mock("@alldots/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/shared")>();
   return {
     ...actual,
     createLogger: (name: string) =>
@@ -75,7 +75,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<vo
 
 /** Hand-publishes an envelope, as a foreign or misbehaving publisher could. */
 async function notifyEnvelope(tenantId: string, message: unknown): Promise<void> {
-  await pool.query("SELECT pg_notify($1, $2)", ["semprec_events", JSON.stringify({ tenantId, message })]);
+  await pool.query("SELECT pg_notify($1, $2)", ["alldots_events", JSON.stringify({ tenantId, message })]);
 }
 
 interface Inbox {
@@ -925,7 +925,7 @@ describe("derived realtime invalidations (issues #1863, #1866, #1868, #1918, #19
     beforeAll(async () => {
       // The http contract server listens on loopback, which the default outbound policy refuses.
       restoreOutboundPolicy = allowLoopbackOutboundForTests();
-      runtimePool = await createRuntimeRolePool(getTestPool(), "semprec_data");
+      runtimePool = await createRuntimeRolePool(getTestPool(), "alldots_data");
     });
 
     afterAll(async () => {

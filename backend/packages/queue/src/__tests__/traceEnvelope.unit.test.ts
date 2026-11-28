@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getTraceContext, withTraceContext } from "@semprec/shared";
+import { getTraceContext, withTraceContext } from "@alldots/shared";
 import { enqueueJob, queueJobEnvelopeSchema, registerTask } from "../index.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -1,7 +1,7 @@
 // Stores the first response of a card action per Idempotency-Key.
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
-import { canonicalizeJson, type TenantScope } from "@semprec/shared";
+import { canonicalizeJson, type TenantScope } from "@alldots/shared";
 import { requireManagedTransaction, requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 

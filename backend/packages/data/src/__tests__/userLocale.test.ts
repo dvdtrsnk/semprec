@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant } from "../testSupport/tenantFixtures.js";
 import type { SupportedLocale } from "../auth/locales.js";
@@ -79,7 +79,7 @@ async function oneLocaleUpdateWaits(): Promise<void> {
 describe("updateUserLocale (issue #1704)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

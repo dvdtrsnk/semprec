@@ -15,7 +15,7 @@ import { POLICY_FILE, RULES, checkArchitecture, isIgnoredName } from "./architec
 const SCRIPT = fileURLToPath(new URL("./architecture.mjs", import.meta.url));
 const MOBILE = path.resolve(path.dirname(SCRIPT), "..");
 
-const KOTLIN = "kotlin/cz/semprec/app";
+const KOTLIN = "kotlin/cz/alldots/app";
 const PRESENTATION = `shared/presentation/src/commonMain/${KOTLIN}/presentation`;
 const HOME_FEATURE = `android/feature/home/src/main/${KOTLIN}/feature/home/presentation/screen`;
 const AUTH_MODULE = "apple/Modules/Features/Auth";
@@ -29,7 +29,7 @@ const APP_MANIFEST = "apple/Projects/App/Project.swift";
 const UI_TESTS = "apple/Projects/App/UITests";
 
 /** An abstract screen ViewModel between ScreenViewModel and the concrete ones. */
-const LIST_VIEW_MODEL = "package cz.semprec.app.presentation\n\nabstract class ListViewModel : ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n";
+const LIST_VIEW_MODEL = "package cz.alldots.app.presentation\n\nabstract class ListViewModel : ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n";
 
 const temporaryDirectories = [];
 after(() => {
@@ -217,7 +217,7 @@ describe("ARCH-APPLE", () => {
 
   it("fails a declared target without a policy entry", () => {
     const root = copyOfTree();
-    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'SemprecProject.tests("DesignSystemTests", for: "DesignSystem"),', 'SemprecProject.tests("DesignSystemTests", for: "DesignSystem"),\n        SemprecProject.tests("ProbeTests", for: "DesignSystem"),');
+    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'AlldotsProject.tests("DesignSystemTests", for: "DesignSystem"),', 'AlldotsProject.tests("DesignSystemTests", for: "DesignSystem"),\n        AlldotsProject.tests("ProbeTests", for: "DesignSystem"),');
     assertViolations(root, ["ARCH-APPLE"], /declares target ProbeTests, which has no entry in apple.targets/);
   });
 
@@ -235,30 +235,30 @@ describe("ARCH-APPLE", () => {
 
   it("fails a target name it cannot resolve to a string", () => {
     const root = copyOfTree();
-    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'SemprecProject.framework("DesignSystem"', "SemprecProject.framework(designSystemName");
+    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'AlldotsProject.framework("DesignSystem"', "AlldotsProject.framework(designSystemName");
     assertViolations(root, ["ARCH-APPLE"], /cannot resolve the target name designSystemName to a string/, /apple.targets lists DesignSystem, which no Project.swift/);
   });
 
   it("allows the UI tests' dependency on their app under test, and fails an import of that app", () => {
     const root = copyOfTree();
-    write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\n@testable import Semprec\n");
-    const violations = assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports Semprec, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\); Semprec is its appUnderTest, which a UI test drives from outside and never imports/);
+    write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\n@testable import Alldots\n");
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AlldotsUITests imports Alldots, which apple.targets.AlldotsUITests.allowed does not list \(allowed: none\); Alldots is its appUnderTest, which a UI test drives from outside and never imports/);
     assert.deepEqual(violations.map((v) => [v.file, v.line]), [[`${UI_TESTS}/ImportProbe.swift`, 2]]);
   });
 
   it("fails an import of an app module in the UI tests, and a dependency on one", () => {
     const root = copyOfTree();
     write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\nimport AuthFeature\n");
-    assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports AuthFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)$/, /SemprecUITests imports AuthFeature without declaring it/);
+    assertViolations(root, ["ARCH-APPLE"], /AlldotsUITests imports AuthFeature, which apple.targets.AlldotsUITests.allowed does not list \(allowed: none\)$/, /AlldotsUITests imports AuthFeature without declaring it/);
     const other = copyOfTree();
     replace(other, APP_MANIFEST, "dependencies: [.target(name: app)]", 'dependencies: [.target(name: app), .project(target: "AuthFeature", path: "../../Modules/Features/Auth")]');
-    assertViolations(other, ["ARCH-APPLE"], /SemprecUITests depends on AuthFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)/);
+    assertViolations(other, ["ARCH-APPLE"], /AlldotsUITests depends on AuthFeature, which apple.targets.AlldotsUITests.allowed does not list \(allowed: none\)/);
   });
 
   it("fails a UI test target without a dependency on its app under test", () => {
     const root = copyOfTree();
     replace(root, APP_MANIFEST, "dependencies: [.target(name: app)]", "dependencies: []");
-    const violations = assertViolations(root, ["ARCH-APPLE"], /SemprecUITests does not depend on Semprec, its apple.targets.SemprecUITests.appUnderTest, so it has no app to launch/);
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AlldotsUITests does not depend on Alldots, its apple.targets.AlldotsUITests.appUnderTest, so it has no app to launch/);
     assert.equal(violations.length, 1);
     assert.equal(violations[0].file, APP_MANIFEST);
   });
@@ -270,8 +270,8 @@ describe("ARCH-APPLE", () => {
     replace(root, APP_MANIFEST, '"Sources/AppIdentifiers.swift",', '"Sources/AppIdentifiers.swift",\n                "../../Modules/Features/Auth/Sources/AuthIdentifiers.swift",');
     write(root, authIdentifiers, `import CoreKit\n${readFileSync(path.join(MOBILE, authIdentifiers), "utf8")}`);
     write(root, appIdentifiers, `import NavigatorUI\n${readFileSync(path.join(MOBILE, appIdentifiers), "utf8")}`);
-    const violations = assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports CoreKit, which apple.targets.SemprecUITests.allowed does not list/, /SemprecUITests imports NavigatorUI, which apple.targets.SemprecUITests.allowed does not list/);
-    assert.ok(violations.every((v) => v.message.startsWith("SemprecUITests ") && v.line === 1), violations.map((v) => v.message).join("\n"));
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AlldotsUITests imports CoreKit, which apple.targets.AlldotsUITests.allowed does not list/, /AlldotsUITests imports NavigatorUI, which apple.targets.AlldotsUITests.allowed does not list/);
+    assert.ok(violations.every((v) => v.message.startsWith("AlldotsUITests ") && v.line === 1), violations.map((v) => v.message).join("\n"));
     assert.deepEqual([...new Set(violations.map((v) => v.file))].sort(), [appIdentifiers, authIdentifiers].sort());
   });
 
@@ -279,26 +279,26 @@ describe("ARCH-APPLE", () => {
     const root = copyOfTree();
     write(root, "apple/Modules/Core/CoreKit/Sources/Probe.swift", "import SharedSDK\n");
     replace(root, APP_MANIFEST, '"Sources/AppIdentifiers.swift",', '"Sources/AppIdentifiers.swift",\n                "../../Modules/Core/CoreKit/Sources/Probe.swift",');
-    const violations = assertViolations(root, ["ARCH-APPLE"], /SemprecUITests compiles this file, which imports the Kotlin framework SharedSDK; apple.targets.SemprecUITests.allowed does not list it/);
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AlldotsUITests compiles this file, which imports the Kotlin framework SharedSDK; apple.targets.AlldotsUITests.allowed does not list it/);
     assert.deepEqual(violations.map((v) => [v.file, v.line]), [["apple/Modules/Core/CoreKit/Sources/Probe.swift", 1]]);
   });
 
   it("fails a UI tests source it cannot check: a glob outside their directory, a missing file, an unresolvable path", () => {
     const glob = copyOfTree();
     replace(glob, APP_MANIFEST, '"Sources/AppIdentifiers.swift",', '"Sources/AppIdentifiers.swift",\n                "../../Modules/Features/Auth/Sources/**",');
-    assertViolations(glob, ["ARCH-APPLE"], /SemprecUITests compiles ..\/..\/Modules\/Features\/Auth\/Sources\/\*\*, which is neither below its apple.targets.SemprecUITests.sources \(UITests\) nor one Swift file/);
+    assertViolations(glob, ["ARCH-APPLE"], /AlldotsUITests compiles ..\/..\/Modules\/Features\/Auth\/Sources\/\*\*, which is neither below its apple.targets.AlldotsUITests.sources \(UITests\) nor one Swift file/);
     const missing = copyOfTree();
     replace(missing, APP_MANIFEST, '"Sources/AppIdentifiers.swift"', '"Sources/AppIdentifierz.swift"');
-    assertViolations(missing, ["ARCH-APPLE"], /SemprecUITests compiles Sources\/AppIdentifierz.swift, which does not exist/);
+    assertViolations(missing, ["ARCH-APPLE"], /AlldotsUITests compiles Sources\/AppIdentifierz.swift, which does not exist/);
     const unresolved = copyOfTree();
     replace(unresolved, APP_MANIFEST, '"Sources/AppIdentifiers.swift"', "appIdentifiersFile");
-    assertViolations(unresolved, ["ARCH-APPLE"], /SemprecUITests: cannot resolve the source appIdentifiersFile to a path/);
+    assertViolations(unresolved, ["ARCH-APPLE"], /AlldotsUITests: cannot resolve the source appIdentifiersFile to a path/);
   });
 
   it("fails an appUnderTest that apple.targets does not list, and the dependency it would have allowed", () => {
     const root = copyOfTree();
-    editPolicy(root, (policy) => (policy.apple.targets.SemprecUITests.appUnderTest = "SemprecMac"));
-    assertViolations(root, ["ARCH-APPLE"], /apple.targets.SemprecUITests.appUnderTest is "SemprecMac", which apple.targets does not list/, /SemprecUITests depends on Semprec, which apple.targets.SemprecUITests.allowed does not list/, /SemprecUITests does not depend on SemprecMac/);
+    editPolicy(root, (policy) => (policy.apple.targets.AlldotsUITests.appUnderTest = "AlldotsMac"));
+    assertViolations(root, ["ARCH-APPLE"], /apple.targets.AlldotsUITests.appUnderTest is "AlldotsMac", which apple.targets does not list/, /AlldotsUITests depends on Alldots, which apple.targets.AlldotsUITests.allowed does not list/, /AlldotsUITests does not depend on AlldotsMac/);
   });
 
   it("fails a dependency name it cannot resolve to a string", () => {
@@ -312,7 +312,7 @@ describe("KMP-COMMON", () => {
   it("fails every platform import prefix in commonMain", () => {
     const root = copyOfTree();
     const imports = ["android.os.Build", "androidx.compose.runtime.Composable", "java.util.UUID", "javax.inject.Inject", "platform.Foundation.NSUUID", "kotlinx.cinterop.CPointer"];
-    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.semprec.app.domain\n", `package cz.semprec.app.domain\n\n${imports.map((name) => `import ${name}`).join("\n")}\n`);
+    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.alldots.app.domain\n", `package cz.alldots.app.domain\n\n${imports.map((name) => `import ${name}`).join("\n")}\n`);
     const violations = assertViolations(root, ["KMP-COMMON"]);
     assert.deepEqual(violations.map((v) => v.line), [3, 4, 5, 6, 7, 8]);
     for (const name of imports) assert.ok(violations.some((v) => v.message.includes(`platform API ${name} `)), name);
@@ -412,7 +412,7 @@ describe("VM-BRIDGE", () => {
 
   it("fails a new ViewModel without test, bridge and screen once for each", () => {
     const root = copyOfTree();
-    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() :\n    ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n");
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.alldots.app.presentation\n\nclass FixtureViewModel internal constructor() :\n    ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n");
     const violations = assertViolations(root, ["VM-BRIDGE"], /no FixtureViewModelTest.kt/, /FixtureViewModel has 0 CoreKit bridges/, /takes FixtureViewModel as a parameter/);
     assert.equal(violations.length, 3);
   });
@@ -426,7 +426,7 @@ describe("VM-BRIDGE", () => {
   it("fails a concrete ViewModel that extends ScreenViewModel through an abstract one, once for each requirement", () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.alldots.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
     const violations = assertViolations(root, ["VM-BRIDGE"], /no FixtureViewModelTest.kt/, /FixtureViewModel has 0 CoreKit bridges/, /takes FixtureViewModel as a parameter/);
     assert.equal(violations.length, 3);
     assert.ok(violations.every((v) => v.file === `${PRESENTATION}/FixtureViewModel.kt` && v.line === 3));
@@ -435,7 +435,7 @@ describe("VM-BRIDGE", () => {
   it("follows the inheritance through several classes, and ends a cycle instead of following it", { timeout: 20_000 }, () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `${PRESENTATION}/Deep.kt`, "package cz.semprec.app.presentation\n\nabstract class PagedViewModel : ListViewModel()\n\nclass DeepViewModel : PagedViewModel()\n\nabstract class LoopA : LoopB()\n\nabstract class LoopB : LoopA()\n\nclass LoopViewModel : LoopA()\n");
+    write(root, `${PRESENTATION}/Deep.kt`, "package cz.alldots.app.presentation\n\nabstract class PagedViewModel : ListViewModel()\n\nclass DeepViewModel : PagedViewModel()\n\nabstract class LoopA : LoopB()\n\nabstract class LoopB : LoopA()\n\nclass LoopViewModel : LoopA()\n");
     const violations = assertViolations(root, ["VM-BRIDGE"], /no DeepViewModelTest.kt/, /DeepViewModel has 0 CoreKit bridges/, /takes DeepViewModel as a parameter/);
     assert.equal(violations.length, 3);
   });
@@ -443,7 +443,7 @@ describe("VM-BRIDGE", () => {
   it("fails a CoreKit class that stores an indirect, an abstract or the base ViewModel type without a lease", () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.alldots.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
     write(root, `${COREKIT_SHARED}/LeaselessBridges.swift`, "final class FixtureBridge {\n    private let viewModel: SharedSDK.FixtureViewModel\n}\n\nfinal class ListBridge {\n    private let viewModel: SharedSDK.ListViewModel\n}\n\nfinal class BaseBridge {\n    private let viewModel: ScreenViewModel<AnyObject, AnyObject, AnyObject>\n}\n");
     const violations = assertViolations(root, ["VM-BRIDGE"]);
     for (const bridge of ["FixtureBridge", "ListBridge", "BaseBridge"]) {
@@ -474,22 +474,22 @@ describe("NAV-OWNERSHIP", () => {
 
   it("fails a navigation controller in a *ViewModel.kt file of the app module", () => {
     const root = copyOfTree();
-    write(root, `android/app/src/main/${KOTLIN}/ProbeViewModel.kt`, "package cz.semprec.app\n\nimport androidx.navigation.NavHostController\n\ninternal fun probe(stack: NavHostController) = stack\n");
+    write(root, `android/app/src/main/${KOTLIN}/ProbeViewModel.kt`, "package cz.alldots.app\n\nimport androidx.navigation.NavHostController\n\ninternal fun probe(stack: NavHostController) = stack\n");
     assertViolations(root, ["NAV-OWNERSHIP"], /imports androidx.navigation.NavHostController in a ViewModel/, /uses NavHostController in a ViewModel/);
   });
 
   it("fails a navigation controller in a class of the app module that extends a shared ViewModel through another", () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `android/app/src/main/${KOTLIN}/Probe.kt`, "package cz.semprec.app\n\nimport cz.semprec.app.presentation.ListViewModel\n\ninternal class ProbeModel : ListViewModel() {\n    fun controller(): NavController? = null\n}\n");
+    write(root, `android/app/src/main/${KOTLIN}/Probe.kt`, "package cz.alldots.app\n\nimport cz.alldots.app.presentation.ListViewModel\n\ninternal class ProbeModel : ListViewModel() {\n    fun controller(): NavController? = null\n}\n");
     const [found] = assertViolations(root, ["NAV-OWNERSHIP"], /uses NavController in a ViewModel/);
     assert.equal(found.file, `android/app/src/main/${KOTLIN}/Probe.kt`);
   });
 
   it("fails a navigation controller in a class of the app module that extends the module's own ViewModel base", () => {
     const root = copyOfTree();
-    write(root, `android/app/src/main/${KOTLIN}/AppModel.kt`, "package cz.semprec.app\n\nimport androidx.lifecycle.ViewModel\n\nabstract class AppModel : ViewModel()\n");
-    write(root, `android/app/src/main/${KOTLIN}/Probe.kt`, "package cz.semprec.app\n\ninternal class ProbeModel : AppModel() {\n    fun controller(): NavHostController? = null\n}\n");
+    write(root, `android/app/src/main/${KOTLIN}/AppModel.kt`, "package cz.alldots.app\n\nimport androidx.lifecycle.ViewModel\n\nabstract class AppModel : ViewModel()\n");
+    write(root, `android/app/src/main/${KOTLIN}/Probe.kt`, "package cz.alldots.app\n\ninternal class ProbeModel : AppModel() {\n    fun controller(): NavHostController? = null\n}\n");
     assertViolations(root, ["NAV-OWNERSHIP"], /uses NavHostController in a ViewModel/);
   });
 
@@ -586,7 +586,7 @@ describe("COPY-PARITY", () => {
     replace(root, appValues, ' translatable="false"', "");
     assertViolations(root, ["COPY-PARITY"], /app_name is listed in androidUntranslatable but lacks translatable="false"/);
     const other = copyOfTree();
-    replace(other, appValues, '    <string name="app_name" translatable="false">Semprec</string>\n', "");
+    replace(other, appValues, '    <string name="app_name" translatable="false">Alldots</string>\n', "");
     assertViolations(other, ["COPY-PARITY"], /:android:app lacks the untranslatable string app_name/);
   });
 
@@ -633,7 +633,7 @@ describe("COPY-PARITY", () => {
     replace(root, homeValuesCs, '<string name="home_empty">Zatím tu nejsou žádné položky.</string>', '<string name="home_empty"></string>');
     replace(root, homeValues, '<string name="home_title">Home</string>', '<string name="home_title">""</string>');
     replace(root, "android/feature/settings/src/main/res/values-cs/strings.xml", '<string name="about_done">Hotovo</string>', '<string name="about_done" />');
-    replace(root, appValues, '>Semprec</string>', ">  </string>");
+    replace(root, appValues, '>Alldots</string>', ">  </string>");
     const violations = assertViolations(root, ["COPY-PARITY"], /^home_empty has an empty Czech translation$/, /^home_title has an empty English value$/, /^about_done has an empty Czech translation$/, /^app_name has an empty value$/);
     assert.equal(violations.length, 4);
     const other = copyOfTree();
@@ -677,7 +677,7 @@ describe("COPY-PARITY", () => {
   it("fails a missing Apple copy key", () => {
     const root = copyOfTree();
     editJson(root, APP_CATALOG, (catalog) => delete catalog.strings["tab.journal"]);
-    assertViolations(root, ["COPY-PARITY"], /Semprec lacks the key tab.journal/);
+    assertViolations(root, ["COPY-PARITY"], /Alldots lacks the key tab.journal/);
   });
 
   it("fails the Android-only key in a String Catalog, and any other key the policy does not list", () => {
@@ -687,7 +687,7 @@ describe("COPY-PARITY", () => {
       catalog.strings["tab.home"] = { localizations: { en: unit("Home"), cs: unit("Domů") } };
       catalog.strings["home.subtitle"] = { localizations: { en: unit("Subtitle"), cs: unit("Podtitul") } };
     });
-    assertViolations(root, ["COPY-PARITY"], /has the key tab.home, but it is Android-only/, /has the key home.subtitle, but it is not a copy key of Semprec/);
+    assertViolations(root, ["COPY-PARITY"], /has the key tab.home, but it is Android-only/, /has the key home.subtitle, but it is not a copy key of Alldots/);
   });
 
   it("fails a String Catalog that is not valid JSON, and a target without a catalog", () => {
@@ -697,7 +697,7 @@ describe("COPY-PARITY", () => {
     const other = copyOfTree();
     remove(other, APP_CATALOG);
     remove(other, APP_CATALOG.replace("Localizable.xcstrings", "InfoPlist.xcstrings"));
-    assertViolations(other, ["COPY-PARITY"], /Semprec has no String Catalog/, /Semprec lacks the key tab.overview/);
+    assertViolations(other, ["COPY-PARITY"], /Alldots has no String Catalog/, /Alldots lacks the key tab.overview/);
   });
 
   it("fails a String Catalog of no copy entry, and a copy entry naming no Apple target", () => {
@@ -730,7 +730,7 @@ describe("WRAPPER", () => {
 describe("the command", () => {
   it("exits 1 and prints each violation with its file and line", () => {
     const root = copyOfTree();
-    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.semprec.app.domain\n", "package cz.semprec.app.domain\n\nimport java.util.UUID\n");
+    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.alldots.app.domain\n", "package cz.alldots.app.domain\n\nimport java.util.UUID\n");
     const { status, output } = run(root);
     assert.equal(status, 1, output);
     assert.match(output, /^FAIL KMP-COMMON /m);
@@ -740,7 +740,7 @@ describe("the command", () => {
 
   it("exits 1 on a violating tree when run through a symlinked path", () => {
     const root = copyOfTree();
-    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.semprec.app.domain\n", "package cz.semprec.app.domain\n\nimport java.util.UUID\n");
+    replace(root, `shared/domain/src/commonMain/${KOTLIN}/domain/PlaceholderItem.kt`, "package cz.alldots.app.domain\n", "package cz.alldots.app.domain\n\nimport java.util.UUID\n");
     const { status, output } = runThroughSymlink(path.dirname(root), "mobile/scripts/architecture.mjs");
     assert.equal(status, 1, output);
     assert.match(output, /^FAIL KMP-COMMON /m);

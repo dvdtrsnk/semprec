@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGHOcrQ",
         "number": 916,
         "title": "Cache ffmpeg packages and give integration-shard steps their own timeouts",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/916",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/916",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/916",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/916",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/916.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/916.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/916",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/916",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/916.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/916.patch",
           "merged_at": "2026-10-01T15:10:48Z"
         },
         "bodySha256": "e01923ba3f9e3e77e6d671507690bfdf43abd019bcee9897ecaf3c8f9393b7e3"
@@ -77,14 +77,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGHiU8w",
         "number": 919,
         "title": "Prove unaffinitized job overlap in queueConcurrency.test.ts without a timing window",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/919",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/919",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/919",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/919",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/919.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/919.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/919",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/919",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/919.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/919.patch",
           "merged_at": "2026-10-01T15:42:03Z"
         },
         "bodySha256": "36f4a2fdd6da3b86785395703d8904db49acceb9cd85a1beb1d9a9b02a32f78f"
@@ -94,7 +94,7 @@
   {
     "id": 32264301723,
     "node_id": "REFE_lADOUFuQ4c8AAAABUZb7S88AAAAHgxosmw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32264301723",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32264301723",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -118,14 +118,14 @@
     },
     "event": "referenced",
     "commit_id": "236d9b2f4072e6ef95348a944c7fac878bd55e6f",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/236d9b2f4072e6ef95348a944c7fac878bd55e6f",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/236d9b2f4072e6ef95348a944c7fac878bd55e6f",
     "created_at": "2026-10-01T15:20:10Z",
     "performed_via_github_app": null
   },
   {
     "id": 32265015612,
     "node_id": "REFE_lADOUFuQ4c8AAAABUZb7S88AAAAHgyURPA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32265015612",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32265015612",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -149,14 +149,14 @@
     },
     "event": "referenced",
     "commit_id": "42327415858d157f0afc8a0d815ee67ad5a06395",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/42327415858d157f0afc8a0d815ee67ad5a06395",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/42327415858d157f0afc8a0d815ee67ad5a06395",
     "created_at": "2026-10-01T15:28:26Z",
     "performed_via_github_app": null
   },
   {
     "id": 32265595063,
     "node_id": "REFE_lADOUFuQ4c8AAAABUZb7S88AAAAHgy3otw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32265595063",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32265595063",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -180,14 +180,14 @@
     },
     "event": "referenced",
     "commit_id": "cb068a4b9142815e0f4cbdd9d33628d7af1ef15b",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/cb068a4b9142815e0f4cbdd9d33628d7af1ef15b",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/cb068a4b9142815e0f4cbdd9d33628d7af1ef15b",
     "created_at": "2026-10-01T15:35:24Z",
     "performed_via_github_app": null
   },
   {
     "id": 32266127950,
     "node_id": "CE_lADOUFuQ4c8AAAABUZb7S88AAAAHgzYKTg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32266127950",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32266127950",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -218,9 +218,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5934917179",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/914#issuecomment-5934917179",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/914",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5934917179",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/914#issuecomment-5934917179",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/914",
     "id": 5934917179,
     "node_id": "IC_kwDOUFuQ4c8AAAABYb-mOw",
     "user": {
@@ -250,7 +250,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5934917179/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5934917179/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

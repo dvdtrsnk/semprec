@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob, type Task } from "@semprec/queue";
-import { createLogger, currentTenantScope } from "@semprec/shared";
+import { enqueueJob, type Task } from "@alldots/queue";
+import { createLogger, currentTenantScope } from "@alldots/shared";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { sendApnsBackgroundPush } from "../push/apnsAdapter.js";
 import type { ApnsTarget, PushSendResult } from "../push/pushSenders.js";

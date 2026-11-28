@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
-import { AGENT_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import { AGENT_TASK_NAMES, registerTask, type Task, type TaskList } from "@alldots/queue";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import { createHeartbeatFireAgentTask } from "./scheduler/sweep.js";
 import type { ActionRegistry } from "./scheduler/actions.js";
 

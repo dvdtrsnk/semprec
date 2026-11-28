@@ -2,8 +2,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import pg, { type Pool } from "pg";
-import { deleteBlocks, getBlocksMap, insertBlocks, moveBlocks, writeBlock } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { deleteBlocks, getBlocksMap, insertBlocks, moveBlocks, writeBlock } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -23,7 +23,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 });
 beforeEach(async () => {

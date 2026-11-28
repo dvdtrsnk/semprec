@@ -3,7 +3,7 @@
   behavior — a platform check used where a shared abstraction would do is a
   finding, not a style nitpick. Every target builds natively for iOS, iPadOS
   and macOS (not Mac Catalyst) from the same sources, except the XCUITest
-  bundle `SemprecUITests`, which runs on iOS and iPadOS only because macOS
+  bundle `AlldotsUITests`, which runs on iOS and iPadOS only because macOS
   XCUITest needs the Accessibility permission.
   (`docs/adr/2026-10-24-kotlin-multiplatform-below-native-mobile-ui.md`)
 - No new abstraction, helper, or config flag beyond what the current issue's

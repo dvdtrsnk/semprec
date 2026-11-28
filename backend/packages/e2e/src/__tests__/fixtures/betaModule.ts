@@ -1,6 +1,6 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 import type { JobHelpers } from "graphile-worker";
-import { createItemWithClient } from "@semprec/data";
+import { createItemWithClient } from "@alldots/data";
 
 /** The other half of the e2e cross-module scenario (see alphaModule.ts). */
 export const manifest: ModuleManifest = {

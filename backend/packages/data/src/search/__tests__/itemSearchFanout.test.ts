@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   assertSearchTaskIdentifiersRegistered,
   CORE_TASK_NAMES,
@@ -13,8 +13,8 @@ import {
   registerTask,
   runOnce,
   SearchTaskIdentifiersNotRegisteredError,
-} from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+} from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
@@ -474,13 +474,13 @@ async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Pr
   const client = await admin.connect();
   let primary: { error: unknown } | undefined;
   try {
-    await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [itemId]);
+    await client.query("SELECT set_config('alldots_test.fault_item', $1, false)", [itemId]);
     await client.query(`CREATE FUNCTION fanout_index_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'test index write failure'; END $$`);
     await client.query(`DO $$ BEGIN EXECUTE format(
       'CREATE TRIGGER fanout_index_fault_test BEFORE INSERT OR UPDATE ON item_search_index FOR EACH ROW '
       'WHEN (NEW.item_id = %L::uuid) EXECUTE FUNCTION fanout_index_fault_test()',
-      current_setting('semprec_test.fault_item')); END $$`);
+      current_setting('alldots_test.fault_item')); END $$`);
     await run();
   } catch (error) {
     primary = { error };
@@ -501,7 +501,7 @@ async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Pr
 describe("search reindex fan-out (issue #1652)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     const role = await runAsSystem("verify fanout role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(

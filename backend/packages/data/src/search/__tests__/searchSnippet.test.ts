@@ -8,7 +8,7 @@ import {
   type SearchItemGroup,
   type SearchItemResult,
   type SearchOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -32,7 +32,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 }, 120_000);
 beforeEach(async () => {
@@ -207,7 +207,7 @@ describe("the snippet of an item-backed search result (issue #1996)", () => {
   });
 
   it("gives a project found through its page an excerpt with the accented word, and reports the page in no other group", async () => {
-    const project = await create("projects", { name: "Semprec iOS" });
+    const project = await create("projects", { name: "Alldots iOS" });
     await writePage(project, ["rozpočet schválený"]);
 
     const answer = await search("rozpocet");

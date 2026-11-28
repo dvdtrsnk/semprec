@@ -1,6 +1,6 @@
 ---
 name: mobile-verify
-description: "How a change under mobile/ is built, tested, linted and reported - the entry point mobile/scripts/verify with its architecture, shared, android and apple steps, the Gradle, Tuist, xcodebuild and SwiftLint commands behind it, reserving a simulator or emulator through bb device-lab and passing it in, and reporting every step as PASS, FAIL or NOT RUN as it happened. Load this BEFORE running or claiming any mobile build, test or lint, and before a pull request that touches mobile/. Triggers on: mobile/scripts/verify, --ios-simulator, --android-serial, architecture.mjs, architecture-policy.json, ./gradlew, sharedJvmTest, sharedAppleTest, androidUnitTest, detektAll, lintDebug, connectedDebugAndroidTest, -Pmobile.iosSimulatorId, tuist generate, xcodebuild, SemprecUITests, swiftlint, DEVELOPER_DIR, JAVA_HOME, bb device-lab, a UDID, an adb serial, a Gradle lock timeout, and claims such as tests pass or verified. Skip only when nothing under mobile/ changed and nothing about mobile is claimed."
+description: "How a change under mobile/ is built, tested, linted and reported - the entry point mobile/scripts/verify with its architecture, shared, android and apple steps, the Gradle, Tuist, xcodebuild and SwiftLint commands behind it, reserving a simulator or emulator through bb device-lab and passing it in, and reporting every step as PASS, FAIL or NOT RUN as it happened. Load this BEFORE running or claiming any mobile build, test or lint, and before a pull request that touches mobile/. Triggers on: mobile/scripts/verify, --ios-simulator, --android-serial, architecture.mjs, architecture-policy.json, ./gradlew, sharedJvmTest, sharedAppleTest, androidUnitTest, detektAll, lintDebug, connectedDebugAndroidTest, -Pmobile.iosSimulatorId, tuist generate, xcodebuild, AlldotsUITests, swiftlint, DEVELOPER_DIR, JAVA_HOME, bb device-lab, a UDID, an adb serial, a Gradle lock timeout, and claims such as tests pass or verified. Skip only when nothing under mobile/ changed and nothing about mobile is claimed."
 ---
 
 # One command verifies mobile/. Report exactly what it ran.
@@ -36,7 +36,7 @@ next to its log.
 | `architecture` | `node mobile/scripts/architecture.mjs` (the rules below) and `node --test` over `mobile/scripts/*.test.mjs` (`architecture.test.mjs` for the rules; `toolchain.test.mjs` for verify's JDK and SwiftLint checks and the `xcodebuild` calls of its `apple` step, and for `kmp-framework`'s JDK lookup, its Gradle task per SDK and configuration and its embed folder check) |
 | `shared` | `./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false`; with `--ios-simulator`, also `-Pmobile.iosSimulatorId=<UDID>`. Needs an Apple silicon Mac |
 | `android` | `./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug detektAll -PdetektAutoFix=false`; with `--android-serial`, also `connectedDebugAndroidTest` on that device |
-| `apple` | the Tuist version must equal `mobile/apple/.tuist-version` and the SwiftLint version `swiftlint_version` in `mobile/apple/.swiftlint.yml`; `swiftlint lint --strict`; `tuist install`; `tuist generate --no-open`; `xcodebuild build` of the `Semprec` scheme, Debug and Release, for `generic/platform=iOS Simulator`, `generic/platform=iOS` (the iPhone build, which links the `iosArm64` Kotlin framework and needs no device) and `generic/platform=macOS`, with `CODE_SIGNING_ALLOWED=NO`; `xcodebuild build-for-testing` of the `SemprecUITests` scheme for `generic/platform=iOS Simulator` (no device); `xcodebuild test` of the `Semprec` scheme on `platform=macOS,arch=arm64`; with `--ios-simulator`, also `xcodebuild test` of the `Semprec` scheme and then of the `SemprecUITests` scheme (XCUITest, iOS only) on that simulator |
+| `apple` | the Tuist version must equal `mobile/apple/.tuist-version` and the SwiftLint version `swiftlint_version` in `mobile/apple/.swiftlint.yml`; `swiftlint lint --strict`; `tuist install`; `tuist generate --no-open`; `xcodebuild build` of the `Alldots` scheme, Debug and Release, for `generic/platform=iOS Simulator`, `generic/platform=iOS` (the iPhone build, which links the `iosArm64` Kotlin framework and needs no device) and `generic/platform=macOS`, with `CODE_SIGNING_ALLOWED=NO`; `xcodebuild build-for-testing` of the `AlldotsUITests` scheme for `generic/platform=iOS Simulator` (no device); `xcodebuild test` of the `Alldots` scheme on `platform=macOS,arch=arm64`; with `--ios-simulator`, also `xcodebuild test` of the `Alldots` scheme and then of the `AlldotsUITests` scheme (XCUITest, iOS only) on that simulator |
 
 `mobile/docs/verify.md` describes every step and prerequisite in detail.
 
@@ -113,11 +113,11 @@ after every edit, as `kmp-shared` §6 says too:
 | Change | Fast check |
 |---|---|
 | shared Kotlin | `./gradlew sharedJvmTest` |
-| exported shared API | add an iOS build: `tuist generate --no-open`, then `xcodebuild build -workspace Semprec.xcworkspace -scheme Semprec -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO` |
+| exported shared API | add an iOS build: `tuist generate --no-open`, then `xcodebuild build -workspace Alldots.xcworkspace -scheme Alldots -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO` |
 | Android Kotlin or resources | `./gradlew androidUnitTest :android:app:lintDebug` |
 | any Kotlin formatting | `./gradlew detektAll` corrects formatting in place (read `git diff` afterwards and keep only what you would have written); `./gradlew detektAll -PdetektAutoFix=false` only reports, as `verify` does |
 | Swift | `swiftlint lint --strict`, then `tuist generate --no-open` and the iOS build above |
-| Apple UI flows | `xcodebuild test -workspace Semprec.xcworkspace -scheme SemprecUITests -destination id=<UDID> -derivedDataPath build/DerivedData` on a simulator you reserved; the `Semprec` scheme neither builds nor runs `SemprecUITests` |
+| Apple UI flows | `xcodebuild test -workspace Alldots.xcworkspace -scheme AlldotsUITests -destination id=<UDID> -derivedDataPath build/DerivedData` on a simulator you reserved; the `Alldots` scheme neither builds nor runs `AlldotsUITests` |
 | a module, a manifest or the policy | `mobile/scripts/verify architecture` |
 
 Before a pull request that touches `mobile/`, run the full pipeline from the
@@ -132,12 +132,12 @@ without its flag and report that step as NOT RUN.
 
 A change to what a screen does also needs it exercised on a device: the
 instrumented `SmokeFlowTest` on Android, and on Apple `SmokeFlowTests` of
-`SemprecUITests` on the reserved iOS simulator (the `apple` step runs it with
+`AlldotsUITests` on the reserved iOS simulator (the `apple` step runs it with
 `--ios-simulator`). A flow those tests do not walk gets a case there, or the
 app installed and driven on the reserved simulator (`bb device-lab install`,
 `launch`, `tap`, `screenshot`, `describe`); the `apple` step builds the Debug
 simulator app into
-`mobile/apple/build/DerivedData/Build/Products/Debug-iphonesimulator/Semprec.app`.
+`mobile/apple/build/DerivedData/Build/Products/Debug-iphonesimulator/Alldots.app`.
 No UI test runs on macOS, because macOS XCUITest needs the Accessibility
 permission: there `AppSceneNavigationTests` drive the shown scene in process,
 and the macOS app's runtime is otherwise not verified unless you launched and

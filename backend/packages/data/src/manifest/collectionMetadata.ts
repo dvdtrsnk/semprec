@@ -1,4 +1,4 @@
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import type { DatabaseRow } from "../types.js";
 
 export interface CollectionMetadata {

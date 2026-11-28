@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 /// The day view as the target of a drag of a calendar item: the system reports every place the finger passes,
-/// many times a second even while it rests, and the drop. Only drags of Semprec's own items are taken; what a drag
+/// many times a second even while it rests, and the drop. Only drags of Alldots's own items are taken; what a drag
 /// carries can be read only at its drop.
 struct CalendarDayDrop: DropDelegate {
 

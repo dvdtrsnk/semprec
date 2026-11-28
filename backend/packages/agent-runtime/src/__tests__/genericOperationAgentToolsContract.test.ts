@@ -1,6 +1,6 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import { randomUUID } from "node:crypto";
-import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@semprec/data";
+import { createItemWithClient, getDatabaseByModuleId, withTransaction } from "@alldots/data";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -10,7 +10,7 @@ import {
   getTestPool,
   inTenantZero,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   insertValueLink,
@@ -24,8 +24,8 @@ import {
   type ItemRow,
   type PropertyRow,
   type ViewRow,
-} from "@semprec/data";
-import type { ModuleRegistry } from "@semprec/module-registry";
+} from "@alldots/data";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import {
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
@@ -33,7 +33,7 @@ import {
   runAsSystem,
   runInTenant,
   type GenericOperationName,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import {
   createGenericOperationAgentTools,
   listGrantedGenericOperationAgentTools,
@@ -499,7 +499,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
   });
 
   it("refuses deletion of a system project and filters it through actual agent tools", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     let cleanupFailure: { error: unknown } | undefined;
     try {
@@ -569,7 +569,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
   });
 
   it("executes relation.set and item.create through AgentTools under tenant RLS", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     let cleanupFailure: { error: unknown } | undefined;
     try {
@@ -578,7 +578,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
           "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
         ),
       );
-      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+      expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
       const ownTenant = await createTestTenant(pool);
       const foreignTenant = await createTestTenant(pool);
       const user = await runAsSystem("test:create-agent-user", () =>

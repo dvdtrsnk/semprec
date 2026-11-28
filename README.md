@@ -1,8 +1,8 @@
-# Semprec
+# Alldots
 
-![Semprec — a second brain that acts on its own](assets/brand/semprec-cover-dark.png)
+![Alldots — a second brain that acts on its own](assets/brand/alldots-cover-dark.png)
 
-Semprec is a personal life-organization system: a Postgres-backed data layer
+Alldots is a personal life-organization system: a Postgres-backed data layer
 with a generic API choke-point, Yjs CRDT blocks/canvas, an IMAP-driven inbox
 pipeline, and an AI agent runtime (`pi-agent-core`) that acts through defined,
 structured mechanisms instead of freeform notes. The goal is determinism
@@ -50,12 +50,12 @@ may be worked in parallel.
   `agent-runtime`, `queue`, `realtime`, `credentials`, `shared`.
 - `issues/` — repository issue records, history, dependency handovers and
   migration evidence; see its README for local CLI commands and rollout state.
-- Vertical slices (Emails, Semprec, later Books/Films) live under
+- Vertical slices (Emails, Alldots, later Books/Films) live under
   `backend/packages/data/src/<domain>/`, each with its own `*ModuleManifest.ts`.
-- `backend/services/` — standalone processes (`semprec-api`,
-  `semprec-agents`, `semprec-transcribe`, `semprec-ai-gateway`) — created
+- `backend/services/` — standalone processes (`alldots-api`,
+  `alldots-agents`, `alldots-transcribe`, `alldots-ai-gateway`) — created
   incrementally as the issue queue progresses; mail live-sync runs inside
-  `semprec-api`.
+  `alldots-api`.
 - `web/` — a React + TypeScript (Vite) app, currently holding the view
   registry, the generic operations client, and the mailbox view renderer.
 - `mobile/` — one Gradle build for the shared Kotlin modules

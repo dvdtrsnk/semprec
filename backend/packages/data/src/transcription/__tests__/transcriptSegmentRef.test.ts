@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { runInTenant, type SempMessageRef } from "@semprec/shared";
+import { runInTenant, type SempMessageRef } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -51,7 +51,7 @@ const segmentRef = (itemId: string, startsAt: number, endsAt: number) =>
 describe("transcriptSegment message refs (issue #1834)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

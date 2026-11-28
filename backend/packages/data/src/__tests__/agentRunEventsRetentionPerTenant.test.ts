@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent } from "../agentRuns/agentRunEventsStore.js";
 import { handleAgentRunEventsRetentionTask } from "../agentRuns/agentRunEventsRetention.js";
@@ -69,7 +69,7 @@ describe("handleAgentRunEventsRetentionTask runs per tenant (issue #987)", () =>
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

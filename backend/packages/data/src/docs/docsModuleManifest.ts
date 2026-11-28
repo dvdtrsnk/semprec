@@ -1,4 +1,4 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 
 /**
  * Documents attach to any item in any database, so the only database declared is the hidden `pages` one. Compaction

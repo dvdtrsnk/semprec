@@ -15,7 +15,7 @@ import { CORE_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
 import { INBOX_TYPE_MODULE_TARGET_DATABASES, PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
 import { CAPTURE_CHANNELS } from "../inbox/captureSource.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
+import { ALLDOTS_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { INBOX_TRANSCRIBED_TEXT_KEY } from "../inbox/inboxVoiceNote.js";
@@ -38,14 +38,14 @@ export interface InboxPipelineDatabases {
 }
 
 /**
- * Seeds Inbox / Inbox item types / Processing proposals and the Inbox `semprec.tick` heartbeats. Needs the
- * core databases, Threads and the Semprec project item.
+ * Seeds Inbox / Inbox item types / Processing proposals and the Inbox `alldots.tick` heartbeats. Needs the
+ * core databases, Threads and the Alldots project item.
  */
 export async function seedInboxPipelineInTransaction(
   client: PoolClient,
   journalDatabaseId: string,
   transcriptsDatabaseId: string,
-  semprecProjectItemId: string,
+  alldotsProjectItemId: string,
   computedKeyRegistry: ComputedKeyRegistry,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<InboxPipelineDatabases> {
@@ -60,13 +60,13 @@ export async function seedInboxPipelineInTransaction(
   computedKeyRegistry.add(JOURNAL_INBOX_COMPUTED_KEY);
   registerJournalInboxViewType(viewTypeRegistry);
 
-  const inbox = await createDb(client, "Inbox", INBOX_MODULE_ID, semprecProjectItemId);
-  const inboxItemTypes = await createDb(client, "Inbox item types", INBOX_ITEM_TYPES_MODULE_ID, semprecProjectItemId);
+  const inbox = await createDb(client, "Inbox", INBOX_MODULE_ID, alldotsProjectItemId);
+  const inboxItemTypes = await createDb(client, "Inbox item types", INBOX_ITEM_TYPES_MODULE_ID, alldotsProjectItemId);
   const processingProposals = await createDb(
     client,
     "Processing proposals",
     PROCESSING_PROPOSALS_MODULE_ID,
-    semprecProjectItemId,
+    alldotsProjectItemId,
   );
 
   // Mandatory and never derived as "today" (offline and delayed capture rely on them); enforced by inboxCreateHook.ts.
@@ -251,13 +251,13 @@ export async function seedInboxPipelineInTransaction(
   );
 
   // Reacts to changed Inbox items without scanning: one heartbeat per event kind (`onItemEventRule.event`
-  // is a single value), each dispatching `semprec.tick`.
+  // is a single value), each dispatching `alldots.tick`.
   for (const event of ["create", "update", "delete"] as const) {
     await createHeartbeat(client, {
-      projectItemId: semprecProjectItemId,
+      projectItemId: alldotsProjectItemId,
       name: `Inbox tick (${event})`,
       rule: { kind: "onItemEvent", databaseId: inbox.id, event },
-      actionId: SEMPREC_TICK_ACTION_ID,
+      actionId: ALLDOTS_TICK_ACTION_ID,
       actionConfig: {
         inboxDatabaseId: inbox.id,
         inboxItemTypesDatabaseId: inboxItemTypes.id,

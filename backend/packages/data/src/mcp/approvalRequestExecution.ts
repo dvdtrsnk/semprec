@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
-import { createLogger } from "@semprec/shared";
+import type { ModuleRegistry } from "@alldots/module-registry";
+import { createLogger } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { executeClaimedMailSendApproval } from "../mail/mailSendApprovalExecution.js";
 import type { MailSendAdapterFactory } from "../mail/send.js";

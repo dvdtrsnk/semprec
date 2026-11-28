@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { mintMcpRunCredential, resolveMcpRunCredential } from "../mcp/mcpRunCredentialAction.js";
@@ -36,7 +36,7 @@ async function userOf(tenantId: string): Promise<string> {
 describe("MCP run credentials resolve to their tenant (issue #994)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -71,7 +71,7 @@ describe("MCP run credentials resolve to their tenant (issue #994)", () => {
     );
 
     expect(rows).toEqual([{ is_nullable: "NO", column_default: "app_tenant_default()" }]);
-    expect(comment.rows[0]!.comment).toBe("semprec:tenancy=global");
+    expect(comment.rows[0]!.comment).toBe("alldots:tenancy=global");
   });
 
   it("stores the run's tenant on the credential", async () => {

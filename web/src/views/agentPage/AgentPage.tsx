@@ -25,7 +25,7 @@ function GuidanceBlock({ agents }: { agents: unknown }) {
 
 /**
  * Heartbeats aren't rendered here yet: there is no list-by-project read function in
- * `schedulerStore.ts` and `semprec-api` has no access to the `HeartbeatRuleKindRegistry` a
+ * `schedulerStore.ts` and `alldots-api` has no access to the `HeartbeatRuleKindRegistry` a
  * correct read would need to parse `heartbeats.rule` — wiring a module registry into the HTTP
  * service is out of scope for issue #127 (MCP tool grants). This block is a placeholder so the
  * Tools block below it sits in the right position once heartbeats are built.

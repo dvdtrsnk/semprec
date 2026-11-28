@@ -2,8 +2,8 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { runInTenant } from "@semprec/shared";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { runInTenant } from "@alldots/shared";
 import {
   assertReaderDatabaseAccess,
   assertWriterDatabaseAccess,
@@ -89,7 +89,7 @@ function check(reader: DatabaseReader, databaseId: string, access: "read" | "wri
 describe("an external client's access to databases (issue #1998)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await inTenant(() => seedSystem(dataPool, createViewTypeRegistry()));

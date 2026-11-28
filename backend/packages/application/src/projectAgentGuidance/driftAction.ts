@@ -7,7 +7,7 @@ import {
   fingerprintGuidanceDriftSubject,
   validateGuidanceDriftContradiction,
   parseProjectAgentGuidanceMarkdown,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import type {
   AiGatewayClientPort,
   GuidanceDriftPermissionContradiction,
@@ -20,7 +20,7 @@ import type {
   ProjectToolCallUsageStore,
   ProjectAgentGuidanceStore,
   TransactionRunner,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { GuidanceChangedError, GuidanceContextChangedError, GuidanceMissingError } from "./driftErrors.js";
 
 export const AGENT_GUIDANCE_DRIFT_OPERATION = "agent_guidance_drift";
@@ -299,7 +299,7 @@ function outranks(
   return compareByCodePoint(candidate.claim, kept.claim) < 0;
 }
 
-export { BEHAVIOR_DRIFT_MIN_RUNS, BEHAVIOR_DRIFT_WINDOW_DAYS } from "@semprec/shared";
+export { BEHAVIOR_DRIFT_MIN_RUNS, BEHAVIOR_DRIFT_WINDOW_DAYS } from "@alldots/shared";
 const BEHAVIOR_SCHEMA = {
   type: "object",
   additionalProperties: false,

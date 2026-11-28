@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { AGENT_RUN_ERROR_CODES, agentRunErrorCodeOf, type AgentRunErrorCode } from "../agentRuns/agentRunErrorCodes.js";
 import { fill } from "../agentRuns/catalogFill.js";
 import { REPLY_INCOMPLETE_REASONS, type ReplyIncompleteReason } from "../agentRuns/replyOutcome.js";

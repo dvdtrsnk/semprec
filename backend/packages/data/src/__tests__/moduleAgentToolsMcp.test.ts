@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { resolveModuleAgentToolsForUser } from "../agentTools/moduleAgentTools.js";
 import { ValidationError } from "../errors.js";
 import { getTestPool } from "../testSupport/testDb.js";

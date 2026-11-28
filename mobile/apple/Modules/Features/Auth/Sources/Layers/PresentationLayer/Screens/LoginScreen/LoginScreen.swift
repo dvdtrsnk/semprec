@@ -10,7 +10,7 @@ struct LoginScreen: View {
     @StateObject private var viewModel: LoginViewModel
 
     // MARK: - State
-    @AppStorage("cz.semprec.lastServer")
+    @AppStorage("cz.alldots.lastServer")
     private var server = ""
     @State private var email = ""
     @State private var password = ""
@@ -58,7 +58,7 @@ private extension LoginScreen {
                 .frame(width: 76, height: 76)
                 .background(Theme.Colors.brand, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .accessibilityHidden(true)
-            Text("Semprec").font(.largeTitle.bold())
+            Text("Alldots").font(.largeTitle.bold())
             Text("login.subtitle", bundle: .module).font(.subheadline).foregroundStyle(Theme.Colors.secondaryText)
         }
     }
@@ -163,9 +163,9 @@ private extension LoginScreen {
 // MARK: - Default server
 private extension LoginScreen {
 
-    /// The server the app was built for (`SemprecDefaultServer` in the app's Info.plist), offered while the person
+    /// The server the app was built for (`AlldotsDefaultServer` in the app's Info.plist), offered while the person
     /// has not signed in to any other one; empty when the build names none.
     static var defaultServer: String {
-        Bundle.main.object(forInfoDictionaryKey: "SemprecDefaultServer") as? String ?? ""
+        Bundle.main.object(forInfoDictionaryKey: "AlldotsDefaultServer") as? String ?? ""
     }
 }

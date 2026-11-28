@@ -1,4 +1,4 @@
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 
 /**
  * `<lane>:<tenantId>` inside a tenant scope, `undefined` otherwise. Derived from the enqueuing scope only,

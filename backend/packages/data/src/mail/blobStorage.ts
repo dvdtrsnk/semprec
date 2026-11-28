@@ -40,8 +40,8 @@ export interface BlobStorageWriter {
 }
 
 const TEST_BLOB_STORAGE_DIRS = {
-  FILES_STORAGE_DIR: "/tmp/semprec-files",
-  MAIL_ATTACHMENTS_DIR: "/tmp/semprec-mail-attachments",
+  FILES_STORAGE_DIR: "/tmp/alldots-files",
+  MAIL_ATTACHMENTS_DIR: "/tmp/alldots-mail-attachments",
 } as const;
 
 /**

@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
@@ -539,14 +539,14 @@ describe("CalDAV adapter against a fake server", () => {
     const work = await calendarNamed(caldav, "Work");
     const created = await caldav.putEvent(
       work,
-      { ref: null, fields: STANDUP_FIELDS, icalUid: "standup-0f4c@semprec" },
+      { ref: null, fields: STANDUP_FIELDS, icalUid: "standup-0f4c@alldots" },
       signal(),
     );
-    expect(created.remoteId).toBe("standup-0f4c@semprec");
+    expect(created.remoteId).toBe("standup-0f4c@alldots");
     expect(created.href).toMatch(new RegExp(`^${work.url}[0-9a-f-]{36}\\.ics$`));
     const file = created.href?.slice(work.url?.length ?? 0) ?? "";
     expect(server.resource("work", file)?.text).toContain("BEGIN:VTIMEZONE");
-    expect(server.resource("work", file)?.text).toContain("UID:standup-0f4c@semprec");
+    expect(server.resource("work", file)?.text).toContain("UID:standup-0f4c@alldots");
     const override = await caldav.putEvent(work, { ref: created, fields: LATE_STANDUP_FIELDS }, signal());
     expect(override.remoteId).toBe(JSON.stringify([created.remoteId, "2026-11-25T09:00"]));
 
@@ -978,7 +978,7 @@ describe("a calendar sync pass with the CalDAV adapter", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
     tenant = await createTestTenant(admin);
     await createUser(admin, {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createListAgentDatabaseGrantsRouteHandler,
   createPatchAgentDatabaseGrantRouteHandler,
@@ -140,7 +140,7 @@ function agentWrite(projectId: string, databaseId: string) {
 describe("project database grants over REST (issue #1841)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     otherTenantId = await createTestTenant(adminPool);

@@ -1,6 +1,6 @@
 // Rollup recompute scheduling and execution: job keys, per-cell/backfill/per-edge enqueues, and the task handlers.
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { runAfterCommit, withTransaction, type Queryable } from "../db/pool.js";
 import { getProperty } from "../chokePoint/propertiesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";

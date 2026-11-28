@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 
 /** The restored snapshot and the replay ledger disagree; `restoreLedgerFailureMessage` recognises it by class. */
 export class RestoreLedgerMismatchError extends Error {

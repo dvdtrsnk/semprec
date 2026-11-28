@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611893755",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5611893755",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611893755",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5611893755",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5611893755,
     "node_id": "IC_kwDOUFuQ4c8AAAABTn6z-w",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5611893755/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5611893755/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612123807",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5612123807",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612123807",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5612123807",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5612123807,
     "node_id": "IC_kwDOUFuQ4c8AAAABToI2nw",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-10T03:18:45Z",
     "updated_at": "2026-09-10T03:18:45Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully.\n\n**Branch:** `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9`\n\n## Summary\n\nImplements issue #214: persistence for project agent guidance and injection into the AI system prompt.\n\n- **Migration** (`packages/data/src/db/migrations/0027_project_agent_guidance.sql`): new `project_agent_guidance` table (`project_item_id` primary key, `owner_user_id` FK to `users`, `markdown`, `updated_at`), additive-only.\n- **Generic ports** (`packages/shared/src/projectAgentGuidance.ts`): `TransactionRunner<Tx>`, `ProjectAgentGuidanceStore<Tx>`, `GuidanceReferenceStore<Tx>`, `GuidanceHeartbeatStore<Tx>` — no Postgres dependency.\n- **Concrete store** (`packages/data/src/projectAgentGuidanceStore.ts`): Postgres implementations, validating `project_item_id` against the partitioned Projects database via `getDatabaseByModuleId` + `getItemById`, and a transaction runner supporting `REPEATABLE READ`/`SERIALIZABLE` isolation.\n- **New `packages/application` package**: `createProjectAgentGuidanceService` with `loadProjectAgentGuidance`, `upsertProjectAgentGuidance`, `transferProjectAgentGuidance`, enforcing ownership rules and blank-markdown validation with the exact `400 validation_failed` / `403 owner_violation` error contracts from the issue. Guidance write and drift-heartbeat upsert commit atomically in one transaction. No dependency on `@semprec/data` or `pg`.\n- **Composition root** (`services/semprec-api/src/projectAgentGuidanceComposition.ts`): wires the concrete stores plus a documented no-op heartbeat store (real implementation lands in #85). No REST endpoint added, per spec.\n- **Agent-runtime adapter** (`packages/agent-runtime/src/projectAgentGuidanceSystemPrompt.ts`): async factory producing a synchronous `systemPromptOverride` closure appending guidance markdown verbatim under `## Project-specific guidance`, via an injected `LoadProjectAgentGuidancePort`.\n- **Dependency-cruiser rules**: enforce `packages/application` never imports `services/*` or `packages/agent-runtime`, and the guidance adapter never imports `pg`/`@semprec/data`.\n\n**Verification:** full build (12 packages), lint, format check, dependency-boundary check (0 violations, 1008 modules), migration numbering check, unit tests (125/125), and integration tests (717/717, including the new store tests against real Postgres) all pass.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully.\n\n**Branch:** `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9`\n\n## Summary\n\nImplements issue #214: persistence for project agent guidance and injection into the AI system prompt.\n\n- **Migration** (`packages/data/src/db/migrations/0027_project_agent_guidance.sql`): new `project_agent_guidance` table (`project_item_id` primary key, `owner_user_id` FK to `users`, `markdown`, `updated_at`), additive-only.\n- **Generic ports** (`packages/shared/src/projectAgentGuidance.ts`): `TransactionRunner<Tx>`, `ProjectAgentGuidanceStore<Tx>`, `GuidanceReferenceStore<Tx>`, `GuidanceHeartbeatStore<Tx>` — no Postgres dependency.\n- **Concrete store** (`packages/data/src/projectAgentGuidanceStore.ts`): Postgres implementations, validating `project_item_id` against the partitioned Projects database via `getDatabaseByModuleId` + `getItemById`, and a transaction runner supporting `REPEATABLE READ`/`SERIALIZABLE` isolation.\n- **New `packages/application` package**: `createProjectAgentGuidanceService` with `loadProjectAgentGuidance`, `upsertProjectAgentGuidance`, `transferProjectAgentGuidance`, enforcing ownership rules and blank-markdown validation with the exact `400 validation_failed` / `403 owner_violation` error contracts from the issue. Guidance write and drift-heartbeat upsert commit atomically in one transaction. No dependency on `@alldots/data` or `pg`.\n- **Composition root** (`services/alldots-api/src/projectAgentGuidanceComposition.ts`): wires the concrete stores plus a documented no-op heartbeat store (real implementation lands in #85). No REST endpoint added, per spec.\n- **Agent-runtime adapter** (`packages/agent-runtime/src/projectAgentGuidanceSystemPrompt.ts`): async factory producing a synchronous `systemPromptOverride` closure appending guidance markdown verbatim under `## Project-specific guidance`, via an injected `LoadProjectAgentGuidancePort`.\n- **Dependency-cruiser rules**: enforce `packages/application` never imports `services/*` or `packages/agent-runtime`, and the guidance adapter never imports `pg`/`@alldots/data`.\n\n**Verification:** full build (12 packages), lint, format check, dependency-boundary check (0 violations, 1008 modules), migration numbering check, unit tests (125/125), and integration tests (717/717, including the new store tests against real Postgres) all pass.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612123807/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612123807/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612344509",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5612344509",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612344509",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5612344509",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5612344509,
     "node_id": "IC_kwDOUFuQ4c8AAAABToWUvQ",
     "user": {
@@ -204,11 +204,11 @@
     },
     "created_at": "2026-09-10T03:35:26Z",
     "updated_at": "2026-09-10T03:35:26Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\n**Branch:** `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9`\n\nNothing new to commit — the branch was already fully pushed to origin at commit `89b1386` (implementation commit `ef9a1c6` plus the merge of `develop` resolving the migration-ordinal and export conflicts). The push confirmed the branch exists on GitHub and is up to date.\n\n## Summary\n\nImplements issue #214: persistence for project agent guidance and injection into the AI system prompt.\n\n- **Migration** (`packages/data/src/db/migrations/0033_project_agent_guidance.sql`): new `project_agent_guidance` table (`project_item_id` primary key, `owner_user_id` FK to `users`, `markdown`, `updated_at`), additive-only.\n- **Generic ports** (`packages/shared/src/projectAgentGuidance.ts`): `TransactionRunner<Tx>`, `ProjectAgentGuidanceStore<Tx>`, `GuidanceReferenceStore<Tx>`, `GuidanceHeartbeatStore<Tx>` — no Postgres dependency.\n- **Concrete store** (`packages/data/src/projectAgentGuidanceStore.ts`): Postgres implementations, validating `project_item_id` against the partitioned Projects database via `getDatabaseByModuleId` + `getItemById`, and a transaction runner supporting `REPEATABLE READ`/`SERIALIZABLE` isolation.\n- **New `packages/application` package**: `createProjectAgentGuidanceService` with `loadProjectAgentGuidance`, `upsertProjectAgentGuidance`, `transferProjectAgentGuidance`, enforcing ownership rules and blank-markdown validation with the exact `400 validation_failed` / `403 owner_violation` error contracts from the issue. Guidance write and drift-heartbeat upsert commit atomically in one transaction. No dependency on `@semprec/data` or `pg`.\n- **Composition root** (`services/semprec-api/src/projectAgentGuidanceComposition.ts`): wires the concrete stores plus a documented no-op heartbeat store (real implementation lands in #85). No REST endpoint added, per spec.\n- **Agent-runtime adapter** (`packages/agent-runtime/src/projectAgentGuidanceSystemPrompt.ts`): async factory producing a synchronous `systemPromptOverride` closure appending guidance markdown verbatim under `## Project-specific guidance`, via an injected `LoadProjectAgentGuidancePort`.\n- **Dependency-cruiser rules**: enforce `packages/application` never imports `services/*` or `packages/agent-runtime`, and the guidance adapter never imports `pg`/`@semprec/data`.\n\n**Merge conflict resolution:** `develop` had moved forward significantly, including claiming migration ordinal `0027` for an unrelated `password_reset_tokens`",
+    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\n**Branch:** `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9`\n\nNothing new to commit — the branch was already fully pushed to origin at commit `89b1386` (implementation commit `ef9a1c6` plus the merge of `develop` resolving the migration-ordinal and export conflicts). The push confirmed the branch exists on GitHub and is up to date.\n\n## Summary\n\nImplements issue #214: persistence for project agent guidance and injection into the AI system prompt.\n\n- **Migration** (`packages/data/src/db/migrations/0033_project_agent_guidance.sql`): new `project_agent_guidance` table (`project_item_id` primary key, `owner_user_id` FK to `users`, `markdown`, `updated_at`), additive-only.\n- **Generic ports** (`packages/shared/src/projectAgentGuidance.ts`): `TransactionRunner<Tx>`, `ProjectAgentGuidanceStore<Tx>`, `GuidanceReferenceStore<Tx>`, `GuidanceHeartbeatStore<Tx>` — no Postgres dependency.\n- **Concrete store** (`packages/data/src/projectAgentGuidanceStore.ts`): Postgres implementations, validating `project_item_id` against the partitioned Projects database via `getDatabaseByModuleId` + `getItemById`, and a transaction runner supporting `REPEATABLE READ`/`SERIALIZABLE` isolation.\n- **New `packages/application` package**: `createProjectAgentGuidanceService` with `loadProjectAgentGuidance`, `upsertProjectAgentGuidance`, `transferProjectAgentGuidance`, enforcing ownership rules and blank-markdown validation with the exact `400 validation_failed` / `403 owner_violation` error contracts from the issue. Guidance write and drift-heartbeat upsert commit atomically in one transaction. No dependency on `@alldots/data` or `pg`.\n- **Composition root** (`services/alldots-api/src/projectAgentGuidanceComposition.ts`): wires the concrete stores plus a documented no-op heartbeat store (real implementation lands in #85). No REST endpoint added, per spec.\n- **Agent-runtime adapter** (`packages/agent-runtime/src/projectAgentGuidanceSystemPrompt.ts`): async factory producing a synchronous `systemPromptOverride` closure appending guidance markdown verbatim under `## Project-specific guidance`, via an injected `LoadProjectAgentGuidancePort`.\n- **Dependency-cruiser rules**: enforce `packages/application` never imports `services/*` or `packages/agent-runtime`, and the guidance adapter never imports `pg`/`@alldots/data`.\n\n**Merge conflict resolution:** `develop` had moved forward significantly, including claiming migration ordinal `0027` for an unrelated `password_reset_tokens`",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612344509/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612344509/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612659538",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5612659538",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612659538",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5612659538",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5612659538,
     "node_id": "IC_kwDOUFuQ4c8AAAABTopjUg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5612659538/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5612659538/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613153086",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5613153086",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613153086",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5613153086",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5613153086,
     "node_id": "IC_kwDOUFuQ4c8AAAABTpHrPg",
     "user": {
@@ -380,11 +380,11 @@
     },
     "created_at": "2026-09-10T04:30:32Z",
     "updated_at": "2026-09-10T04:30:32Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9` (same branch backing PR #364).\n\n## Summary\n\nThis push addresses the second round of CI code-review feedback on PR #364 (1 HIGH + 2 MEDIUM findings):\n\n- **HIGH — error masking**: `requireOrValidationError` previously caught *any* exception from `requireProjectsItem`/`requireUser` (including DB connection failures/timeouts) and reported it as a 400 `validation_failed`. Added a typed sentinel `GuidanceReferenceNotFoundError` in `@semprec/shared`, thrown by `guidanceReferenceStore` specifically for missing entities; the service now narrows its catch to that type via `instanceof` and rethrows everything else unchanged.\n- **MEDIUM — unbounded markdown**: added a 32 KiB byte-length cap (`MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES`) with a new `too_long` validation reason, since guidance is appended verbatim to the agent's system prompt on every invocation.\n- **MEDIUM — ownership bypass**: `projectAgentGuidanceStore.upsert`'s `ON CONFLICT ... DO UPDATE` no longer touches `owner_user_id`, so only `transferProjectAgentGuidance` can ever change ownership — enforced at the SQL level rather than relying solely on service-layer discipline.\n\nAdded regression tests for all three (infra-error-propagation unit test, too-long-markdown unit test, and an integration test proving a second `upsert` with a different owner doesn't mutate the stored owner), plus updated existing integration tests that asserted the old `NotFoundError` type.\n\nFull check suite passed against this commit: build, lint, format:check, check:boundaries, migration numbering, unit tests (140/140), and integration tests (887/887).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9` (same branch backing PR #364).\n\n## Summary\n\nThis push addresses the second round of CI code-review feedback on PR #364 (1 HIGH + 2 MEDIUM findings):\n\n- **HIGH — error masking**: `requireOrValidationError` previously caught *any* exception from `requireProjectsItem`/`requireUser` (including DB connection failures/timeouts) and reported it as a 400 `validation_failed`. Added a typed sentinel `GuidanceReferenceNotFoundError` in `@alldots/shared`, thrown by `guidanceReferenceStore` specifically for missing entities; the service now narrows its catch to that type via `instanceof` and rethrows everything else unchanged.\n- **MEDIUM — unbounded markdown**: added a 32 KiB byte-length cap (`MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES`) with a new `too_long` validation reason, since guidance is appended verbatim to the agent's system prompt on every invocation.\n- **MEDIUM — ownership bypass**: `projectAgentGuidanceStore.upsert`'s `ON CONFLICT ... DO UPDATE` no longer touches `owner_user_id`, so only `transferProjectAgentGuidance` can ever change ownership — enforced at the SQL level rather than relying solely on service-layer discipline.\n\nAdded regression tests for all three (infra-error-propagation unit test, too-long-markdown unit test, and an integration test proving a second `upsert` with a different owner doesn't mutate the stored owner), plus updated existing integration tests that asserted the old `NotFoundError` type.\n\nFull check suite passed against this commit: build, lint, format:check, check:boundaries, migration numbering, unit tests (140/140), and integration tests (887/887).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613153086/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613153086/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -440,9 +440,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613476711",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5613476711",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613476711",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5613476711",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5613476711,
     "node_id": "IC_kwDOUFuQ4c8AAAABTpbbZw",
     "user": {
@@ -472,7 +472,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613476711/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613476711/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -528,9 +528,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613689816",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5613689816",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613689816",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5613689816",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5613689816,
     "node_id": "IC_kwDOUFuQ4c8AAAABTpob2A",
     "user": {
@@ -556,11 +556,11 @@
     },
     "created_at": "2026-09-10T05:32:38Z",
     "updated_at": "2026-09-10T05:32:38Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9` (same branch backing PR #364).\n\n## Summary\n\nThis push addresses the fourth round of CI code-review feedback on PR #364:\n\n- **MEDIUM (test-coverage)**: `transferProjectAgentGuidance`'s `!existing || existing.ownerUserId !== actor.userId` check documents that transferring guidance that doesn't exist yet gets the same 403 `owner_violation` as a wrong-owner transfer, but no test exercised the `!existing` branch directly — all three existing transfer tests used a pre-seeded row. Added a test that calls `transferProjectAgentGuidance` against an empty store and asserts the 403.\n- **Low (architecture)**: `noopGuidanceHeartbeatStore` was re-exported from `services/semprec-api/src/index.ts`'s public surface even though it's an internal placeholder used only by `projectAgentGuidanceComposition.ts` until #85 delivers the real heartbeat store — exporting it risked accidental use where a real store is expected. Removed it from the public export; nothing else in the repo imported it that way.\n\nI deliberately left unmet acceptance criterion #36 (\"`packages/agent-runtime` receives a `loadProjectAgentGuidance` port from the `semprec-agents` composition root\") unaddressed: the `semprec-agents` service doesn't exist in this repository, and standing one up is outside issue #214's Task/Scope section, which explicitly limits this part to guidance persistence, shared ports, the application service, and the system-prompt projection adapter — wiring the adapter into a consuming process is left for whichever later issue introduces `semprec-agents`.\n\nFull check suite passed against this commit: build (12/12 packages), lint, format:check, check:boundaries (0 violations), migration numbering (33 files, unique ordinals), unit tests (141/141), and integration tests (888/888).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #364\n\nTokens: 0 · Cost: $0.0000\n\nPushed to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_ysapxrszu9` (same branch backing PR #364).\n\n## Summary\n\nThis push addresses the fourth round of CI code-review feedback on PR #364:\n\n- **MEDIUM (test-coverage)**: `transferProjectAgentGuidance`'s `!existing || existing.ownerUserId !== actor.userId` check documents that transferring guidance that doesn't exist yet gets the same 403 `owner_violation` as a wrong-owner transfer, but no test exercised the `!existing` branch directly — all three existing transfer tests used a pre-seeded row. Added a test that calls `transferProjectAgentGuidance` against an empty store and asserts the 403.\n- **Low (architecture)**: `noopGuidanceHeartbeatStore` was re-exported from `services/alldots-api/src/index.ts`'s public surface even though it's an internal placeholder used only by `projectAgentGuidanceComposition.ts` until #85 delivers the real heartbeat store — exporting it risked accidental use where a real store is expected. Removed it from the public export; nothing else in the repo imported it that way.\n\nI deliberately left unmet acceptance criterion #36 (\"`packages/agent-runtime` receives a `loadProjectAgentGuidance` port from the `alldots-agents` composition root\") unaddressed: the `alldots-agents` service doesn't exist in this repository, and standing one up is outside issue #214's Task/Scope section, which explicitly limits this part to guidance persistence, shared ports, the application service, and the system-prompt projection adapter — wiring the adapter into a consuming process is left for whichever later issue introduces `alldots-agents`.\n\nFull check suite passed against this commit: build (12/12 packages), lint, format:check, check:boundaries (0 violations), migration numbering (33 files, unique ordinals), unit tests (141/141), and integration tests (888/888).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613689816/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613689816/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -616,9 +616,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613921719",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5613921719",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613921719",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5613921719",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5613921719,
     "node_id": "IC_kwDOUFuQ4c8AAAABTp2ltw",
     "user": {
@@ -648,7 +648,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5613921719/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5613921719/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -704,9 +704,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614211966",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5614211966",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614211966",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5614211966",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5614211966,
     "node_id": "IC_kwDOUFuQ4c8AAAABTqITfg",
     "user": {
@@ -736,7 +736,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614211966/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614211966/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -792,9 +792,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614339716",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5614339716",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614339716",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5614339716",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5614339716,
     "node_id": "IC_kwDOUFuQ4c8AAAABTqQGhA",
     "user": {
@@ -824,7 +824,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614339716/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614339716/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -880,9 +880,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614352061",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5614352061",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614352061",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5614352061",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5614352061,
     "node_id": "IC_kwDOUFuQ4c8AAAABTqQ2vQ",
     "user": {
@@ -912,7 +912,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614352061/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614352061/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -968,9 +968,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614700396",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5614700396",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614700396",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5614700396",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5614700396,
     "node_id": "IC_kwDOUFuQ4c8AAAABTqmHbA",
     "user": {
@@ -996,11 +996,11 @@
     },
     "created_at": "2026-09-10T07:18:59Z",
     "updated_at": "2026-09-10T07:18:59Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #365\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_6kd3rk7tew`.\n\n## Summary\n\nImplements issue #214: persists canonical hand-written project-agent guidance and projects it into the agent system prompt.\n\n- **`packages/data`**: migration `0033_project_agent_guidance.sql` for the `project_agent_guidance` table; concrete `PoolClient` implementations of the guidance store, reference store, and transaction runner.\n- **`packages/shared`**: generic `ProjectAgentGuidance`, `TransactionRunner`, `ProjectAgentGuidanceStore`, `GuidanceReferenceStore`, and `GuidanceHeartbeatStore` ports — no `pg` dependency.\n- **`packages/application`** (new): `createProjectAgentGuidanceService` with load/upsert/transfer, matching the issue's exact authorization rules and error payloads (`400 validation_failed`, `403 owner_violation`), each mutation committing guidance + heartbeat upsert atomically in one transaction.\n- **`packages/agent-runtime`**: `createProjectAgentGuidanceSystemPromptOverride` adapter appends guidance markdown verbatim under `## Project-specific guidance`, via an injected port — no direct `pg`/`@semprec/data` import.\n- **`semprec-api`**: composition root wiring the concrete stores plus a documented no-op heartbeat store (real one lands in #85).\n- **`dependency-cruiser.rules.json`**: new rules enforcing the package-boundary constraints the issue mandates.\n\nVerified: full monorepo build, lint, format check, dependency-boundary check, pi-import-path check, and migration-numbering check all pass; full backend test suite (unit 142/142, integration 888/888 against real Postgres, e2e 5/5) all pass.\n\nNote: another Relay thread had already produced an equivalent, review-hardened implementation for this same issue (PR #364). To avoid redundant design work, I rebased that already-validated design onto current `develop` in this branch/worktree (renumbering the migration to `0033`, regenerating the lockfile) and independently re-verified everything here.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #365\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-214-implementation-audit-fixes-07-23-persi-thr_6kd3rk7tew`.\n\n## Summary\n\nImplements issue #214: persists canonical hand-written project-agent guidance and projects it into the agent system prompt.\n\n- **`packages/data`**: migration `0033_project_agent_guidance.sql` for the `project_agent_guidance` table; concrete `PoolClient` implementations of the guidance store, reference store, and transaction runner.\n- **`packages/shared`**: generic `ProjectAgentGuidance`, `TransactionRunner`, `ProjectAgentGuidanceStore`, `GuidanceReferenceStore`, and `GuidanceHeartbeatStore` ports — no `pg` dependency.\n- **`packages/application`** (new): `createProjectAgentGuidanceService` with load/upsert/transfer, matching the issue's exact authorization rules and error payloads (`400 validation_failed`, `403 owner_violation`), each mutation committing guidance + heartbeat upsert atomically in one transaction.\n- **`packages/agent-runtime`**: `createProjectAgentGuidanceSystemPromptOverride` adapter appends guidance markdown verbatim under `## Project-specific guidance`, via an injected port — no direct `pg`/`@alldots/data` import.\n- **`alldots-api`**: composition root wiring the concrete stores plus a documented no-op heartbeat store (real one lands in #85).\n- **`dependency-cruiser.rules.json`**: new rules enforcing the package-boundary constraints the issue mandates.\n\nVerified: full monorepo build, lint, format check, dependency-boundary check, pi-import-path check, and migration-numbering check all pass; full backend test suite (unit 142/142, integration 888/888 against real Postgres, e2e 5/5) all pass.\n\nNote: another Relay thread had already produced an equivalent, review-hardened implementation for this same issue (PR #364). To avoid redundant design work, I rebased that already-validated design onto current `develop` in this branch/worktree (renumbering the migration to `0033`, regenerating the lockfile) and independently re-verified everything here.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614700396/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614700396/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1056,9 +1056,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614821124",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/214#issuecomment-5614821124",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/214",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614821124",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/214#issuecomment-5614821124",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/214",
     "id": 5614821124,
     "node_id": "IC_kwDOUFuQ4c8AAAABTqtfBA",
     "user": {
@@ -1088,7 +1088,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5614821124/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5614821124/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

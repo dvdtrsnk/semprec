@@ -4,7 +4,7 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
 import type { ItemRow } from "../types.js";
@@ -65,7 +65,7 @@ async function createTickedProposal(
       type: type.id,
     }),
   );
-  const tick = createSemprecTickAction(pool, async () => result);
+  const tick = createAlldotsTickAction(pool, async () => result);
   await tick(
     {
       inboxDatabaseId: databases.inboxId,

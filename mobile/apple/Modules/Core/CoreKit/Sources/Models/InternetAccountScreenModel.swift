@@ -169,7 +169,7 @@ public enum InternetAccountSignIn: Equatable, Sendable {
     case again
     /// Asks the provider for calendar access; only while `canAllowCalendarAccess`.
     case allowCalendarAccess
-    /// The browser came back to `semprec://oauth` at `callbackUrl`.
+    /// The browser came back to `alldots://oauth` at `callbackUrl`.
     case returned(callbackUrl: String)
     /// The person closed the browser before it came back.
     case cancelled
@@ -183,7 +183,7 @@ public enum InternetAccountEffect: Equatable, Sendable {
     case removed
     /// Calendars was switched on; the app asks for the permission to notify about calendar changes.
     case calendarsTurnedOn
-    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `semprec://oauth`; the app reports
+    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `alldots://oauth`; the app reports
     /// how it ended with `signIn(.returned)`, `signIn(.cancelled)` or `signIn(.failed)`.
     case openSignIn(url: String)
 }

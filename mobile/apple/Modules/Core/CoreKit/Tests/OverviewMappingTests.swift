@@ -33,7 +33,7 @@ final class OverviewMappingTests: XCTestCase {
             .content,
             refreshing: true,
             projects: [
-                SharedSDK.OverviewProjectItem(id: "p", name: "Semprec", color: nil, status: "inProgress")
+                SharedSDK.OverviewProjectItem(id: "p", name: "Alldots", color: nil, status: "inProgress")
             ],
             collections: [
                 SharedSDK.OverviewCollectionItem(
@@ -52,7 +52,7 @@ final class OverviewMappingTests: XCTestCase {
                     mailUnread: 5,
                     problemCount: 2,
                     projects: [
-                        OverviewProject(id: "p", name: "Semprec", color: nil, status: "inProgress")
+                        OverviewProject(id: "p", name: "Alldots", color: nil, status: "inProgress")
                     ],
                     collections: [
                         OverviewCollection(

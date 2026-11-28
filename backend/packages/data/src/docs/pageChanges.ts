@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import type { Pool } from "pg";
-import { getBlocksMap, getOrderArray } from "@semprec/block-model";
+import { getBlocksMap, getOrderArray } from "@alldots/block-model";
 import { withTransaction } from "../db/pool.js";
 import type { CreatedBy } from "../types.js";
 import { ValidationError } from "../errors.js";

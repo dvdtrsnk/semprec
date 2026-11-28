@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
 /** The instruction's text is read from the history entry `instructionEntryId`, never carried here. */

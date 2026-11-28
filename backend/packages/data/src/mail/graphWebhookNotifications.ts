@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { getMailAccountSyncStateByGraphSubscriptionId, routeGraphSubscription } from "./mailAccountSyncStateStore.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";

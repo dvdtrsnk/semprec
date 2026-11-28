@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -57,7 +57,7 @@ async function journalEntryCount(period: string, tenantId = tenant, type?: Journ
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   await resetDatabase(admin);
   tenant = await createTestTenant(admin);
   otherTenant = await createTestTenant(admin);

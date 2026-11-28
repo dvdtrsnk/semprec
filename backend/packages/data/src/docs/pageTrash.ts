@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type * as Y from "yjs";
 import { z } from "zod";
-import { MAX_INDENT, MIN_INDENT, deleteBlocks, getBlocksMap, insertBlocks, readPageBlocks } from "@semprec/block-model";
+import { MAX_INDENT, MIN_INDENT, deleteBlocks, getBlocksMap, insertBlocks, readPageBlocks } from "@alldots/block-model";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import type { ItemDeleteHook, ItemRestoreHook } from "../chokePoint/hooks.js";
 import { lockItemTrashEpoch } from "../chokePoint/itemsStore.js";

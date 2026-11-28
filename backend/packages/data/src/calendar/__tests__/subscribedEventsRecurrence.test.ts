@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -178,7 +178,7 @@ describe("recurring subscribed events (issue gh-1966)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
     tenantA = await seededTenant(null);
     tenantB = await seededTenant("Asia/Tokyo");

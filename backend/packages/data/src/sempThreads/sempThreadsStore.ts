@@ -3,7 +3,7 @@ import { requireAffectedRows, requireManagedTransaction, requireSingleRow } from
 import { enqueueSempMessage } from "../semp/sempMessageQueue.js";
 import { allocateSempMessageTimestamp } from "../semp/sempMessageOrder.js";
 import { assertKnownValue } from "../dbRowValidation.js";
-import type { SempThreadDetail, SempThreadMessage, SempTickThreadHeartbeat } from "@semprec/shared";
+import type { SempThreadDetail, SempThreadMessage, SempTickThreadHeartbeat } from "@alldots/shared";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { isOnItemEventRule, parseHeartbeatRule, type HeartbeatRuleKindRegistry } from "../scheduler/rule.js";
 import { NotFoundError, ValidationError } from "../errors.js";

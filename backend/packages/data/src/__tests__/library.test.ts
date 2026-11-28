@@ -7,8 +7,8 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
 import { LibraryMetadataConfigurationError } from "../library/libraryMetadataConfig.js";
 import { downloadLibraryCover } from "../library/openLibraryFetcher.js";
@@ -165,7 +165,7 @@ async function withRoots(count: number, run: (roots: string[]) => Promise<void>)
   const roots: string[] = [];
   const failures: unknown[] = [];
   try {
-    for (let i = 0; i < count; i++) roots.push(await mkdtemp(join(tmpdir(), "semprec-library-")));
+    for (let i = 0; i < count; i++) roots.push(await mkdtemp(join(tmpdir(), "alldots-library-")));
     await run(roots);
   } catch (error) {
     failures.push(error);
@@ -1313,7 +1313,7 @@ describe("library automation_error recipient in a tenant", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "alldots_data"));
   });
 
   beforeEach(async () => {
@@ -1378,7 +1378,7 @@ describe("Books year and ISBN properties", () => {
   let booksId: string;
   beforeEach(async () => {
     admin ??= getTestPool();
-    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    runtime ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
     tenantId = await createTestTenant(admin);
     await runInTenant(tenantId, async () => {
@@ -1466,7 +1466,7 @@ describe("library cover override", () => {
   beforeEach(async () => {
     await resetDatabase(pool);
     await seedSystem(pool);
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-library-cover-override-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-library-cover-override-"));
     storage = new LocalFsBlobStorageWriter(storageRoot);
   });
 

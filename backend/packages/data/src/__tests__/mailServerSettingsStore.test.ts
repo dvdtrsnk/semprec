@@ -187,7 +187,7 @@ describe("mail server settings store (issue #1473)", () => {
   it("hides another tenant's row under row-level security", async () => {
     const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const id = randomUUID();
     try {
       await withTenantTransaction(runtimePool, tenantA, async (client) => {

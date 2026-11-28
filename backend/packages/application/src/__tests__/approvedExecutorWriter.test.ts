@@ -1,4 +1,4 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
@@ -7,9 +7,9 @@ import {
   inTenantZero,
   registerRelationEdgeDeleteHook,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { runOnce } from "@semprec/queue";
-import * as data from "@semprec/data";
+} from "@alldots/data/testSupport";
+import { runOnce } from "@alldots/queue";
+import * as data from "@alldots/data";
 import {
   createAgentRun,
   createChokePoint,
@@ -27,8 +27,8 @@ import {
   type ApprovalRequiredError,
   type ChokePoint,
   type WriterIdentity,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
@@ -46,8 +46,8 @@ const testMetadataResolver: CollectionMetadataResolver = {
 
 // The approved-operation executor calls these two data-layer functions by name; wrapping them
 // (still running the real implementation) records the writer it passes.
-vi.mock("@semprec/data", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/data")>();
+vi.mock("@alldots/data", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/data")>();
   return {
     ...actual,
     itemDeleteWithClient: vi.fn(actual.itemDeleteWithClient),
@@ -184,7 +184,7 @@ describe("approved destructive operations write as the requesting agent (issue #
         throw new Error("Missing generic approval request");
       }
       const genericRequest = { ...request, payload: request.payload };
-      const actual = await vi.importActual<typeof import("@semprec/data")>("@semprec/data");
+      const actual = await vi.importActual<typeof import("@alldots/data")>("@alldots/data");
       const failure = new Error("forced post-delete failure");
       vi.mocked(data.deleteRelationWithClient).mockImplementationOnce(async (...args) => {
         await actual.deleteRelationWithClient(...args);

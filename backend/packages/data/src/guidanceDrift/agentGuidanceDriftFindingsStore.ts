@@ -3,8 +3,8 @@ import type {
   GuidanceDriftFinding,
   GuidanceDriftFindingStore,
   UpsertActiveGuidanceDriftFindingInput,
-} from "@semprec/shared";
-import { validateGuidanceDriftContradiction } from "@semprec/shared";
+} from "@alldots/shared";
+import { validateGuidanceDriftContradiction } from "@alldots/shared";
 import { requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { assertKnownValue } from "../dbRowValidation.js";

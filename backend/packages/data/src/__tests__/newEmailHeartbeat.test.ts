@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createHash, randomUUID } from "node:crypto";
-import { runOnce } from "@semprec/queue";
-import type { AiGatewayClientPort } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import type { AiGatewayClientPort } from "@alldots/shared";
 import {
   bindToTenantZero,
   createTenantZeroUser,

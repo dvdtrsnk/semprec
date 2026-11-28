@@ -2,9 +2,9 @@ import "../domainWriteHooks.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
   registerItemDeleteHook,
@@ -460,7 +460,7 @@ function entriesOf(...entries: Array<[string, boolean]>): Array<{ id: string; li
 describe("merging the duplicate Journal entries of one period (issue #1726)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -610,8 +610,8 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
       const moved = await runInTenant(tenant, async () =>
         cp.createItem({ databaseId: ids.events, properties: { name: "Standup", date: DAY } }),
       );
-      const olderText = `Notes from [Review](semprec://items/${kept.id})`;
-      const newerText = `Notes from [Standup](semprec://items/${moved.id})`;
+      const olderText = `Notes from [Review](alldots://items/${kept.id})`;
+      const newerText = `Notes from [Standup](alldots://items/${moved.id})`;
       await write(older, olderText);
       await write(newer, newerText);
       // The page-text job derives the system-owned `events` edges from the page; the fixture runs its owner directly.
@@ -1006,7 +1006,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
     it("fails with the page insertion's refusal and changes nothing when the duplicate's page links a trashed item", async () => {
       const pair = await populatedDuplicates();
       const task = await createNamed(ids.tasks, "Follow up");
-      await write(pair.newer, `See [Follow up](semprec://items/${task})`);
+      await write(pair.newer, `See [Follow up](alldots://items/${task})`);
       await trash(ids.tasks, task);
       const before = await everything();
 

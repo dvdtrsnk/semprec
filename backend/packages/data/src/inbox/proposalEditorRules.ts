@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { EditorSchemaDescriptor, ModuleRegistry } from "@semprec/module-registry";
+import type { EditorSchemaDescriptor, ModuleRegistry } from "@alldots/module-registry";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";

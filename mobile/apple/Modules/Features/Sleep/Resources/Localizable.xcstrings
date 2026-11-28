@@ -886,13 +886,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Připomenutí přijde jako upozornění Sempa. Soustředění Spánek si zapneš v Nastavení › Soustředění, Semprec ho jen připomene."
+            "value" : "Připomenutí přijde jako upozornění Sempa. Soustředění Spánek si zapneš v Nastavení › Soustředění, Alldots ho jen připomene."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The reminder arrives as a Semp notification. You turn the Sleep focus on in Settings › Focus, Semprec only reminds you of it."
+            "value" : "The reminder arrives as a Semp notification. You turn the Sleep focus on in Settings › Focus, Alldots only reminds you of it."
           }
         }
       }
@@ -1638,13 +1638,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Povol Semprecu budíky v Nastavení, aby mohl budík zvonit."
+            "value" : "Povol Alldotsu budíky v Nastavení, aby mohl budík zvonit."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Allow alarms for Semprec in Settings, so that the alarm can ring."
+            "value" : "Allow alarms for Alldots in Settings, so that the alarm can ring."
           }
         }
       }

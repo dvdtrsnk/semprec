@@ -29,7 +29,7 @@ describe("Markdown property writes", () => {
     const valid = "# Heading\n\n**bold**";
     const updated = await cp.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { body: valid } });
     expect(updated.properties.body).toBe(valid);
-    for (const body of ["[Title](semprec://page/p1)", 42]) {
+    for (const body of ["[Title](alldots://page/p1)", 42]) {
       await expect(
         cp.updateItem({ databaseId: db.id, itemId: item.id, propertiesPatch: { body } }),
       ).rejects.toMatchObject({ status: 400, details: { field: "body" } });
@@ -54,7 +54,7 @@ describe("Markdown property writes", () => {
       const before = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
         db.id,
       ]);
-      for (const body of ["[Title](semprec://page/p1)", 42]) {
+      for (const body of ["[Title](alldots://page/p1)", 42]) {
         await expect(cp.createItem({ databaseId: db.id, properties: { body } })).rejects.toMatchObject({
           status: 400,
           details: { field: "body" },

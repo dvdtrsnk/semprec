@@ -1,6 +1,6 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import { z } from "zod";
-import { CAPABILITY_IDS, type RiskClass } from "@semprec/shared";
+import { CAPABILITY_IDS, type RiskClass } from "@alldots/shared";
 import {
   moduleManifestSchema,
   type CustomRouteMethod,
@@ -98,7 +98,7 @@ export interface ModuleWorkerProjection {
 }
 
 /**
- * A custom route with its `handlerExport` resolved, left `unknown`: `semprec-api` casts it to its
+ * A custom route with its `handlerExport` resolved, left `unknown`: `alldots-api` casts it to its
  * own handler-factory shape, so this package does not depend on its HTTP types.
  */
 export interface ModuleCustomRouteDefinition {
@@ -527,7 +527,7 @@ export class ModuleRegistry {
    * the source's nor the target's, or a cycle in the property graph (node per
    * `databaseKey.propertyKey`, edge per via rule). A resolver rule is checked for its target only.
    * `valueFilter` keys name a singleton system database no manifest declares, so only the manifest
-   * schema and `@semprec/data`'s seeded-schema drift check cover them.
+   * schema and `@alldots/data`'s seeded-schema drift check cover them.
    */
   validateLinkRules(): void {
     const allRules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);

@@ -10,7 +10,7 @@ export async function repositoryIssueRead(root, input) {
   if (!["capabilities", "list", "get", "state", "children"].includes(request.operation)) throw new Error("Unsupported repository issue read");
   if (Object.keys(request).some(key => !["operation", "number", "label", "excludedLabel", "revision", "allowShadow"].includes(key))) throw new Error("Unknown repository issue request field");
   const migration = object(JSON.parse(await readBounded(resolve(root, "issues/migration/state.json"), 100000)), "migration state");
-  if (migration.schemaVersion !== 1 || migration.repository !== "dvdtrsnk/semprec" || !["github", "repository"].includes(migration.authority)) throw new Error("Invalid repository issue authority");
+  if (migration.schemaVersion !== 1 || migration.repository !== "dvdtrsnk/alldots" || !["github", "repository"].includes(migration.authority)) throw new Error("Invalid repository issue authority");
   if (request.operation === "capabilities") return { version: 1, authority: migration.authority };
   if (request.allowShadow !== undefined && typeof request.allowShadow !== "boolean") throw new Error("Invalid shadow flag");
   if (migration.authority !== "repository" && request.allowShadow !== true) throw new Error("Repository issue authority is not active");
@@ -22,7 +22,7 @@ export async function repositoryIssueRead(root, input) {
     const id = identifier(issue.metadata.id);
     const fileSha256 = digest(await readBounded(resolve(root, `issues/items/${id}.md`)));
     return { repositoryIssueKind: issue.metadata.kind, number: relayNumber(id), title: issue.metadata.title, body: issue.body, labels: issue.metadata.labels, open: issue.metadata.state === "open",
-      url: `https://github.com/dvdtrsnk/semprec/blob/${revision}/issues/items/${id}.md`,
+      url: `https://github.com/dvdtrsnk/alldots/blob/${revision}/issues/items/${id}.md`,
       repositoryIssue: { id, revision, fileSha256, bodySha256: digest(issue.body) } };
   };
   if (request.operation === "list") {

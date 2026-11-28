@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/961",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/961",
   "id": 5687187968,
   "node_id": "I_kwDOUFuQ4c8AAAABUvuaAA",
   "number": 961,
@@ -56,7 +56,7 @@
   "body": "## Behavior specification (approved)\n\nPart of the multi-tenancy program specified in #950. Open the system to a second user only after everything is enforced and reviewed:\n\n1. Security gate (maintainer): the strict release is deployed and the release before it is strict too; an external adversarial review of the policies, the definer and router functions and the isolation suites; restore and deletion replay rehearsed; budgets configured.\n2. Invitation acceptance: a public, per-IP rate-limited endpoint; an unknown, expired, revoked or used token always gives the same 404; one transaction creates the tenant and the user and consumes the invite, then the tenant is provisioned and becomes active; this issue drops the single-tenant guard.\n3. The web invitation acceptance page reads the token from the URL fragment and removes it from the address bar.\n\n## Decisions\n\n- **Why is the guard dropped in the acceptance issue and not earlier?** → So that no code path can create a second tenant before the gate is signed.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -67,7 +67,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/961/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/961/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

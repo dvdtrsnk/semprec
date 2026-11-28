@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
@@ -64,7 +64,7 @@ async function readCatalog(pool: Pool): Promise<{ tables: string[]; foreignKeys:
   const { rows: tableRows } = await pool.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY 1`,
   );
   const { rows: fkRows } = await pool.query<{ table_name: string; referenced_table: string }>(
@@ -314,7 +314,7 @@ async function purgeUnderLock(
   let locked = false;
   try {
     const { rows } = await client.query<{ locked: boolean }>(
-      "SELECT pg_try_advisory_lock(hashtextextended('semprec_tenant_purge:' || $1::text, 0)) AS locked",
+      "SELECT pg_try_advisory_lock(hashtextextended('alldots_tenant_purge:' || $1::text, 0)) AS locked",
       [tenantId],
     );
     locked = requireSingleRow(rows, "pg_try_advisory_lock").locked;
@@ -330,7 +330,7 @@ async function purgeUnderLock(
   } finally {
     if (locked) {
       try {
-        await client.query("SELECT pg_advisory_unlock(hashtextextended('semprec_tenant_purge:' || $1::text, 0))", [
+        await client.query("SELECT pg_advisory_unlock(hashtextextended('alldots_tenant_purge:' || $1::text, 0))", [
           tenantId,
         ]);
       } catch (unlockErr) {

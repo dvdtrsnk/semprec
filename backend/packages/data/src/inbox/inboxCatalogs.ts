@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, type ModuleCatalogs } from "@alldots/module-registry";
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 

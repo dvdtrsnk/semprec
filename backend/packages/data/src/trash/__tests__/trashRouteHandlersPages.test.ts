@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { withTransaction } from "../../db/pool.js";
 import { createSubpageWithClient, renamePageWithClient } from "../../docs/pageOperations.js";
@@ -106,7 +106,7 @@ function pageOf(body: Body, itemId: string): NonNullable<Body["items"][number]["
 describe("GET /api/trash/items with pages (issue gh-1855)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(dataPool);
   });
 

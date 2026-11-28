@@ -8,25 +8,25 @@ and host provisioning (#244, #176):
 - `Caddyfile` — the single public entry point. One domain, automatic TLS, HSTS without
   `includeSubDomains`/`preload`, compression, JSON access log to stderr, and the two-tier
   `POST /api/files` request-body limit. Reverse-proxies `/api/*`, `/mcp` and `/healthz` to
-  `semprec-api` on `127.0.0.1:8080` and serves the web client from
-  `/opt/semprec/current/web/dist` with an `index.html` fallback. Installed to
+  `alldots-api` on `127.0.0.1:8080` and serves the web client from
+  `/opt/alldots/current/web/dist` with an `index.html` fallback. Installed to
   `/etc/caddy/Caddyfile` by `provision.sh`, which also enables `caddy.service` and hands it
-  `SEMPREC_DOMAIN` through `/etc/caddy/semprec.env`.
+  `ALLDOTS_DOMAIN` through `/etc/caddy/alldots.env`.
 - `nftables.conf` — the host firewall: only 22/80/443 reachable from outside the host, and uid
-  `semprec` may not connect to loopback, private, link-local or metadata addresses (DNS and the
+  `alldots` may not connect to loopback, private, link-local or metadata addresses (DNS and the
   Postgres/gateway loopback ports excepted). Installed to `/etc/nftables.conf` and enabled by
-  `provision.sh`, which also reloads `nftables.service`. It owns only its own `table inet semprec`
+  `provision.sh`, which also reloads `nftables.service`. It owns only its own `table inet alldots`
   and never flushes the ruleset, so Docker's own `ip filter`/`ip nat` tables are left alone.
 - `docker-compose.yml` — PostgreSQL only, bound to `127.0.0.1`. Its container receives exactly
   `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`, interpolated from
-  `/opt/semprec/shared/env/postgres.env` by `docker compose --env-file
-/opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
+  `/opt/alldots/shared/env/postgres.env` by `docker compose --env-file
+/opt/alldots/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
   provisioned before this file dropped MinIO can remove its now-unused volume by hand (check its
   name with `docker volume ls`, typically `<project>_minio_data`) with `docker volume rm
 <volume-name>` — optional, not scripted.
 - `shared/env/<group>.env.example` — twelve values-free templates, one per secret group
   (`postgres`, `migrate`, `data-role`, `side-role`, `master-key`, `gateway-token`, `ai-gateway`,
-  `api`, `agents`, `settings`, `backup`, `monitor`), for `/opt/semprec/shared/env/<group>.env`. Each
+  `api`, `agents`, `settings`, `backup`, `monitor`), for `/opt/alldots/shared/env/<group>.env`. Each
   key is in exactly one group and each template's header names the units that load it
   (`docs/architecture/delivery-and-operations.md`). `provision.sh` installs a template only
   when its group file does not exist yet.
@@ -35,33 +35,33 @@ and host provisioning (#244, #176):
   root from this directory's checked-out copy. It never overwrites an existing group file or a
   release.
 - `systemd/` — source units installed into `/etc/systemd/system`, a journald drop-in installed at
-  `/etc/systemd/journald.conf.d/semprec.conf`, and timer-script skeletons installed under
-  `/opt/semprec/shared/bin`. The timer bodies belong to #171, #177, and #178; their schedules are
+  `/etc/systemd/journald.conf.d/alldots.conf`, and timer-script skeletons installed under
+  `/opt/alldots/shared/bin`. The timer bodies belong to #171, #177, and #178; their schedules are
   installed now so later provisioning updates replace only non-secret operational templates.
 
-`semprec-api`, `semprec-agents`, `semprec-transcribe`, and `semprec-ai-gateway` run as systemd
-units; mail live-sync runs inside `semprec-api`, not as a unit of its own. The internal HTTP listeners bind to loopback in their
+`alldots-api`, `alldots-agents`, `alldots-transcribe`, and `alldots-ai-gateway` run as systemd
+units; mail live-sync runs inside `alldots-api`, not as a unit of its own. The internal HTTP listeners bind to loopback in their
 own `server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
 `backend/services/*/src/serve.ts`, not in a unit file. Each unit's
 `EnvironmentFile=` lines are its allowlist of secret groups; nothing service-specific is ever
 shipped inside a release directory, so a release contains no secret of any kind:
 
-| unit                                    | groups (in `/opt/semprec/shared/env/`)                           |
+| unit                                    | groups (in `/opt/alldots/shared/env/`)                           |
 | --------------------------------------- | ---------------------------------------------------------------- |
-| `semprec-api`                           | `data-role`, `master-key`, `gateway-token`, `api`, `settings`    |
-| `semprec-agents`                        | `data-role`, `master-key`, `gateway-token`, `agents`, `settings` |
-| `semprec-transcribe`                    | `data-role`, `gateway-token`, `settings`                         |
-| `semprec-ai-gateway`                    | `side-role`, `gateway-token`, `ai-gateway`                       |
-| `semprec-backup`                        | `postgres`, `settings`, `backup`                                 |
-| `semprec-restore-test`                  | `side-role`, `settings`, `backup`                                |
-| `semprec-dead-man`, `semprec-failping@` | `monitor`                                                        |
-| `semprec-trash-purge`                   | none                                                             |
+| `alldots-api`                           | `data-role`, `master-key`, `gateway-token`, `api`, `settings`    |
+| `alldots-agents`                        | `data-role`, `master-key`, `gateway-token`, `agents`, `settings` |
+| `alldots-transcribe`                    | `data-role`, `gateway-token`, `settings`                         |
+| `alldots-ai-gateway`                    | `side-role`, `gateway-token`, `ai-gateway`                       |
+| `alldots-backup`                        | `postgres`, `settings`, `backup`                                 |
+| `alldots-restore-test`                  | `side-role`, `settings`, `backup`                                |
+| `alldots-dead-man`, `alldots-failping@` | `monitor`                                                        |
+| `alldots-trash-purge`                   | none                                                             |
 
 The four long-running units load `current/release.env` last. `migrate` is loaded by no unit: only
 `deploy.sh` hands it to its transient migration and seed units.
 
-`semprec-agents` has no HTTP listener: it is the second graphile-worker composition root (issue
-#91), owning the agent-affinity task catalog over the same Postgres-backed queue `semprec-api`
+`alldots-agents` has no HTTP listener: it is the second graphile-worker composition root (issue
+#91), owning the agent-affinity task catalog over the same Postgres-backed queue `alldots-api`
 uses. Its unit is a long-running worker, not socket-activated.
 
 ## Deploying a release (issue #190)
@@ -88,8 +88,8 @@ In order, it:
    check failed", when one fails to load instead of ending in its own configuration refusal, and
    writes `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
-   `/opt/semprec/shared/env/migrate.env` — and nothing else — and connects with its
-   `SEMPREC_MIGRATE_DATABASE_URL` and applies the baseline schema to the database, which the
+   `/opt/alldots/shared/env/migrate.env` — and nothing else — and connects with its
+   `ALLDOTS_MIGRATE_DATABASE_URL` and applies the baseline schema to the database, which the
    operator wipes before every deploy (`deploy.sh` never drops data; see
    [`docs/operations/migrations.md`](../docs/operations/migrations.md)), then runs the
    seed CLI (`runSeedCli.js`) right after it the same way, under the same URL — it provisions
@@ -101,12 +101,12 @@ In order, it:
    with "tenancy verification failed", when any of them does not hold;
 4. renames the staging directory to `releases/<tag>`, then replaces `current` with one
    `rename(2)`;
-5. restarts `semprec-ai-gateway`, `semprec-api` (which also hosts mail live-sync),
-   `semprec-agents` and `semprec-transcribe`, and prints the `APP_VERSION` each running process has.
+5. restarts `alldots-ai-gateway`, `alldots-api` (which also hosts mail live-sync),
+   `alldots-agents` and `alldots-transcribe`, and prints the `APP_VERSION` each running process has.
 
 A failure in steps 1–3 removes the staging directory and exits non-zero with `current` and every
 service untouched. A failure in step 5 exits non-zero too, but `current` already names the new
-release. Only one deploy runs at a time (`/opt/semprec/.deploy.lock`).
+release. Only one deploy runs at a time (`/opt/alldots/.deploy.lock`).
 
 Every long-running unit loads `current/release.env` after its group files, so the version a
 process reports comes from the release it runs. The script never reads, copies or prints
@@ -139,31 +139,31 @@ is a new, fixed release deployed normally. `deploy.test.sh` covers rollback too.
 
 ## Logs and external liveness (issue #171)
 
-Every Semprec systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL uses
+Every Alldots systemd service supplies a distinct `SyslogIdentifier`; PostgreSQL uses
 the Docker Compose `journald` driver with its own tag. This keeps process and container logs
 filterable in one persistent journal. Provisioning configures `Storage=persistent`, a 2 GiB
 maximum, and 90-day retention. Journal state is operational evidence, not backup input: #177's
 restic job excludes `/var/log/journal` along with secrets and reproducible configuration.
 
-The `semprec-dead-man` timer probes `https://$SEMPREC_DOMAIN/healthz` every five minutes before
+The `alldots-dead-man` timer probes `https://$ALLDOTS_DOMAIN/healthz` every five minutes before
 pinging `HEALTHCHECKS_PING_URL`; failed health probes therefore never report a false success. The
 four long-running services restart every 5 seconds for up to 15 minutes (180 attempts). Only when
-that restart limit is exhausted does systemd invoke `semprec-failping@%n.service`, which sends the
+that restart limit is exhausted does systemd invoke `alldots-failping@%n.service`, which sends the
 failed unit name to the monitor's `/fail` endpoint. A crash recovered by a restart does not trigger
 `/fail`.
 
 ## Encrypted off-site backups (issue #177)
 
-`semprec-backup.timer` runs daily at 03:30. Its root-owned service writes two PostgreSQL
+`alldots-backup.timer` runs daily at 03:30. Its root-owned service writes two PostgreSQL
 custom-format dumps, each to a temporary file that is moved into place only when complete:
 
-- `/var/backups/semprec/postgres.dump`, the whole database except the data of `tenant_keys`
+- `/var/backups/alldots/postgres.dump`, the whole database except the data of `tenant_keys`
   (`--exclude-table-data=public.tenant_keys`; the table's schema stays);
-- `/var/backups/semprec/tenant-keys.dump`, a `--data-only` dump of `public.tenant_keys` alone,
+- `/var/backups/alldots/tenant-keys.dump`, a `--data-only` dump of `public.tenant_keys` alone,
   taken after the main dump. Keys can be added or erased between the two observations, so their
   tenant sets can differ. A failing dump fails the run before any restic call.
 
-Between the key dump and restic it writes `/var/backups/semprec/tenant-deletions.ledger` (also
+Between the key dump and restic it writes `/var/backups/alldots/tenant-deletions.ledger` (also
 through a temporary file and `mv`): one lowercase tenant UUID per line, the ids in
 `tenant_deletions` ordered by `completed_at`, read with `psql` in the Postgres container. The
 file-only validator rejects malformed, duplicate or oversized artifacts before any restic call.
@@ -172,15 +172,15 @@ order provides bounded provenance rather than a shared snapshot guarantee. It le
 re-apply deletions recorded after an older snapshot (see "Re-applying account deletions after a restore").
 
 It then runs two `restic backup` commands: the main snapshot (the main dump, the ledger and the two blob
-storage directories the `blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/semprec/data/files`)
-and `MAIL_ATTACHMENTS_DIR` (`/opt/semprec/data/mail-attachments`); a missing directory fails the
+storage directories the `blobs` rows point into, `FILES_STORAGE_DIR` (`/opt/alldots/data/files`)
+and `MAIL_ATTACHMENTS_DIR` (`/opt/alldots/data/mail-attachments`); a missing directory fails the
 backup before restic runs), and a separate snapshot of the key dump alone. MinIO is not used by
 the application and is not backed up. The restic repository is S3-compatible and encrypted by
 restic. Only after both backups succeed does the job apply retention per kind, then prune once:
 
-- `restic forget --path /var/backups/semprec/postgres.dump --keep-daily 14 --keep-weekly 8 --keep-monthly 12`
+- `restic forget --path /var/backups/alldots/postgres.dump --keep-daily 14 --keep-weekly 8 --keep-monthly 12`
   for main snapshots (this also matches the older ones taken before the key dump existed);
-- `restic forget --path /var/backups/semprec/tenant-keys.dump --keep-within 7d` for key snapshots;
+- `restic forget --path /var/backups/alldots/tenant-keys.dump --keep-within 7d` for key snapshots;
 - `restic prune`.
 
 **Crypto-shred bound.** Deleting a tenant's `tenant_keys` row makes its secrets unrecoverable only
@@ -192,23 +192,23 @@ advancing while backups do not run.
 **Disaster recovery needs both halves.** Keep the restored database and all services offline.
 Initialise the new PostgreSQL cluster with the same `POSTGRES_USER` and `POSTGRES_DB` as the
 backed-up one: the main dump records its tables as owned by that superuser, and the block below
-fails before `pg_restore` when `SEMPREC_RESTORE_OWNER` (that user's name) does not exist in the
+fails before `pg_restore` when `ALLDOTS_RESTORE_OWNER` (that user's name) does not exist in the
 cluster. The block restores the selected main snapshot and then the newest independent key
 snapshot:
 
-- It creates `semprec_side`, `semprec_data` (a member of `semprec_side`) and `semprec_router` when
+- It creates `alldots_side`, `alldots_data` (a member of `alldots_side`) and `alldots_router` when
   they are missing, with the attributes the baseline migration gives them, before `pg_restore`, because the
-  dump's row-level security policies and grants name them. It sets the passwords of `semprec_data`
-  and `semprec_side` from `SEMPREC_DATA_DB_PASSWORD` and `SEMPREC_SIDE_DB_PASSWORD` through
+  dump's row-level security policies and grants name them. It sets the passwords of `alldots_data`
+  and `alldots_side` from `ALLDOTS_DATA_DB_PASSWORD` and `ALLDOTS_SIDE_DB_PASSWORD` through
   psql's `\getenv` (psql 15 or newer), so no password is placed in a command-line argument.
 - The production restore keeps owners and privileges: it never passes `--no-owner` or
-  `--no-privileges`, because the restored services connect as `semprec_data`, `semprec_side` and
-  `semprec_router` and hold only the privileges the dump grants them. (The monthly restore test
+  `--no-privileges`, because the restored services connect as `alldots_data`, `alldots_side` and
+  `alldots_router` and hold only the privileges the dump grants them. (The monthly restore test
   skips both, in a disposable cluster whose roles it creates itself.)
-- It restores the main dump from the snapshot named by `SEMPREC_RESTORE_SNAPSHOT` (list the
-  candidates with `restic snapshots --path /var/backups/semprec/postgres.dump`) and the two blob
+- It restores the main dump from the snapshot named by `ALLDOTS_RESTORE_SNAPSHOT` (list the
+  candidates with `restic snapshots --path /var/backups/alldots/postgres.dump`) and the two blob
   storage directories from that same snapshot, under their original absolute paths.
-- It selects the newest key snapshot with `restic dump --path /var/backups/semprec/tenant-keys.dump
+- It selects the newest key snapshot with `restic dump --path /var/backups/alldots/tenant-keys.dump
 latest`. Never choose an older key dump: it can hold the key of a tenant whose deletion erased it
   since, and key snapshots expire after 7 days. The import below also refuses the key of a tenant
   that is `deleting` or tombstoned in `tenant_deletions`.
@@ -216,8 +216,8 @@ latest`. Never choose an older key dump: it can hold the key of a tenant whose d
 Supply the offline cluster's superuser connection through `PGHOST`, `PGPORT`, `PGUSER` and
 `PGPASSWORD`, the offline admin and non-owner target database URLs, the exact 64-character ID of the
 selected offline PostgreSQL container, and a new path in a protected operator-owned directory for the
-cleanup receipt through `SEMPREC_RESTORE_ADMIN_URL`, `SEMPREC_RESTORE_TARGET_URL`,
-`SEMPREC_RESTORE_CONTAINER`, and `SEMPREC_RESTORE_RECEIPT`. Run the block as a directly executed
+cleanup receipt through `ALLDOTS_RESTORE_ADMIN_URL`, `ALLDOTS_RESTORE_TARGET_URL`,
+`ALLDOTS_RESTORE_CONTAINER`, and `ALLDOTS_RESTORE_RECEIPT`. Run the block as a directly executed
 Bash script; do not source it. The key import target role must already have `SELECT` on `tenants`
 and `tenant_deletions` and `SELECT, INSERT` on `tenant_keys`; it must be subject to the target's RLS.
 
@@ -226,58 +226,58 @@ and `tenant_deletions` and `SELECT, INSERT` on `tenant_keys`; it must be subject
 ```bash
 set -euo pipefail
 umask 077
-: "${SEMPREC_RESTORE_OWNER:?SEMPREC_RESTORE_OWNER must be set to the superuser name of the backed-up database}"
-: "${SEMPREC_RESTORE_DATABASE:?SEMPREC_RESTORE_DATABASE must be set}"
-: "${SEMPREC_RESTORE_SNAPSHOT:?SEMPREC_RESTORE_SNAPSHOT must be set to the selected main snapshot ID}"
-: "${SEMPREC_RESTORE_MAIN_DUMP:?SEMPREC_RESTORE_MAIN_DUMP must be set}"
-: "${SEMPREC_RESTORE_KEY_DUMP:?SEMPREC_RESTORE_KEY_DUMP must be set}"
-: "${SEMPREC_DATA_DB_PASSWORD:?SEMPREC_DATA_DB_PASSWORD must be set}"
-: "${SEMPREC_SIDE_DB_PASSWORD:?SEMPREC_SIDE_DB_PASSWORD must be set}"
-: "${SEMPREC_RESTORE_ADMIN_URL:?SEMPREC_RESTORE_ADMIN_URL must be set}"
-: "${SEMPREC_RESTORE_TARGET_URL:?SEMPREC_RESTORE_TARGET_URL must be set}"
-: "${SEMPREC_RESTORE_CONTAINER:?SEMPREC_RESTORE_CONTAINER must be set}"
-: "${SEMPREC_RESTORE_RECEIPT:?SEMPREC_RESTORE_RECEIPT must be set}"
+: "${ALLDOTS_RESTORE_OWNER:?ALLDOTS_RESTORE_OWNER must be set to the superuser name of the backed-up database}"
+: "${ALLDOTS_RESTORE_DATABASE:?ALLDOTS_RESTORE_DATABASE must be set}"
+: "${ALLDOTS_RESTORE_SNAPSHOT:?ALLDOTS_RESTORE_SNAPSHOT must be set to the selected main snapshot ID}"
+: "${ALLDOTS_RESTORE_MAIN_DUMP:?ALLDOTS_RESTORE_MAIN_DUMP must be set}"
+: "${ALLDOTS_RESTORE_KEY_DUMP:?ALLDOTS_RESTORE_KEY_DUMP must be set}"
+: "${ALLDOTS_DATA_DB_PASSWORD:?ALLDOTS_DATA_DB_PASSWORD must be set}"
+: "${ALLDOTS_SIDE_DB_PASSWORD:?ALLDOTS_SIDE_DB_PASSWORD must be set}"
+: "${ALLDOTS_RESTORE_ADMIN_URL:?ALLDOTS_RESTORE_ADMIN_URL must be set}"
+: "${ALLDOTS_RESTORE_TARGET_URL:?ALLDOTS_RESTORE_TARGET_URL must be set}"
+: "${ALLDOTS_RESTORE_CONTAINER:?ALLDOTS_RESTORE_CONTAINER must be set}"
+: "${ALLDOTS_RESTORE_RECEIPT:?ALLDOTS_RESTORE_RECEIPT must be set}"
 : "${PGHOST:?PGHOST must be set}"
 : "${PGUSER:?PGUSER must be set}"
 : "${PGPASSWORD:?PGPASSWORD must be set}"
-[[ "$SEMPREC_RESTORE_SNAPSHOT" =~ ^[0-9a-f]{8,64}$ ]] || {
-  echo "SEMPREC_RESTORE_SNAPSHOT must be a restic snapshot ID" >&2
+[[ "$ALLDOTS_RESTORE_SNAPSHOT" =~ ^[0-9a-f]{8,64}$ ]] || {
+  echo "ALLDOTS_RESTORE_SNAPSHOT must be a restic snapshot ID" >&2
   exit 1
 }
-export PGDATABASE="$SEMPREC_RESTORE_DATABASE"
+export PGDATABASE="$ALLDOTS_RESTORE_DATABASE"
 owner_query="SELECT count(*) FROM pg_roles WHERE rolname = :'owner'"
 owner_count="$(printf '%s\n' "$owner_query" |
-  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=owner="$SEMPREC_RESTORE_OWNER")"
+  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=owner="$ALLDOTS_RESTORE_OWNER")"
 [[ "$owner_count" == 1 ]] || {
-  echo "the cluster has no role named SEMPREC_RESTORE_OWNER; initialise it with the backed-up POSTGRES_USER" >&2
+  echo "the cluster has no role named ALLDOTS_RESTORE_OWNER; initialise it with the backed-up POSTGRES_USER" >&2
   exit 1
 }
 psql --no-psqlrc --set=ON_ERROR_STOP=1 <<'SQL'
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_side') THEN
-    CREATE ROLE semprec_side LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_side') THEN
+    CREATE ROLE alldots_side LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_data') THEN
-    CREATE ROLE semprec_data LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE semprec_side;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_data') THEN
+    CREATE ROLE alldots_data LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE alldots_side;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_router') THEN
-    CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_router') THEN
+    CREATE ROLE alldots_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
   END IF;
 END
 $$;
-\getenv data_password SEMPREC_DATA_DB_PASSWORD
-\getenv side_password SEMPREC_SIDE_DB_PASSWORD
-ALTER ROLE semprec_data PASSWORD :'data_password';
-ALTER ROLE semprec_side PASSWORD :'side_password';
+\getenv data_password ALLDOTS_DATA_DB_PASSWORD
+\getenv side_password ALLDOTS_SIDE_DB_PASSWORD
+ALTER ROLE alldots_data PASSWORD :'data_password';
+ALTER ROLE alldots_side PASSWORD :'side_password';
 SQL
-restic dump "$SEMPREC_RESTORE_SNAPSHOT" /var/backups/semprec/postgres.dump > "$SEMPREC_RESTORE_MAIN_DUMP"
-pg_restore --exit-on-error --dbname="$SEMPREC_RESTORE_DATABASE" "$SEMPREC_RESTORE_MAIN_DUMP"
-restic restore "$SEMPREC_RESTORE_SNAPSHOT" --target / \
-  --include /opt/semprec/data/files --include /opt/semprec/data/mail-attachments
-restic dump --path /var/backups/semprec/tenant-keys.dump latest \
-  /var/backups/semprec/tenant-keys.dump > "$SEMPREC_RESTORE_KEY_DUMP"
-node /opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js "$SEMPREC_RESTORE_KEY_DUMP"
+restic dump "$ALLDOTS_RESTORE_SNAPSHOT" /var/backups/alldots/postgres.dump > "$ALLDOTS_RESTORE_MAIN_DUMP"
+pg_restore --exit-on-error --dbname="$ALLDOTS_RESTORE_DATABASE" "$ALLDOTS_RESTORE_MAIN_DUMP"
+restic restore "$ALLDOTS_RESTORE_SNAPSHOT" --target / \
+  --include /opt/alldots/data/files --include /opt/alldots/data/mail-attachments
+restic dump --path /var/backups/alldots/tenant-keys.dump latest \
+  /var/backups/alldots/tenant-keys.dump > "$ALLDOTS_RESTORE_KEY_DUMP"
+node /opt/alldots/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js "$ALLDOTS_RESTORE_KEY_DUMP"
 ```
 
 <!-- restore-database-command:end -->
@@ -294,26 +294,26 @@ and users must reconnect. Main snapshots taken between the introduction of per-t
 this change still contain tenant zero's wrapped key until they age out; no other tenant existed then.
 
 The backup input inventory is intentionally narrow: the two custom PostgreSQL dumps, the deletion
-ledger and the two blob storage directories only. It excludes `/opt/semprec/shared/env/`, the legacy `/opt/semprec/shared/.env`, `apns-key.p8`, all credentials
+ledger and the two blob storage directories only. It excludes `/opt/alldots/shared/env/`, the legacy `/opt/alldots/shared/.env`, `apns-key.p8`, all credentials
 including `CREDENTIALS_MASTER_KEY` (the deployment's secrets master key), `/var/log/journal`,
 certificates, and reproducible release or deployment configuration. No restic invocation traverses a parent
 directory that could include those paths. The daily schedule gives a maximum data-loss window
 (RPO) of 24 hours, plus changes since the last completed daily backup.
 
 No proxy-level auth, rate-limiting, IP filtering, or subdomains — all of that stays in the
-application (`services/semprec-api`), by design.
+application (`services/alldots-api`), by design.
 
 ## Monthly restore test (issue #178)
 
-`semprec-restore-test.timer` runs monthly. Its root-owned service restores the newest main restic
-snapshot (`restic restore latest --path /var/backups/semprec/postgres.dump`, since a bare `latest`
+`alldots-restore-test.timer` runs monthly. Its root-owned service restores the newest main restic
+snapshot (`restic restore latest --path /var/backups/alldots/postgres.dump`, since a bare `latest`
 could pick a key snapshot) into a temporary directory under `/var/tmp`. It starts a disposable
 PostgreSQL container on a dedicated bridge with IP masquerade disabled, a random loopback-only
 port and a generated private password. This is not a claim of universal egress isolation. The
 script never addresses production Compose containers or volumes. The run passes only if all of these hold:
 
-- `clusterRoles`: the three cluster roles `semprec_side`, `semprec_data` (a member of
-  `semprec_side`) and `semprec_router` are created, `NOLOGIN`, in the disposable cluster before the
+- `clusterRoles`: the three cluster roles `alldots_side`, `alldots_data` (a member of
+  `alldots_side`) and `alldots_router` are created, `NOLOGIN`, in the disposable cluster before the
   restore, because the dump's row-level security policies name them and `--no-privileges` does not
   skip policies;
 - `pg_restore --exit-on-error --no-owner --no-privileges` of the restored custom dump succeeds;
@@ -337,16 +337,16 @@ uncertain owner, unresolved staging receipt or failed cleanup retains the owned 
 reconciliation and fails the run. Only then does a passing run mark the `backup:restoreTest`
 observability check `ok` and ping `HEALTHCHECKS_RESTORE_PING_URL`. A failed run marks that check
 `alerting`, writes one `backup_restore_failed` notification through the data layer's
-`writeNotification` (the `restoreTestResultCli.js` of the current release, as `semprec_side`),
+`writeNotification` (the `restoreTestResultCli.js` of the current release, as `alldots_side`),
 pings the monitor's `/fail` endpoint, and exits non-zero. It never sends the success ping.
-`deploy/systemd/scripts/semprec-restore-test.test.sh` is the hermetic behavior test.
+`deploy/systemd/scripts/alldots-restore-test.test.sh` is the hermetic behavior test.
 
 ## Re-applying account deletions after a restore (issue #1078)
 
 Keep all user-facing services, workers and their timers offline throughout restoration,
 validation and replay. Restore the selected main snapshot and compatible keys as described
-above. Supply `SEMPREC_API_DATABASE_URL` securely for the API database role and set
-`SEMPREC_RESTORE_LEDGER` to a file in a protected operator-owned directory. Run this block
+above. Supply `ALLDOTS_API_DATABASE_URL` securely for the API database role and set
+`ALLDOTS_RESTORE_LEDGER` to a file in a protected operator-owned directory. Run this block
 as a directly executed Bash script; do not source it or place it in a conditional command.
 It fetches the newest path-selected replay ledger, checks that it covers the restored
 snapshot's tombstones, and starts application services only after actual replay succeeds.
@@ -356,17 +356,17 @@ snapshot's tombstones, and starts application services only after actual replay 
 ```bash
 set -euo pipefail
 umask 077
-: "${SEMPREC_API_DATABASE_URL:?SEMPREC_API_DATABASE_URL must be set}"
-: "${SEMPREC_RESTORE_LEDGER:?SEMPREC_RESTORE_LEDGER must be set}"
-restic dump --path /var/backups/semprec/postgres.dump latest \
-  /var/backups/semprec/tenant-deletions.ledger > "$SEMPREC_RESTORE_LEDGER"
-DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
-  /opt/semprec/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js \
-  --database "$SEMPREC_RESTORE_LEDGER"
-DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
-  /opt/semprec/current/backend/packages/data/dist/tenancy/replayTenantDeletionsCli.js \
-  "$SEMPREC_RESTORE_LEDGER"
-systemctl start semprec-api.service semprec-agents.service semprec-transcribe.service semprec-ai-gateway.service
+: "${ALLDOTS_API_DATABASE_URL:?ALLDOTS_API_DATABASE_URL must be set}"
+: "${ALLDOTS_RESTORE_LEDGER:?ALLDOTS_RESTORE_LEDGER must be set}"
+restic dump --path /var/backups/alldots/postgres.dump latest \
+  /var/backups/alldots/tenant-deletions.ledger > "$ALLDOTS_RESTORE_LEDGER"
+DATABASE_URL="$ALLDOTS_API_DATABASE_URL" node \
+  /opt/alldots/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js \
+  --database "$ALLDOTS_RESTORE_LEDGER"
+DATABASE_URL="$ALLDOTS_API_DATABASE_URL" node \
+  /opt/alldots/current/backend/packages/data/dist/tenancy/replayTenantDeletionsCli.js \
+  "$ALLDOTS_RESTORE_LEDGER"
+systemctl start alldots-api.service alldots-agents.service alldots-transcribe.service alldots-ai-gateway.service
 ```
 
 <!-- restore-activation-command:end -->
@@ -385,13 +385,13 @@ crypto-shredded according to the separate key backup's retention and availabilit
 
 ## Bootstrap secrets (issue #175)
 
-- **Twelve group files plus the key file.** `/opt/semprec/shared/env/<group>.env` (the templates
-  are `shared/env/<group>.env.example`) and `/opt/semprec/shared/apns-key.p8` (Apple's `.p8` APNs
+- **Twelve group files plus the key file.** `/opt/alldots/shared/env/<group>.env` (the templates
+  are `shared/env/<group>.env.example`) and `/opt/alldots/shared/apns-key.p8` (Apple's `.p8` APNs
   auth key — no template committed, since there is no values-free form of a private key; see
   `shared/env/api.env.example` for why it's a separate file instead of an inlined value). `shared/env`
   is `root:root 0700` and each group file `root:root 0600`, since systemd reads `EnvironmentFile=` as
-  root before dropping privileges; `apns-key.p8` is `root:semprec 0640` inside `/opt/semprec/shared`
-  (itself `root:semprec 0750`), since the `semprec` service user reads the key directly by path.
+  root before dropping privileges; `apns-key.p8` is `root:alldots 0640` inside `/opt/alldots/shared`
+  (itself `root:alldots 0750`), since the `alldots` service user reads the key directly by path.
   `provision.sh` corrects all of these ownerships and modes on every run.
 - **Distribution.** A unit loads only the groups listed for it in the table above (#176);
   `apns-key.p8` is read directly by path (`APNS_PRIVATE_KEY_PATH`,
@@ -417,14 +417,14 @@ crypto-shredded according to the separate key backup's retention and availabilit
   touches it once present.
 - **Adding a key.** A new key picks exactly one group and is added to that group's template. On an
   existing host the template is not re-applied to an existing group file, so the line is added to
-  `/opt/semprec/shared/env/<group>.env` by hand, followed by a restart of the units that load it.
+  `/opt/alldots/shared/env/<group>.env` by hand, followed by a restart of the units that load it.
 - **Upgrading from the single `.env`.** Rerun `provision.sh`. For every group file that does not
   exist yet it takes each template line `KEY=…` and replaces it with the legacy
-  `/opt/semprec/shared/.env`'s last `KEY=` line, verbatim; keys no group claims are not copied, and
+  `/opt/alldots/shared/.env`'s last `KEY=` line, verbatim; keys no group claims are not copied, and
   their names (never their values) are printed to stderr together with a note that the legacy file
   is no longer read. It never modifies or deletes the legacy file. Verify the group files, restart
-  the units (`systemctl restart semprec-api semprec-agents semprec-transcribe semprec-ai-gateway`),
-  and only then delete `/opt/semprec/shared/.env` by hand.
+  the units (`systemctl restart alldots-api alldots-agents alldots-transcribe alldots-ai-gateway`),
+  and only then delete `/opt/alldots/shared/.env` by hand.
 
 ## Czech full-text search (issues #206, #207)
 
@@ -443,34 +443,34 @@ PostgreSQL needs them to index or search any message, so rerun `provision.sh` wh
 ## Front door (Caddy)
 
 `provision.sh` installs `Caddyfile` to `/etc/caddy/Caddyfile` and a systemd drop-in
-(`systemd/caddy-semprec.conf`) to `/etc/systemd/system/caddy.service.d/semprec.conf` that points
-`caddy.service` at an `EnvironmentFile=/etc/caddy/semprec.env`. It then reads `SEMPREC_DOMAIN` out
-of `/opt/semprec/shared/env/monitor.env` and renders that one value into `/etc/caddy/semprec.env`
+(`systemd/caddy-alldots.conf`) to `/etc/systemd/system/caddy.service.d/alldots.conf` that points
+`caddy.service` at an `EnvironmentFile=/etc/caddy/alldots.env`. It then reads `ALLDOTS_DOMAIN` out
+of `/opt/alldots/shared/env/monitor.env` and renders that one value into `/etc/caddy/alldots.env`
 (`root:root 0600`) — Caddy never reads the group file itself, only the one value it needs.
 
-On a first run against a freshly installed `monitor.env` template, `SEMPREC_DOMAIN` is still empty:
+On a first run against a freshly installed `monitor.env` template, `ALLDOTS_DOMAIN` is still empty:
 provisioning prints a warning to stderr and leaves Caddy unconfigured rather than failing, so the
-rest of provisioning still completes. Once an operator sets `SEMPREC_DOMAIN` and reruns
-`provision.sh`, it writes `/etc/caddy/semprec.env`, enables and (re)loads `caddy.service`, and
+rest of provisioning still completes. Once an operator sets `ALLDOTS_DOMAIN` and reruns
+`provision.sh`, it writes `/etc/caddy/alldots.env`, enables and (re)loads `caddy.service`, and
 validates the rendered config. Rerunning with an unchanged domain is a no-op on the rendered file.
 
-To let the iOS app open the password-reset link, the operator sets `SEMPREC_APPLE_TEAM_ID` and
-`SEMPREC_IOS_BUNDLE_ID` (both from the Apple Developer account) in `monitor.env` and reruns
+To let the iOS app open the password-reset link, the operator sets `ALLDOTS_APPLE_TEAM_ID` and
+`ALLDOTS_IOS_BUNDLE_ID` (both from the Apple Developer account) in `monitor.env` and reruns
 `provision.sh`. It then renders `/etc/caddy/apple-app-site-association`, which Caddy serves at
 `/.well-known/apple-app-site-association` as `application/json` and which claims only
 `/?page=password-reset`. While either key is empty no file is rendered, provisioning warns with
 the key name, and the path answers 404.
 
 `PORT=8080` must also be set in `api.env` — `Caddyfile`'s `reverse_proxy` targets
-`127.0.0.1:8080` and `semprec-api` listens on `PORT`, so the two values have to agree.
+`127.0.0.1:8080` and `alldots-api` listens on `PORT`, so the two values have to agree.
 
-`APP_BASE_URL` in `api.env` must equal `https://$SEMPREC_DOMAIN`: it is the origin every
-emailed link is built against, and semprec-api falls back to `http://localhost:3000` without it.
+`APP_BASE_URL` in `api.env` must equal `https://$ALLDOTS_DOMAIN`: it is the origin every
+emailed link is built against, and alldots-api falls back to `http://localhost:3000` without it.
 Without both `SMTP_HOST` and `SMTP_FROM_ADDRESS` no password-reset mail is sent, although the
 request still answers `200`. `provision.sh` warns about both on every run without failing or editing
 the file. A host whose `api.env` predates these keys needs the seven lines (`APP_BASE_URL`,
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM_ADDRESS`, `SMTP_USER`, `SMTP_PASSWORD`) from
-`shared/env/api.env.example` added to it by hand, then `systemctl restart semprec-api`.
+`shared/env/api.env.example` added to it by hand, then `systemctl restart alldots-api`.
 
 ## Web client
 
@@ -478,21 +478,21 @@ the file. A host whose `api.env` predates these keys needs the seven lines (`APP
 release alongside `backend/`, producing `web/dist`. `Caddyfile` serves that directory straight off
 the `current` symlink, so a deploy or rollback switches the web client and the backend together —
 there is no separate release or version for the client. The prefixes `Caddyfile` reverse-proxies to
-`semprec-api` (`/api/*`, `/mcp`, `/healthz`) must stay in step with the ones `web/vite.config.ts`
+`alldots-api` (`/api/*`, `/mcp`, `/healthz`) must stay in step with the ones `web/vite.config.ts`
 proxies in development.
 
 ## Host firewall (nftables)
 
 `provision.sh` installs `nftables.conf` to `/etc/nftables.conf`, enables `nftables.service`, and
-reloads it. The ruleset owns only its own `table inet semprec` and never flushes the ruleset, so
+reloads it. The ruleset owns only its own `table inet alldots` and never flushes the ruleset, so
 Docker's own `ip filter`/`ip nat` tables — and the port mappings and masquerading they provide —
 are left alone. Container-to-container traffic is governed entirely by Docker's own chains; this
 ruleset has no `forward` chain of its own.
 
-### Egress of uid `semprec`
+### Egress of uid `alldots`
 
-The `output` chain sends only traffic of uid `semprec` (the four services, their timer scripts and
-`deploy.sh`'s migration and seed runs) through the `semprec_egress` chain; root, Caddy, Docker and
+The `output` chain sends only traffic of uid `alldots` (the four services, their timer scripts and
+`deploy.sh`'s migration and seed runs) through the `alldots_egress` chain; root, Caddy, Docker and
 apt are untouched. That uid can reach:
 
 - replies on connections already admitted (so Caddy still reaches the api on `127.0.0.1:8080`);
@@ -505,72 +505,72 @@ It can no longer reach the blocked sets: `0.0.0.0/8`, RFC 1918, `100.64.0.0/10` 
 `127.0.0.0/8`, `169.254.0.0/16` (metadata), `192.0.0.0/24`, `198.18.0.0/15`, multicast and
 reserved IPv4, and the IPv6 unspecified, loopback, IPv4-mapped, NAT64, discard, ULA, link-local and
 multicast ranges. Such connections are rejected at once (`admin-prohibited`) and logged, at most
-10 per minute, with the prefix `semprec-egress-deny `.
+10 per minute, with the prefix `alldots-egress-deny `.
 
 Consequences for operators:
 
 - An SMTP relay, IMAP server or MCP server on a private or loopback address is unreachable.
 - `AI_GATEWAY_PORT` must stay `3002`.
-- `SEMPREC_DOMAIN` must resolve to a public address, or the dead-man probe is rejected.
+- `ALLDOTS_DOMAIN` must resolve to a public address, or the dead-man probe is rejected.
 - Other loopback ports of the services are not reachable from each other except through the
   rules above.
 
 Host check after provisioning:
 
 ```sh
-sudo -u semprec curl -m 5 http://169.254.169.254/        # fails immediately
-sudo -u semprec curl -m 5 http://10.0.0.1/               # fails immediately
-sudo -u semprec timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'  # succeeds (no pg_isready on the host)
-sudo -u semprec curl -sS -o /dev/null https://example.com     # succeeds
-journalctl -k | grep semprec-egress-deny                 # shows the denials
+sudo -u alldots curl -m 5 http://169.254.169.254/        # fails immediately
+sudo -u alldots curl -m 5 http://10.0.0.1/               # fails immediately
+sudo -u alldots timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'  # succeeds (no pg_isready on the host)
+sudo -u alldots curl -sS -o /dev/null https://example.com     # succeeds
+journalctl -k | grep alldots-egress-deny                 # shows the denials
 ```
 
 ## stdio MCP sandbox
 
-A `stdio` MCP server never runs as `semprec` or as a child of `semprec-api` or `semprec-agents`.
+A `stdio` MCP server never runs as `alldots` or as a child of `alldots-api` or `alldots-agents`.
 Those services connect to a UNIX socket, and systemd starts the server for that one connection as
-the dedicated user `semprec-mcp`. See
+the dedicated user `alldots-mcp`. See
 `docs/architecture/delivery-and-operations.md`.
 
-- **User.** `provision.sh` creates the system user `semprec-mcp`, with its own group, no
-  membership in `semprec`, home `/var/lib/semprec-mcp` and shell `/usr/sbin/nologin`. systemd
+- **User.** `provision.sh` creates the system user `alldots-mcp`, with its own group, no
+  membership in `alldots`, home `/var/lib/alldots-mcp` and shell `/usr/sbin/nologin`. systemd
   creates the home as the unit's `StateDirectory` (`0700`).
-- **Socket.** `semprec-mcp-launch.socket` listens on `/run/semprec-mcp-launch.sock`
-  (`root:semprec`, `0660`). It accepts each connection separately, at most 16 at a time.
-  `provision.sh` enables and starts it. `semprec-api.service` and `semprec-agents.service` want it,
-  start after it, and find it through `SEMPREC_MCP_LAUNCH_SOCKET=/run/semprec-mcp-launch.sock`.
+- **Socket.** `alldots-mcp-launch.socket` listens on `/run/alldots-mcp-launch.sock`
+  (`root:alldots`, `0660`). It accepts each connection separately, at most 16 at a time.
+  `provision.sh` enables and starts it. `alldots-api.service` and `alldots-agents.service` want it,
+  start after it, and find it through `ALLDOTS_MCP_LAUNCH_SOCKET=/run/alldots-mcp-launch.sock`.
   Without that variable, a service outside tests refuses every `stdio` connect with
   `stdio_sandbox_unavailable`.
-- **Unit.** Each connection starts `semprec-mcp-launch@.service`, which runs
-  `/usr/local/libexec/semprec-mcp-launch` (installed by `provision.sh`, `root:root 0755`) with the
+- **Unit.** Each connection starts `alldots-mcp-launch@.service`, which runs
+  `/usr/local/libexec/alldots-mcp-launch` (installed by `provision.sh`, `root:root 0755`) with the
   connection as stdin and stdout. The launcher reads one JSON header line naming the command, its
-  arguments and its environment, then `exec`s the command in `/var/lib/semprec-mcp`. It exits 64
+  arguments and its environment, then `exec`s the command in `/var/lib/alldots-mcp`. It exits 64
   and runs nothing on a malformed header or the wrong uid; its stderr goes to the journal under
-  `semprec-mcp-launch`. The unit cannot see `/opt/semprec/shared`, `/opt/semprec/data`,
-  `/var/backups/semprec` or `/etc/caddy`, or other users' processes. It has no capabilities, is
+  `alldots-mcp-launch`. The unit cannot see `/opt/alldots/shared`, `/opt/alldots/data`,
+  `/var/backups/alldots` or `/etc/caddy`, or other users' processes. It has no capabilities, is
   stopped after 300 seconds, and is limited to 1 GiB of memory and 64 tasks.
-- **Egress.** The `output` chain sends traffic of uid `semprec-mcp` through `semprec_mcp_egress`. It
-  accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `semprec_egress`.
+- **Egress.** The `output` chain sends traffic of uid `alldots-mcp` through `alldots_mcp_egress`. It
+  accepts replies and DNS (tcp/udp port 53) and rejects the same blocked sets as `alldots_egress`.
   It has no loopback exception: apart from port 53, all of `127.0.0.0/8` and `::1` is rejected,
   including Postgres and the gateway. Denials are logged, at most 10 per minute, with the prefix
-  `semprec-mcp-egress-deny `. A `stdio` server that needs a private or loopback address cannot
+  `alldots-mcp-egress-deny `. A `stdio` server that needs a private or loopback address cannot
   run here.
 
 Host check after provisioning, with a `stdio` server connected (for example during "Synchronize
 tools"):
 
 ```sh
-systemctl status semprec-mcp-launch.socket                          # active (listening)
-ps -o user= -p <server pid>                                         # semprec-mcp
-sudo -u semprec-mcp cat /opt/semprec/shared/apns-key.p8             # fails (permission denied)
-sudo -u semprec-mcp timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'    # fails immediately
-journalctl -k | grep semprec-mcp-egress-deny                        # shows the denial
+systemctl status alldots-mcp-launch.socket                          # active (listening)
+ps -o user= -p <server pid>                                         # alldots-mcp
+sudo -u alldots-mcp cat /opt/alldots/shared/apns-key.p8             # fails (permission denied)
+sudo -u alldots-mcp timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'    # fails immediately
+journalctl -k | grep alldots-mcp-egress-deny                        # shows the denial
 ```
 
 ## Service sandboxing
 
-The seven `semprec` units (`semprec-api`, `semprec-agents`, `semprec-transcribe`,
-`semprec-ai-gateway`, `semprec-dead-man`, `semprec-failping@` and `semprec-trash-purge`) share one
+The seven `alldots` units (`alldots-api`, `alldots-agents`, `alldots-transcribe`,
+`alldots-ai-gateway`, `alldots-dead-man`, `alldots-failping@` and `alldots-trash-purge`) share one
 `[Service]` baseline (issue #1071): `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
 `PrivateTmp=yes`, `PrivateDevices=yes`, the `Protect*` kernel and cgroup switches,
 `ProtectProc=invisible`, `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes`,
@@ -581,13 +581,13 @@ exact set of directives asserted in `deploy/provision.test.sh`.
 
 Write access is granted only where a unit writes blobs:
 
-- `semprec-api.service`: `ReadWritePaths=/opt/semprec/data/files /opt/semprec/data/mail-attachments`.
-- `semprec-transcribe.service`: `ReadWritePaths=/opt/semprec/data/files`.
+- `alldots-api.service`: `ReadWritePaths=/opt/alldots/data/files /opt/alldots/data/mail-attachments`.
+- `alldots-transcribe.service`: `ReadWritePaths=/opt/alldots/data/files`.
 
 Those paths must equal `FILES_STORAGE_DIR` and `MAIL_ATTACHMENTS_DIR` in
-`/opt/semprec/shared/env/settings.env`. Changing either variable requires changing the unit. The
+`/opt/alldots/shared/env/settings.env`. Changing either variable requires changing the unit. The
 directories are created by `provision.sh`, so the lines carry no `-` prefix. The other five units have
-no `ReadWritePaths=`, and `semprec-agents` and `semprec-ai-gateway` write no files.
+no `ReadWritePaths=`, and `alldots-agents` and `alldots-ai-gateway` write no files.
 
 Three directives are deliberately absent:
 
@@ -595,13 +595,13 @@ Three directives are deliberately absent:
 - `ProcSubset=pid`: it hides `/proc/cpuinfo` and `/proc/meminfo`, which Node's `os` module reads.
 - `PrivateUsers=`: it remaps the uid and gid namespace that the services' ownership checks depend on.
 
-The root units `semprec-backup.service` and `semprec-restore-test.service` (Docker and restic) and
-`semprec-mcp-launch@.service` (sandboxed by #1070) are not changed here.
+The root units `alldots-backup.service` and `alldots-restore-test.service` (Docker and restic) and
+`alldots-mcp-launch@.service` (sandboxed by #1070) are not changed here.
 
 Host check after provisioning, as the maintainer, at the first deploy after this change:
 
 ```sh
-systemd-analyze security semprec-api.service        # repeat for each unit; none reports UNSAFE
+systemd-analyze security alldots-api.service        # repeat for each unit; none reports UNSAFE
 ./deploy/deploy.sh                                   # every version is reported
 # upload and download a file in the web client; both succeed
 # run a transcription job to completion (ffmpeg runs under the filter)

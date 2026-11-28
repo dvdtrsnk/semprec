@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
@@ -99,7 +99,7 @@ function ordered(rows: Awaited<ReturnType<typeof linkRows>>): Awaited<ReturnType
 describe("value links detach when their source is deleted (issue #1656)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     const role = await runAsSystem("verify value link role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(

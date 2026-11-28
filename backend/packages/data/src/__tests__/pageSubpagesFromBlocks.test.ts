@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { readPageBlocks, type PageBlock } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { readPageBlocks, type PageBlock } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
@@ -22,7 +22,7 @@ import {
   writePageTextBlocks,
 } from "../testSupport/testDb.js";
 import type { CreatedBy } from "../types.js";
-import type { PageCreateSubpageInput, PageCreateSubpageOutput } from "@semprec/shared";
+import type { PageCreateSubpageInput, PageCreateSubpageOutput } from "@alldots/shared";
 
 let admin: Pool;
 let runtime: Pool;
@@ -30,7 +30,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);

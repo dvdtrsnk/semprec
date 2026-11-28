@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import * as application from "@semprec/application";
+import * as application from "@alldots/application";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -7,7 +7,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -23,9 +23,9 @@ import {
   type DatabaseRow,
   type ItemRow,
   type PropertyRow,
-} from "@semprec/data";
-import type { ModuleRegistry } from "@semprec/module-registry";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import type { ModuleRegistry } from "@alldots/module-registry";
+import { runInTenant } from "@alldots/shared";
 import { runAgentTurn } from "../lifecycleAdapter.js";
 import { createGenericOperationAgentTools } from "../tools/generic/genericOperationAgentTools.js";
 import type { AgentMessage } from "../types.js";
@@ -85,7 +85,7 @@ async function newAgent(
   const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
   const run = await createAgentRun(runtime, { projectItemId: project.id, triggeredBy: "user", task: "inherited" });
   for (const { database, access } of grants) {
-    // The user-only admin store is not exported from `@semprec/data`, so the decision is written directly.
+    // The user-only admin store is not exported from `@alldots/data`, so the decision is written directly.
     await withTransaction(runtime, (client) =>
       client.query("INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, $3)", [
         project.id,
@@ -123,7 +123,7 @@ describe("marking the answers that return an item linked to a sensitive record (
     await seedSystem(admin, createViewTypeRegistry());
     await createTenantZeroUser(admin);
     registry = await loadFullModuleRegistry();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, createTestProjectItem, getTestPool, resetDatabase } from "@semprec/data/testSupport";
-import { createAgentRun } from "@semprec/data";
+import { createTenantZeroUser, createTestProjectItem, getTestPool, resetDatabase } from "@alldots/data/testSupport";
+import { createAgentRun } from "@alldots/data";
 import {
   BUSY_ERROR_MESSAGE,
   DelegationRegistry,

@@ -13,7 +13,7 @@ createdAt: "2026-11-22T06:52:47.527Z"
 updatedAt: "2026-11-22T07:01:31.328Z"
 closedAt: "2026-11-22T07:01:31.328Z"
 source: null
-approval: {"specSha256":"b99c4541555bbc31a249e00023cb817e0ea5c7d2a9e61be2efd6637f9e50d5b8","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-22T06:52:48.432Z"}
+approval: {"specSha256":"f97fbc2eeee962ad37f13ab361b434e94da96a16f0f99f9a720b6c774c6e8022","source":"repository","actor":"claude-delegated-by-david","at":"2026-11-22T06:52:48.432Z"}
 resolution: {"pullRequests":[],"commit":"040d6eeffb0a669bd6cb899e796438b9a8bdbbf9","at":"2026-11-22T07:01:31.328Z"}
 ---
 **Blocked by:** none
@@ -23,7 +23,7 @@ resolution: {"pullRequests":[],"commit":"040d6eeffb0a669bd6cb899e796438b9a8bdbbf
 
 Model tier rationale: Applies an existing edge pattern (the per-address throttle and the batch dedupe of the Graph calendar webhook) to one more public listener.
 
-Found in the end-to-end test campaign after PR #2089. `POST /api/mail/graph/webhook` (`createGraphWebhookRequestListener`, `services/semprec-api/src/graphWebhookHandler.ts`) is public and unauthenticated by design. Unlike the calendar webhooks and the mail OAuth callback (`createClientIpThrottle` in `app.ts`, `calendarWebhookHandlers.ts`, `mailOauthCallbackHandler.ts`) it has no per-address rate limit, and it runs `handleGraphChangeNotification` (a `route_graph_subscription` lookup plus a tenant transaction) once per entry of the batch, with no dedupe and no cap, so one 256 KiB POST can drive thousands of database round trips. This is edge hardening, not a change of Microsoft's behaviour.
+Found in the end-to-end test campaign after PR #2089. `POST /api/mail/graph/webhook` (`createGraphWebhookRequestListener`, `services/alldots-api/src/graphWebhookHandler.ts`) is public and unauthenticated by design. Unlike the calendar webhooks and the mail OAuth callback (`createClientIpThrottle` in `app.ts`, `calendarWebhookHandlers.ts`, `mailOauthCallbackHandler.ts`) it has no per-address rate limit, and it runs `handleGraphChangeNotification` (a `route_graph_subscription` lookup plus a tenant transaction) once per entry of the batch, with no dedupe and no cap, so one 256 KiB POST can drive thousands of database round trips. This is edge hardening, not a change of Microsoft's behaviour.
 
 Decision: every POST, the validation handshake included, counts under a new throttle action `mailWebhook` (300 per minute per client address, its own budget, so calendar notifications cannot starve mail ones) before the body or the database is read; over the limit it answers an empty 429 with `Retry-After`. The batch goes through the calendar webhook's `distinctGraphNotifications`, moved to a shared `graphNotificationBatch.ts`: the first 100 entries, each distinct `(subscriptionId, clientState)` pair once, at most 20 pairs, ids and client states bounded at 256 characters.
 
@@ -39,13 +39,13 @@ Load `io-hardening`, `testing`.
 
 ## Touches
 
-- backend/services/semprec-api/src/clientIpThrottle.ts
-- backend/services/semprec-api/src/graphNotificationBatch.ts
-- backend/services/semprec-api/src/calendarWebhookHandlers.ts
-- backend/services/semprec-api/src/graphWebhookHandler.ts
-- backend/services/semprec-api/src/app.ts
-- backend/services/semprec-api/src/__tests__/graphWebhookHandler.test.ts
-- backend/services/semprec-api/src/__tests__/clientIpThrottle.unit.test.ts
+- backend/services/alldots-api/src/clientIpThrottle.ts
+- backend/services/alldots-api/src/graphNotificationBatch.ts
+- backend/services/alldots-api/src/calendarWebhookHandlers.ts
+- backend/services/alldots-api/src/graphWebhookHandler.ts
+- backend/services/alldots-api/src/app.ts
+- backend/services/alldots-api/src/__tests__/graphWebhookHandler.test.ts
+- backend/services/alldots-api/src/__tests__/clientIpThrottle.unit.test.ts
 - docs/architecture/tenancy-and-security.md
 
 ## Scope

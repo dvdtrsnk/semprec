@@ -1318,13 +1318,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tento koncept nejde v Semprecu upravit."
+            "value" : "Tento koncept nejde v Alldotsu upravit."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This draft cannot be changed in Semprec."
+            "value" : "This draft cannot be changed in Alldots."
           }
         }
       }

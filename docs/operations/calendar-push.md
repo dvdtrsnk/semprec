@@ -8,7 +8,7 @@ and stops (`calendarPushChannels`, hourly sweep `calendarPushChannelsSweep`). Ca
 
 ## Configuration
 
-Read by the API process (`resolveCalendarPushRuntime` in `services/semprec-api`) when its queue
+Read by the API process (`resolveCalendarPushRuntime` in `services/alldots-api`) when its queue
 starts:
 
 | Provider  | Channels are kept when                                                                                                                       | Webhook                                      |

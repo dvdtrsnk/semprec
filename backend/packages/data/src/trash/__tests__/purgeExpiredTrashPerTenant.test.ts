@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, QueryResult } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -110,7 +110,7 @@ async function withZeroRowResult(sql: string, fn: () => Promise<void>): Promise<
 describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(pool);
   });
 

@@ -1,4 +1,4 @@
-plugins { id("semprec.android.compose") }
+plugins { id("alldots.android.compose") }
 dependencies {
     // Features build their screens from these; the BOM keeps every Compose artifact on one release.
     api(platform(libs.compose.bom))

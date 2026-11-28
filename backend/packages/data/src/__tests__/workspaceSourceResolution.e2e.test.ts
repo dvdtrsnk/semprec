@@ -1,10 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
-import { ensureQueueSchema } from "@semprec/queue";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { BLOCK_TYPES } from "@semprec/block-model";
-import { resolveMasterKeyFromEnv } from "@semprec/credentials";
+import { runInTenant } from "@alldots/shared";
+import { ensureQueueSchema } from "@alldots/queue";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { BLOCK_TYPES } from "@alldots/block-model";
+import { resolveMasterKeyFromEnv } from "@alldots/credentials";
 
 it("resolves workspace roots to source modules in the e2e tier", async () => {
   const sharedPath = fileURLToPath(new URL("../../../shared/src/index.ts", import.meta.url));

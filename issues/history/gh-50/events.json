@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPMxA",
         "number": 40,
         "title": "[20/22] Operations — Caddy, backups, secrets, provisioning",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/40",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/40",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "89f8e302359d7ea940bde106f7b3c942366e9f517f89b3584ec0c7e3452e450d"
       }
@@ -41,7 +41,7 @@
   {
     "id": 30129963288,
     "node_id": "REFE_lADOUFuQ4c8AAAABOhUaaM8AAAAHA-LBGA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30129963288",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30129963288",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -65,7 +65,7 @@
     },
     "event": "referenced",
     "commit_id": "efad048b3c769b4e0fe714d96355ddcf85aed5fe",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/efad048b3c769b4e0fe714d96355ddcf85aed5fe",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/efad048b3c769b4e0fe714d96355ddcf85aed5fe",
     "created_at": "2026-08-27T20:52:19Z",
     "performed_via_github_app": null
   },
@@ -101,8 +101,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kETA",
         "number": 187,
         "title": "[deployment] Controlled release and deployment — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/187",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/187",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "39a2d7d883e7341951890d2cf8883920c394cae92fafdc4512f3ff28ea581760"
       }
@@ -140,8 +140,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kEfg",
         "number": 188,
         "title": "[deployment 03/06] Add the e2e and pi-agent contract CI tiers",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/188",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/188",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c56f25ec6c45ff889406248dc232319d34c1e760b01156fe138f60980d4d8a58"
       }
@@ -179,8 +179,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kEog",
         "number": 189,
         "title": "[deployment 04/06] Enforce monorepo semantic tag eligibility",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/189",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/189",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "a8b5c0c3ade76457aa6f7780b802e872c6f66bb227478256b1808d6c9dc800b3"
       }
@@ -218,8 +218,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kE6w",
         "number": 190,
         "title": "[deployment 05/06] Deploy immutable releases with an atomic current symlink",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/190",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/190",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c7430d52a1d9f2b337b30f3efcfe94abd68efa5a2ecf95aecae042a4ca496575"
       }
@@ -257,8 +257,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kFIg",
         "number": 191,
         "title": "[deployment 06/06] Provide fast code rollback and forward-only migration rules",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/191",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/191",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "281543ff0aa99629f4aeee6c8af0b7e93057d4e799cf49e637e486de05e1ae9b"
       }
@@ -296,17 +296,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kBJg",
         "number": 172,
         "title": "[operations] Production operations — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/172",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/172",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "aacd93b99f9c79f4cf39ba018d43cad2cc1c1765a3574db2faebb769e46f7e64"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854481",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/50#issuecomment-5465854481",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/50",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854481",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/50#issuecomment-5465854481",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/50",
     "id": 5465854481,
     "node_id": "IC_kwDOUFuQ4c8AAAABRcpSEQ",
     "user": {
@@ -336,7 +336,7 @@
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854481/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854481/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -375,7 +375,7 @@
   {
     "id": 30224400218,
     "node_id": "CE_lADOUFuQ4c8AAAABOhUaaM8AAAAHCYO_Wg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30224400218",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30224400218",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

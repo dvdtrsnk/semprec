@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import { createLogger } from "@semprec/shared";
+import { createLogger } from "@alldots/shared";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { computeBadgeForUser } from "../notifications/badgeCount.js";

@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -68,7 +68,7 @@ function newProject(): Promise<string> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   await resetDatabase(admin);
   tenant = await createTestTenant(admin);
   otherTenant = await createTestTenant(admin);

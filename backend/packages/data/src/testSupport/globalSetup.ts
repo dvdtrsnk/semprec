@@ -6,25 +6,25 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
-import { ensureQueueSchema } from "@semprec/queue";
+import { runAsSystem } from "@alldots/shared";
+import { ensureQueueSchema } from "@alldots/queue";
 import { installQueueSchema } from "../db/queueSchema.js";
 import { runMigrations } from "../db/migrate.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { BLOCK_TYPES } from "@semprec/block-model";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { BLOCK_TYPES } from "@alldots/block-model";
 
 /**
  * A free port, so parallel runs (worktrees, shared CI runners) do not clash; a clash otherwise surfaces as "No test
- * files found". Probing races, so `SEMPREC_TEST_PG_PORT` can pin one.
+ * files found". Probing races, so `ALLDOTS_TEST_PG_PORT` can pin one.
  */
 async function choosePort(): Promise<number> {
-  const configured = process.env.SEMPREC_TEST_PG_PORT;
+  const configured = process.env.ALLDOTS_TEST_PG_PORT;
   if (configured) {
     const port = Number(configured);
     if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-      throw new Error(`SEMPREC_TEST_PG_PORT is not a valid port number: ${configured}`);
+      throw new Error(`ALLDOTS_TEST_PG_PORT is not a valid port number: ${configured}`);
     }
     return port;
   }
@@ -44,7 +44,7 @@ async function choosePort(): Promise<number> {
 }
 
 /** Migrated once per run; integration workers clone it, so nothing may stay connected to it after setup. */
-const TEMPLATE_DATABASE = "semprec_test";
+const TEMPLATE_DATABASE = "alldots_test";
 
 /** vitest globalSetup: one embedded Postgres for the whole run. */
 export default async function setup(): Promise<() => Promise<void>> {
@@ -69,12 +69,12 @@ export default async function setup(): Promise<() => Promise<void>> {
   const removedStaleDirs = await sweepStalePostgresDirs({ tmpDir: tmpdir() });
   if (removedStaleDirs.length > 0) {
     console.warn(
-      `Swept stale semprec-pg-* director${removedStaleDirs.length === 1 ? "y" : "ies"}: ${removedStaleDirs.join(", ")}`,
+      `Swept stale alldots-pg-* director${removedStaleDirs.length === 1 ? "y" : "ies"}: ${removedStaleDirs.join(", ")}`,
     );
   }
 
   const port = await choosePort();
-  const databaseDir = await mkdtemp(path.join(tmpdir(), "semprec-pg-"));
+  const databaseDir = await mkdtemp(path.join(tmpdir(), "alldots-pg-"));
   const pg = new EmbeddedPostgres({
     databaseDir,
     user: "postgres",
@@ -154,7 +154,7 @@ export default async function setup(): Promise<() => Promise<void>> {
     process.env.TEST_ADMIN_DATABASE_URL = `postgresql://postgres:postgres@127.0.0.1:${port}/postgres`;
     // Roles are cluster-wide, so all workers share one runtime-role password (`createRuntimeRolePool`).
     process.env.TEST_RUNTIME_ROLE_PASSWORD = randomUUID();
-    // SEMPREC_TENANT_SCOPE is chosen per test file by `tenantScopeMode.ts`; the e2e config pins `warn`.
+    // ALLDOTS_TENANT_SCOPE is chosen per test file by `tenantScopeMode.ts`; the e2e config pins `warn`.
     // Deterministic test-only credentials key.
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/79",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/79",
   "id": 5285476712,
   "node_id": "I_kwDOUFuQ4c8AAAABOwn5aA",
   "number": 79,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -45,7 +45,7 @@
     {
       "id": 11979305248,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWxIA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/agent:done",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/agent:done",
       "name": "agent:done",
       "color": "5319e7",
       "default": false,
@@ -76,7 +76,7 @@
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** none\n\n## Context\n\nThird standalone smoke-test issue, this time run on the `claude-code` runtime\nafter the pipeline infrastructure fixes made during this session (WireGuard\nfirewall exception for home-api reporting, log/worktree/project directory\nownership). Purpose: confirm claude-code runs now also report correctly to\nhome-api / the dashboard Run History, since that reporting was silently\nbroken for every runtime before this session's fixes. Not part of the\nfounding `[NN/22]` batch, no relationship to any other issue.\n\n## Task\n\nCreate a new file `docs/pipeline-smoke-test-3.md` containing exactly this\ncontent (one line, plus a trailing newline):\n\n```\nSemprec agent pipeline smoke test 3 — claude-code usage reporting verified.\n```\n\n## Scope\n\n### In scope\n- Creating the single file `docs/pipeline-smoke-test-3.md` with the exact\n  content specified above.\n\n### Out of scope\n- Any other file, schema, dependency, or code change.\n\n## Acceptance criteria\n\n- `docs/pipeline-smoke-test-3.md` exists on `develop` after merge.\n- Its content is exactly the single line `Semprec agent pipeline smoke test 3 — claude-code usage reporting verified.` (plus a trailing newline).\n- No other files are modified by this issue's PR.\n",
+  "body": "**Blocked by:** none\n\n## Context\n\nThird standalone smoke-test issue, this time run on the `claude-code` runtime\nafter the pipeline infrastructure fixes made during this session (WireGuard\nfirewall exception for home-api reporting, log/worktree/project directory\nownership). Purpose: confirm claude-code runs now also report correctly to\nhome-api / the dashboard Run History, since that reporting was silently\nbroken for every runtime before this session's fixes. Not part of the\nfounding `[NN/22]` batch, no relationship to any other issue.\n\n## Task\n\nCreate a new file `docs/pipeline-smoke-test-3.md` containing exactly this\ncontent (one line, plus a trailing newline):\n\n```\nAlldots agent pipeline smoke test 3 — claude-code usage reporting verified.\n```\n\n## Scope\n\n### In scope\n- Creating the single file `docs/pipeline-smoke-test-3.md` with the exact\n  content specified above.\n\n### Out of scope\n- Any other file, schema, dependency, or code change.\n\n## Acceptance criteria\n\n- `docs/pipeline-smoke-test-3.md` exists on `develop` after merge.\n- Its content is exactly the single line `Alldots agent pipeline smoke test 3 — claude-code usage reporting verified.` (plus a trailing newline).\n- No other files are modified by this issue's PR.\n",
   "closed_by": {
     "login": "dvdtrsnk-agent[bot]",
     "id": 321888475,
@@ -99,7 +99,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -110,7 +110,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

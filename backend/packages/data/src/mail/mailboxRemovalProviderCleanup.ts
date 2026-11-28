@@ -1,7 +1,7 @@
 // Cleanup of a removed mailbox outside the database: what the removal transaction reads for it, kept in
 // memory only, and the best-effort steps that run after the commit.
 import { DatabaseError, type PoolClient } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { getCredentialType, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import { logger } from "./logger.js";
 import { getGmailAccountUse, type MailAccountSyncStateRow } from "./mailAccountSyncStateStore.js";

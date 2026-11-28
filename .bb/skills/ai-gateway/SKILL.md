@@ -1,13 +1,13 @@
 ---
 name: ai-gateway
-description: "Every model call in this backend goes through semprec-ai-gateway, which enforces the budget caps and records ai_gateway_calls. Load this BEFORE reaching for a provider SDK, not after the call works. Triggers on: chat completion, prompt, embedding, transcription, Whisper, DeepInfra, pyannote, diarization, openai, @anthropic-ai, a provider API key, a new model id, and any HTTP call to a model endpoint from anywhere. Skip only when the diff is inside semprec-ai-gateway itself."
+description: "Every model call in this backend goes through alldots-ai-gateway, which enforces the budget caps and records ai_gateway_calls. Load this BEFORE reaching for a provider SDK, not after the call works. Triggers on: chat completion, prompt, embedding, transcription, Whisper, DeepInfra, pyannote, diarization, openai, @anthropic-ai, a provider API key, a new model id, and any HTTP call to a model endpoint from anywhere. Skip only when the diff is inside alldots-ai-gateway itself."
 ---
 
-# AI calls go through semprec-ai-gateway. All of them.
+# AI calls go through alldots-ai-gateway. All of them.
 
 Rules: `docs/architecture/agents-approvals-and-ai.md`.
 
-`semprec-ai-gateway` is the single process allowed to talk to AI providers. Every
+`alldots-ai-gateway` is the single process allowed to talk to AI providers. Every
 other package, service, module, and script makes AI calls only through the
 gateway's internal contract.
 

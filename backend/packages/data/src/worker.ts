@@ -12,11 +12,11 @@ import {
 } from "./calendar/sync/calendarAccountSyncJob.js";
 import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@alldots/queue";
 import { withTransaction } from "./db/pool.js";
 import { resolveMailModuleIds } from "./mail/mailModuleIds.js";
-import { withTraceContext, type AiGatewayClientPort } from "@semprec/shared";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import { withTraceContext, type AiGatewayClientPort } from "@alldots/shared";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import {
   handleHeartbeatSweepTask,
   createHeartbeatFireCoreTask,

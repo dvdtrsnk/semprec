@@ -34,18 +34,18 @@ describe("createLogger", () => {
 
   it("emits newline-delimited JSON carrying the given process name", () => {
     const { stream, lines } = captureLines();
-    const logger = pino({ name: "semprec-api", level: "info" }, stream);
+    const logger = pino({ name: "alldots-api", level: "info" }, stream);
     logger.info("service started");
 
     const record = lines()[0]!;
-    expect(record.name).toBe("semprec-api");
+    expect(record.name).toBe("alldots-api");
     expect(record.msg).toBe("service started");
     expect(typeof record.time).toBe("number");
   });
 
   it("defaults to info level with debug disabled", () => {
     delete process.env.LOG_LEVEL;
-    const logger = createLogger("semprec-api");
+    const logger = createLogger("alldots-api");
     expect(logger.level).toBe("info");
     expect(logger.isLevelEnabled("debug")).toBe(false);
     expect(logger.isLevelEnabled("info")).toBe(true);
@@ -53,21 +53,21 @@ describe("createLogger", () => {
 
   it("enables debug when LOG_LEVEL=debug", () => {
     process.env.LOG_LEVEL = "debug";
-    const logger = createLogger("semprec-api");
+    const logger = createLogger("alldots-api");
     expect(logger.level).toBe("debug");
     expect(logger.isLevelEnabled("debug")).toBe(true);
   });
 
   it("re-reads LOG_LEVEL on every call, so a later restart picks up a changed value", () => {
     process.env.LOG_LEVEL = "warn";
-    expect(createLogger("semprec-api").level).toBe("warn");
+    expect(createLogger("alldots-api").level).toBe("warn");
     process.env.LOG_LEVEL = "debug";
-    expect(createLogger("semprec-api").level).toBe("debug");
+    expect(createLogger("alldots-api").level).toBe("debug");
   });
 
   it("falls back to info for an invalid LOG_LEVEL value", () => {
     process.env.LOG_LEVEL = "not-a-real-level";
-    expect(createLogger("semprec-api").level).toBe("info");
+    expect(createLogger("alldots-api").level).toBe("info");
   });
 
   it("redacts an Authorization header nested under headers", () => {
@@ -105,7 +105,7 @@ describe("createLogger", () => {
 
   it("the factory redacts real request-shaped secrets", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const logger = createLogger("semprec-api");
+    const logger = createLogger("alldots-api");
     let output: unknown;
     try {
       logger.info(
@@ -137,7 +137,7 @@ describe("createLogger", () => {
 
   it("redacts secret fields and authorization headers through the supported eight object levels", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const logger = createLogger("semprec-api");
+    const logger = createLogger("alldots-api");
     let output: unknown;
     try {
       logger.info(
@@ -237,7 +237,7 @@ describe("createLogger tenant binding", () => {
   function emit(fn: (logger: ReturnType<typeof createLogger>) => void): Record<string, unknown> {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      fn(createLogger("semprec-api"));
+      fn(createLogger("alldots-api"));
       expect(writeSpy).toHaveBeenCalledTimes(1);
       return JSON.parse(String(writeSpy.mock.calls[0]![0])) as Record<string, unknown>;
     } finally {
@@ -278,7 +278,7 @@ describe("createLogger tenant binding", () => {
   it("adds no tenantId once runInTenant has returned", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      const logger = createLogger("semprec-api");
+      const logger = createLogger("alldots-api");
       runInTenant(TENANT_A, () => logger.info("inside"));
       logger.info("after");
       const records = writeSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
@@ -320,7 +320,7 @@ describe("installFatalHandlers", () => {
 
   it("logs one fatal record and exits non-zero on an uncaught exception", () => {
     const { stream, lines } = captureLines();
-    const logger = pino({ name: "semprec-api" }, stream);
+    const logger = pino({ name: "alldots-api" }, stream);
     installFatalHandlers(logger);
 
     process.emit("uncaughtException", new Error("boom"));
@@ -334,7 +334,7 @@ describe("installFatalHandlers", () => {
 
   it("logs one fatal record and exits non-zero on an unhandled rejection", () => {
     const { stream, lines } = captureLines();
-    const logger = pino({ name: "semprec-api" }, stream);
+    const logger = pino({ name: "alldots-api" }, stream);
     installFatalHandlers(logger);
 
     process.emit("unhandledRejection", new Error("rejected"), Promise.resolve());

@@ -51,9 +51,9 @@ export interface BackupRecoveryFixture {
 /** Owns one isolated PostgreSQL 16 container, its private credentials, and its network. */
 export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixture> {
   const id = randomUUID().replaceAll("-", "");
-  const container = `semprec-recovery-${id}`;
-  const network = `semprec-recovery-${id}`;
-  const directory = await mkdtemp(join(tmpdir(), "semprec-recovery-"));
+  const container = `alldots-recovery-${id}`;
+  const network = `alldots-recovery-${id}`;
+  const directory = await mkdtemp(join(tmpdir(), "alldots-recovery-"));
   const password = randomUUID();
   const envFile = join(directory, "postgres.env");
   let networkAttempted = false;
@@ -89,7 +89,7 @@ export async function createBackupRecoveryFixture(): Promise<BackupRecoveryFixtu
             "--tuples-only",
             "--no-align",
             "--set=ON_ERROR_STOP=1",
-            "--command=SELECT count(*) FROM pg_database WHERE left(datname,16) = 'semprec_restore_'",
+            "--command=SELECT count(*) FROM pg_database WHERE left(datname,16) = 'alldots_restore_'",
           ]);
           if (remaining.toString("utf8").trim() !== "0") throw new Error("Fixture staging database remains present");
         }

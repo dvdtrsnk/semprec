@@ -5,9 +5,9 @@ import { inflateRawSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -214,7 +214,7 @@ interface RecordingThrottle {
 }
 
 /**
- * A limiter answering like `semprec-api`'s `ClientIpThrottle`: it grants every attempt with a
+ * A limiter answering like `alldots-api`'s `ClientIpThrottle`: it grants every attempt with a
  * reservation, or refuses every one with `refuseWithSeconds`. `onAttempt` runs when the route asks.
  */
 function recordingThrottle(options: { refuseWithSeconds?: number; onAttempt?: () => void } = {}): RecordingThrottle {
@@ -489,7 +489,7 @@ function capturingStorage(): { storage: BlobStorageWriter; written: Buffer[] } {
 describe("POST /api/mail/mailboxes: connect a mailbox with a password (issue gh-1736)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   afterAll(async () => {

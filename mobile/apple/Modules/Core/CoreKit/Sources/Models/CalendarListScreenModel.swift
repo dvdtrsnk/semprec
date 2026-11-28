@@ -33,7 +33,7 @@ public struct CalendarSwatch: Equatable, Sendable, Identifiable {
     }
 }
 
-/// A calendar of the list. `systemKey` is `tasks`, `birthdays`, `sleep` or `holidaysCz` for one Semprec fills. A
+/// A calendar of the list. `systemKey` is `tasks`, `birthdays`, `sleep` or `holidaysCz` for one Alldots fills. A
 /// calendar of the `account` group belongs to the section `accountId` (empty when the server did not say which
 /// account) and carries the provider's `remoteName` and `remoteColor`; `usesRemoteColor` says its colour is the
 /// provider's. A `readOnly` calendar takes no new events.

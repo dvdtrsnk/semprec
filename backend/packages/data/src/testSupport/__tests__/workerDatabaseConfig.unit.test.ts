@@ -36,7 +36,7 @@ function integrationTestFiles(): string[] {
 }
 
 function listFile(content: string): URL {
-  const file = path.join(mkdtempSync(path.join(tmpdir(), "semprec-exclusive-")), "list.json");
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "alldots-exclusive-")), "list.json");
   writeFileSync(file, content);
   return pathToFileURL(file);
 }
@@ -85,7 +85,7 @@ describe("isClusterExclusive", () => {
 
 describe("workerDatabaseName", () => {
   it("names the database after the worker slot", () => {
-    expect(workerDatabaseName("3")).toBe("semprec_test_w3");
+    expect(workerDatabaseName("3")).toBe("alldots_test_w3");
   });
 
   it.each([undefined, "", "1; DROP", "12345"])("refuses %j, which is not a worker slot", (poolId) => {

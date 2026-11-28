@@ -6,7 +6,7 @@ import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { replyOutcomeOfStoredSteps } from "../agentRuns/replyOutcome.js";
 import { parseStoredSempReplySteps } from "./sempStoredSteps.js";
 import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { raiseAgentReplyProblem } from "./agentReplyProblems.js";
 import { enqueueSempMessage } from "./sempMessageQueue.js";

@@ -90,9 +90,9 @@ export interface ProposalComputationResult {
 
 /**
  * The injected model call that decides what an Inbox source becomes. It must never write to any target database or
- * page; it only computes values, and `createSemprecTickAction` alone writes the envelope.
+ * page; it only computes values, and `createAlldotsTickAction` alone writes the envelope.
  */
-export type ComputeSemprecProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
+export type ComputeAlldotsProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
 
 export interface TickSnapshot {
   recognition?: boolean;

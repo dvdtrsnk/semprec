@@ -1,14 +1,14 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/244",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/244",
   "id": 5328432874,
   "node_id": "I_kwDOUFuQ4c8AAAABPZlu6g",
   "number": 244,
-  "title": "[operations 05/08] Provision host packages, service user, and the /opt/semprec release tree idempotently",
+  "title": "[operations 05/08] Provision host packages, service user, and the /opt/alldots release tree idempotently",
   "user": {
     "login": "dvdtrsnk",
     "id": 122625462,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/172",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/172",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #175, #91\n\n## Context\n\nThis issue builds on #175 (bootstrap secrets in `/opt/semprec/shared/.env`). It is the first half of provisioning: a single idempotent `provision.sh` that takes a bare Linux server to a state ready for its first deploy with no manual improvisation by the operator. #176 adds the systemd service units, timer skeletons, and journald configuration to the same script; #177 is the next slice of the batch. `deploy.sh`, the CI gate, and the release/symlink mechanics ship in #190 and run on top of the tree provisioned here.\n\n## Task\n\nAdd an idempotent `provision.sh` in the implementation repo (alongside the future `deploy.sh`) that installs and configures:\n\n- Node LTS and pnpm, Docker with Compose, Caddy, restic, `ffmpeg`/`ffprobe`.\n- The service user.\n- The bare `/opt/semprec` directory tree (`releases/`, `shared/`, …), populated later by `deploy.sh`.\n- The `shared/.env` template listing the required keys without values, per #175, only if no `.env` exists — configured secrets and existing releases are preserved on rerun.\n\nThe script must be rerunnable: a second run creates no duplicates and overwrites nothing the operator configured. No Ansible/Nix.\n\n## Scope\n\n### In scope\n\n- Package installation, service user, `/opt/semprec` tree, `.env` template placement, idempotence, tests, and necessary documentation.\n\n### Out of scope\n\n- The five service units, the four timer skeletons, journald persistence/limits, and the loopback/shared-env unit contracts — #176.\n- `deploy.sh`/CI — #190/#188.\n- Hunspell — #206.\n\n## Acceptance criteria\n\n- One run prepares a clean supported Debian/Ubuntu host with every listed package, the service user, and the `/opt/semprec` tree.\n- Second run creates no duplicates and overwrites no secrets or releases.\n- No interactive improvisation is required.\n",
+  "body": "**Blocked by:** #175, #91\n\n## Context\n\nThis issue builds on #175 (bootstrap secrets in `/opt/alldots/shared/.env`). It is the first half of provisioning: a single idempotent `provision.sh` that takes a bare Linux server to a state ready for its first deploy with no manual improvisation by the operator. #176 adds the systemd service units, timer skeletons, and journald configuration to the same script; #177 is the next slice of the batch. `deploy.sh`, the CI gate, and the release/symlink mechanics ship in #190 and run on top of the tree provisioned here.\n\n## Task\n\nAdd an idempotent `provision.sh` in the implementation repo (alongside the future `deploy.sh`) that installs and configures:\n\n- Node LTS and pnpm, Docker with Compose, Caddy, restic, `ffmpeg`/`ffprobe`.\n- The service user.\n- The bare `/opt/alldots` directory tree (`releases/`, `shared/`, …), populated later by `deploy.sh`.\n- The `shared/.env` template listing the required keys without values, per #175, only if no `.env` exists — configured secrets and existing releases are preserved on rerun.\n\nThe script must be rerunnable: a second run creates no duplicates and overwrites nothing the operator configured. No Ansible/Nix.\n\n## Scope\n\n### In scope\n\n- Package installation, service user, `/opt/alldots` tree, `.env` template placement, idempotence, tests, and necessary documentation.\n\n### Out of scope\n\n- The five service units, the four timer skeletons, journald persistence/limits, and the loopback/shared-env unit contracts — #176.\n- `deploy.sh`/CI — #190/#188.\n- Hunspell — #206.\n\n## Acceptance criteria\n\n- One run prepares a clean supported Debian/Ubuntu host with every listed package, the service user, and the `/opt/alldots` tree.\n- Second run creates no duplicates and overwrites no secrets or releases.\n- No interactive improvisation is required.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/244/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/244/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

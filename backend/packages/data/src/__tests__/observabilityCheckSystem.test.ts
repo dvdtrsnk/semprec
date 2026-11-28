@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
+import { enqueueJob } from "@alldots/queue";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -147,7 +147,7 @@ async function runCheck(jobId: string = randomUUID(), taskPool: Pool = pool): Pr
 }
 
 async function withBoundedRuntime(fn: (runtime: Pool) => Promise<void>): Promise<void> {
-  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  const runtime = await createRuntimeRolePool(pool, "alldots_data");
   runtime.options.connectionTimeoutMillis = 2000;
   runtime.options.statement_timeout = 7000;
   runtime.options.query_timeout = 9000;
@@ -889,7 +889,7 @@ describe("observability.checkSystem (issue #169)", () => {
       adminB = await createTestUser(tenantB);
       const tenantC = await createTestTenant(pool);
       await createTestUser(tenantC, "member");
-      runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     });
 
     afterEach(async () => {

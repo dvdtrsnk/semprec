@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
-import { createLogger, currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
+import { createLogger, currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 import { withTransaction, runAfterCommit } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { tenantLane } from "../tenancy/tenantLane.js";

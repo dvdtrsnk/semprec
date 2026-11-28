@@ -13,7 +13,7 @@ const backendDirectory = fileURLToPath(new URL("../../../../../", import.meta.ur
 const testSupportDirectory = fileURLToPath(new URL("../", import.meta.url));
 
 /** SHA-256 of `tenantScopeWarnFiles.frozen.json`. Never update it. */
-const FROZEN_LIST_SHA256 = "a097f515c543d126420c86f40c2e7b68c98a22f3dc9a6f2965758d5eca7d67b6";
+const FROZEN_LIST_SHA256 = "bc79eb0c43bfcddc7014945f6d180e9843949c55fa00bd2ea4e333bbafb4fb60";
 
 /** None of these may be listed. */
 const OWN_NEW_TEST_FILES: readonly string[] = [
@@ -23,33 +23,33 @@ const OWN_NEW_TEST_FILES: readonly string[] = [
 ];
 
 /**
- * The original set of integration files mentioning `SEMPREC_TENANT_SCOPE` with `"warn"`. Never edit it; its hash
+ * The original set of integration files mentioning `ALLDOTS_TENANT_SCOPE` with `"warn"`. Never edit it; its hash
  * is pinned so `FROZEN_SCOPE_MODE_SUITES` (a subset) cannot grow.
  */
 const FIRST_SCOPE_MODE_SUITES: readonly string[] = [
   "packages/data/src/__tests__/runtimeRoleAssertion.test.ts",
   "packages/data/src/__tests__/strictTenantEnforcement.test.ts",
   "packages/data/src/__tests__/tenantScopePool.test.ts",
-  "services/semprec-agents/src/__tests__/agentsTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/adapterTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/bespokeListenerTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts",
-  "services/semprec-transcribe/src/transcriptionTenantScope.test.ts",
+  "services/alldots-agents/src/__tests__/agentsTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/adapterTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/bespokeListenerTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts",
+  "services/alldots-transcribe/src/transcriptionTenantScope.test.ts",
 ];
 
 /** SHA-256 of `FIRST_SCOPE_MODE_SUITES`, newline-joined with a trailing newline. Never update it. */
-const FIRST_SCOPE_MODE_SUITES_SHA256 = "0eff7a82ad1e27204129bc8f793e8f4af799aa0cbe08517a169ddf5751d1ad25";
+const FIRST_SCOPE_MODE_SUITES_SHA256 = "22ba46e967ac21d5e5dc3f951e4af3f649472180e1b5cf093bd626c5f79b6b8d";
 
-/** Files allowed to mention `SEMPREC_TENANT_SCOPE` with `"warn"`. Only shrinks. */
+/** Files allowed to mention `ALLDOTS_TENANT_SCOPE` with `"warn"`. Only shrinks. */
 const FROZEN_SCOPE_MODE_SUITES: readonly string[] = [
   "packages/data/src/__tests__/runtimeRoleAssertion.test.ts",
   "packages/data/src/__tests__/strictTenantEnforcement.test.ts",
   "packages/data/src/__tests__/tenantScopePool.test.ts",
-  "services/semprec-agents/src/__tests__/agentsTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/adapterTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/bespokeListenerTenantScope.test.ts",
-  "services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts",
-  "services/semprec-transcribe/src/transcriptionTenantScope.test.ts",
+  "services/alldots-agents/src/__tests__/agentsTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/adapterTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/bespokeListenerTenantScope.test.ts",
+  "services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts",
+  "services/alldots-transcribe/src/transcriptionTenantScope.test.ts",
 ];
 
 /** The file is a boundary, so each entry is checked instead of cast. */
@@ -90,19 +90,19 @@ describe("the integration tier's selection of test files", () => {
     expect(config).toContain('include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"]');
     expect(config).toContain('"**/*.unit.test.ts", "**/*.e2e.test.ts"');
     expect(config).toMatch(/setupFiles: \[[^\]]*"\.\/packages\/data\/src\/testSupport\/tenantScopeMode\.ts"/);
-    expect(config).toContain("provide: { explicitTenantScopeMode: process.env.SEMPREC_TENANT_SCOPE ?? null }");
+    expect(config).toContain("provide: { explicitTenantScopeMode: process.env.ALLDOTS_TENANT_SCOPE ?? null }");
   });
 
   it("keeps the e2e tier on warn", () => {
     const config = readFileSync(path.join(backendDirectory, "vitest.e2e.config.ts"), "utf8");
-    expect(config).toContain('SEMPREC_TENANT_SCOPE: process.env.SEMPREC_TENANT_SCOPE ?? "warn"');
+    expect(config).toContain('ALLDOTS_TENANT_SCOPE: process.env.ALLDOTS_TENANT_SCOPE ?? "warn"');
     expect(config).not.toContain("setupFiles");
   });
 
   it("walks the files the tier runs, test files of the source included", () => {
     const files = integrationTestFiles();
     expect(files).toContain("packages/data/src/testSupport/__tests__/tenantScopeModeDefault.test.ts");
-    expect(files).toContain("services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts");
+    expect(files).toContain("services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts");
     expect(files).not.toContain("packages/data/src/testSupport/__tests__/tenantScopeWarnFiles.unit.test.ts");
     expect(files).not.toContain("packages/e2e/src/__tests__/nativeEntrypoints.e2e.test.ts");
   });
@@ -165,7 +165,7 @@ describe("the set of frozen scope-mode suites", () => {
 describe("the integration test files that switch the mode to warn themselves", () => {
   const matching = integrationTestFiles().filter((file) => {
     const text = readFileSync(path.join(backendDirectory, file), "utf8");
-    return text.includes("SEMPREC_TENANT_SCOPE") && text.includes('"warn"');
+    return text.includes("ALLDOTS_TENANT_SCOPE") && text.includes('"warn"');
   });
 
   it("are only the frozen scope-mode suites", () => {

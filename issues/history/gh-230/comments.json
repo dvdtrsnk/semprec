@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575111993",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/230#issuecomment-5575111993",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/230",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575111993",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/230#issuecomment-5575111993",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/230",
     "id": 5575111993,
     "node_id": "IC_kwDOUFuQ4c8AAAABTE11OQ",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575111993/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575111993/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575260247",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/230#issuecomment-5575260247",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/230",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575260247",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/230#issuecomment-5575260247",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/230",
     "id": 5575260247,
     "node_id": "IC_kwDOUFuQ4c8AAAABTE-4Vw",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-07T20:15:33Z",
     "updated_at": "2026-09-07T20:15:33Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #325\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-230-agent-runtime-06-08-record-every-gatew-thr_j5m9q8cfde` to origin.\n\n## Summary\n\nImplements issue #230: adds the `ai_gateway_calls` structural migration and native-unit accounting for the gateway's four AI functions.\n\n- `backend/packages/data/src/db/migrations/0016_ai_gateway_calls.sql` — the `ai_gateway_calls` table per spec (bigserial id, `at`, `provider`, `model`, nullable `input_tokens`/`output_tokens`, nullable `audio_seconds`, `cost_usd` NOT NULL, nullable `agent_run_id` FK).\n- `backend/packages/data/src/aiGateway/aiGatewayCallsStore.ts` — `recordTokenGatewayCall` and `recordAudioGatewayCall`, following the repo's existing store conventions; audio calls leave both token columns NULL (never 0) and token calls leave `audio_seconds` NULL.\n- New `@semprec/ai-gateway` package (`backend/packages/ai-gateway`) — no gateway package existed anywhere in the repo before this, so it introduces `complete()`, `embed()`, `transcribe()`, `diarize()` as accounting wrappers around an injected provider invocation, each guaranteed to record exactly one row on success and none on failure. Provider adapters and budget enforcement remain out of scope, per the issue (left to #120/#181).\n- Tests cover the null-vs-zero distinction, `agent_run_id` propagation, and the not-recorded-on-failure case, both at the store level and through the gateway functions.\n\nAll checks pass: unit (83/83), integration (463/463), e2e (5/5), module-boundary check, migration-numbering check, and a full workspace build.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #325\n\nTokens: 0 · Cost: $0.0000\n\nPushed branch `bb/relay-230-agent-runtime-06-08-record-every-gatew-thr_j5m9q8cfde` to origin.\n\n## Summary\n\nImplements issue #230: adds the `ai_gateway_calls` structural migration and native-unit accounting for the gateway's four AI functions.\n\n- `backend/packages/data/src/db/migrations/0016_ai_gateway_calls.sql` — the `ai_gateway_calls` table per spec (bigserial id, `at`, `provider`, `model`, nullable `input_tokens`/`output_tokens`, nullable `audio_seconds`, `cost_usd` NOT NULL, nullable `agent_run_id` FK).\n- `backend/packages/data/src/aiGateway/aiGatewayCallsStore.ts` — `recordTokenGatewayCall` and `recordAudioGatewayCall`, following the repo's existing store conventions; audio calls leave both token columns NULL (never 0) and token calls leave `audio_seconds` NULL.\n- New `@alldots/ai-gateway` package (`backend/packages/ai-gateway`) — no gateway package existed anywhere in the repo before this, so it introduces `complete()`, `embed()`, `transcribe()`, `diarize()` as accounting wrappers around an injected provider invocation, each guaranteed to record exactly one row on success and none on failure. Provider adapters and budget enforcement remain out of scope, per the issue (left to #120/#181).\n- Tests cover the null-vs-zero distinction, `agent_run_id` propagation, and the not-recorded-on-failure case, both at the store level and through the gateway functions.\n\nAll checks pass: unit (83/83), integration (463/463), e2e (5/5), module-boundary check, migration-numbering check, and a full workspace build.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575260247/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575260247/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575334553",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/230#issuecomment-5575334553",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/230",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575334553",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/230#issuecomment-5575334553",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/230",
     "id": 5575334553,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFDamQ",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575334553/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575334553/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575375611",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/230#issuecomment-5575375611",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/230",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575375611",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/230#issuecomment-5575375611",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/230",
     "id": 5575375611,
     "node_id": "IC_kwDOUFuQ4c8AAAABTFF6-w",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575375611/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575375611/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

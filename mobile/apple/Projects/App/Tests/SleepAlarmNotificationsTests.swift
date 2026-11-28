@@ -2,7 +2,7 @@ import CoreKit
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The sleep alarms of the device, which the app keeps in step with the sleep plan when a scene shows or becomes
 /// active and when a silent push asks, and removes when nobody is signed in. Which alarms ring is decided in the shared

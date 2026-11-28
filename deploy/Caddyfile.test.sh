@@ -41,7 +41,7 @@ mkdir -p "$TEST_ROOT/aasa-present" "$TEST_ROOT/aasa-absent"
 readonly AASA_BODY='{"applinks":{"details":[{"appIDs":["TEAMTEST.test.bundle"]}]}}'
 printf '%s\n' "$AASA_BODY" > "$TEST_ROOT/aasa-present/apple-app-site-association"
 
-SEMPREC_DOMAIN="http://127.0.0.1:$PORT" SEMPREC_AASA_DIR="$TEST_ROOT/aasa-present" caddy run --config "$TEST_ROOT/Caddyfile" \
+ALLDOTS_DOMAIN="http://127.0.0.1:$PORT" ALLDOTS_AASA_DIR="$TEST_ROOT/aasa-present" caddy run --config "$TEST_ROOT/Caddyfile" \
   --adapter caddyfile 2> "$LOG_FILE" &
 CADDY_PID=$!
 
@@ -84,7 +84,7 @@ wait "$CADDY_PID" 2>/dev/null || true
 CADDY_PID=""
 
 # Second run without a rendered file: the path must be a 404, not the SPA fallback.
-SEMPREC_DOMAIN="http://127.0.0.1:$PORT" SEMPREC_AASA_DIR="$TEST_ROOT/aasa-absent" caddy run \
+ALLDOTS_DOMAIN="http://127.0.0.1:$PORT" ALLDOTS_AASA_DIR="$TEST_ROOT/aasa-absent" caddy run \
   --config "$TEST_ROOT/Caddyfile" --adapter caddyfile 2> "$TEST_ROOT/caddy-absent.log" &
 CADDY_PID=$!
 ready=0

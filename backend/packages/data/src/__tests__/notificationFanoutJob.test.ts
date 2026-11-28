@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import type { Pool } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";

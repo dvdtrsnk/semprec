@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant, TenantScopeMissingError } from "@semprec/shared";
+import { runAsSystem, runInTenant, TenantScopeMissingError } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -311,7 +311,7 @@ async function transactionIdsHeldBy(pid: number): Promise<number> {
 describe("mailbox removal (gh-1690)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
   });
 

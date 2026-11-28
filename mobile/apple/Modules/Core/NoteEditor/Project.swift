@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "NoteEditor",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "NoteEditor",
             dependencies: [
                 .project(target: "CoreKit", path: "../CoreKit"),
@@ -14,7 +14,7 @@ let project = Project(
             ],
             resources: ["Resources/**"]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "NoteEditorTests",
             for: "NoteEditor",
             dependencies: [.project(target: "CoreKit", path: "../CoreKit")]

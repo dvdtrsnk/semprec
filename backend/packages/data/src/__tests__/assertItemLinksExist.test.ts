@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { parseMarkdown } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { parseMarkdown } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
@@ -16,7 +16,7 @@ let setupCleanupAttempted = false;
 beforeAll(async () => {
   admin = getTestPool();
   try {
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   } catch (error) {
     setupCleanupAttempted = true;
     let cleanupFailure: { error: unknown } | undefined;
@@ -80,21 +80,21 @@ describe("assertItemLinksExist", () => {
       const db = await createDatabase(client, { name: "Foreign" });
       return (await insertItem(client, { databaseId: db.id, properties: {} })).id;
     });
-    await inTenant(tenantB, (client) => check(client, `[Own](semprec://items/${foreign})`));
+    await inTenant(tenantB, (client) => check(client, `[Own](alldots://items/${foreign})`));
     await inTenant(tenantA, async (client) => {
       const before = await counts(client);
-      await check(client, `[Standup](semprec://items/${local.own}) [Again](semprec://items/${local.own})`);
+      await check(client, `[Standup](alldots://items/${local.own}) [Again](alldots://items/${local.own})`);
       await check(client, "plain [web](https://example.com) text");
-      const missing = await failureBody(client, `[X](semprec://items/${randomUUID()})`);
+      const missing = await failureBody(client, `[X](alldots://items/${randomUUID()})`);
       expect(missing).toMatchObject({
         status: 400,
         code: "validation_failed",
         details: { issues: [{ path: "markdown" }] },
       });
       for (const target of [foreign, local.deleted, "not-a-uuid"]) {
-        expect(await failureBody(client, `[X](semprec://items/${target})`)).toEqual(missing);
+        expect(await failureBody(client, `[X](alldots://items/${target})`)).toEqual(missing);
       }
-      expect(await failureBody(client, `[Own](semprec://items/${local.own}) [X](semprec://items/${foreign})`)).toEqual(
+      expect(await failureBody(client, `[Own](alldots://items/${local.own}) [X](alldots://items/${foreign})`)).toEqual(
         missing,
       );
       expect(await counts(client)).toEqual(before);

@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore, putBlockWithClient, type DocStore } from "../docs/docStore.js";
@@ -26,7 +26,7 @@ import {
 } from "../docs/docHistory.js";
 import { getBlock as readBlock, listBlocks as readBlocks } from "../docs/blocks.js";
 import { setDocUpdateHook, type DocUpdateEvent } from "../realtimeHook.js";
-import { getBlocksMap, readPageBlocks, writeBlock } from "@semprec/block-model";
+import { getBlocksMap, readPageBlocks, writeBlock } from "@alldots/block-model";
 import { docEtag, insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 
 let pool: Pool;
@@ -80,7 +80,7 @@ describe("docs (CRDT layer)", () => {
 
   describe("explicit page ensure", () => {
     it("waits for a concurrent trash and refuses both absent and existing documents", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const role = await runAsSystem("check page reservation role", () =>
           runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -1206,7 +1206,7 @@ describe("docs (CRDT layer)", () => {
         writeBlock(ydoc, { id: "b", type: "h1", text: "Heading block" });
       });
       const result = await readMarkdown(item.id);
-      expect(result.markdown).toContain("[Subpage](semprec://page/11111111-1111-4111-8111-111111111111)");
+      expect(result.markdown).toContain("[Subpage](alldots://page/11111111-1111-4111-8111-111111111111)");
       expect(result.markdown).toContain("# Heading block");
       expect(result.markdown).not.toContain("Root title");
       expect(readPageBlocks(await loadDoc(pool, doc.id)).map((block) => block.id)).toEqual(["a", "b"]);

@@ -1,8 +1,8 @@
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { resolveCatalogLabel } from "@semprec/module-registry";
-import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@semprec/shared";
+import { resolveCatalogLabel } from "@alldots/module-registry";
+import { AiGatewayFailedError, createLogger, type AiGatewayClientPort } from "@alldots/shared";
 import { detectFileType } from "../blobs/fileTypeDetection.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { ingestUploadedBlob } from "../blobs/fileUploadStore.js";

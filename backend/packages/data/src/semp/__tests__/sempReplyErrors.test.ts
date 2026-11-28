@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { AGENT_RUN_ERROR_CODES, AgentRunError, AiBudgetExceededError } from "../../agentRuns/agentRunErrorCodes.js";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -133,7 +133,7 @@ describe("why a Semp reply failed (issue #1907)", () => {
   beforeAll(async () => {
     const admin = getTestPool();
     await resetDatabase(admin);
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

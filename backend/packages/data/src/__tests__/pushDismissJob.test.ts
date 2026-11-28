@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, registerTask, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, registerTask, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { handleNotificationFanoutTask } from "../notifications/notificationFanoutJob.js";
@@ -174,7 +174,7 @@ async function deliveryRows(tenant: DismissTenant) {
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

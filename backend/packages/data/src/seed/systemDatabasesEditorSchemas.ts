@@ -3,7 +3,7 @@ import type {
   EditorFieldDescriptor,
   EditorGroupDescriptor,
   EditorSchemaDescriptor,
-} from "@semprec/module-registry";
+} from "@alldots/module-registry";
 
 /**
  * Inbox card editor schemas of the system databases, keyed by the card's base kind; labels and

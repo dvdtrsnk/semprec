@@ -7,7 +7,7 @@ import * as viewsStore from "../chokePoint/viewsStore.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { createViewTypeRegistry, registerViewType, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { resolveProperty } from "../manifest/catalogResolution.js";
 
 let pool: Pool;

@@ -52,13 +52,13 @@
       "NotesFeatureTests": { "project": "Modules/Features/Notes", "sources": "Tests", "allowed": ["NotesFeature", "CoreKit"] },
       "RecordingsFeature": { "project": "Modules/Features/Recordings", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "RecordingsFeatureTests": { "project": "Modules/Features/Recordings", "sources": "Tests", "allowed": ["RecordingsFeature", "CoreKit"] },
-      "Semprec": {
+      "Alldots": {
         "project": "Projects/App",
         "sources": "Sources",
         "allowed": ["AccountFeature", "AuthFeature", "CalendarFeature", "CollectionsFeature", "CoreKit", "Dependencies", "DesignSystem", "InboxFeature", "JournalFeature", "MailFeature", "NavigatorUI", "NotesFeature", "OverviewFeature", "RecordingsFeature", "SempFeature", "SleepFeature", "TasksFeature"]
       },
-      "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "OverviewFeature", "NavigatorUI"] },
-      "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" },
+      "AlldotsTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Alldots", "CoreKit", "OverviewFeature", "NavigatorUI"] },
+      "AlldotsUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Alldots" },
       "CalendarFeature": { "project": "Modules/Features/Calendar", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "CalendarFeatureTests": { "project": "Modules/Features/Calendar", "sources": "Tests", "allowed": ["CalendarFeature", "CoreKit"] },
       "JournalFeature": { "project": "Modules/Features/Journal", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem", "NoteEditor"] },
@@ -78,12 +78,12 @@
   },
   "navigation": {
     "gradleModules": [":android:app"],
-    "appleTargets": ["Semprec", "SemprecTests"]
+    "appleTargets": ["Alldots", "AlldotsTests"]
   },
   "copy": [
     {
       "android": ":android:app",
-      "apple": "Semprec",
+      "apple": "Alldots",
       "keys": [],
       "androidOnly": ["tab.home", "tab.settings"],
       "appleOnly": [

@@ -7,9 +7,9 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { AgentRunError, createUser, finishAgentRun, hashPassword, type AgentRunRow } from "@semprec/data";
-import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { AgentRunError, createUser, finishAgentRun, hashPassword, type AgentRunRow } from "@alldots/data";
+import { currentTenantScope, getTraceContext, runAsSystem, runInTenant } from "@alldots/shared";
 import {
   SEMP_BUSY_ERROR_MESSAGE,
   SempConversation,
@@ -77,7 +77,7 @@ function gate(): { promise: Promise<void>; release: () => void } {
   return { promise, release };
 }
 
-const SEMPREC_PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
+const ALLDOTS_PROJECT_ITEM_ID = "99999999-9999-9999-9999-999999999999";
 
 /** One turn that replies `text`. */
 const turn = (text: string): AgentMessage[] => [
@@ -172,14 +172,14 @@ describe("SempConversation", () => {
       conversationPool,
       {
         createAgentSessionForRun: async () => createAgentSession,
-        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
         ...extra,
       },
       ttlMs,
     );
   }
 
-  /** The runs of the Semprec project. */
+  /** The runs of the Alldots project. */
   async function projectRuns() {
     const { rows } = await pool.query<{
       id: string;
@@ -193,7 +193,7 @@ describe("SempConversation", () => {
     }>(
       `SELECT id, unit, triggered_by, parent_run_id, status, result, error_code, finished_at
          FROM agent_runs WHERE project_item_id = $1 ORDER BY started_at`,
-      [SEMPREC_PROJECT_ITEM_ID],
+      [ALLDOTS_PROJECT_ITEM_ID],
     );
     return rows;
   }
@@ -205,7 +205,7 @@ describe("SempConversation", () => {
     body: (runtimePool: Pool, conversations: SempConversation[]) => Promise<void>,
     cleanups: Array<() => Promise<unknown>> = [],
   ): Promise<void> {
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const conversations: SempConversation[] = [];
     let failure: { error: unknown } | undefined;
     try {
@@ -273,7 +273,7 @@ describe("SempConversation", () => {
               },
             });
           },
-          resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+          resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
           reconstructHistory: createReconstructConversationHistory(noCompaction),
         });
         conversations.push(conversation);
@@ -311,7 +311,7 @@ describe("SempConversation", () => {
         const options = {
           createAgentSessionForRun: async (): Promise<CreateAgentSession> =>
             wakes++ > 0 ? next.createAgentSession : midToolFailure(turnFailure),
-          resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+          resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
           reconstructHistory: createReconstructConversationHistory(noCompaction),
         };
         const beforeRestart = new SempConversation(runtimePool, options);
@@ -406,7 +406,7 @@ describe("SempConversation", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       expect(await sendInTenantZero(conversation, "hi")).toEqual({ ok: true, message: "first wake" });
-      expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID]]);
+      expect(calls).toEqual([[ALLDOTS_PROJECT_ITEM_ID]]);
       expect(tasks).toEqual(["hi"]);
       expect(initialStates).toEqual([undefined]);
 
@@ -416,7 +416,7 @@ describe("SempConversation", () => {
 
       expect(await sendInTenantZero(conversation, "hi again")).toEqual({ ok: true, message: "second wake" });
 
-      expect(calls).toEqual([[SEMPREC_PROJECT_ITEM_ID], [SEMPREC_PROJECT_ITEM_ID]]);
+      expect(calls).toEqual([[ALLDOTS_PROJECT_ITEM_ID], [ALLDOTS_PROJECT_ITEM_ID]]);
       expect(tasks).toEqual(["hi", "hi again"]);
       expect(initialStates).toEqual([undefined, { messages: [priorEntry] }]);
     } finally {
@@ -455,7 +455,7 @@ describe("SempConversation", () => {
     const createAgentSessionForRun = vi.fn(async () => scriptedSession([]).createAgentSession);
     const conversation = new SempConversation(pool, {
       createAgentSessionForRun,
-      resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+      resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
       reconstructHistory: async () => ({ entries: [], compacted: true }),
     });
     try {
@@ -669,7 +669,7 @@ describe("SempConversation", () => {
             return createAgentSession(options);
           };
         },
-        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
       });
       const controller = new AbortController();
 
@@ -768,7 +768,7 @@ describe("SempConversation", () => {
         createAgentSessionForRun: async () => {
           throw new Error("compose failed");
         },
-        resolveProjectItemId: async () => SEMPREC_PROJECT_ITEM_ID,
+        resolveProjectItemId: async () => ALLDOTS_PROJECT_ITEM_ID,
       });
 
       await expect(sendWith(conversation, "hi", {})).rejects.toThrow("compose failed");
@@ -861,7 +861,7 @@ describe("SempConversation across tenants", () => {
   beforeEach(async () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
-    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
     const passwordHash = await hashPassword("s3cret-password");

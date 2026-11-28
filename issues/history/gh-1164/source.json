@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1164",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1164",
   "id": 5801070078,
   "node_id": "I_kwDOUFuQ4c8AAAABWcVN_g",
   "number": 1164,
@@ -76,7 +76,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -87,7 +87,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1164/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1164/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

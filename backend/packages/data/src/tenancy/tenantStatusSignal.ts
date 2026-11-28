@@ -1,9 +1,9 @@
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { logger } from "./logger.js";
 
 /** Cross-process tenant deactivation signal; payload `{"tenantId":"<uuid>"}`, built by Postgres. */
-export const TENANT_STATUS_CHANNEL = "semprec_tenant_status";
+export const TENANT_STATUS_CHANNEL = "alldots_tenant_status";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

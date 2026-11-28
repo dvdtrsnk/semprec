@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
 import {
   createTenantZeroUser,
   getTenantZeroId,
@@ -175,7 +175,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -204,13 +204,13 @@ describe("approval request decide+execute (issue #131)", () => {
 
     expect(contractServer.getLastToolCall()).toEqual({
       name: "search_web",
-      arguments: { query: "semprec" },
+      arguments: { query: "alldots" },
       meta: { idempotencyKey: request.id },
     });
     const finished = await getApprovalRequest(pool, request.id);
     expect(finished!.executedAt).not.toBeNull();
     expect(finished!.executionError).toBe(false);
-    expect(finished!.executionResult).toBe(JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }));
+    expect(finished!.executionResult).toBe(JSON.stringify({ name: "search_web", arguments: { query: "alldots" } }));
     const messages = await pool.query<{ system_key: string; context: unknown }>(
       "SELECT system_key, context FROM semp_messages WHERE thread_id = $1",
       [thread.rows[0]!.id],
@@ -247,7 +247,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -281,7 +281,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -350,7 +350,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -417,7 +417,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     await inTenantZero(() =>
@@ -509,7 +509,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -545,7 +545,7 @@ describe("approval request decide+execute (issue #131)", () => {
       agentRunId: run.id,
       toolName: SEARCH_TOOL.name,
       riskClass: "unclassified",
-      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "semprec" } },
+      payload: { mcpToolRegistrationId: registration.id, mcpServerItemId: server.id, args: { query: "alldots" } },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
     });
     const userId = run.actorUserId;
@@ -578,7 +578,7 @@ describe("approval request decide+execute (issue #131)", () => {
   const NO_LONGER_AVAILABLE_MESSAGE =
     "This MCP tool is no longer available to the requesting project: its grant was revoked, or its registration or server is inactive.";
 
-  async function approveAndSetUp(args: Record<string, unknown> = { query: "semprec" }) {
+  async function approveAndSetUp(args: Record<string, unknown> = { query: "alldots" }) {
     const contractServer = startStdioContractServer([SEARCH_TOOL]);
     servers.push(contractServer);
     const { server, registration, projectItemId } = await createGrantedTool(contractServer);
@@ -695,7 +695,7 @@ describe("approval request decide+execute (issue #131)", () => {
 
     expect(contractServer.getLastToolCall()).toEqual({
       name: "search_web",
-      arguments: { query: "semprec" },
+      arguments: { query: "alldots" },
       meta: { idempotencyKey: request.id },
     });
     const finished = await getApprovalRequest(pool, request.id);
@@ -705,7 +705,7 @@ describe("approval request decide+execute (issue #131)", () => {
   });
 
   it("records a callFailed outcome kind when the tool call itself errors", async () => {
-    const { request, server, threadId } = await approveAndSetUp({ query: "semprec", __forceError: true });
+    const { request, server, threadId } = await approveAndSetUp({ query: "alldots", __forceError: true });
 
     await drainQueue();
 

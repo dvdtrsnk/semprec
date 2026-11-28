@@ -54,7 +54,7 @@ jobs:
     # returns in minutes, and a non-Relay review finishes well inside it.
     timeout-minutes: 150
     steps:
-      - name: Checkout semprec
+      - name: Checkout alldots
         uses: actions/checkout@v4
         with:
           # Deliberately review the PR head in both trigger modes, rather than the

@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { Pool } from "pg";
 
 const warn = vi.fn();
-vi.mock("@semprec/shared", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@semprec/shared")>()),
+vi.mock("@alldots/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@alldots/shared")>()),
   createLogger: () => ({ warn }),
 }));
 

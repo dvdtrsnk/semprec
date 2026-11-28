@@ -1,9 +1,9 @@
 import "../../domainWriteHooks.js";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { enqueueJob, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -221,7 +221,7 @@ function itemInvalidationsOf(itemId: string) {
 describe("the people of a thread's tasks follow the conversation (issue gh-1923)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
   });
 

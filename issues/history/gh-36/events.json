@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPMxA",
         "number": 40,
         "title": "[20/22] Operations — Caddy, backups, secrets, provisioning",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/40",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/40",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "89f8e302359d7ea940bde106f7b3c942366e9f517f89b3584ec0c7e3452e450d"
       }
@@ -41,7 +41,7 @@
   {
     "id": 30089516611,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPKVs8AAAAHAXmWQw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30089516611",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30089516611",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -76,7 +76,7 @@
   {
     "id": 30098813782,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPKVs8AAAAHAgdzVg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30098813782",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30098813782",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -140,8 +140,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPJtA",
         "number": 35,
         "title": "[15/22] Czech and English — i18n for system labels",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/35",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/35",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c70174438294232f1bcc91f58eb7d036e3feaf4bcff8345fa09488eaee341e14"
       }
@@ -150,7 +150,7 @@
   {
     "id": 30114668862,
     "node_id": "RTE_lADOUFuQ4c8AAAABOdPKVs8AAAAHAvlhPg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30114668862",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30114668862",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -214,8 +214,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOdPNSg",
         "number": 41,
         "title": "[21/22] Batch meeting transcription",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/41",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/41",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "cf75707e32b0ab9ed2e3dd1506cbc6295389689f447debcb9d9ce8fd8347b850"
       }
@@ -253,8 +253,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvCJg",
         "number": 81,
         "title": "[implementation-audit-fixes] Close severe gaps from completed implementation audit — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/81",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/81",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "1b9baa131514e711f47e237321203f6ca60694046731d8aa21ace0694f22cbc2"
       }
@@ -292,8 +292,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvnbg",
         "number": 85,
         "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/85",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/85",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "38cd52b034fd57a380936e2f2943b30fb07dbf0e4d43bee3cd68e32810c0f86a"
       }
@@ -331,8 +331,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvozQ",
         "number": 91,
         "title": "[implementation-audit-fixes 23/23] Host graphile-worker composition roots in API and agents",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/91",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/91",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f5bba808255c56026e9009798ca7a91a154f2fe3e54921e6b2b8b508d404b8b1"
       }
@@ -370,8 +370,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvoYg",
         "number": 89,
         "title": "[implementation-audit-fixes 19/23] Execute approved destructive operations exactly once",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/89",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/89",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "320ad2a68b0152d859b71a1a836b4a50874124f7915943091d35068ba9bbb6d6"
       }
@@ -409,8 +409,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0j-9Q",
         "number": 161,
         "title": "[realtime-v1 02/06] Bridge transactional invalidations and notifications through PostgreSQL",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/161",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/161",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "e39a68c1bf4f1bbd94e4bb25773dca57c23fdce7a2266ebb1eed5c03fe12ff84"
       }
@@ -448,8 +448,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0j7Gg",
         "number": 144,
         "title": "[system-i18n] Resolve system labels in Czech and English — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/144",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/144",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "75068225469d81f18abdc046b9b5332dad42b076c652ff6e80e52d766a5a1606"
       }
@@ -487,8 +487,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0j8Ag",
         "number": 148,
         "title": "[notifications-v1] Persist and deliver actionable notifications — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/148",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/148",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c17fc9dd9c000d9bf76797965dff9c12a0a05ab57b7e0eceac6b34943944a4c6"
       }
@@ -526,8 +526,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kBJg",
         "number": 172,
         "title": "[operations] Production operations — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/172",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/172",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "aacd93b99f9c79f4cf39ba018d43cad2cc1c1765a3574db2faebb769e46f7e64"
       }
@@ -565,17 +565,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kCog",
         "number": 179,
         "title": "[batch-transcription] Batch meeting transcription — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/179",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/179",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "82f669916a69ede78766df5bb3fe0ac664cdc0788417de684fce91b64679bb0f"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465853738",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/36#issuecomment-5465853738",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/36",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465853738",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/36#issuecomment-5465853738",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/36",
     "id": 5465853738,
     "node_id": "IC_kwDOUFuQ4c8AAAABRcpPKg",
     "user": {
@@ -605,7 +605,7 @@
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465853738/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465853738/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -644,7 +644,7 @@
   {
     "id": 30224397287,
     "node_id": "CE_lADOUFuQ4c8AAAABOdPKVs8AAAAHCYOz5w",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30224397287",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30224397287",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -706,8 +706,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABPZlbTw",
         "number": 221,
         "title": "[implementation-audit-fixes 21/23] Declare task queue affinity in module descriptors",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/221",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/221",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "ed69436b1e2223fd2711d5eab5a0e2e6a71720221966c9e8c3daa6a3d1702f50"
       }
@@ -745,8 +745,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABPZlVKg",
         "number": 214,
         "title": "[implementation-audit-fixes 07/23] Persist project agent guidance and project it into the system prompt",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/214",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/214",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "51bbd265cf0db2997289dc4150eb36ae7b6b26a89b47065a1d6e70e2dfbdc360"
       }
@@ -784,14 +784,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABC9Tqzg",
         "number": 366,
         "title": "[implementation-audit-fixes 08/23] Add the AI gateway structured completion endpoint and client port (#215)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/366",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/366",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/366",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/366",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/366.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/366.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/366",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/366",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/366.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/366.patch",
           "merged_at": "2026-09-10T09:57:39Z"
         },
         "bodySha256": "320b64e9e9ce410ebcca44f00c7c4c9a9b44711e1f841b14ca2c8872e4013029"
@@ -830,14 +830,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABC-s0Ig",
         "number": 368,
         "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications (#85)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/368",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/368",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/368",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/368",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/368.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/368.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/368",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/368",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/368.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/368.patch",
           "merged_at": "2026-09-10T13:04:27Z"
         },
         "bodySha256": "8833cc609a08b70ae25324a5b92fa55f41b6eb3e1d4cbe0d92aabc38387fbfc4"
@@ -876,14 +876,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABC_l1SQ",
         "number": 369,
         "title": "[implementation-audit-fixes 09/23] Detect guidance drift and manage findings notifications (#85)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/369",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/369",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/369",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/369",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/369.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/369.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/369",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/369",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/369.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/369.patch",
           "merged_at": "2026-09-10T13:04:25Z"
         },
         "bodySha256": "da674e46814e789d938fc3dacad72ffee90891be530c4c5189bca8f9e052f701"
@@ -922,14 +922,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABDQku0A",
         "number": 392,
         "title": "[realtime-v1 02/06] Bridge transactional invalidations and notifications through PostgreSQL (#161)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/392",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/392",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/392",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/392",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/392.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/392.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/392",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/392",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/392.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/392.patch",
           "merged_at": "2026-09-12T15:59:58Z"
         },
         "bodySha256": "79d18ddd541924ca3e9bc74eb99bdc81f37d0ecb8ff00fd00b8b921876088c32"
@@ -939,7 +939,7 @@
   {
     "id": 31025448008,
     "node_id": "REFE_lADOUFuQ4c8AAAABOdPKVs8AAAAHOULESA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31025448008",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31025448008",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -963,7 +963,7 @@
     },
     "event": "referenced",
     "commit_id": "915e6d5ee1cf084a453638ba6dfb44e944806977",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/915e6d5ee1cf084a453638ba6dfb44e944806977",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/915e6d5ee1cf084a453638ba6dfb44e944806977",
     "created_at": "2026-09-12T15:49:15Z",
     "performed_via_github_app": null
   },
@@ -999,14 +999,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABEEVqUA",
         "number": 436,
         "title": "[implementation-audit-fixes 18/23] Expose generic operations through AgentTools and MCP (#220)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/436",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/436",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/436",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/436",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/436.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/436.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/436",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/436",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/436.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/436.patch",
           "merged_at": "2026-09-18T18:32:37Z"
         },
         "bodySha256": "d701f06af220aec2c9a35b681bb2ea60570f34150a2e6d3df887012344e3a720"
@@ -1045,14 +1045,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABF0uAnA",
         "number": 840,
         "title": "[pre-tenancy-groundwork 07/07] Route the choke point's mail and transcription hooks through a registry and forbid chokePoint importing domain folders (#659)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/840",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/840",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/840",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/840",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/840.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/840.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/840",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/840",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/840.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/840.patch",
           "merged_at": "2026-09-30T16:48:31Z"
         },
         "bodySha256": "65df3f6858a411a4dea46d7e6b3c31b47d2e493097b2f452c208cdf44637e7ef"
@@ -1091,14 +1091,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGdHexg",
         "number": 1104,
         "title": "[mt-foundation 09/16] Teach the convention skills and AGENTS.md the tenancy rules (#970)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1104",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1104",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1104",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1104.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1104.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1104",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1104",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1104.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1104.patch",
           "merged_at": "2026-10-05T18:23:06Z"
         },
         "bodySha256": "b6e6c3715ec74f84c2702d12ae4311a09ca02945a02f994ff4563dec6de0ea33"
@@ -1137,14 +1137,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABI9Y6ZQ",
         "number": 1184,
         "title": "[mt-enforcement 05/12] Prove AI gateway isolation with an exhaustive two-tenant endpoint suite (#1057)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1184",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1184",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1184",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1184",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1184.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1184.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1184",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1184",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1184.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1184.patch",
           "merged_at": "2026-10-17T09:30:24Z"
         },
         "bodySha256": "00b226a0b3fb750b9faea6476f4759866f88c6c8252e0eceec47f2fe9a33a50d"

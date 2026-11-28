@@ -71,7 +71,7 @@ async function displaceAndUpsert(
 
 /**
  * An endpoint moves silently to the registering account: another owner's active row is revoked
- * first, and the caller cannot tell whether one existed. The table is `semprec:tenancy=global`
+ * first, and the caller cannot tell whether one existed. The table is `alldots:tenancy=global`
  * because an endpoint names one physical device, so displacement deliberately ignores the tenant.
  * Displace and upsert are atomic, so a failed insert never leaves the previous owner revoked.
  */

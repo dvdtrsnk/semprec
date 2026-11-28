@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562707422",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/226#issuecomment-5562707422",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/226",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562707422",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/226#issuecomment-5562707422",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/226",
     "id": 5562707422,
     "node_id": "IC_kwDOUFuQ4c8AAAABS5At3g",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562707422/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562707422/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562780937",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/226#issuecomment-5562780937",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/226",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562780937",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/226#issuecomment-5562780937",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/226",
     "id": 5562780937,
     "node_id": "IC_kwDOUFuQ4c8AAAABS5FNCQ",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-06T22:59:30Z",
     "updated_at": "2026-09-06T22:59:30Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #312\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-226-module-contract-10-12-author-manifests-thr_g9rv3jpz2n`.\n\n## Summary\n\nAuthored `ModuleManifest`s for issue #226's four target modules — a pure retrofit, no behavior or data changes:\n\n- **`schemaCore`** (`backend/packages/data/src/chokePoint/schemaCoreModuleManifest.ts`) — the choke point and core system tables (`0001_core_schema.sql`). No databases, no agent tools.\n- **`views`** (`backend/packages/data/src/views/viewsModuleManifest.ts`) — `0002_views.sql` and the built-in view types (`table`, `board`, `calendar`, `list`).\n- **`docs`** (`backend/packages/data/src/docs/docsModuleManifest.ts`) — `0003_docs.sql`, the block-append mechanism. Deliberately doesn't redeclare `DOC_COMPACTION_SWEEP`/etc. since those remain core cron tasks.\n- **`systemDatabases`** (`backend/packages/data/src/seed/systemDatabasesModuleManifest.ts`) — the ten hardcoded databases from `seedTenDatabases.ts`, reusing their existing `owner_module_id` keys and names, plus Journal's `temporal-switcher` view type.\n\nEach manifest is re-exported from the `@semprec/data` package barrel. A new integration-tier test file, `backend/packages/data/src/__tests__/coreModuleManifests.test.ts`, verifies each manifest loads through `ModuleRegistry.loadModule()`, passes structural validation, and that all four load together into one registry with no id/name/key collisions.\n\nNote: this worktree's branch had been forked from a `develop` tip that predated the whole module-contract series (parts 01–09), so before authoring anything I fast-forward-merged `origin/develop` (currently at PR #311) into this branch to bring in `@semprec/module-registry` and the rest of the infrastructure these manifests depend on.\n\nVerified: full build (`pnpm -r run build`) and all three test tiers pass — unit (83/83), integration (369/369, including the 5 new load tests), and e2e (5/5).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #312\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-226-module-contract-10-12-author-manifests-thr_g9rv3jpz2n`.\n\n## Summary\n\nAuthored `ModuleManifest`s for issue #226's four target modules — a pure retrofit, no behavior or data changes:\n\n- **`schemaCore`** (`backend/packages/data/src/chokePoint/schemaCoreModuleManifest.ts`) — the choke point and core system tables (`0001_core_schema.sql`). No databases, no agent tools.\n- **`views`** (`backend/packages/data/src/views/viewsModuleManifest.ts`) — `0002_views.sql` and the built-in view types (`table`, `board`, `calendar`, `list`).\n- **`docs`** (`backend/packages/data/src/docs/docsModuleManifest.ts`) — `0003_docs.sql`, the block-append mechanism. Deliberately doesn't redeclare `DOC_COMPACTION_SWEEP`/etc. since those remain core cron tasks.\n- **`systemDatabases`** (`backend/packages/data/src/seed/systemDatabasesModuleManifest.ts`) — the ten hardcoded databases from `seedTenDatabases.ts`, reusing their existing `owner_module_id` keys and names, plus Journal's `temporal-switcher` view type.\n\nEach manifest is re-exported from the `@alldots/data` package barrel. A new integration-tier test file, `backend/packages/data/src/__tests__/coreModuleManifests.test.ts`, verifies each manifest loads through `ModuleRegistry.loadModule()`, passes structural validation, and that all four load together into one registry with no id/name/key collisions.\n\nNote: this worktree's branch had been forked from a `develop` tip that predated the whole module-contract series (parts 01–09), so before authoring anything I fast-forward-merged `origin/develop` (currently at PR #311) into this branch to bring in `@alldots/module-registry` and the rest of the infrastructure these manifests depend on.\n\nVerified: full build (`pnpm -r run build`) and all three test tiers pass — unit (83/83), integration (369/369, including the 5 new load tests), and e2e (5/5).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562780937/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562780937/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562814345",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/226#issuecomment-5562814345",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/226",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562814345",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/226#issuecomment-5562814345",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/226",
     "id": 5562814345,
     "node_id": "IC_kwDOUFuQ4c8AAAABS5HPiQ",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5562814345/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5562814345/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

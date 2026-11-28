@@ -3,7 +3,7 @@
 // releasing each Email's meta row and emptied thread.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { lockItemTrashEpoch } from "../chokePoint/itemsStore.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";

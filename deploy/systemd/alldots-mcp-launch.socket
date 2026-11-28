@@ -1,0 +1,13 @@
+[Unit]
+Description=Alldots stdio MCP sandbox launcher socket
+
+[Socket]
+ListenStream=/run/alldots-mcp-launch.sock
+SocketUser=root
+SocketGroup=alldots
+SocketMode=0660
+Accept=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

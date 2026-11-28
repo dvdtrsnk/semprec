@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleCatalogs } from "@alldots/module-registry";
 import { z } from "zod";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { renderResolutionTitle, type ResolutionTitleParams } from "./sempResolutionTitles.js";

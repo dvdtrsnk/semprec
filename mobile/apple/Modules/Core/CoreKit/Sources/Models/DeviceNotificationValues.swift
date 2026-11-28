@@ -1,7 +1,7 @@
 import Foundation
 
 /// The APNs environment a device token belongs to: the sandbox for a development build, production for a distributed
-/// one. The raw value is what the app's Info.plist names under `SemprecApnsEnvironment`.
+/// one. The raw value is what the app's Info.plist names under `AlldotsApnsEnvironment`.
 public enum PushEnvironment: String, Equatable, Sendable {
 
     case sandbox
