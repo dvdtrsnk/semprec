@@ -13,7 +13,7 @@ createdAt: "2026-10-31T17:31:01.915Z"
 updatedAt: "2026-11-03T08:02:08.270Z"
 closedAt: "2026-11-03T08:02:08.270Z"
 source: null
-approval: {"specSha256":"2a65785f46ee5be794cab51068240444124dadbdbf5887dde8eed418c6ab874a","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: isolated compiled CLI evidence; native packaging remains unresolved","at":"2026-11-03T06:29:37.414Z"}
+approval: {"specSha256":"89f75e638284a3bc87b91b7892227d158e733681bf48bc4ddd63acc1e9175d2f","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: isolated compiled CLI evidence; native packaging remains unresolved","at":"2026-11-03T06:29:37.414Z"}
 resolution: {"pullRequests":[],"commit":"7f862f56f45ff51f85f85944b0ff45ecbddef8ec","at":"2026-11-03T08:02:08.270Z"}
 ---
 **Blocked by:** sp-e02ff8c6-d20d-4fde-be2a-e0033cf9ef91

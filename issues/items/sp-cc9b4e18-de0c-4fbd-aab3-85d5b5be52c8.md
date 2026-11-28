@@ -13,7 +13,7 @@ createdAt: "2026-10-31T17:31:01.976Z"
 updatedAt: "2026-11-07T23:02:17.033Z"
 closedAt: "2026-11-07T23:02:17.033Z"
 source: null
-approval: {"specSha256":"29182c92ec9860719dd7ad82c7a0fab38fed6dca05cf4b6306762872c9a2e421","source":"repository","actor":"Owner-delegated controller: batch34 R1 current-instance invariant, bounded Tasks-owned historical SQL and nonblocking area source reservation; preserve release gates","at":"2026-11-07T20:54:54.531Z"}
+approval: {"specSha256":"7ee93420137bbe26b74587a77ebe3f70ace4215c6b4b272e7d23ac3a741632a7","source":"repository","actor":"Owner-delegated controller: batch34 R1 current-instance invariant, bounded Tasks-owned historical SQL and nonblocking area source reservation; preserve release gates","at":"2026-11-07T20:54:54.531Z"}
 resolution: {"pullRequests":[],"commit":"a2b922d8ff98353d56907d494d46eceff16abb18","at":"2026-11-07T23:02:17.033Z"}
 ---
 **Blocked by:** sp-1385289a-c057-4dcf-a42f-b2aaded63f7b

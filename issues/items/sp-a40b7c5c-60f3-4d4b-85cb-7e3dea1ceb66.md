@@ -13,7 +13,7 @@ createdAt: "2026-11-21T11:43:55.694Z"
 updatedAt: "2026-11-21T13:24:31.969Z"
 closedAt: "2026-11-21T13:24:31.969Z"
 source: null
-approval: {"specSha256":"362bf9b07a4975ae6639ecba3d6ed34076b1f2f0f1699666971a89b3e823fcc3","source":"repository","actor":"claude-delegated-by-david: delegated by dvdtrsnk for the internet accounts fixes, 2026-11-21","at":"2026-11-21T11:44:05.861Z"}
+approval: {"specSha256":"361042f1b38cb548d802161678c735f8abfd3b2ae2a35191fde7020d7b9248fe","source":"repository","actor":"claude-delegated-by-david: delegated by dvdtrsnk for the internet accounts fixes, 2026-11-21","at":"2026-11-21T11:44:05.861Z"}
 resolution: {"pullRequests":[],"commit":"6577964ade3666647894dd960ac0a6c96c71e6e6","at":"2026-11-21T13:24:31.969Z"}
 ---
 **Blocked by:** none

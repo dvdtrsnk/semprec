@@ -13,7 +13,7 @@ createdAt: "2026-11-27T18:55:41.305Z"
 updatedAt: "2026-11-27T20:13:41.547Z"
 closedAt: "2026-11-27T20:13:41.547Z"
 source: null
-approval: {"specSha256":"bf7e54f1da712657b8fa1d5657ba18dacccb4fecfae3aa97e6d265c7a2b532ae","source":"repository","actor":"david","at":"2026-11-27T18:55:42.571Z"}
+approval: {"specSha256":"36b6e35adb450b53ad4d140bd075a473da0f04ddaedf87151508072c3209ebef","source":"repository","actor":"david","at":"2026-11-27T18:55:42.571Z"}
 resolution: {"pullRequests":[],"commit":"14b377534c696d7b853d59a7e313746a89dff3d1","at":"2026-11-27T20:13:41.547Z"}
 ---
 **Blocked by:** sp-ba084bcb-8d4f-4a0d-939c-06276354ce46

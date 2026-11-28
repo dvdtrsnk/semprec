@@ -13,7 +13,7 @@ createdAt: "2026-10-31T17:31:01.910Z"
 updatedAt: "2026-11-03T05:37:51.537Z"
 closedAt: "2026-11-03T05:37:51.537Z"
 source: null
-approval: {"specSha256":"6749f0611085628a702b0ffcab6bd25995d994f5bc2e8323ef86ee367a8e0dc2","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: grouped R1 expiry and scoped publication repair","at":"2026-11-03T04:50:55.963Z"}
+approval: {"specSha256":"fde2b2b36835a0c2e3924cc646d10bbf6be3382ca9d524b5f4f35c52b4d504f8","source":"repository","actor":"Owner-delegated controller thr_pz39tcih5r: grouped R1 expiry and scoped publication repair","at":"2026-11-03T04:50:55.963Z"}
 resolution: {"pullRequests":[],"commit":"ee37aac1813db1773b01b64fdf44999078116493","at":"2026-11-03T05:37:51.537Z"}
 ---
 **Blocked by:** sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7
