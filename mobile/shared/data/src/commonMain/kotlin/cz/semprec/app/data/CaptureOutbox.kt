@@ -8,8 +8,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.util.hex
 import io.ktor.util.sha1
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
