@@ -152,7 +152,7 @@ class AuthenticatedApi(
 
         /**
          * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the
-         * `POST`s that only read (a query, a count, a search, the preview of a project's mail signals), the raw
+         * `POST`s that only read (a query, a count, the facet counts of a collection, a search, the preview of a project's mail signals), the raw
          * staging of a blob (the item it belongs to is created by a later request), the saving of a page's own text
          * (the diary's day page, which its load ensures with a `PUT`, and an item's `page.md`), which no list shows,
          * and the history upload of a mailbox (`history-index`), whose leases change nothing shown and whose slices,
@@ -164,6 +164,7 @@ class AuthenticatedApi(
             return !(
                 route.endsWith("/query") ||
                     route.endsWith("/count") ||
+                    route.endsWith("/facets") ||
                     route.endsWith("/signals/preview") ||
                     route.startsWith("/api/search") ||
                     route == "/api/blobs" ||

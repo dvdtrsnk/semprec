@@ -88,38 +88,6 @@ struct InboxDestination: View {
     }
 }
 
-/// Every tag of the projects, over a model of the project `projectId` it was reached from.
-struct ProjectTagsDestination: View {
-
-    let projectId: String
-    let composition: AppComposition
-
-    var body: some View {
-        CollectionsScreenFactory.projectTags(
-            projectId: projectId,
-            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
-            router: composition.collectionsRouter
-        )
-    }
-}
-
-/// One tag of the projects (`tagKey`), over a model of the project `projectId` it was reached from.
-struct ProjectTagDestination: View {
-
-    let projectId: String
-    let tagKey: String
-    let composition: AppComposition
-
-    var body: some View {
-        CollectionsScreenFactory.projectTag(
-            projectId: projectId,
-            tagKey: tagKey,
-            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
-            router: composition.collectionsRouter
-        )
-    }
-}
-
 /// The sleep sheets: the plan, one night, and the wake settings (`sleepPlan`, `sleepNight` and `sleepWakeSettings`).
 struct SleepDestination: View {
 

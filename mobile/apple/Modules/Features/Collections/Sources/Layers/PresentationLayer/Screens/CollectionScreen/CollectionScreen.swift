@@ -54,9 +54,11 @@ private extension CollectionScreen {
     var loaded: some View {
         let state = viewModel.state
         return items(state)
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // A safe area bar joins the navigation bar and its scroll edge effect; an inset with a background of its
+            // own reached under the bar as an opaque slab and the edge effect hid its chips.
+            .safeAreaBar(edge: .top, spacing: 0) {
                 if let bar = state.facetBar {
-                    CollectionFacetBarView(bar: bar, send: viewModel.send).background(.bar)
+                    CollectionFacetBarView(bar: bar, send: viewModel.send)
                 }
             }
             .searchable(

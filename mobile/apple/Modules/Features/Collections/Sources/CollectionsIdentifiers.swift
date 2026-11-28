@@ -38,17 +38,14 @@ enum CollectionsIdentifiers {
     static let projectMailSignals = "project.settings.mailSignals"
     static let projectTags = "project.tags"
     static let projectSettingsTags = "project.settings.tags"
+    static let projectTagsSheet = "project.settings.tags.sheet"
+    static let projectTagsCancel = "project.settings.tags.cancel"
+    static let projectTagsDone = "project.settings.tags.done"
     static let projectSettingsNewTag = "project.settings.tags.new"
-    static let projectSettingsAddTag = "project.settings.tags.add"
-    static let projectSettingsManageTags = "project.settings.tags.manage"
-    static let projectTagsPage = "project.settings.tags.page"
-    /// Followed by the tag's key, e.g. `project.settings.tags.row.client`.
-    static let projectTagRowPrefix = "project.settings.tags.row."
-    static let projectTagPage = "project.settings.tag"
+    /// Followed by the tag's key, e.g. `project.settings.tags.chip.client`.
+    static let projectTagChipPrefix = "project.settings.tags.chip."
     static let projectTagName = "project.settings.tag.name"
     static let projectTagRename = "project.settings.tag.rename"
-    /// Followed by the swatch's key, e.g. `project.settings.tag.color.green`.
-    static let projectTagColorPrefix = "project.settings.tag.color."
     static let projectTagDelete = "project.settings.tag.delete"
     static let projectTagDeleteConfirm = "project.settings.tag.delete.confirm"
 }

@@ -2,23 +2,19 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The settings of a project: its status, its deadline (which a long-term project does not have), its tags
-/// with a field that creates a new one, whether it is pinned to the overview, and the entries to the tags of the
-/// projects, which rename, recolor and delete them, and to its mail signals; the project opens either on its stack
-/// once the sheet is closed.
+/// The settings of a project: its status, its deadline (which a long-term project does not have), its tags, chosen
+/// on a sheet of their own, whether it is pinned to the overview, and the entry to its mail signals, which opens on
+/// the project's stack once the sheet is closed.
 struct ProjectSettingsSheet: View {
 
     // MARK: - Dependencies
     let state: ItemState
     let send: (ItemAction) -> Void
     let close: () -> Void
-    let openTags: () -> Void
     let openMailSignals: () -> Void
 
     // MARK: - State
-    @State private var newTag = ""
-    /// The tags the project held when the typed name was sent; nil while no new tag is on its way.
-    @State private var tagsBeforeAdd: Set<String>?
+    @State private var isChoosingTags = false
 
     // MARK: - Body
     var body: some View {
@@ -30,8 +26,17 @@ struct ProjectSettingsSheet: View {
                 pinnedSection
                 mailSignalsSection
             }
-            .onChange(of: tagKeys) { _, keys in clearNewTagOnceAdded(keys) }
-            .onChange(of: state.choiceFailure) { _, failure in if failure != nil { tagsBeforeAdd = nil } }
+            .sheet(isPresented: $isChoosingTags) {
+                if let tags = field("tags") {
+                    ProjectTagsSheet(
+                        tags: tags,
+                        swatches: state.swatches,
+                        saving: state.saving,
+                        failure: state.choiceFailure,
+                        send: send
+                    )
+                }
+            }
             .navigationTitle(Text("project.settings", bundle: .module))
             .inlineNavigationTitle()
             .toolbar {
@@ -45,21 +50,16 @@ struct ProjectSettingsSheet: View {
     }
 
     // MARK: - Methods
-    /// The intent that creates a tag named `label` and sets it on the project.
-    static func newChoice(_ label: String, of field: FieldView) -> ItemAction {
-        .edit(.addChoice(propertyKey: field.propertyKey, label: label))
+    /// The project's tags as the row shows them, "#Client #Home"; nothing while it has none.
+    static func summary(of tags: FieldView) -> String {
+        guard case .choices(let options) = tags.content else { return "" }
+        return options.map { "#" + $0.label }.joined(separator: " ")
     }
 
-    /// Whether the project's tags gained one since `before`, which is how the sheet learns that the typed name was
-    /// added: a refused add changes no tag and keeps the name in the field.
-    static func gainedTag(before: Set<String>?, now: Set<String>) -> Bool {
-        guard let before else { return false }
-        return !now.isSubset(of: before)
-    }
-
-    /// Whether a new tag can be sent: the name is not blank and no write is running, which would drop it.
-    static func canAddTag(named name: String, saving: Bool) -> Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !saving
+    /// The refusal of the last write of the project's tags, shown under the Tags row: setting the chosen tags fails as
+    /// a write, changing a tag itself as a choice, and either can arrive after the tags sheet closed.
+    static func tagsFailure(in state: ItemState, propertyKey: String) -> ItemWriteFailure? {
+        [state.writeFailure, state.choiceFailure].compactMap { $0 }.first { $0.propertyKey == propertyKey }
     }
 }
 
@@ -105,32 +105,27 @@ private extension ProjectSettingsSheet {
     @ViewBuilder var tagsSection: some View {
         if let tags = field("tags") {
             Section {
-                FieldRowView(field: tags, fields: state.fields, format: FieldFormat(), send: send)
-                if tags.editable {
-                    HStack {
-                        TextField(text: $newTag) { Text("project.tags.new", bundle: .module) }
-                            .onSubmit { if canAddTag { addTag(to: tags) } }
-                            .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsNewTag)
-                        Button { addTag(to: tags) } label: { Text("project.tags.add", bundle: .module) }
-                            .disabled(!canAddTag)
-                            .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsAddTag)
-                    }
-                    Button(action: openTags) {
-                        HStack {
-                            Text("project.tags.manage", bundle: .module)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
+                Button { isChoosingTags = true } label: {
+                    HStack(spacing: Theme.Spacing.small) {
+                        Label {
+                            Text(verbatim: tags.name)
+                        } icon: {
+                            Image(systemName: "number").foregroundStyle(Theme.Colors.secondaryText)
                         }
-                        .contentShape(Rectangle())
+                        Spacer(minLength: Theme.Spacing.small)
+                        Text(verbatim: Self.summary(of: tags))
+                            .foregroundStyle(Theme.Colors.secondaryText)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
                     }
-                    .listRowButton()
-                    .foregroundStyle(.primary)
-                    .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsManageTags)
+                    .contentShape(Rectangle())
                 }
-            } header: {
-                Text(tags.name).accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
+                .listRowButton()
+                .foregroundStyle(.primary)
+                .disabled(!tags.editable)
+                .accessibilityIdentifier(CollectionsIdentifiers.projectSettingsTags)
             } footer: {
-                if let failure = state.choiceFailure, failure.propertyKey == tags.propertyKey {
+                if let failure = Self.tagsFailure(in: state, propertyKey: tags.propertyKey) {
                     Text(FailureKind.message(for: failure.kind)).foregroundStyle(Theme.Colors.destructive)
                 }
             }
@@ -165,24 +160,6 @@ private extension ProjectSettingsSheet {
         } footer: {
             Text("project.settings.mailSignals.footer", bundle: .module)
         }
-    }
-
-    var canAddTag: Bool { Self.canAddTag(named: newTag, saving: state.saving) }
-
-    /// Sends the typed name as a new tag of the project; the field keeps it until the tag is on the project.
-    func addTag(to tags: FieldView) {
-        tagsBeforeAdd = tagKeys
-        send(Self.newChoice(newTag, of: tags))
-    }
-
-    func clearNewTagOnceAdded(_ keys: Set<String>) {
-        guard Self.gainedTag(before: tagsBeforeAdd, now: keys) else { return }
-        newTag = ""
-        tagsBeforeAdd = nil
-    }
-
-    var tagKeys: Set<String> {
-        if case .choices(let options) = field("tags")?.content { Set(options.map(\.key)) } else { [] }
     }
 
     var selectedStatus: String? {
