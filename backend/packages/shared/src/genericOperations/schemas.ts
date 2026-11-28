@@ -257,6 +257,15 @@ export const PropertyOptionUpdateInputSchema = z
   .strict();
 export type PropertyOptionUpdateInput = z.infer<typeof PropertyOptionUpdateInputSchema>;
 
+/** The option goes, and so does its key from every item value of the property. */
+export const PropertyOptionRemoveInputSchema = z
+  .object({
+    propertyId: canonicalUuid,
+    key: z.string().min(1),
+  })
+  .strict();
+export type PropertyOptionRemoveInput = z.infer<typeof PropertyOptionRemoveInputSchema>;
+
 export const ViewListInputSchema = z.object({ cursor, limit }).strict();
 export type ViewListInput = z.infer<typeof ViewListInputSchema>;
 
@@ -829,6 +838,7 @@ export interface InputByOperation {
   "property.delete": PropertyDeleteInput;
   "property.option.add": PropertyOptionAddInput;
   "property.option.update": PropertyOptionUpdateInput;
+  "property.option.remove": PropertyOptionRemoveInput;
   "view.list": ViewListInput;
   "view.get": ViewGetInput;
   "view.create": ViewCreateInput;

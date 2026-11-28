@@ -274,6 +274,10 @@ export function createGenericApplicationService(
       );
     },
 
+    async removePropertyOption(actor, input) {
+      await chokePoint.removePropertyOption(input.propertyId, input.key, actor.userId);
+    },
+
     async listViews(_actor, input) {
       const views = await chokePoint.listCuratedViews();
       return paginate(views, input.cursor, input.limit);

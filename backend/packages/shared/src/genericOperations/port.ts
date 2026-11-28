@@ -35,6 +35,7 @@ export interface OutputByOperation {
   "property.delete": Property;
   "property.option.add": PropertyOption;
   "property.option.update": PropertyOption;
+  "property.option.remove": void;
   "view.list": Page<View>;
   "view.get": View;
   "view.create": View;
@@ -256,6 +257,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["property.option.update"],
   ): Promise<OutputByOperation["property.option.update"]>;
+  removePropertyOption(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.option.remove"],
+  ): Promise<OutputByOperation["property.option.remove"]>;
   listViews(actor: AuthenticatedActor, input: InputByOperation["view.list"]): Promise<OutputByOperation["view.list"]>;
   getView(actor: AuthenticatedActor, input: InputByOperation["view.get"]): Promise<OutputByOperation["view.get"]>;
   createView(

@@ -37,6 +37,7 @@ import {
   PropertyListInputSchema,
   PropertyOptionAddInputSchema,
   PropertyOptionUpdateInputSchema,
+  PropertyOptionRemoveInputSchema,
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
   RelationListInputSchema,
@@ -164,6 +165,10 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "property.option.update": {
     input: PropertyOptionUpdateInputSchema,
     invoke: (service, actor, input) => service.updatePropertyOption(actor, input),
+  },
+  "property.option.remove": {
+    input: PropertyOptionRemoveInputSchema,
+    invoke: (service, actor, input) => service.removePropertyOption(actor, input),
   },
   "view.list": {
     input: ViewListInputSchema,

@@ -816,5 +816,100 @@ describe("property routes (issue #240)", () => {
       expect(await after.json()).toEqual({ error: { code: "schema_locked" } });
       expect((await chokePoint.getProperty(tags.id))?.config).toEqual(stored);
     });
+
+    describe("DELETE /api/properties/:id/options/:key", () => {
+      function remove(propertyId: string, segment: string, headers: Record<string, string>) {
+        return fetch(`${baseUrl}/api/properties/${propertyId}/options/${segment}`, { method: "DELETE", headers });
+      }
+
+      it("answers 204 with no body, the schema lists the tag no more, and no item holds its key", async () => {
+        const headers = await sessionHeaders();
+        const tags = await healthProperty("tags");
+        const item = await chokePoint.createItem({
+          databaseId: tags.databaseId,
+          properties: { name: "Check-up", tags: ["medication", "epilepsy"] },
+        });
+
+        const res = await remove(tags.id, "medication", headers);
+
+        expect(res.status).toBe(204);
+        expect(await res.text()).toBe("");
+        expect((await schemaTags(headers)).map((option) => option.key)).toEqual(
+          SEEDED_TAG_KEYS.filter((key) => key !== "medication"),
+        );
+        expect((await chokePoint.getItem(tags.databaseId, item.id))?.properties.tags).toEqual(["epilepsy"]);
+      });
+
+      it("removes an option whose key holds a space and a diacritic through its percent-encoded path segment", async () => {
+        const headers = await sessionHeaders();
+        const propertyId = await propertyWithOptionKey(headers, "Vysoká priorita");
+
+        const res = await remove(propertyId, encodeURIComponent("Vysoká priorita"), headers);
+
+        expect(res.status).toBe(204);
+        expect((await chokePoint.getProperty(propertyId))?.config).toEqual({ options: [{ key: "other" }] });
+      });
+
+      it.each([
+        [
+          "an option key the property does not hold",
+          async () => (await healthProperty("tags")).id,
+          "missing",
+          404,
+          (propertyId: string) => ({
+            code: "not_found",
+            details: { resource: "propertyOption", propertyId, key: "missing" },
+          }),
+        ],
+        [
+          "a text property",
+          async () => (await healthProperty("subject")).id,
+          "one",
+          400,
+          () => ({ code: "validation_failed", details: { field: "propertyId" } }),
+        ],
+        [
+          "a system-owned select",
+          async () => {
+            const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+            if (!journal) throw new Error("Journal database was not seeded");
+            const type = await chokePoint.getPropertyByKey(journal.id, "type");
+            if (!type) throw new Error("Journal 'type' property was not seeded");
+            return type.id;
+          },
+          "week",
+          400,
+          () => ({ code: "validation_failed", details: { field: "propertyId", reason: "system_owned" } }),
+        ],
+        [
+          "a key segment that is not valid percent-encoding",
+          async () => (await healthProperty("tags")).id,
+          "%zz",
+          400,
+          () => ({ code: "validation_failed", details: { field: "key" } }),
+        ],
+      ])("refuses %s and writes nothing", async (_case, propertyOf, segment, status, error) => {
+        const headers = await sessionHeaders();
+        const propertyId = await propertyOf();
+        const before = (await chokePoint.getProperty(propertyId))?.config;
+
+        const res = await remove(propertyId, segment, headers);
+
+        expect(res.status).toBe(status);
+        expect(await res.json()).toEqual({ error: error(propertyId) });
+        expect((await chokePoint.getProperty(propertyId))?.config).toEqual(before);
+      });
+
+      it("answers 400 naming 'id' for a property id that is not a UUID and 404 for an unknown one", async () => {
+        const headers = await sessionHeaders();
+
+        const bad = await remove("tags", "medication", headers);
+        expect(bad.status).toBe(400);
+        expect(await bad.json()).toEqual({ error: { code: "validation_failed", details: { field: "id" } } });
+        const unknown = await remove(randomUUID(), "medication", headers);
+        expect(unknown.status).toBe(404);
+        expect(await unknown.json()).toEqual({ error: { code: "not_found" } });
+      });
+    });
   });
 });

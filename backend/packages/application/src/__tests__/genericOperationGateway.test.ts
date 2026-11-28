@@ -1643,7 +1643,7 @@ describe("createGenericOperationGateway", () => {
       );
     });
 
-    it("refuses both REST-only option operations for a person and for an agent run like an unknown operation, writing nothing", async () => {
+    it("refuses every REST-only option operation for a person and for an agent run like an unknown operation, writing nothing", async () => {
       const gateway = gatewayFor();
       const database = await chokePoint.createDatabase({ name: "Gateway options" });
       const property = await chokePoint.createProperty({
@@ -1662,6 +1662,7 @@ describe("createGenericOperationGateway", () => {
             key: "herbs",
             label: "Fresh herbs",
           }),
+          gateway.invoke("property.option.remove", actor, ALL_CAPABILITIES, { propertyId: property.id, key: "herbs" }),
         ];
         for (const refusal of refusals) {
           await expect(refusal).rejects.toMatchObject({ name: "NotFoundError", code: "not_found", status: 404 });

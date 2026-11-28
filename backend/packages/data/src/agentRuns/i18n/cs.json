@@ -33,6 +33,7 @@
   "agentStep.title.operation.property.delete": "Smazání vlastnosti",
   "agentStep.title.operation.property.option.add": "Přidání možnosti",
   "agentStep.title.operation.property.option.update": "Změna možnosti",
+  "agentStep.title.operation.property.option.remove": "Odebrání možnosti",
   "agentStep.title.operation.view.list": "Výpis pohledů",
   "agentStep.title.operation.view.get": "Čtení pohledu",
   "agentStep.title.operation.view.create": "Vytvoření pohledu",
