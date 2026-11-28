@@ -236,7 +236,6 @@
         "search.scope.file",
         "search.scope.mail",
         "search.scope.chat",
-        "search.count",
         "search.movedFrom",
         "search.missedInEvent",
         "search.recurrence.daily",

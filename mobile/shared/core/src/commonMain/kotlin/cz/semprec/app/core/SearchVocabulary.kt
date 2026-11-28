@@ -15,7 +15,6 @@ enum class SearchSubtitleKind {
     PHONE,
     RELATIONSHIP,
     STATUS,
-    COUNT,
     SENDER,
     MOVED_FROM,
     MISSED_IN_EVENT,
