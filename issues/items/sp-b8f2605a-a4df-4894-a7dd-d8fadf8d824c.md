@@ -3,18 +3,18 @@ schemaVersion: 1
 id: "sp-b8f2605a-a4df-4894-a7dd-d8fadf8d824c"
 title: "[areas-removal-debt 04/06] Make the system task isolation case independent of heartbeat timing"
 kind: "implementation"
-state: "open"
-stateReason: null
+state: "closed"
+stateReason: "completed"
 labels: ["spec:approved"]
 parent: "sp-706a1b28-481d-4407-856f-726e4ec0e61a"
 assignees: []
 milestone: null
 createdAt: "2026-11-27T23:25:27.971Z"
-updatedAt: "2026-11-27T23:25:29.608Z"
-closedAt: null
+updatedAt: "2026-11-27T23:38:02.085Z"
+closedAt: "2026-11-27T23:38:02.085Z"
 source: null
 approval: {"specSha256":"525b6497daf76a3650fc0c42c9c086b85a41286206cf22cf973e8cb770276af4","source":"repository","actor":"david","at":"2026-11-27T23:25:29.608Z"}
-resolution: null
+resolution: {"pullRequests":[],"commit":"11aab97b1fe6cac6537e30c67c982b5c08617f9a","at":"2026-11-27T23:38:02.085Z"}
 ---
 **Blocked by:** none
 **Model tier:** medium
