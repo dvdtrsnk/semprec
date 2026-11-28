@@ -1,7 +1,7 @@
 package cz.semprec.app.presentation
 
 sealed interface JournalAction {
-    /** Reads the selected period again. */
+    /** Reads the selected period again; a period already shown stays on screen until the answer replaces it. */
     data object Retry : JournalAction
 
     /** Shows the period of [kind] that starts on [start] (`YYYY-MM-DD`). */

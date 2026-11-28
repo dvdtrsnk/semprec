@@ -92,7 +92,7 @@ class JournalViewModel internal constructor(
     override fun onAction(action: JournalAction) {
         if (isClosed) return
         when (action) {
-            JournalAction.Retry -> load()
+            JournalAction.Retry -> load(keepsContent = state.value.phase == JournalPhase.CONTENT)
             is JournalAction.Select -> select(action.kind, action.start)
             is JournalAction.ShowAxisAround -> showAxisAround(action.day)
             JournalAction.GoToday -> select(JournalPeriodKind.DAY, state.value.today)
@@ -139,14 +139,16 @@ class JournalViewModel internal constructor(
     }
 
     /**
-     * Loads the selected period; with [keepsContent] the period shown so far stays until the answer replaces it. A
-     * kept period shows at once and stays when it cannot be read again.
+     * Loads the selected period; with [keepsContent] the period shown so far stays until the answer replaces it, and
+     * stays when it is the selected one and cannot be read again. A kept period shows at once and stays when it
+     * cannot be read again.
      */
     private fun load(keepsContent: Boolean = false) {
         loadJob?.cancel()
         val selection = state.value.selection
         val period = selection.toPeriod()
         val keptPage = kept[period]
+        val stays = keptPage != null || (keepsContent && state.value.shown == selection)
         if (keptPage != null) {
             show(keptPage, selection)
         } else if (!keepsContent) {
@@ -167,7 +169,7 @@ class JournalViewModel internal constructor(
                     show(result.value, selection)
                     prefetchAround(selection)
                 }
-                keptPage != null -> Unit
+                stays -> Unit
                 result is RepositoryResult.Failure -> update { failed(it, around, result.kind) }
                 else -> update { failed(it, around, null) }
             }
