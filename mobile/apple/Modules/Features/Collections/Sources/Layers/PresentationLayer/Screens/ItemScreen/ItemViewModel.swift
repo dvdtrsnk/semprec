@@ -44,8 +44,6 @@ final class ItemViewModel: ObservableObject {
         case .mailSignals: router.showProjectMailSignals(projectId: itemId)
         case .notes: router.showProjectNotes(projectId: itemId)
         case .agent: router.showProjectAgent(projectId: itemId)
-        case .tags: router.showProjectTags(projectId: itemId)
-        case .tag(let key): router.showProjectTag(projectId: itemId, tagKey: key)
         case .files:
             router.showCollection(
                 .ofItem(databaseKey: DatabaseKey.files, relationKey: DatabaseKey.projects, itemId: itemId)
@@ -58,8 +56,6 @@ final class ItemViewModel: ObservableObject {
 enum ProjectDestination: Equatable {
 
     case tasks, mail, mailSignals, notes, agent, files
-    /// Every tag of the projects, and one of them by its key.
-    case tags, tag(key: String)
 }
 
 // MARK: - Private

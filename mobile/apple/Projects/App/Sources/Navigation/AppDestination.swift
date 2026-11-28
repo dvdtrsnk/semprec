@@ -20,10 +20,6 @@ enum AppDestination: Hashable {
     /// The detail of an item presented as a sheet over the stack of `tab`, for the databases whose items the design
     /// opens in place (companies, files, books, films, recipes, health records); what it opens goes onto that stack.
     case itemSheet(itemId: String, databaseKey: String?, tab: AppTab)
-    /// Every tag of the projects, read through the project `projectId`, whose settings lead to it.
-    case projectTags(projectId: String)
-    /// One tag of the projects, to be renamed, recolored or deleted, read through the project `projectId`.
-    case projectTag(projectId: String, tagKey: String)
     /// The sleep plan sheet; `night` is the evening (`YYYY-MM-DD`) whose ring it shows, or nil.
     case sleepPlan(night: String?)
     /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
@@ -77,7 +73,7 @@ extension AppDestination {
         switch self {
         case .profile, .details, .sleepPlan, .sleepNight, .sleepWakeSettings, .calendars, .invitations, .newItem,
              .mailCompose, .itemSheet: true
-        case .pending, .tasks, .collection, .collectionItem, .projectTags, .projectTag, .notes, .inbox, .mailList,
+        case .pending, .tasks, .collection, .collectionItem, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .projectMailSignals, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false
         }

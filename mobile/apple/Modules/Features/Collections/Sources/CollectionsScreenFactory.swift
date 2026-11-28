@@ -67,27 +67,4 @@ public enum CollectionsScreenFactory {
             ItemScreen(viewModel: ItemViewModel(itemId: itemId, model: makeModel(), router: router))
         }
     }
-
-    // MARK: - Project tags
-    /// Every tag of the projects, read through the project `projectId` (a model of that project's item).
-    public static func projectTags(
-        projectId: String,
-        makeModel: @escaping @MainActor () -> any ItemScreenModel,
-        router: any CollectionsRouting
-    ) -> some View {
-        ProjectTagsScreen(viewModel: ItemViewModel(itemId: projectId, model: makeModel(), router: router))
-    }
-
-    /// One tag of the projects (`tagKey`), renamed, recolored or deleted through the project `projectId`.
-    public static func projectTag(
-        projectId: String,
-        tagKey: String,
-        makeModel: @escaping @MainActor () -> any ItemScreenModel,
-        router: any CollectionsRouting
-    ) -> some View {
-        ProjectTagScreen(
-            tagKey: tagKey,
-            viewModel: ItemViewModel(itemId: projectId, model: makeModel(), router: router)
-        )
-    }
 }

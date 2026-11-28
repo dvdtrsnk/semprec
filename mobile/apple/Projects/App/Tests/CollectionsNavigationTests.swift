@@ -91,24 +91,8 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
         router.showProjectTasks(projectId: "p1")
-        router.showProjectTags(projectId: "p1")
-        router.showProjectTag(projectId: "p1", tagKey: "client")
-        XCTAssertEqual(overview.dismissals, 10)
-        XCTAssertEqual(overview.pushed.count, 10)
-    }
-
-    @MainActor
-    func testTheTagsOfTheProjectsAndEachTagOpenOnTheStackOfTheCollection() {
-        let context = NavigationContext()
-        let overview = StackSpy()
-        context.register(overview, for: .overview)
-        let router = AppCollectionsRouter(context: context, tab: .overview)
-        router.showProjectTags(projectId: "p1")
-        router.showProjectTag(projectId: "p1", tagKey: "client")
-        XCTAssertEqual(overview.pushed, [.projectTags(projectId: "p1"), .projectTag(projectId: "p1", tagKey: "client")])
-        XCTAssertTrue(overview.sheets.isEmpty)
-        XCTAssertFalse(AppDestination.projectTags(projectId: "p1").presentsAsSheet)
-        XCTAssertFalse(AppDestination.projectTag(projectId: "p1", tagKey: "client").presentsAsSheet)
+        XCTAssertEqual(overview.dismissals, 8)
+        XCTAssertEqual(overview.pushed.count, 8)
     }
 
     @MainActor

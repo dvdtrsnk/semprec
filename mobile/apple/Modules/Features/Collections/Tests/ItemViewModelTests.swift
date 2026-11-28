@@ -46,7 +46,7 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testANewTagOfTheProjectSettingsIsSentAsANewChoiceOfTheTags() {
+    func testANewTagOfTheProjectSettingsIsSentAsANewChoiceOfTheTags() throws {
         let model = ScriptedItemScreenModel(state: state(databaseKey: "projects"))
         let viewModel = ItemViewModel(itemId: "i1", model: model, router: RouterSpy())
         let tags = FieldView(
@@ -58,23 +58,8 @@ final class ItemViewModelTests: XCTestCase {
             editable: true,
             origin: nil
         )
-        viewModel.send(ProjectSettingsSheet.newChoice("Client", of: tags))
+        viewModel.send(try XCTUnwrap(ProjectTagsSheet.creating("Client", in: tags, saving: false)))
         XCTAssertEqual(model.actions, [.edit(.addChoice(propertyKey: "tags", label: "Client"))])
-    }
-
-    @MainActor
-    func testTheTypedTagIsClearedOnlyOnceTheProjectGainedATag() {
-        XCTAssertTrue(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home", "client"]))
-        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: ["home"], now: ["home"]))
-        XCTAssertFalse(ProjectSettingsSheet.gainedTag(before: nil, now: ["home", "client"]))
-    }
-
-    @MainActor
-    func testANewTagIsSentOnlyWithANameAndNoRunningWrite() {
-        XCTAssertTrue(ProjectSettingsSheet.canAddTag(named: "Client", saving: false))
-        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "Client", saving: true))
-        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "", saving: false))
-        XCTAssertFalse(ProjectSettingsSheet.canAddTag(named: "  ", saving: false))
     }
 
     @MainActor
@@ -145,16 +130,12 @@ final class ItemViewModelTests: XCTestCase {
         viewModel.showProject(.notes)
         viewModel.showProject(.agent)
         viewModel.showProject(.files)
-        viewModel.showProject(.tags)
-        viewModel.showProject(.tag(key: "client"))
         XCTAssertEqual(router.tasks, ["p1"])
         XCTAssertEqual(router.mail, ["p1"])
         XCTAssertEqual(router.mailSignals, ["p1"])
         XCTAssertEqual(router.notes, ["p1"])
         XCTAssertEqual(router.agents, ["p1"])
         XCTAssertEqual(router.collections, [.ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")])
-        XCTAssertEqual(router.projectTags, ["p1"])
-        XCTAssertEqual(router.projectTag, ["p1:client"])
     }
 
     @MainActor
