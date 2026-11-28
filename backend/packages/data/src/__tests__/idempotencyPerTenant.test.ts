@@ -52,7 +52,7 @@ async function twoTenants(client: PoolClient) {
   const dbA = await createDatabase(client, { name: "A" });
   await scopeTo(client, tenantB);
   const dbB = await createDatabase(client, { name: "B" });
-  await client.query("SET LOCAL ROLE semprec_data");
+  await client.query("SET LOCAL ROLE alldots_data");
   return { tenantA, tenantB, dbA, dbB };
 }
 
@@ -109,12 +109,12 @@ describe("idempotency reservations are per tenant", () => {
 
       await client.query("RESET ROLE");
       await scopeTo(client, tenantA);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const inA = await insertItemWithReplay(client, { databaseId: dbA.id, properties: {}, idempotencyKey: "k" });
 
       await client.query("RESET ROLE");
       await scopeTo(client, tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const inB = await insertItemWithReplay(client, { databaseId: dbB.id, properties: {}, idempotencyKey: "k" });
       expect(inB.created).toBe(true);
       expect(inB.item.id).not.toBe(inA.item.id);
@@ -123,7 +123,7 @@ describe("idempotency reservations are per tenant", () => {
 
       await client.query("RESET ROLE");
       await scopeTo(client, tenantA);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const replayA = await insertItemWithReplay(client, { databaseId: dbA.id, properties: {}, idempotencyKey: "k" });
       expect(replayA.created).toBe(false);
       expect(replayA.item.id).toBe(inA.item.id);
@@ -138,12 +138,12 @@ describe("idempotency reservations are per tenant", () => {
 
       await client.query("RESET ROLE");
       await scopeTo(client, tenantA);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const inA = await insertItemWithReplay(client, { databaseId: dbA.id, properties: {}, idempotencyKey: "k" });
 
       await client.query("RESET ROLE");
       await scopeTo(client, tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const firstB = await insertItemWithReplay(client, { databaseId: dbB.id, properties: {}, idempotencyKey: "k" });
       await softDeleteItem(client, dbB.id, firstB.item.id);
       const secondB = await insertItemWithReplay(client, { databaseId: dbB.id, properties: {}, idempotencyKey: "k" });

@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import type { Queryable } from "../db/pool.js";
 import { withTransaction } from "../db/pool.js";

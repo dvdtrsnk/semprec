@@ -2,7 +2,7 @@
 
 Every scenario is run by hand on an iOS Simulator (iPhone 18 Pro, never the iPhone Duo) next to the system Calendar app
 on the same simulator, with equivalent data. The expected result is what the system Calendar does; a difference that is
-not a deliberate Semprec feature is a defect. Results of each run are kept in `calendar-qa-results.md`.
+not a deliberate Alldots feature is a defect. Results of each run are kept in `calendar-qa-results.md`.
 
 ## How a scenario is run
 
@@ -114,7 +114,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | B12 | all-day reminder (task without time) | checkbox chip (exp) |
 | B13 | tap on all-day chip | opens details (exp) |
 | B14 | long press on all-day chip | menu (exp) |
-| B15 | drag all-day chip into timeline | gives it a time (Semprec feature) |
+| B15 | drag all-day chip into timeline | gives it a time (Alldots feature) |
 | B16 | drag timed event up into all-day row | becomes all-day |
 | B17 | all-day row scroll when more than visible rows | OPEN |
 | B18 | all-day row with sleep marker | OPEN |
@@ -130,7 +130,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | C03 | two reminders same minute | stacked/side by side, readable titles |
 | C04 | three reminders same minute | OPEN |
 | C05 | reminder + event same time | OPEN |
-| C06 | reminder inside an event | shown as event sub-task (Semprec) |
+| C06 | reminder inside an event | shown as event sub-task (Alldots) |
 | C07 | reminder at event start | OPEN |
 | C08 | reminder at event end | OPEN |
 | C09 | reminder at 00:05 over sleep alarm label | no text collision |
@@ -143,7 +143,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | C16 | reminder long title | OPEN |
 | C17 | reminder with repeat | each occurrence |
 | C18 | reminder drag to another time | snaps 15 min |
-| C19 | reminder drag onto an event | becomes sub-task (Semprec) |
+| C19 | reminder drag onto an event | becomes sub-task (Alldots) |
 | C20 | reminder delete via menu | OPEN |
 | C21 | reminder duplicate via menu | OPEN |
 | C22 | reminder cut/paste | OPEN |
@@ -155,9 +155,9 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 
 | ID | Scenario | Native iOS Calendar (reference) |
 |----|----------|---------------------------------|
-| D01 | week strip Monday-first, weekday letters (obs M T W…) vs Semprec "Mon Tue" | DIFF(minor) |
+| D01 | week strip Monday-first, weekday letters (obs M T W…) vs Alldots "Mon Tue" | DIFF(minor) |
 | D02 | selected day capsule colour: black (Apple) vs accent | DIFF(design) |
-| D03 | today marker colour: red (Apple) vs gold (Semprec) | design, keep |
+| D03 | today marker colour: red (Apple) vs gold (Alldots) | design, keep |
 | D04 | weekend days dimmed | obs |
 | D05 | tap on a day | haptic + immediate selection |
 | D06 | swipe week strip | moves a week, keeps weekday |
@@ -165,7 +165,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | D08 | swipe velocity: fast flick passes one day only | OPEN |
 | D09 | swipe during vertical scroll inertia | no accidental day change |
 | D10 | date title format "Thursday – 26. 11. 2026" vs "Thursday 26 November" | design, keep |
-| D11 | week number "W48" at the start of the date line | Semprec feature |
+| D11 | week number "W48" at the start of the date line | Alldots feature |
 | D12 | back button label (month name) | obs |
 | D13 | back button transforms to year when in month | OPEN |
 | D14 | Today button: haptic, scroll to now, selects today | OPEN |
@@ -193,7 +193,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | E06 | long press then drag | move with snap 15 min, preview block, haptic on each snap |
 | E07 | move preview shows new time live | OPEN |
 | E08 | move across midnight/day edge | clamped to day |
-| E09 | move to another day | Semprec: drag to week strip? |
+| E09 | move to another day | Alldots: drag to week strip? |
 | E10 | auto-scroll when dragging near top/bottom edge | OPEN |
 | E11 | drag released outside any area | cancel or commit? |
 | E12 | drag cancelled by system (incoming interrupt) | OPEN |
@@ -201,13 +201,13 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | E14 | resize bottom handle | OPEN |
 | E15 | resize handle reachable when event is under floating bars | OPEN |
 | E16 | resize past 00:00/24:00 | clamped |
-| E17 | handle visual: circles top-right / bottom-left (Apple) vs Semprec | DIFF |
+| E17 | handle visual: circles top-right / bottom-left (Apple) vs Alldots | DIFF |
 | E18 | selected style: solid accent fill + white text (Apple) vs outline | FIXED (solid accent, full width) |
 | E19 | selected event on top of cascade, full width (obs) | FIXED (solid accent, full width) |
 | E20 | haptics: selection on long press (Apple) | OPEN |
 | E21 | haptics: snap while dragging | OPEN |
 | E22 | double tap | nothing/zoom? |
-| E23 | long press on empty space | new event at that time or paste (Semprec: paste) |
+| E23 | long press on empty space | new event at that time or paste (Alldots: paste) |
 | E24 | long press on empty space with clipboard | paste at position |
 | E25 | swipe inside selected event | no day change while selected |
 | E26 | scroll while an item is selected | menu follows or hides |
@@ -240,7 +240,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | F18 | copy then paste via long press on empty space | OPEN |
 | F19 | cut then paste moves the event | OPEN |
 | F20 | duplicate creates a copy at the same time (Apple: same slot) | OPEN |
-| F21 | clipboard banner/indicator | Semprec shows in bottom bar? |
+| F21 | clipboard banner/indicator | Alldots shows in bottom bar? |
 | F22 | cut item shows ghost until pasted | OPEN |
 | F23 | paste in another day | OPEN |
 | F24 | paste into the all-day row | OPEN |
@@ -292,7 +292,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | H21 | calendar chooser lists only editable calendars | OPEN |
 | H22 | notes multiline | OPEN |
 | H23 | URL validation | OPEN |
-| H24 | attachment (Apple has) | not in Semprec |
+| H24 | attachment (Apple has) | not in Alldots |
 | H25 | Event/Task switch keeps title | OPEN |
 | H26 | task form: due date/time optional, flag, repeat | OPEN |
 | H27 | task without date | goes to inbox |
@@ -320,7 +320,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | ID | Scenario | Native iOS Calendar (reference) |
 |----|----------|---------------------------------|
 | I01 | month title large, weekday letters header | obs |
-| I02 | content of a day cell in the month view | the system Calendar shows titled chips and "+N"; Semprec keeps, by the owner's decision, one line made of the colours of the day's events, as long as they last |
+| I02 | content of a day cell in the month view | the system Calendar shows titled chips and "+N"; Alldots keeps, by the owner's decision, one line made of the colours of the day's events, as long as they last |
 | I03 | today marker | OPEN |
 | I04 | selected day marker | OPEN |
 | I05 | busy day (13 events) | overflow indicator |
@@ -355,7 +355,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | J07 | year 2030 / 2020 | OPEN |
 | J08 | mini month weekend dimming | OPEN |
 | J09 | year view dark mode | OPEN |
-| J10 | search button (Apple) | Semprec none |
+| J10 | search button (Apple) | Alldots none |
 
 ## K. Zoom transitions (year ↔ month ↔ day)
 
@@ -498,7 +498,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | R09 | system alert during drag | OPEN |
 | R10 | app kill during pending write | recovered |
 
-## S. Semprec-specific timeline items
+## S. Alldots-specific timeline items
 
 | ID | Scenario | Native iOS Calendar (reference) |
 |----|----------|---------------------------------|
@@ -533,7 +533,7 @@ not a deliberate Semprec feature is a defect. Results of each run are kept in `c
 | T14 | month view, swipe sideways | nothing moves, the month only scrolls vertically |
 | T15 | month view, slow vertical scroll | smooth, the large title follows the month at the top |
 | T16 | year view, vertical scroll | smooth, no paging |
-| T17 | long press on an empty place of the timeline | the system Calendar starts a new event at that time; Semprec pastes when something is cut or copied |
+| T17 | long press on an empty place of the timeline | the system Calendar starts a new event at that time; Alldots pastes when something is cut or copied |
 | T18 | tap on an empty place of the timeline | nothing, a held item is deselected |
 | T19 | double tap on the timeline | nothing |
 | T20 | keyboard open in the new item sheet, then save | the keyboard goes down with the sheet, the new item shows at once |

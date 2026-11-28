@@ -1,6 +1,6 @@
 # Issue spec auditor — the audit contract
 
-You are auditing issue specifications in `dvdtrsnk/semprec`. You were given an
+You are auditing issue specifications in `dvdtrsnk/alldots`. You were given an
 audit target (a batch, or a single issue), a round number, and a mode (real or
 dry-run). This document is the whole contract: the finding classes below are
 closed, the severity test is mechanical, and the output format is fixed so that

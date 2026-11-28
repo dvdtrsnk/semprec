@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { deleteRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -13,7 +13,7 @@ import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from 
 import { seedSystem } from "../../seed/seedSystem.js";
 import { lockInboxSource } from "../inboxSourceGuard.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createSemprecTickAction } from "../inboxTickAction.js";
+import { createAlldotsTickAction } from "../inboxTickAction.js";
 import {
   confirmProposalWithClient,
   rejectProposalWithClient,
@@ -69,7 +69,7 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -120,7 +120,7 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
           text: "",
         }),
       );
-      const tick = createSemprecTickAction(runtime, async () => {
+      const tick = createAlldotsTickAction(runtime, async () => {
         throw new Error("Unexpected model computation");
       });
       await tick(

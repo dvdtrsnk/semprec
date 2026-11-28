@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";

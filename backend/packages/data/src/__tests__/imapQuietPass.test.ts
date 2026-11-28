@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
@@ -25,7 +25,7 @@ const USER_ID = randomUUID();
 describe("a quiet IMAP pass against a loopback server with 80 ms per command", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

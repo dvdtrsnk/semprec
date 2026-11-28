@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABHXtdJQ",
         "number": 1156,
         "title": "feat: adopt Relay model tiers and guarded issue metadata backfill",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1156",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1156",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1156",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1156",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1156.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1156.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1156",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1156",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1156.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1156.patch",
           "merged_at": "2026-10-08T19:28:44Z"
         },
         "bodySha256": "4fe6d5e819516961f3bc10ba8ae584b19bc018fc351786729d0fec23c46acd6b"
@@ -48,7 +48,7 @@
   {
     "id": 32819209772,
     "node_id": "CE_lADOUFuQ4c8AAAABV4W_588AAAAHpC1mLA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32819209772",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32819209772",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

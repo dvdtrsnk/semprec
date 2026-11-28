@@ -11,7 +11,7 @@ import {
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError, type PoolClient } from "pg";
-import { canonicalizeJson, currentTenantScope } from "@semprec/shared";
+import { canonicalizeJson, currentTenantScope } from "@alldots/shared";
 import { ApprovalResourceBusyError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
 import * as databasesStore from "./databasesStore.js";

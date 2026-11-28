@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compileFilterNode, type FilterProperties, type FilterProperty } from "../views/filterCompiler.js";
-import { filterNodeSchema as sharedSchema, FILTER_CONDITION_TYPES as sharedTypes } from "@semprec/shared";
+import { filterNodeSchema as sharedSchema, FILTER_CONDITION_TYPES as sharedTypes } from "@alldots/shared";
 import { filterNodeSchema as dataSchema, FILTER_CONDITION_TYPES, parseFilterNode } from "../views/filterTree.js";
 import { ForbiddenError, ValidationError } from "../errors.js";
 

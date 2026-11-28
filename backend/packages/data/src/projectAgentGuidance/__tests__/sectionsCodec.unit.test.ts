@@ -3,7 +3,7 @@ import {
   composeProjectAgentGuidanceMarkdown,
   findReservedHeading,
   parseProjectAgentGuidanceMarkdown,
-} from "@semprec/shared";
+} from "@alldots/shared";
 
 describe("project guidance section codec", () => {
   it("round trips all sections through canonical Markdown", () => {

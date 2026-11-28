@@ -8,7 +8,7 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createBlob, deleteBlobIfUnreferenced, getBlob } from "../../blobs/blobsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -231,7 +231,7 @@ describe("inboxAttachmentsStore (issue #1564)", () => {
       const itemId = await newInboxItem();
       const first = await newBlob("t/blobs/concurrent-first");
       const second = await newBlob("t/blobs/concurrent-second");
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let release = () => {};
       let holderReady = () => {};
       let competitorReady = () => {};

@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the Sleep feature's route does in the app: the router presents the wake settings as a sheet over the stack of
 /// the tab the person is on.

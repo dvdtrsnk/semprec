@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { createLogger, type Logger } from "@semprec/shared";
+import { createLogger, type Logger } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 
 const logger: Logger = createLogger("inbox-tick");

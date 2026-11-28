@@ -2,7 +2,7 @@
   {
     "id": 33931980942,
     "node_id": "LE_lADOUFuQ4c8AAAABZDbPa88AAAAH5oDwjg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33931980942",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33931980942",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -67,14 +67,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJ_FHtA",
         "number": 1243,
         "title": "[ci-stability-followup 04/04] Poll for expire()'s writes instead of sleeping in the DelegationRegistry TTL tests (#1242)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1243",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1243",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1243",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1243",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1243.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1243.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1243",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1243",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1243.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1243.patch",
           "merged_at": "2026-10-22T09:40:28Z"
         },
         "bodySha256": "3a72105b802c1460357f849a130b5b418d8738123013c8da3990abf9d754a0ab"
@@ -84,7 +84,7 @@
   {
     "id": 33935386817,
     "node_id": "REFE_lADOUFuQ4c8AAAABZDbPa88AAAAH5rTowQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33935386817",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33935386817",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -108,14 +108,14 @@
     },
     "event": "referenced",
     "commit_id": "412f3e0a61d225abdf5adbfa7eb91915848b8ab1",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/412f3e0a61d225abdf5adbfa7eb91915848b8ab1",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/412f3e0a61d225abdf5adbfa7eb91915848b8ab1",
     "created_at": "2026-10-22T09:40:30Z",
     "performed_via_github_app": null
   },
   {
     "id": 33935387075,
     "node_id": "CE_lADOUFuQ4c8AAAABZDbPa88AAAAH5rTpww",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33935387075",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33935387075",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

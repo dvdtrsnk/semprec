@@ -10,18 +10,18 @@ describe("vite dev-server proxy", () => {
   let savedApiUrl: string | undefined;
 
   beforeEach(() => {
-    savedApiUrl = process.env.SEMPREC_API_URL;
-    delete process.env.SEMPREC_API_URL;
-    // The config reads SEMPREC_API_URL at module evaluation, so each test re-imports it
+    savedApiUrl = process.env.ALLDOTS_API_URL;
+    delete process.env.ALLDOTS_API_URL;
+    // The config reads ALLDOTS_API_URL at module evaluation, so each test re-imports it
     // after the variable is cleared.
     vi.resetModules();
   });
 
   afterEach(() => {
     if (savedApiUrl === undefined) {
-      delete process.env.SEMPREC_API_URL;
+      delete process.env.ALLDOTS_API_URL;
     } else {
-      process.env.SEMPREC_API_URL = savedApiUrl;
+      process.env.ALLDOTS_API_URL = savedApiUrl;
     }
   });
 
@@ -43,8 +43,8 @@ describe("vite dev-server proxy", () => {
     expect(proxy["/mcp"]).toEqual({ target: "http://localhost:3001" });
   });
 
-  it("targets SEMPREC_API_URL for both prefixes when it is set", async () => {
-    process.env.SEMPREC_API_URL = "http://custom-host:4000";
+  it("targets ALLDOTS_API_URL for both prefixes when it is set", async () => {
+    process.env.ALLDOTS_API_URL = "http://custom-host:4000";
     const proxy = await loadProxy();
     expect(proxy["/api"]).toEqual({ target: "http://custom-host:4000", ws: true });
     expect(proxy["/mcp"]).toEqual({ target: "http://custom-host:4000" });

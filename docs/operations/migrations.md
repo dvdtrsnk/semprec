@@ -26,7 +26,7 @@ search configurations, tables with their keys, indexes, triggers and grants, for
 row-level security policies, default privileges, and tenant zero with its default AI budget.
 
 Every object belongs to the migrating role, except the cross-tenant router functions, which belong
-to `semprec_router` ([database roles](database-roles.md)). The `semprec:tenancy=` table comments are
+to `alldots_router` ([database roles](database-roles.md)). The `alldots:tenancy=` table comments are
 read by the deploy-time tenancy verifier (`src/db/tenancyInvariants.ts`).
 
 ## Changing the schema

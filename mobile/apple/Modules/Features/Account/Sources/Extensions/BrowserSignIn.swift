@@ -2,7 +2,7 @@ import AuthenticationServices
 import SwiftUI
 
 /// Shows a provider's sign-in page in the system's browser sheet and waits until the page sends the browser back to
-/// `semprec://oauth`. A screen builds it from its `webAuthenticationSession` environment value, so the sheet is shown
+/// `alldots://oauth`. A screen builds it from its `webAuthenticationSession` environment value, so the sheet is shown
 /// over the window of the view that started the sign-in.
 struct BrowserSignIn {
 
@@ -15,7 +15,7 @@ struct BrowserSignIn {
     }
 
     /// The scheme the server sends the browser back to; the app target registers it.
-    static let callbackScheme = "semprec"
+    static let callbackScheme = "alldots"
 
     // MARK: - Dependencies
     private let authenticate: @MainActor (URL) async throws -> URL

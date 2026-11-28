@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -106,7 +106,7 @@ async function setModuleId(tenantId: string, from: string, to: string): Promise<
 describe("default Inbox item types seeding (issue gh-1977)", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   });
 
   beforeEach(async () => {

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../errors.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -808,7 +808,7 @@ describe("createMailTransportFactory (issue #1634)", () => {
   it("allows the owning runtime tenant and refuses a foreign mailbox without reading its credential", async () => {
     const owner = getTenantZeroId();
     const other = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const failures: unknown[] = [];
     try {
       await runInTenant(owner, () =>

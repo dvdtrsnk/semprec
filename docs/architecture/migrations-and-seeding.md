@@ -10,7 +10,7 @@ runtime DDL through security-definer functions are in
 
 ### One baseline, no versions
 
-Semprec has not been released. The backend assumes it is the first version of itself, and every
+Alldots has not been released. The backend assumes it is the first version of itself, and every
 database it runs against was created from the current baseline:
 
 - The schema is one file, `backend/packages/data/src/db/migrations/0001_baseline.sql`. A schema
@@ -46,9 +46,9 @@ database it runs against was created from the current baseline:
 - It reads `DATABASE_URL` (the migrating role) and opens one owner pool without a statement
   timeout.
 - Inside `runAsSystem("deploy migrations", ...)` it runs `runMigrations`, then `installQueueSchema`
-  (`data/db/queueSchema.ts`: graphile-worker's schema, then `semprec_side`'s grants on it, which the
+  (`data/db/queueSchema.ts`: graphile-worker's schema, then `alldots_side`'s grants on it, which the
   SQL file cannot create).
-- Every queue runtime (semprec-api, semprec-agents, semprec-transcribe) also runs `installQueueSchema`
+- Every queue runtime (alldots-api, alldots-agents, alldots-transcribe) also runs `installQueueSchema`
   at start, so several processes run it at once on a fresh database. graphile-worker's own migration
   tolerates that. The grants run in one `withTransaction` that first takes the advisory lock
   `(2335, 0)`, because Postgres refuses concurrent updates of one catalog row
@@ -77,7 +77,7 @@ function created in the baseline:
 
 `deploy/deploy.sh` runs the migrations CLI, then the seed CLI, then
 `verifyTenancyCli.js` (catalog tenancy invariants, `backend/packages/data/src/db/tenancyInvariants.ts`),
-each in a transient `systemd-run` unit that loads `/opt/semprec/shared/env/migrate.env`, before
+each in a transient `systemd-run` unit that loads `/opt/alldots/shared/env/migrate.env`, before
 the new release is activated. On the wiped database this creates the schema, provisions tenant
 zero and verifies the catalog. Any failure leaves `current` and the running services untouched.
 See [delivery-and-operations.md](delivery-and-operations.md#deploy).
@@ -90,7 +90,7 @@ See [delivery-and-operations.md](delivery-and-operations.md#deploy).
 creates, for one tenant, the records the rest of the system assumes exist:
 
 - the system databases and their rows (`seed/seedSystem.ts`: System settings singleton,
-  Projects with the Semprec project, the hardcoded databases, the module databases and their
+  Projects with the Alldots project, the hardcoded databases, the module databases and their
   heartbeats, via the `seed/seed*.ts` functions);
 - then the default Inbox item types (`seedDefaultInboxItemTypes`).
 
@@ -103,7 +103,7 @@ A `provisioning` tenant becomes `active` only after all of it succeeded.
   `deleting` is never visited), one at a time, each inside its tenant scope. A failing tenant
   does not stop the others; the run ends with one `AggregateError` naming every failed tenant.
 - The CLI connects with the migrating URL but opens its pool with
-  `createPool(url, { role: "semprec_data" })`: the pg startup option `-c role=semprec_data` makes
+  `createPool(url, { role: "alldots_data" })`: the pg startup option `-c role=alldots_data` makes
   every connection run as the runtime role from the moment it opens, so row-level security
   applies to every statement. `provisionTenant` calls `assertRowSecurityActive` first and
   refuses an owner or superuser pool before writing anything.
@@ -136,7 +136,7 @@ existence check:
 ## Deploy-time tenant work
 
 - The seed is the only deploy-time step that writes tenant rows. It runs once per tenant, inside
-  that tenant's scope, on a `createPool(url, { role: "semprec_data" })` pool, enumerated with
+  that tenant's scope, on a `createPool(url, { role: "alldots_data" })` pool, enumerated with
   `forEachMaintainedTenant`, never on the owner pool, which bypasses row-level security.
 - `forEachMaintainedTenant` (deploy: `provisioning`, `active`, `suspended`) and
   `forEachActiveTenant` (scheduled sweeps: `active` only) differ deliberately.

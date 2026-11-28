@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -22,7 +22,7 @@ let dataPool: Pool;
 let chokePoint: ChokePoint;
 
 function openDataPool(): Pool {
-  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
 }
 
 async function seedTenant(tenantId: string): Promise<void> {

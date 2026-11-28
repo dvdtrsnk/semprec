@@ -11,7 +11,7 @@ import {
   type SearchGroup,
   type SearchMailResult,
   type SearchOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -35,8 +35,8 @@ let storageRoot: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-search-group-"));
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-search-group-"));
   const role = await runAsSystem("verify mail search group test role", () =>
     runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

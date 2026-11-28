@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { runInTenant } from "@semprec/shared";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { runInTenant } from "@alldots/shared";
 import { createAgentRun, finishAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -34,7 +34,7 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -109,7 +109,7 @@ describe("tick thread header and active run on the thread detail (issue #1562)",
   });
 
   it("validates a module-declared rule kind against the active modules: shown while active, refused once inactive or unknown", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "semprec-tick-rule-"));
+    const directory = await mkdtemp(join(tmpdir(), "alldots-tick-rule-"));
     try {
       // A module declaring its own heartbeat rule kind, loaded through the real module registry.
       const modulePath = join(directory, "rule.mjs");

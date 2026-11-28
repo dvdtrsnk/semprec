@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";

@@ -9,7 +9,7 @@ function text(area, status = "accepted", date = "2026-09-10") {
   return `---\nstatus: ${status}\ndate: ${date}\narea: [${area}]\nsupersedes: []\nsuperseded-by: null\n---\n\n# Decision\n`;
 }
 test("platform discovery includes shared rules and historical Apple candidates without copying ADRs", async t => {
-  const root = await mkdtemp(join(tmpdir(), "semprec-adr-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "alldots-adr-")); t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, "docs/adr"); await mkdir(directory, { recursive: true });
   for (const [name, area, status] of [["backend", "backend", "accepted"], ["web", "web", "accepted"], ["shared", "cross-cutting", "accepted"], ["mobile", "mobile", "accepted"], ["old-apple", "apple", "accepted"], ["retired", "apple", "superseded"]])
     await writeFile(join(directory, `2026-09-10-${name}.md`), text(area, status));
@@ -28,7 +28,7 @@ test("ADR parser rejects missing, ambiguous and unknown metadata and newly intro
     assert.throws(() => parseAdr(content, "2026-09-10-example.md"));
 });
 test("backend and web output points at the architecture documents; mobile output does not", async t => {
-  const root = await mkdtemp(join(tmpdir(), "semprec-adr-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "alldots-adr-")); t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "docs/adr"), { recursive: true });
   await writeFile(join(root, "docs/adr/2026-09-10-mobile.md"), text("mobile"));
   const cwd = process.cwd(); process.chdir(root); t.after(() => process.chdir(cwd));

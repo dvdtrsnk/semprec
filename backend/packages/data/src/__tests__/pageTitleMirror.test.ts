@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import pg, { type Pool, type PoolClient } from "pg";
-import { writeBlock } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+import { writeBlock } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
 import "../domainWriteHooks.js";
 import {
   createRuntimeRolePool,
@@ -145,7 +145,7 @@ async function runMirrorJobs(): Promise<void> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 });
 beforeEach(async () => {
@@ -381,7 +381,7 @@ describe("subpage title mirror (issue #1715)", () => {
       observer: PoolClient,
       connectionErrors: unknown[],
     ): Promise<{ pool: Pool; session: Session }> {
-      const owned = await createRuntimeRolePool(admin, "semprec_data");
+      const owned = await createRuntimeRolePool(admin, "alldots_data");
       try {
         owned.on("connect", (client) => {
           client.on("error", (error: unknown) => connectionErrors.push(error));

@@ -1,4 +1,4 @@
-// HTTP routes of Semprec mail drafts. Each handler parses and bounds the request, runs one `draft.ts` operation in one
+// HTTP routes of Alldots mail drafts. Each handler parses and bounds the request, runs one `draft.ts` operation in one
 // transaction and answers its view.
 import type { Pool } from "pg";
 import { z } from "zod";

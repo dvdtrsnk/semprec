@@ -24,7 +24,7 @@ async function databaseNames(pool: Pool, tenantId: string): Promise<string[]> {
 describe("two-tenant runtime-role harness", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -95,15 +95,15 @@ describe("two-tenant runtime-role harness", () => {
     }
   });
 
-  it("connects as a non-superuser semprec_data", async () => {
+  it("connects as a non-superuser alldots_data", async () => {
     const { rows } = await dataPool.query<{ current_user: string; rolsuper: boolean }>(
       "SELECT current_user, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS rolsuper",
     );
-    expect(rows).toEqual([{ current_user: "semprec_data", rolsuper: false }]);
+    expect(rows).toEqual([{ current_user: "alldots_data", rolsuper: false }]);
   });
 
-  it("refuses semprec_side an INSERT INTO items", async () => {
-    const sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
+  it("refuses alldots_side an INSERT INTO items", async () => {
+    const sidePool = await createRuntimeRolePool(adminPool, "alldots_side");
     try {
       await expect(sidePool.query("INSERT INTO items (database_id) VALUES (gen_random_uuid())")).rejects.toThrow(
         /permission denied/,
@@ -114,11 +114,11 @@ describe("two-tenant runtime-role harness", () => {
   });
 
   it("still connects after another file changed the role's password", async () => {
-    await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${randomUUID()}'`);
-    const pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    await adminPool.query(`ALTER ROLE alldots_data WITH PASSWORD '${randomUUID()}'`);
+    const pool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       const { rows } = await pool.query<{ current_user: string }>("SELECT current_user");
-      expect(rows[0]?.current_user).toBe("semprec_data");
+      expect(rows[0]?.current_user).toBe("alldots_data");
     } finally {
       await pool.end();
     }
@@ -128,12 +128,12 @@ describe("two-tenant runtime-role harness", () => {
     // Separate sessions, as separate workers would be: Postgres refuses the loser of two simultaneous ALTER ROLEs.
     const sessions = Array.from({ length: 16 }, () => getTestPool({ max: 1 }));
     try {
-      const pools = await Promise.all(sessions.map((session) => createRuntimeRolePool(session, "semprec_side")));
+      const pools = await Promise.all(sessions.map((session) => createRuntimeRolePool(session, "alldots_side")));
       try {
         const users = await Promise.all(
           pools.map(async (pool) => (await pool.query<{ current_user: string }>("SELECT current_user")).rows[0]),
         );
-        expect(users).toEqual(Array.from({ length: 16 }, () => ({ current_user: "semprec_side" })));
+        expect(users).toEqual(Array.from({ length: 16 }, () => ({ current_user: "alldots_side" })));
       } finally {
         await Promise.all(pools.map((pool) => pool.end()));
       }
@@ -142,7 +142,7 @@ describe("two-tenant runtime-role harness", () => {
     }
   });
 
-  describe("with tenant zero and tenant B under semprec_data", () => {
+  describe("with tenant zero and tenant B under alldots_data", () => {
     it("scopes inserted rows to the tenant they were written in", async () => {
       const b = await createTestTenant(adminPool);
       const zero = getTenantZeroId();

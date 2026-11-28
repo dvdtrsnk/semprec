@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { serializeBlocks } from "@semprec/block-model";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { serializeBlocks } from "@alldots/block-model";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale, getUserById } from "../auth/usersStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { insertPageMarkdown } from "../docs/pageMarkdown.js";

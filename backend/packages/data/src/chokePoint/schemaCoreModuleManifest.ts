@@ -1,5 +1,5 @@
-import type { ModuleManifest } from "@semprec/module-registry";
-import { CAPABILITY_IDS } from "@semprec/shared";
+import type { ModuleManifest } from "@alldots/module-registry";
+import { CAPABILITY_IDS } from "@alldots/shared";
 import type { Pool } from "pg";
 import { createHeartbeatTriggerTool } from "../scheduler/heartbeatAgentTools.js";
 import type { HeartbeatRuleKindRegistry } from "../scheduler/rule.js";

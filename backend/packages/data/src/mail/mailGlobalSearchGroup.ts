@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { SearchMailResult } from "@semprec/shared";
+import type { SearchMailResult } from "@alldots/shared";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { buildItemSearchQuery } from "../search/itemSearchQuery.js";

@@ -40,8 +40,8 @@ Load `kmp-shared`, `shared-viewmodel`, `apple-swiftui`, `canonical-keys`, `testi
 
 ## Touches
 
-- mobile/shared/domain/src/commonMain/kotlin/cz/semprec/app/domain/ (title rule, CalendarUseCases.kt)
-- mobile/shared/presentation/src/commonMain/kotlin/cz/semprec/app/presentation/ItemDetailsChanges.kt, ItemChanges.kt, TasksViewModel.kt, CalendarViewModel.kt
+- mobile/shared/domain/src/commonMain/kotlin/cz/alldots/app/domain/ (title rule, CalendarUseCases.kt)
+- mobile/shared/presentation/src/commonMain/kotlin/cz/alldots/app/presentation/ItemDetailsChanges.kt, ItemChanges.kt, TasksViewModel.kt, CalendarViewModel.kt
 - mobile/shared/*/src/commonTest/
 - mobile/apple/Modules/Core/DesignSystem/ (title binding and its tests)
 - mobile/apple/Modules/Features/Calendar/ (chooser, form row, delete alert identifiers, tests)
@@ -56,7 +56,7 @@ Load `kmp-shared`, `shared-viewmodel`, `apple-swiftui`, `canonical-keys`, `testi
 
 ### Out of scope
 
-- An XCUITest of the calendar flows: `SemprecUITests` covers only the session gate and has no signed-in or scripted calendar to walk.
+- An XCUITest of the calendar flows: `AlldotsUITests` covers only the session gate and has no signed-in or scripted calendar to walk.
 - Android and web; the backend.
 - Other text fields (descriptions, notes, names of calendars or accounts).
 

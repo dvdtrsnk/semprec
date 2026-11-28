@@ -7,23 +7,23 @@ import {
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
-} from "@semprec/shared";
+} from "@alldots/shared";
 
 /** Carries the caller's own tenant scope across the loopback hop; the gateway validates it and enters that tenant. */
-const TENANT_ID_HEADER = "x-semprec-tenant-id";
+const TENANT_ID_HEADER = "x-alldots-tenant-id";
 
 /** The headers that attribute a speech synthesis to the agent run and the Semp message it serves. */
-const AGENT_RUN_ID_HEADER = "x-semprec-agent-run-id";
-const SEMP_MESSAGE_ID_HEADER = "x-semprec-semp-message-id";
+const AGENT_RUN_ID_HEADER = "x-alldots-agent-run-id";
+const SEMP_MESSAGE_ID_HEADER = "x-alldots-semp-message-id";
 
-/** The budget for the whole round trip to `semprec-ai-gateway`. */
+/** The budget for the whole round trip to `alldots-ai-gateway`. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
 /** The gateway caps its own request bodies at 1 MiB (`completeHandler.ts`), so a larger response is refused rather than buffered. */
 const MAX_RESPONSE_BODY_BYTES = 1024 * 1024;
 
 export interface HttpAiGatewayClientConfig {
-  /** The port `semprec-ai-gateway` listens on; the client always addresses it over loopback. */
+  /** The port `alldots-ai-gateway` listens on; the client always addresses it over loopback. */
   port: number;
   /** Compared by the gateway against its own `AI_GATEWAY_INTERNAL_TOKEN`. */
   token: string;
@@ -300,9 +300,9 @@ export interface SynthesizeSpeechOptions {
   voice: string;
   /** Aborting it ends the request; the gateway aborts the provider and settles the audio produced so far. */
   signal?: AbortSignal;
-  /** The agent run whose turn is spoken (`x-semprec-agent-run-id`); omit when the speech serves no run. */
+  /** The agent run whose turn is spoken (`x-alldots-agent-run-id`); omit when the speech serves no run. */
   agentRunId?: string;
-  /** The Semp assistant message that is spoken (`x-semprec-semp-message-id`); omit when the speech serves none. */
+  /** The Semp assistant message that is spoken (`x-alldots-semp-message-id`); omit when the speech serves none. */
   sempMessageId?: string;
 }
 

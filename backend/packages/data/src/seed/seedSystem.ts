@@ -1,6 +1,6 @@
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import type { Pool, PoolClient } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -162,10 +162,10 @@ async function seedSystemInTransaction(
   );
   const projectsDb = tenDatabases.projects;
 
-  const semprecProject = await itemsStore.insertItem(client, {
+  const alldotsProject = await itemsStore.insertItem(client, {
     databaseId: projectsDb.id,
     properties: {
-      name: "Semprec",
+      name: "Alldots",
       systemActive: true,
       agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[SYSTEM_SETTINGS_MODULE_ID],
     },
@@ -177,7 +177,7 @@ async function seedSystemInTransaction(
     name: "System settings",
     system: true,
     ownerModuleId: SYSTEM_SETTINGS_MODULE_ID,
-    ownerProjectItemId: semprecProject.id,
+    ownerProjectItemId: alldotsProject.id,
   });
   await propertiesStore.createProperty(client, {
     databaseId: settingsDb.id,
@@ -232,7 +232,7 @@ async function seedSystemInTransaction(
   // Daily manifest <-> text/owner_process drift check for the supervisor's project. Needs settingsDb:
   // next_fire_at reads the system timezone.
   await createHeartbeat(client, {
-    projectItemId: semprecProject.id,
+    projectItemId: alldotsProject.id,
     name: "Manifest drift check",
     rule: { kind: "dailyTime", at: "03:00" },
     actionId: DRIFT_CHECK_ACTION_ID,
@@ -241,7 +241,7 @@ async function seedSystemInTransaction(
   // Live mechanical drift check: catches manual DB edits made after startup, which load-time validation
   // cannot see. Offset five minutes from the check above.
   await createHeartbeat(client, {
-    projectItemId: semprecProject.id,
+    projectItemId: alldotsProject.id,
     name: "Module registry drift check",
     rule: { kind: "dailyTime", at: "03:05" },
     actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
@@ -282,7 +282,7 @@ async function seedSystemInTransaction(
     throw new Error("Files.events property not found after seedTenDatabasesInTransaction");
   }
   await createHeartbeat(client, {
-    projectItemId: semprecProject.id,
+    projectItemId: alldotsProject.id,
     name: "Files transcription trigger",
     rule: { kind: "onItemEvent", databaseId: tenDatabases.files.id, event: "create" },
     actionId: FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -294,27 +294,27 @@ async function seedSystemInTransaction(
   });
   // Daily: puts every failed Transcriptions row back into the pipeline as a fresh batch.
   await createHeartbeat(client, {
-    projectItemId: semprecProject.id,
+    projectItemId: alldotsProject.id,
     ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
     actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
     actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
   });
   // Midnight: moves unfinished one-off tasks to the new day.
   await createHeartbeat(client, {
-    projectItemId: semprecProject.id,
+    projectItemId: alldotsProject.id,
     ...TASKS_DAY_ROLLOVER_HEARTBEAT,
     actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
     actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
   });
   // Sunday evening: asks the assistant to tidy the Journal.
-  await ensureJournalWeeklyCleanupHeartbeat(client, semprecProject.id);
+  await ensureJournalWeeklyCleanupHeartbeat(client, alldotsProject.id);
 
-  // Needs Journal, Transcripts, Threads and the Semprec project item.
+  // Needs Journal, Transcripts, Threads and the Alldots project item.
   await seedInboxPipelineInTransaction(
     client,
     tenDatabases.journal.id,
     tenDatabases.transcripts.id,
-    semprecProject.id,
+    alldotsProject.id,
     computedKeyRegistry,
     viewTypeRegistry,
   );

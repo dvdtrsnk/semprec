@@ -1,4 +1,4 @@
-import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "@alldots/shared";
 import { assertKnownValue } from "../dbRowValidation.js";
 import type { SempReplyStep, SempReplyStepParams, SempReplyStepStatus, SempReplyStepText } from "./sempReplySteps.js";
 import { sempUuid } from "./sempReplyToolCalls.js";

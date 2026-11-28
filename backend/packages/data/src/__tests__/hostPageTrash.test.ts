@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg, { type Pool, type PoolClient } from "pg";
 import type * as Y from "yjs";
-import { moveBlocks, readPageBlocks } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { moveBlocks, readPageBlocks } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";
@@ -62,7 +62,7 @@ registerItemRestoreHook(async ({ item, rootItemId, writerKind, agentRunId, actin
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(runtime);
 });
 beforeEach(async () => {

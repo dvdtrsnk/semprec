@@ -3,8 +3,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import * as relationStore from "../../chokePoint/relationsStore.js";
 import "../../domainWriteHooks.js";
 import {
@@ -206,7 +206,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
   /** Runs `work` on a runtime-role pool, which row-level security applies to, in tenant zero unless `scoped` is off. */
   async function asRuntime<T>(work: (runtime: Pool) => Promise<T>, scoped = true): Promise<T> {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

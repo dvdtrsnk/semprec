@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { withTransaction } from "../db/pool.js";
@@ -56,7 +56,7 @@ const LOCK_NOT_AVAILABLE = { code: "55P03" };
 describe("ensureMailAccountSyncStateOfLiveMailbox (sp-1272c2b9)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

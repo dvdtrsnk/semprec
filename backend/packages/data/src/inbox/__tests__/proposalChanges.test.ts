@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -520,7 +520,7 @@ describe("describeUpdateSteps (issue #2028)", () => {
     let dataPool: Pool;
 
     beforeAll(async () => {
-      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     });
 
     afterAll(async () => {

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
@@ -88,7 +88,7 @@ const nextOccurrenceId = async (seriesId: string, previousId: string): Promise<s
 describe("carrying Tasks fields and relations to the next recurring instance (issue #1673)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { readCalendarTimeline } from "../../calendar/timelineRead.js";
 import { CALENDAR_TIMELINE_SOURCES } from "../../calendar/timelineSources.js";
@@ -273,7 +273,7 @@ function observed(pool: Pool): { pool: Pool; statements: string[] } {
 describe("journal day events and birthdays (issues #1721, #2015)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("verify journal day events role", () =>
       dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

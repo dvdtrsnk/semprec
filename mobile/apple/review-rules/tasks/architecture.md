@@ -14,12 +14,12 @@ Check for architecture and ownership violations:
 5. A `Project.swift` dependency or an import that makes a feature depend on
    another feature, the app or `SharedSDK`, or a core module depend on a
    feature — `ARCH-DEPENDENCY`, high.
-6. A project-owned target that does not use `SemprecProject.destinations` and
-   `SemprecProject.deploymentTargets`, a minimum version or architecture set
+6. A project-owned target that does not use `AlldotsProject.destinations` and
+   `AlldotsProject.deploymentTargets`, a minimum version or architecture set
    outside `Tuist/ProjectDescriptionHelpers/`, or a package linked to a target
    that does not use it — `ARCH-DEPENDENCY`, medium: every target must build
    for the same destinations, minimums and arm64 slices as the Kotlin
-   framework. The one exception is the XCUITest bundle `SemprecUITests`,
+   framework. The one exception is the XCUITest bundle `AlldotsUITests`,
    which builds for `[.iPhone, .iPad]` with `.iOS(ProjectConfiguration.iosMinimum)`
    because macOS XCUITest needs the Accessibility permission; another target
    with its own destinations, or that bundle with other destinations or a

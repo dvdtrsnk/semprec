@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createAgentRun, finishAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { insertAgentRunEvent, listSempTurnEvents } from "../../agentRuns/agentRunEventsStore.js";
 import { handleAgentRunEventsRetentionTask } from "../../agentRuns/agentRunEventsRetention.js";
@@ -55,7 +55,7 @@ describe("the typed step summary of a Semp reply (issue #1860)", () => {
   beforeAll(async () => {
     const admin = getTestPool();
     await resetDatabase(admin);
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

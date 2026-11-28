@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
@@ -53,7 +53,7 @@ import {
   type CatalogResolver,
   type ManifestLocale,
 } from "../manifest/catalogResolution.js";
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { UUID_RE } from "../docs/pageOwnerDatabase.js";
 import { NotFoundError, ValidationError } from "../errors.js";

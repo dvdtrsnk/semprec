@@ -255,12 +255,12 @@ describe("lossless canonical inline content", () => {
 
   it.each([false, true])("preserves an actual Y.Text page link with ids=%s and either page policy", (withIds) => {
     const doc = new Y.Doc();
-    const text: TextRun[] = [{ insert: " [Title] ", attributes: { bold: true, link: { href: "semprec://page/p1" } } }];
+    const text: TextRun[] = [{ insert: " [Title] ", attributes: { bold: true, link: { href: "alldots://page/p1" } } }];
     writeBlock(doc, { id: "source", type: "text", text });
     const blocks = readPageBlocks(doc);
     expect(blocks[0]?.text).toEqual(text);
     const markdown = serializeBlocks(blocks, { withIds });
-    expect(markdown).toContain("(<semprec://page/p1>)");
+    expect(markdown).toContain("(<alldots://page/p1>)");
     for (const allowPage of [false, true]) {
       const parsed = parseMarkdown(markdown, { allowPage });
       expect(parsed[0]).toMatchObject({ type: "text", text });
@@ -274,9 +274,9 @@ describe("lossless canonical inline content", () => {
       ["https://\nleading", "https://&#xa;leading"],
       ["https://a\nb", "https://a&#xa;b"],
       ["https://trailing\n", "https://trailing&#xa;"],
-      ["semprec://page/a\n\nb", "semprec://page/a&#xa;&#xa;b"],
-      ["semprec://page/&#xa;", "semprec://page/\\&#xa;"],
-      ["semprec://page/\\&#xa;\n<end>", "semprec://page/\\\\\\&#xa;&#xa;\\<end\\>"],
+      ["alldots://page/a\n\nb", "alldots://page/a&#xa;&#xa;b"],
+      ["alldots://page/&#xa;", "alldots://page/\\&#xa;"],
+      ["alldots://page/\\&#xa;\n<end>", "alldots://page/\\\\\\&#xa;&#xa;\\<end\\>"],
       ["https://a/(x)&#xA;&#x0a;&#10;", "https://a/(x)&#xA;&#x0a;&#10;"],
     ] as const;
     for (const [href, encoded] of cases) {
@@ -328,10 +328,10 @@ describe("lossless canonical inline content", () => {
       expect(serializeBlocks(parsed, { withIds, resolvePageTitle: resolver })).toBe(markdown);
       expect(() => parseMarkdown(markdown, { allowPage: false })).toThrow(BlockInputError);
     }
-    expect(serializeBlocks([{ id: "x", type: "page", indent: 0, pageId: "p1" }])).toBe("[](semprec://page/p1)");
-    expect(parseMarkdown("[](semprec://page/\\u005Cu0041)")[0]?.pageId).toBe("\\u0041");
-    expect(parseMarkdown("[](semprec://page/\\u00e9)")[0]?.pageId).toBe("\\u00e9");
-    expect(parseMarkdown("[](semprec://page/%20)")[0]?.pageId).toBe("%20");
+    expect(serializeBlocks([{ id: "x", type: "page", indent: 0, pageId: "p1" }])).toBe("[](alldots://page/p1)");
+    expect(parseMarkdown("[](alldots://page/\\u005Cu0041)")[0]?.pageId).toBe("\\u0041");
+    expect(parseMarkdown("[](alldots://page/\\u00e9)")[0]?.pageId).toBe("\\u00e9");
+    expect(parseMarkdown("[](alldots://page/%20)")[0]?.pageId).toBe("%20");
   });
 
   it.each([false, true])("keeps resolver captions on a single page line with ids=%s", (withIds) => {
@@ -352,17 +352,17 @@ describe("lossless canonical inline content", () => {
 
   it("keeps page links inline in preserved unknown types and alongside other text", () => {
     const text: TextRun[] = [
-      { insert: "Page", attributes: { link: { href: "semprec://page/p1" } } },
+      { insert: "Page", attributes: { link: { href: "alldots://page/p1" } } },
       { insert: " and " },
       { insert: "web", attributes: { link: { href: "https://example.com" } } },
     ];
     const source = [{ id: "x", type: "future-kind", indent: 0, text }];
     const markdown = serializeBlocks(source, { withIds: true });
-    expect(markdown).toContain("[Page](<semprec://page/p1>) and [web](https://example.com)");
+    expect(markdown).toContain("[Page](<alldots://page/p1>) and [web](https://example.com)");
     expect(parseMarkdown(markdown, { allowPage: false })[0]).toMatchObject({ type: "future-kind", text });
     expect(serializeBlocks(parseMarkdown(markdown), { withIds: true })).toBe(markdown);
-    expect(parseMarkdown("[Title](semprec://page/p1)")[0]).toMatchObject({ type: "page", pageId: "p1" });
-    expect(() => parseMarkdown("[Title](semprec://page/p1)", { allowPage: false })).toThrow(BlockInputError);
+    expect(parseMarkdown("[Title](alldots://page/p1)")[0]).toMatchObject({ type: "page", pageId: "p1" });
+    expect(() => parseMarkdown("[Title](alldots://page/p1)", { allowPage: false })).toThrow(BlockInputError);
   });
 
   it.each([
@@ -411,7 +411,7 @@ describe("markdown behaviour", () => {
   const text = (insert: string): TextRun[] => [{ insert }];
 
   it("parses a page link line when pages are allowed by default", () => {
-    expect(parseMarkdown("[T](semprec://page/p1)")).toMatchObject([{ type: "page", pageId: "p1" }]);
+    expect(parseMarkdown("[T](alldots://page/p1)")).toMatchObject([{ type: "page", pageId: "p1" }]);
   });
 
   it("writes an empty page title when no resolver is given", () => {
@@ -425,7 +425,7 @@ describe("markdown behaviour", () => {
       pageId: "p1",
       synthetic: false,
     };
-    expect(serializeBlocks([block])).toBe("[](semprec://page/p1)");
+    expect(serializeBlocks([block])).toBe("[](alldots://page/p1)");
   });
 
   it("separates blocks with a blank line except between adjacent list items", () => {
@@ -440,7 +440,7 @@ describe("markdown behaviour", () => {
 
   it("keeps ids from comments, never repeats one and skips used generated ids", () => {
     const parsed = parseMarkdown(
-      "<!-- semprec:block id=b1 type=text indent=0 -->\none\n\n<!-- semprec:block id=b1 type=text indent=0 -->\ntwo\n\nthree",
+      "<!-- alldots:block id=b1 type=text indent=0 -->\none\n\n<!-- alldots:block id=b1 type=text indent=0 -->\ntwo\n\nthree",
     );
     expect(parsed.map((block) => block.id)).toEqual(["b1", "b2", "b3"]);
   });
@@ -452,13 +452,13 @@ describe("markdown behaviour", () => {
   });
 
   it("ignores a type key in a comment that is not a plain key", () => {
-    expect(parseMarkdown("<!-- semprec:block id=a type=a/b indent=0 -->\nhi")).toMatchObject([
+    expect(parseMarkdown("<!-- alldots:block id=a type=a/b indent=0 -->\nhi")).toMatchObject([
       { id: "a", type: "text" },
     ]);
   });
 
   it("does not let a comment change the type of a marker line", () => {
-    expect(parseMarkdown("<!-- semprec:block id=a type=callout indent=0 -->\n## Title")).toMatchObject([
+    expect(parseMarkdown("<!-- alldots:block id=a type=callout indent=0 -->\n## Title")).toMatchObject([
       { type: "h2" },
     ]);
   });
@@ -482,7 +482,7 @@ describe("markdown behaviour", () => {
     expect(withoutIds).toBe("x");
     expect(parseMarkdown(withoutIds)[0]?.id).toBe("b1");
     const duplicates = parseMarkdown(
-      "<!-- semprec:block id=a type=text indent=0 -->\nx\n\n<!-- semprec:block id=\\u0061 type=text indent=0 -->\ny",
+      "<!-- alldots:block id=a type=text indent=0 -->\nx\n\n<!-- alldots:block id=\\u0061 type=text indent=0 -->\ny",
     );
     expect(duplicates.map((block) => block.id)).toEqual(["a", "b1"]);
   });
@@ -501,7 +501,7 @@ describe("markdown behaviour", () => {
     const empty = serializeBlocks([{ id: "a", type: "", indent: 0, text: [] }]);
     expect(parseMarkdown(empty)).toMatchObject([{ id: "a", type: "", text: [] }]);
     expect(serializeBlocks(parseMarkdown(empty))).toBe(empty);
-    expect(parseMarkdown("<!-- semprec:block id=a type=we\\u0020ird indent=0 -->\n## Title")[0]?.type).toBe("h2");
+    expect(parseMarkdown("<!-- alldots:block id=a type=we\\u0020ird indent=0 -->\n## Title")[0]?.type).toBe("h2");
   });
 
   it("round-trips text that looks like a marker or markup", () => {
@@ -517,37 +517,37 @@ describe("collectItemLinks", () => {
   const OTHER = "aaaaaaaa-5a47-4d0b-9c61-7e2a1b9d4f11";
 
   it("returns distinct well-formed ids in order of first appearance, lower-cased", () => {
-    const md = `[A](semprec://items/${OTHER})\n\n[B](semprec://items/${ID.toUpperCase()}) and [C](semprec://items/${ID})\n\n[D](semprec://items/${OTHER})`;
+    const md = `[A](alldots://items/${OTHER})\n\n[B](alldots://items/${ID.toUpperCase()}) and [C](alldots://items/${ID})\n\n[D](alldots://items/${OTHER})`;
     expect(collectItemLinks(parseMarkdown(md))).toEqual({ ids: [OTHER, ID], malformed: false });
   });
 
   it("flags a malformed item id and ignores other links", () => {
-    const md = "[A](semprec://items/not-a-uuid) [B](https://example.com) [C](semprec://page/p-1)";
+    const md = "[A](alldots://items/not-a-uuid) [B](https://example.com) [C](alldots://page/p-1)";
     expect(collectItemLinks(parseMarkdown(md))).toEqual({ ids: [], malformed: true });
     expect(collectItemLinks(parseMarkdown("[B](https://example.com)"))).toEqual({ ids: [], malformed: false });
   });
 
   it("does not change the parsed blocks: the link stays plain content", () => {
-    const blocks = parseMarkdown(`[Standup](semprec://items/${ID})`);
+    const blocks = parseMarkdown(`[Standup](alldots://items/${ID})`);
     expect(blocks).toMatchObject([
-      { type: "text", text: [{ insert: "Standup", attributes: { link: { href: `semprec://items/${ID}` } } }] },
+      { type: "text", text: [{ insert: "Standup", attributes: { link: { href: `alldots://items/${ID}` } } }] },
     ]);
   });
 });
 
 describe("stripMarkdown", () => {
   it("reduces markers, emphasis, links and breaks to plain text", () => {
-    const md = "## Title\n\n- **bold** and [a link](https://e.com)<br>next\n- [x] `code`\n\n[Page](semprec://page/p1)";
+    const md = "## Title\n\n- **bold** and [a link](https://e.com)<br>next\n- [x] `code`\n\n[Page](alldots://page/p1)";
     expect(stripMarkdown(md, 100)).toBe("Title bold and a link next code Page");
   });
 
   it("retains escaped page-link labels without changing the page model", () => {
-    const md = "[Roadmap \\[draft\\]](semprec://page/p1)";
+    const md = "[Roadmap \\[draft\\]](alldots://page/p1)";
     expect(stripMarkdown(md, 100)).toBe("Roadmap [draft]");
     expect(parseMarkdown(md)).toMatchObject([{ type: "page", pageId: "p1" }]);
     expect(parseMarkdown(md)[0]).not.toHaveProperty("text");
-    expect(stripMarkdown("[](semprec://page/p1)", 100)).toBe("");
-    expect(stripMarkdown("[Page](semprec://page/p1)\r\nnext", 100)).toBe("Page next");
+    expect(stripMarkdown("[](alldots://page/p1)", 100)).toBe("");
+    expect(stripMarkdown("[Page](alldots://page/p1)\r\nnext", 100)).toBe("Page next");
   });
 
   it("truncates to maxChars code points", () => {
@@ -618,7 +618,7 @@ describe("strike, underline, color, highlight and toggles", () => {
   it("round-trips the new marks in a toggle block and a heading", () => {
     const text: TextRun[] = [{ insert: "x", attributes: { strike: true, underline: true, highlight: "gray" } }];
     expect(expectRoundTrip(text, "toggle")).toBe(
-      '<!-- semprec:block id=x type=toggle indent=0 -->\n<mark data-color="gray"><u>~~x~~</u></mark>',
+      '<!-- alldots:block id=x type=toggle indent=0 -->\n<mark data-color="gray"><u>~~x~~</u></mark>',
     );
     expect(expectRoundTrip(text, "h2")).toBe('## <mark data-color="gray"><u>~~x~~</u></mark>');
   });
@@ -629,23 +629,23 @@ describe("strike, underline, color, highlight and toggles", () => {
       { id: "t", type: "text", indent: 0, toggle: true, text: [{ insert: "T" }] },
       { id: "q", type: "quote", indent: 0, toggle: true, text: [{ insert: "Q" }] },
     ];
-    expect(serializeBlocks(blocks)).toBe("<!-- semprec:block id=h type=h1 indent=0 toggle=true -->\n# H\n\nT\n\n> Q");
+    expect(serializeBlocks(blocks)).toBe("<!-- alldots:block id=h type=h1 indent=0 toggle=true -->\n# H\n\nT\n\n> Q");
     expect(serializeBlocks(blocks, { withIds: true })).toBe(
       [
-        "<!-- semprec:block id=h type=h1 indent=0 toggle=true -->",
+        "<!-- alldots:block id=h type=h1 indent=0 toggle=true -->",
         "# H",
         "",
-        "<!-- semprec:block id=t type=text indent=0 -->",
+        "<!-- alldots:block id=t type=text indent=0 -->",
         "T",
         "",
-        "<!-- semprec:block id=q type=quote indent=0 -->",
+        "<!-- alldots:block id=q type=quote indent=0 -->",
         "> Q",
       ].join("\n"),
     );
   });
 
   it("reads a toggle heading's flag from the comment even when the line sets a different heading level", () => {
-    expect(parseMarkdown("<!-- semprec:block id=h type=h1 indent=0 toggle=true -->\n### Three")).toEqual([
+    expect(parseMarkdown("<!-- alldots:block id=h type=h1 indent=0 toggle=true -->\n### Three")).toEqual([
       { id: "h", type: "h3", indent: 0, toggle: true, text: [{ insert: "Three" }] },
     ]);
   });
@@ -653,7 +653,7 @@ describe("strike, underline, color, highlight and toggles", () => {
   it("strips the new marks and keeps toggle text in plain text", () => {
     expect(
       stripMarkdown(
-        '<!-- semprec:block id=t type=toggle indent=0 -->\n~~a~~ <u>b</u> <span data-color="red">c</span> <mark data-color="blue">d</mark> \\~',
+        '<!-- alldots:block id=t type=toggle indent=0 -->\n~~a~~ <u>b</u> <span data-color="red">c</span> <mark data-color="blue">d</mark> \\~',
         100,
       ),
     ).toBe("a b c d ~");
@@ -677,13 +677,13 @@ describe("page link captions", () => {
     const markdown = serializeBlocks(blocks, {
       resolvePageTitle: (_pageId, block) => (block.text ?? []).map((run) => run.insert).join(""),
     });
-    expect(markdown).toBe("[First caption](semprec://page/p1)\n\n[Second caption](semprec://page/p1)");
+    expect(markdown).toBe("[First caption](alldots://page/p1)\n\n[Second caption](alldots://page/p1)");
   });
 
   it("keeps a one-argument resolver working", () => {
     const blocks = [{ id: "a", type: "page", indent: 0, pageId: "p1" }];
     expect(serializeBlocks(blocks, { resolvePageTitle: (pageId) => `Page ${pageId}` })).toBe(
-      "[Page p1](semprec://page/p1)",
+      "[Page p1](alldots://page/p1)",
     );
   });
 });

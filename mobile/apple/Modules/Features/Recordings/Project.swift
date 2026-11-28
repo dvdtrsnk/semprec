@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "RecordingsFeature",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "RecordingsFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
@@ -14,7 +14,7 @@ let project = Project(
             ],
             resources: ["Resources/**"]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "RecordingsFeatureTests",
             for: "RecordingsFeature",
             dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")]

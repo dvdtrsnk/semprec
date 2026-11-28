@@ -1,7 +1,7 @@
 // Approval snapshot of an agent's `page.convertToBlock`; computed at call time and again at execution, and the two
 // must agree.
 import type { PoolClient } from "pg";
-import type { PageConvertToBlockInput } from "@semprec/shared";
+import type { PageConvertToBlockInput } from "@alldots/shared";
 import { buildResourceSnapshot, type DestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
 import { planPageConvertToBlock } from "./pageOperations.js";
 

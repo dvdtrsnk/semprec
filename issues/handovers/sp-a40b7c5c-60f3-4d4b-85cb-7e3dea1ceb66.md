@@ -27,7 +27,7 @@ Implementation commits `6577964ad`, `845e76b55` and `450cc6747` on `feat/interne
 - The alert buttons have the identifiers `calendar.delete.confirm` and `calendar.delete.cancel`.
 - AXe finding: the reported defect did not reproduce. I tested on an iPhone 18 Pro simulator with a temporary harness (not committed) that showed `CalendarScreen` over preview data, both with the old behaviour (menu kept) and the new one (menu closed). In both cases AXe's `describe-ui` listed the alert as a `Sheet` with its title, message and the `Cancel` and `Delete` buttons, because the alert is a standard alert in the app's own process.
 - SwiftUI did not reliably pass `.accessibilityIdentifier` on alert buttons to the accessibility tree. The identifiers appeared in one run and not in the later ones. Automation should find the buttons by role and label inside the alert (`app.alerts.buttons`) when the identifier is missing.
-- No XCUITest was added: `SemprecUITests` covers only the session gate and has no signed-in or scripted calendar.
+- No XCUITest was added: `AlldotsUITests` covers only the session gate and has no signed-in or scripted calendar.
 
 **Deviations from the Task wording.**
 - The DesignSystem helper is a view modifier over an `onChange` of the bound text, not a wrapping `Binding`. A binding that refuses the line break leaves its state unchanged, so SwiftUI does not redraw and the field keeps showing the break. The modifier lets the break land and then removes it.
@@ -42,7 +42,7 @@ Implementation commits `6577964ad`, `845e76b55` and `450cc6747` on `feat/interne
   - Shared PASS: JVM 1533, macOS native 1527 and iOS simulator native 1527 tests, detekt included.
   - SwiftLint, Tuist, all six Apple builds and the UI-test build PASS.
   - `test on macOS` hung for over an hour without running a test bundle, so the run was stopped. The remaining test steps were run by hand with the same commands:
-    - `Semprec` on the iOS simulator: 769/769 passed, among them CoreKitTests 311, CalendarFeatureTests 81 and DesignSystemTests 4.
-    - `SemprecUITests`: passed.
+    - `Alldots` on the iOS simulator: 769/769 passed, among them CoreKitTests 311, CalendarFeatureTests 81 and DesignSystemTests 4.
+    - `AlldotsUITests`: passed.
     - macOS: retried once by hand, and it hung again before running a test bundle, so it was stopped. macOS tests are NOT RUN.
 - On the simulator, the chooser, the choice of a calendar (the row then reads "Osobní · iCloud") and Return in a single-line title (no line break, `onReturn` called once) were driven through AXe in the temporary harness.

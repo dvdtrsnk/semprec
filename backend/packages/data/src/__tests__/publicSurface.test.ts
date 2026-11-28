@@ -1,5 +1,5 @@
 /**
- * Freezes the public surface of `@semprec/data` (runtime exports, `createChokePoint()` methods, key type
+ * Freezes the public surface of `@alldots/data` (runtime exports, `createChokePoint()` methods, key type
  * exports). Edit these lists only in a change that deliberately alters the public API.
  */
 import { afterAll, describe, expect, it } from "vitest";
@@ -188,8 +188,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "ReauthenticationFailedError",
   "RetryPendingError",
   "RuntimeRoleAssertionError",
-  "SEMPREC_TICK_ACTION_ID",
-  "SEMPREC_TICK_QUEUE_NAME",
+  "ALLDOTS_TICK_ACTION_ID",
+  "ALLDOTS_TICK_QUEUE_NAME",
   "SEMP_PROBLEMS_RETENTION_DAYS",
   "SEMP_THREAD_KINDS",
   "SEMP_TURN_CANCEL_CHANNEL",
@@ -425,7 +425,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "createSempChatThread",
   "createSempStatusRouteHandler",
   "createSempStatusSummaryRouteHandler",
-  "createSemprecTickAction",
+  "createAlldotsTickAction",
   "createSession",
   "createSetHeartbeatEnabledRouteHandler",
   "createSmtpTransporter",
@@ -964,7 +964,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "seedSystemProjectAgentGuidance",
   "seedTenDatabasesInTransaction",
   "selectActiveSteps",
-  "semprecTickActionConfigSchema",
+  "alldotsTickActionConfigSchema",
   "sendSempMessage",
   "sensitiveSourceDatabaseIdsByItem",
   "setAgentDatabaseGrantForProjectSettings",
@@ -1146,7 +1146,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
 
 let pool: Pool | undefined;
 
-describe("@semprec/data public surface", () => {
+describe("@alldots/data public surface", () => {
   afterAll(async () => {
     await pool?.end();
   });

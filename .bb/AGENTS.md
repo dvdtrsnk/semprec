@@ -1,6 +1,6 @@
-# Semprec — how work is done here
+# Alldots — how work is done here
 
-Semprec is a personal life-organization system: a Postgres data layer behind a
+Alldots is a personal life-organization system: a Postgres data layer behind a
 generic choke-point API, Yjs CRDT blocks/canvas, an IMAP inbox pipeline, and an
 agent runtime. `backend/` is a pnpm workspace (`packages/`, `services/`),
 `web/` is React + TypeScript on Vite, and `mobile/` holds the native apps
@@ -116,7 +116,7 @@ errors (`error-handling`) follow.
    or compatibility branch for data an older version wrote; every database is
    recreated from the baseline. Production rules arrive with the owner's first
    production deployment (`docs/architecture/migrations-and-seeding.md`).
-4. Every AI/provider call goes through `semprec-ai-gateway`.
+4. Every AI/provider call goes through `alldots-ai-gateway`.
 5. Canonical stored keys are English camelCase (view types kebab-case); labels
    resolve through i18n and are never hardcoded.
 6. Nothing crossing a boundary stays `any` or an unchecked `as` — type it or
@@ -163,14 +163,14 @@ one:
   `mobile/android/app/src/androidTest/` (`connectedDebugAndroidTest`, on an
   emulator you reserved).
 - Swift XCTest bundles (`CoreKitTests`, `HomeFeatureTests`,
-  `SettingsFeatureTests`, `SemprecTests`, each from its target's `Tests/`), all
-  hosted in the app and run by the `Semprec` scheme on macOS and on a reserved
+  `SettingsFeatureTests`, `AlldotsTests`, each from its target's `Tests/`), all
+  hosted in the app and run by the `Alldots` scheme on macOS and on a reserved
   iOS simulator. `CoreKitTests` drive the real Kotlin ViewModels and check
   every mapping branch of the bridges with Kotlin values; the feature tests
-  use `ScriptedScreenModel`; `SemprecTests` show the real `AppScene` in a
+  use `ScriptedScreenModel`; `AlldotsTests` show the real `AppScene` in a
   window and drive its NavigatorUI stacks.
-- The XCUITest bundle `SemprecUITests` (`mobile/apple/Projects/App/UITests/`),
-  run by its own `SemprecUITests` scheme on a reserved iOS simulator only,
+- The XCUITest bundle `AlldotsUITests` (`mobile/apple/Projects/App/UITests/`),
+  run by its own `AlldotsUITests` scheme on a reserved iOS simulator only,
   walks the app's flows by the same identifiers as Android's `SmokeFlowTest`.
 
 Write the test list from the issue's Acceptance criteria and the behaviors a

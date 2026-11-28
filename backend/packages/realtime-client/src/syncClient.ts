@@ -1,4 +1,4 @@
-import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
+import type { AgentRunEventRow, NotificationRow } from "@alldots/data";
 import {
   buildBinaryFrame,
   decodeDocId,
@@ -7,7 +7,7 @@ import {
   type AgentDeltaChunk,
   type InboundFrame,
   type OutboundFrame,
-} from "@semprec/realtime";
+} from "@alldots/realtime";
 import type { Doc as YDoc } from "yjs";
 import { nextReconnectDelayMs } from "./backoff.js";
 import { createDocSession, type DocSession } from "./docSession.js";
@@ -75,7 +75,7 @@ function toBuffer(data: Buffer | ArrayBuffer | Buffer[]): Buffer {
 
 /**
  * The `WS /api/sync` client: reconnects after a drop with exponential backoff and jitter, then runs
- * each stream's own recovery path (no universal cursor). Typed against `@semprec/realtime`'s
+ * each stream's own recovery path (no universal cursor). Typed against `@alldots/realtime`'s
  * protocol so wire-format changes fail to compile.
  */
 export function createSyncClient(options: SyncClientOptions): SyncClient {

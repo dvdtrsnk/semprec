@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/e2e",
+  "name": "@alldots/e2e",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/data": "workspace:*",
-    "@semprec/module-registry": "workspace:*",
-    "@semprec/queue": "workspace:*",
+    "@alldots/data": "workspace:*",
+    "@alldots/module-registry": "workspace:*",
+    "@alldots/queue": "workspace:*",
     "pg": "^8.23.0"
   },
   "devDependencies": {

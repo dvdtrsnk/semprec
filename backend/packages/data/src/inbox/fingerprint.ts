@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { canonicalizeJson, compareByCodePoint } from "@semprec/shared";
+import { canonicalizeJson, compareByCodePoint } from "@alldots/shared";
 
 /**
  * Processing proposals' `fingerprint` has two shapes by `kind`: Inbox sources store the `v2:` string computed here;

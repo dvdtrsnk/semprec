@@ -2,7 +2,7 @@ import CoreKit
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 final class SceneLifetimeTests: XCTestCase {
 

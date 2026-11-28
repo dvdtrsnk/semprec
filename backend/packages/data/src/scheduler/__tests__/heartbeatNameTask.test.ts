@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -50,7 +50,7 @@ async function reload(id: string) {
 describe("updateHeartbeatName / updateHeartbeatTask (issue #1435)", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   beforeEach(async () => {

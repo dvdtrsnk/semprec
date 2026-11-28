@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createUser } from "../auth/usersStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { reviseProposalWithClient } from "../inbox/proposalActions.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
@@ -40,7 +40,7 @@ describe("Semp reference turn reads", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -320,7 +320,7 @@ describe("Semp reference turn reads", () => {
           text: "",
         }),
       );
-      const tick = createSemprecTickAction(runtime, async () => {
+      const tick = createAlldotsTickAction(runtime, async () => {
         throw new Error("Unexpected model computation");
       });
       await tick(

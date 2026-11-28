@@ -1,8 +1,8 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
 import { deleteRelationWithClient, updateRelationWithClient } from "../chokePoint/relationOps.js";
@@ -22,7 +22,7 @@ import { createCoreTaskList } from "../worker.js";
 
 // The link rule `fileProjectsFromEvents` and the release of a file's company link when its attachment is
 // removed (`blobs/eventAttachmentLinkRelease.ts`). Calls run through the choke point on the runtime role
-// `semprec_data`; the administrator pool only reads the job queue and runs marked fixture SQL.
+// `alldots_data`; the administrator pool only reads the job queue and runs marked fixture SQL.
 
 const RULE = "fileProjectsFromEvents";
 const COMPANIES_RULE = "fileCompaniesFromProjects";
@@ -208,10 +208,10 @@ async function insertEdgeWithoutHooks(file: string, event: string): Promise<void
 describe("the fileProjectsFromEvents link rule and the release of a removed attachment (issue #1756)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
-    holderPool = await createRuntimeRolePool(admin, "semprec_data");
-    propagationPool = await createRuntimeRolePool(admin, "semprec_data");
-    edgeWriterPool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
+    holderPool = await createRuntimeRolePool(admin, "alldots_data");
+    propagationPool = await createRuntimeRolePool(admin, "alldots_data");
+    edgeWriterPool = await createRuntimeRolePool(admin, "alldots_data");
     // The backends of the concurrent parties are told apart by their `application_name`.
     holderPool.options.application_name = "attachment:holder";
     propagationPool.options.application_name = "attachment:propagation";

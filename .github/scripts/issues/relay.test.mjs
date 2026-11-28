@@ -10,9 +10,9 @@ import { repositoryIssueRead } from "./relay.mjs";
 const revision = "a".repeat(40);
 const body = "**Blocked by:** none\n**Model tier:** low\n\n## Context\nModel tier rationale: One existing mechanism.\n\n## Task\nDeliver the mechanism.\n\n## Touches\n- example.txt\n\n## Scope\n### In scope\nThe mechanism.\n### Out of scope\nOther work.\n\n## Acceptance criteria\nThe mechanism returns the expected result.\n";
 async function fixture(t, authority = "repository") {
-  const root = await mkdtemp(join(tmpdir(), "semprec-relay-reader-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "alldots-relay-reader-")); t.after(() => rm(root, { recursive: true, force: true }));
   for (const path of ["items", "handovers", "migration"]) await mkdir(join(root, "issues", path), { recursive: true });
-  await writeFile(join(root, "issues/migration/state.json"), JSON.stringify({ schemaVersion: 1, repository: "dvdtrsnk/semprec", authority }));
+  await writeFile(join(root, "issues/migration/state.json"), JSON.stringify({ schemaVersion: 1, repository: "dvdtrsnk/alldots", authority }));
   const issue = queueIssue(approveIssue(createRecord({ title: "Implement mechanism", body }), "maintainer"));
   const path = join(root, `issues/items/${issue.metadata.id}.md`); await writeFile(path, serializeRecord(issue));
   return { root, issue, path };

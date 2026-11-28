@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
-import { withTraceContext } from "@semprec/shared";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@alldots/queue";
+import { withTraceContext } from "@alldots/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
 import {
   createAgentRun,
@@ -15,7 +15,7 @@ import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTickThreadStore.js";
 import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
-import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
+import { ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
 import { ValidationError } from "../errors.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
@@ -54,9 +54,9 @@ export function createActionRegistry(): ActionRegistry {
 /** Jobs sharing a queue name never run concurrently; enqueue appends `:<tenantId>` in a tenant scope. */
 export type ActionQueueAffinity = Map<string, string>;
 
-/** Routes `semprec.tick` to `semprec-tick` so two ticks for one Inbox item cannot both create a proposal card. */
+/** Routes `alldots.tick` to `alldots-tick` so two ticks for one Inbox item cannot both create a proposal card. */
 export function createActionQueueAffinity(): ActionQueueAffinity {
-  return new Map([[SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME]]);
+  return new Map([[ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME]]);
 }
 
 export type RunAgentFn = (input: {

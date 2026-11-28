@@ -29,7 +29,7 @@ async function itemCount(): Promise<number> {
 describe("runSeed (issue #644, per tenant since #1005)", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    pool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    pool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   });
 
   beforeEach(async () => {

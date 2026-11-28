@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { getTenantZeroId, getTestPool, resetDatabase, tenantForNextTestUser } from "../testSupport/testDb.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { createUser } from "../auth/usersStore.js";
@@ -852,7 +852,7 @@ describe("auth actions (issue #140)", () => {
     let runtime: Pool;
 
     beforeEach(async () => {
-      runtime ??= await createRuntimeRolePool(pool, "semprec_data");
+      runtime ??= await createRuntimeRolePool(pool, "alldots_data");
     });
 
     afterEach(() => {
@@ -1066,7 +1066,7 @@ describe("auth actions (issue #140)", () => {
           const { rows } = await client.query<{ singleKeyFree: boolean; installationKeyFree: boolean }>(
             `SELECT pg_try_advisory_xact_lock(hashtext($2)) AS "singleKeyFree",
                     pg_try_advisory_xact_lock($1::int4, hashtext($2)) AS "installationKeyFree"`,
-            [SESSION_DEVICE_LOCK_CLASS, `semprec_device:${user.id}:${deviceId}`],
+            [SESSION_DEVICE_LOCK_CLASS, `alldots_device:${user.id}:${deviceId}`],
           );
           return rows[0];
         });
@@ -1093,7 +1093,7 @@ describe("auth actions (issue #140)", () => {
         // `FOR UPDATE`, which waits here for the first login. The key has this installation's hash, as the
         // membership key would for a deviceId chosen to collide with it.
         mutation = withTransaction(pool, async (client) => {
-          await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`semprec_device:${user.id}:${deviceId}`]);
+          await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`alldots_device:${user.id}:${deviceId}`]);
           await client.query<{ id: string }>("SELECT id FROM users WHERE id = $1 FOR UPDATE", [user.id]);
         });
         await expectWaitingBackends(2);

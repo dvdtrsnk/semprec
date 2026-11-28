@@ -294,7 +294,7 @@ private extension ProfileScreen {
                     state: ProfileState(
                         phase: .content,
                         email: "david.tresnak@example.cz",
-                        serverUrl: "https://semprec.example.cz",
+                        serverUrl: "https://alldots.example.cz",
                         locale: "cs",
                         locales: ["cs", "en"],
                         figures: ProfileFigures(

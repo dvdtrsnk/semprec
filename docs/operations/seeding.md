@@ -2,10 +2,10 @@
 
 Issue #644, per tenant since #1005. `backend/packages/data/dist/db/runSeedCli.js` (source
 `src/db/runSeedCli.ts`, body in `src/db/runSeed.ts`) creates, for every tenant, the records every
-other part of Semprec assumes exist:
+other part of Alldots assumes exist:
 
 - the "System settings" singleton database and its settings row;
-- the Projects database with the Semprec project row;
+- the Projects database with the Alldots project row;
 - the ten hardcoded databases, the Email, Library, Inbox, MCP, Calendar, Recipes and Sleep module
   databases, their views and their heartbeats;
 - then the default Inbox item types.
@@ -27,10 +27,10 @@ It prints one line per tenant:
 
 It never prints the connection string.
 
-## Runs as `semprec_data`
+## Runs as `alldots_data`
 
-The CLI connects with `SEMPREC_MIGRATE_DATABASE_URL` (the table owner) but opens its pool with
-`createPool(url, { role: "semprec_data" })`, so every connection runs as `semprec_data` and
+The CLI connects with `ALLDOTS_MIGRATE_DATABASE_URL` (the table owner) but opens its pool with
+`createPool(url, { role: "alldots_data" })`, so every connection runs as `alldots_data` and
 row-level security applies. `provisionTenant` refuses to run when RLS is not active for its role.
 See [the rules](../architecture/migrations-and-seeding.md#deploy-time-tenant-work).
 
@@ -46,7 +46,7 @@ list yet, so a repeated run adds none.
 ## When it runs
 
 `deploy/deploy.sh` runs it on every deploy, right after the migrations CLI and under the same
-`SEMPREC_MIGRATE_DATABASE_URL`, before the release is activated. A seed failure fails the deploy
+`ALLDOTS_MIGRATE_DATABASE_URL`, before the release is activated. A seed failure fails the deploy
 with `seed failed` and leaves `current` and the services untouched (see
 [`deploy/README.md`](../../deploy/README.md)).
 

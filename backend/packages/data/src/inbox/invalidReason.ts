@@ -1,4 +1,4 @@
-import { resolveCatalogLabel } from "@semprec/module-registry";
+import { resolveCatalogLabel } from "@alldots/module-registry";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { getInboxCatalogs } from "./inboxCatalogs.js";
 import type { ItemRow } from "../types.js";

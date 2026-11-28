@@ -1,4 +1,4 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import type { Pool, PoolClient } from "pg";
 import {
   ApprovalRequiredError,
@@ -52,7 +52,7 @@ import {
   type PageConvertCheck,
   type PageReplaceCheck,
   type PageRestoreCheck,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   GENERIC_OPERATION_BINDINGS,
   GENERIC_OPERATION_NAMES,
@@ -66,7 +66,7 @@ import {
   type OutputByOperation,
   type ValidationIssueLike,
   validationIssueField,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createGenericApplicationService, toActor } from "./genericApplicationService.js";
 
 /** Operations whose approval snapshots and transactional replay are supported. */

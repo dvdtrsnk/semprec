@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5466933526",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/96#issuecomment-5466933526",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/96",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5466933526",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/96#issuecomment-5466933526",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/96",
     "id": 5466933526,
     "node_id": "IC_kwDOUFuQ4c8AAAABRdrJFg",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5466933526/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5466933526/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -70,8 +70,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -89,9 +89,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5466973303",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/96#issuecomment-5466973303",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/96",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5466973303",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/96#issuecomment-5466973303",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/96",
     "id": 5466973303,
     "node_id": "IC_kwDOUFuQ4c8AAAABRdtkdw",
     "user": {
@@ -117,11 +117,11 @@
     },
     "created_at": "2026-08-30T05:42:27Z",
     "updated_at": "2026-08-30T05:42:27Z",
-    "body": "PIPELINE HALTED: this issue still carries one of `agent:implementing agent:reviewing-and-fixing agent:blocked agent:failed`, most likely from a crashed or blocked run. The dispatcher will not pick up any work for this project until this is resolved (remove the label to retry, or finish/close manually). Log dir on VPS: `/home/semprec-agent/logs/semprec`.",
+    "body": "PIPELINE HALTED: this issue still carries one of `agent:implementing agent:reviewing-and-fixing agent:blocked agent:failed`, most likely from a crashed or blocked run. The dispatcher will not pick up any work for this project until this is resolved (remove the label to retry, or finish/close manually). Log dir on VPS: `/home/alldots-agent/logs/alldots`.",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5466973303/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5466973303/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -159,8 +159,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -178,9 +178,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5550925408",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/96#issuecomment-5550925408",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/96",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5550925408",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/96#issuecomment-5550925408",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/96",
     "id": 5550925408,
     "node_id": "IC_kwDOUFuQ4c8AAAABStxmYA",
     "user": {
@@ -210,7 +210,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5550925408/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5550925408/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -266,9 +266,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5551085531",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/96#issuecomment-5551085531",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/96",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5551085531",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/96#issuecomment-5551085531",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/96",
     "id": 5551085531,
     "node_id": "IC_kwDOUFuQ4c8AAAABSt7X2w",
     "user": {
@@ -298,7 +298,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5551085531/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5551085531/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -38,7 +38,7 @@ describe("the stored steps in the Semp thread message read (issue #1887)", () =>
   beforeAll(async () => {
     const admin = getTestPool();
     await resetDatabase(admin);
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     const tenant = await createTestTenant(admin);
     // A run needs the tenant's user as its actor.
     userId = (

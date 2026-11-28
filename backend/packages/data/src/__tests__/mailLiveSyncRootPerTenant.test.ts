@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { currentTenantScope, runInTenant, type TenantScope } from "@semprec/shared";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { currentTenantScope, runInTenant, type TenantScope } from "@alldots/shared";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -97,7 +97,7 @@ describe("mail live-sync root across tenants (issue #990)", () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
     await seedSystem(pool);
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterEach(async () => {
@@ -262,7 +262,7 @@ describe("process heartbeat ticks (issue #990)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    dataPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterEach(async () => {
@@ -272,7 +272,7 @@ describe("process heartbeat ticks (issue #990)", () => {
   });
 
   it("writes its row on every tick with no ambient scope, in strict mode, without onError", async () => {
-    vi.stubEnv("SEMPREC_TENANT_SCOPE", "strict");
+    vi.stubEnv("ALLDOTS_TENANT_SCOPE", "strict");
     const onError = vi.fn();
     const handle = startProcessHeartbeat(
       dataPool!,

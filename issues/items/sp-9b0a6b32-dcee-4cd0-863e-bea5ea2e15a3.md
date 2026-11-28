@@ -58,7 +58,7 @@ consumers go first and the seed last.
 - backend/packages/data/src/views/, manifest/collectionMetadata.ts, chokePoint/ (related routes, value links), derived/, mail/, sleep/sleepRouteHandlers.ts, calendar/duplicateCalendarItem.ts, domainWriteHooks.ts, index.ts
 - backend/packages/data/src/seed/systemDatabasesModuleManifest.ts (areaFilter declarations only)
 - backend/packages/shared/src/genericOperations/rows.ts, backend/packages/queue/src/index.ts (comment)
-- backend/services/semprec-api/src/schemaHandler.ts and tests; the tests of the touched data paths
+- backend/services/alldots-api/src/schemaHandler.ts and tests; the tests of the touched data paths
 
 ## Scope
 

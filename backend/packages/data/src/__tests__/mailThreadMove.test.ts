@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
@@ -43,8 +43,8 @@ type MoveKind = "archive" | "trash";
 describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-move-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-move-"));
   });
 
   beforeEach(async () => {
@@ -192,7 +192,7 @@ describe("POST /api/mail/threads/:threadId/archive and /trash (issue gh-1917)", 
           "SELECT properties->>'providerId' AS provider_id, properties->>'name' AS name FROM items WHERE tenant_id = app_tenant_default() AND id = $1",
           [edge?.folderId],
         );
-        expect(rows[0]?.provider_id).toBe("semprec:archive");
+        expect(rows[0]?.provider_id).toBe("alldots:archive");
       });
     });
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -79,7 +79,7 @@ describe("monthly AI usage (gh-1462)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -698,8 +698,8 @@ describe("AI usage call snapshot", () => {
   beforeAll(async () => {
     admin = getTestPool();
     try {
-      readerPool = await createRuntimeRolePool(admin, "semprec_data");
-      writerPool = await createRuntimeRolePool(admin, "semprec_data");
+      readerPool = await createRuntimeRolePool(admin, "alldots_data");
+      writerPool = await createRuntimeRolePool(admin, "alldots_data");
     } catch (error) {
       setupCleanupAttempted = true;
       const outcomes = await Promise.allSettled([readerPool?.end(), admin.end()]);

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, type GenericOperationName } from "@alldots/shared";
 import type { AgentRunEventKind, AgentRunEventRow } from "../agentRuns/agentRunEventsStore.js";
 import type { ApprovalRequestStateView } from "../mcp/approvalRequestsStore.js";
 import {

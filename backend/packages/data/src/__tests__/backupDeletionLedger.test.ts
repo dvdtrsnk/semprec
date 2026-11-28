@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { beginTenantDeletion } from "../tenancy/deleteAccount.js";
@@ -25,11 +25,11 @@ let directory: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);
-  directory = await mkdtemp(join(tmpdir(), "semprec-ledger-validator-"));
+  directory = await mkdtemp(join(tmpdir(), "alldots-ledger-validator-"));
 });
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
@@ -75,7 +75,7 @@ describe("PostgreSQL 16 dump and later replay ledger", () => {
     source.on("error", (error) => {
       cleanup.push(error);
     });
-    const sourceRuntime = createPool(fixture.adminUrl, { role: "semprec_data" });
+    const sourceRuntime = createPool(fixture.adminUrl, { role: "alldots_data" });
     let restored: Pool | undefined;
     let restoredRuntime: Pool | undefined;
     let restoredCreated = false;
@@ -124,7 +124,7 @@ describe("PostgreSQL 16 dump and later replay ledger", () => {
       restored.on("error", (error) => {
         cleanup.push(error);
       });
-      restoredRuntime = createPool(url.toString(), { role: "semprec_data" });
+      restoredRuntime = createPool(url.toString(), { role: "alldots_data" });
       const before = await restored.query<{ tenant: boolean; tombstone: boolean }>(
         "SELECT EXISTS(SELECT 1 FROM tenants WHERE id=$1) AS tenant, EXISTS(SELECT 1 FROM tenant_deletions WHERE tenant_id=$1) AS tombstone",
         [later],

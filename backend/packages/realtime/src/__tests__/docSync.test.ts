@@ -11,15 +11,15 @@ import {
   withTransaction,
   type ChokePoint,
   type DocStore,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createDocSyncRegistry, type DocSyncRegistry } from "../docSync.js";
 import { appendClientUpdateId, decodeDocId, parseBinaryFrame } from "../protocolV1.js";
 
@@ -328,7 +328,7 @@ describe("createDocSyncRegistry tenant isolation (issue #1026)", () => {
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
     // RLS applies only to a runtime role, so the registry under test reads through one.
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     registry = createDocSyncRegistry(runtimePool);
   });
 
@@ -541,7 +541,7 @@ describe("createDocSyncRegistry doc:ack (issue #1362)", () => {
     await resetDatabase(pool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
-    runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     registry = createDocSyncRegistry(runtimePool);
     docId = await runInTenant(tenantA, async () => {
       const db = await createChokePoint(runtimePool).createDatabase({ name: "Pages" });

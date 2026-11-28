@@ -76,7 +76,7 @@ enum CalendarPreviewData {
             id: "faktura", kind: .task, title: "Odeslat fakturu", color: "#007AFF", date: "2026-10-16", allDay: false,
             startMinutes: 14 * 60, endMinutes: 15 * 60 + 30, hasEnd: true
         ),
-        event("fokus", "Fokus: Semprec iOS", color: "#FF9500", date: "2026-10-16", minutes: 15 * 60...16 * 60 + 30),
+        event("fokus", "Fokus: Alldots iOS", color: "#FF9500", date: "2026-10-16", minutes: 15 * 60...16 * 60 + 30),
         CalendarItem(
             id: "najem", kind: .task, title: "Zaplatit nájem", color: "#007AFF", date: "2026-10-16", allDay: true
         )

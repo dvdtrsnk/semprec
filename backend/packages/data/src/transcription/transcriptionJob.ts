@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@alldots/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
 /** The sole process allowed to write Transcriptions' system-owned fields. */
@@ -15,7 +15,7 @@ export function transcriptionCreateJobKey(fileItemId: string): string {
   return `transcription-create:${fileItemId}`;
 }
 
-const TRANSCRIPTION_SOURCE_LINK_PREFIX = "semprec://items/";
+const TRANSCRIPTION_SOURCE_LINK_PREFIX = "alldots://items/";
 
 /** The Files item it was transcribed from, which is also its job's key. */
 export function transcriptionSourceLink(fileItemId: string): string {

@@ -43,9 +43,9 @@ Implement these exact snapshots in order with their required skills and tests. B
 
 Model tier rationale: A new invalidation scope added to an existing thin-message realtime mechanism, with the one non-trivial part being that writes from the agents process must reach the API's sockets.
 
-Realtime in `backend/packages/realtime` uses thin messages through `semprec_events` (`pgNotifyPublisher.ts`): outbound frames `invalidate` for `item` and `schema`, `notification`, `agent:event` and `agent:delta`. The app has no way to learn that a Semp thread changed (a new message, a reply changing state, a title change, a tick run) except by polling. Live reply text already flows through `agent:watch {runId, afterEventId}`; only the thread-level change signal is missing.
+Realtime in `backend/packages/realtime` uses thin messages through `alldots_events` (`pgNotifyPublisher.ts`): outbound frames `invalidate` for `item` and `schema`, `notification`, `agent:event` and `agent:delta`. The app has no way to learn that a Semp thread changed (a new message, a reply changing state, a title change, a tick run) except by polling. Live reply text already flows through `agent:watch {runId, afterEventId}`; only the thread-level change signal is missing.
 
-#1367 added the tables. #1383 makes realtime messages publishable from `semprec-agents`, where the turn runner and heartbeat runs write thread rows. This issue adds the `sempThread` invalidation scope and its publishing hook; the code paths that write messages call it from their own issues.
+#1367 added the tables. #1383 makes realtime messages publishable from `alldots-agents`, where the turn runner and heartbeat runs write thread rows. This issue adds the `sempThread` invalidation scope and its publishing hook; the code paths that write messages call it from their own issues.
 
 Client-side phases of a reply are derived from existing events (queued or turn start = thinking, tool_use name = i18n description, first text delta = writing); no new server event is needed.
 
@@ -59,8 +59,8 @@ Load `state-writes`, `io-hardening`, `canonical-keys` and `testing`.
 
 1. In `backend/packages/realtime/src/protocolV1.ts` add the message `{ type: 'invalidation', scope: 'sempThread', threadId }` to `RealtimeMessage` and the outbound frame `{ type: 'invalidate', scope: 'sempThread', threadId }` to `OutboundFrame`. Update `pgNotifyPublisher.ts` (publish and parse) and `syncServer.ts` fan-out so only sockets of the message's tenant receive it. Follow the accepted tenant-scoped fan-out ADR: PostgreSQL derives the envelope tenant from publisher scope, with no explicit publisher tenant override; keep the existing session-revocation exception.
 2. Update `backend/packages/realtime-client` (`serverFrame.ts` and its exports) to parse and expose the new frame.
-3. Add a data-layer hook in `backend/packages/data/src/realtimeHook.ts` (a `publishSempThreadInvalidation(client, tenantId, threadId)` shape) that publishes after commit through the existing after-commit mechanism (`runAfterCommit`), usable from both `semprec-api` and `semprec-agents` hooks.
-4. Tests: a socket of tenant A receives the frame, a socket of tenant B does not; the frame is not published when the transaction rolls back; a hook call in a `semprec-agents` style write reaches an API socket through `semprec_events`; the client parses the frame; malformed frames are ignored.
+3. Add a data-layer hook in `backend/packages/data/src/realtimeHook.ts` (a `publishSempThreadInvalidation(client, tenantId, threadId)` shape) that publishes after commit through the existing after-commit mechanism (`runAfterCommit`), usable from both `alldots-api` and `alldots-agents` hooks.
+4. Tests: a socket of tenant A receives the frame, a socket of tenant B does not; the frame is not published when the transaction rolls back; a hook call in a `alldots-agents` style write reaches an API socket through `alldots_events`; the client parses the frame; malformed frames are ignored.
 
 #### Touches
 
@@ -72,8 +72,8 @@ Load `state-writes`, `io-hardening`, `canonical-keys` and `testing`.
 - backend/packages/realtime-client/src/serverFrame.ts
 - backend/packages/realtime-client/src/index.ts (export line, if any)
 - tests beside each of the above
-- backend/services/semprec-api/src/__tests__/tenantIsolationRealtime.test.ts (only actual API sempThread hook/publisher delivery, runtime-role tenant isolation and rollback evidence)
-- backend/services/semprec-agents/src/__tests__/realtimeWiring.test.ts (only replace the existing schema-sentinel explicit publisher tenant argument with runInTenant for that tenant, preserving its assertions and lifecycle)
+- backend/services/alldots-api/src/__tests__/tenantIsolationRealtime.test.ts (only actual API sempThread hook/publisher delivery, runtime-role tenant isolation and rollback evidence)
+- backend/services/alldots-agents/src/__tests__/realtimeWiring.test.ts (only replace the existing schema-sentinel explicit publisher tenant argument with runInTenant for that tenant, preserving its assertions and lifecycle)
 
 #### Scope
 
@@ -212,7 +212,7 @@ Load `state-writes`, `error-handling`, `io-hardening` and `testing`.
 
 Model tier rationale: One known mechanism (a nullable-column migration on the identity plane plus validated login input and a user-agent matcher) across the store, action and handler seams with existing login fixtures, and no change to who can authenticate.
 
-The app is going to show the signed-in devices of an account ("this iPhone", "Safari on macOS", "iPad Air") and let the user sign individual devices out. Today a session cannot say which device it belongs to. `POST /api/auth/login` (`backend/services/semprec-api/src/authHandler.ts`, `login` in `backend/packages/data/src/auth/authActions.ts`) stores only `platform` (`web|ios|macos`) and the `User-Agent` header in the `sessions` table (`0025_auth_schema.sql`). `SessionRow`, `SessionDbRow`, `mapRow` and `createSession` live in `backend/packages/data/src/auth/sessionsStore.ts` and `backend/packages/data/src/auth/types.ts`. `sessions` is a global identity table: only `semprec_data` has DML on it (`0057_identity_tables_api_role_only.sql`), so a new column needs no new grant.
+The app is going to show the signed-in devices of an account ("this iPhone", "Safari on macOS", "iPad Air") and let the user sign individual devices out. Today a session cannot say which device it belongs to. `POST /api/auth/login` (`backend/services/alldots-api/src/authHandler.ts`, `login` in `backend/packages/data/src/auth/authActions.ts`) stores only `platform` (`web|ios|macos`) and the `User-Agent` header in the `sessions` table (`0025_auth_schema.sql`). `SessionRow`, `SessionDbRow`, `mapRow` and `createSession` live in `backend/packages/data/src/auth/sessionsStore.ts` and `backend/packages/data/src/auth/types.ts`. `sessions` is a global identity table: only `alldots_data` has DML on it (`0057_identity_tables_api_role_only.sql`), so a new column needs no new grant.
 
 This issue only records the device identity at login. Sliding expiry (#1512), listing (#1583), bulk revocation (#1650) and replacing a previous session of the same installation (#1687) build on the columns added here.
 
@@ -244,8 +244,8 @@ Load `db-migrations`, `error-handling`, `io-hardening` and `testing`.
 - backend/packages/data/src/__tests__/migrationCompatibility.test.ts (only actual staged session-device upgrade, populated legacy preservation and new constraints)
 - backend/packages/data/src/__tests__/authSchema.test.ts
 - backend/packages/data/src/__tests__/authActions.test.ts
-- backend/services/semprec-api/src/authHandler.ts (login body parsing)
-- backend/services/semprec-api/src/__tests__/authHandler.test.ts
+- backend/services/alldots-api/src/authHandler.ts (login body parsing)
+- backend/services/alldots-api/src/__tests__/authHandler.test.ts
 
 #### Scope
 
@@ -296,10 +296,10 @@ Load `state-writes` and `testing`.
 
 - backend/packages/data/src/auth/authActions.ts (TTL constants, initial `expiresAt` in `login`)
 - backend/packages/data/src/auth/sessionsStore.ts (`touchSessionLastSeen`)
-- backend/services/semprec-api/src/authHandler.ts (cookie `Max-Age`)
+- backend/services/alldots-api/src/authHandler.ts (cookie `Max-Age`)
 - backend/packages/data/src/__tests__/publicSurface.test.ts (only if an exported constant is added or removed)
 - backend/packages/data/src/__tests__/authActions.test.ts
-- backend/services/semprec-api/src/__tests__/authHandler.test.ts
+- backend/services/alldots-api/src/__tests__/authHandler.test.ts
 
 #### Scope
 
@@ -328,7 +328,7 @@ Load `state-writes` and `testing`.
 
 Model tier rationale: One protocol change in a single handler with a small, well-specified request/response contract, but it sits on an authenticated endpoint where the unauthenticated and tenant behavior must stay unchanged.
 
-The MCP endpoint `POST /mcp` (`backend/services/semprec-api/src/mcp/mcpHandler.ts`) serves only `tools/list` and `tools/call`. Any other JSON-RPC method, including `initialize`, answers `-32601 Unknown method`, so a standard MCP client cannot complete its handshake, and every non-POST request answers 404. The handler authenticates first (a run credential or a human session/Bearer, then the tenant scope); that order stays.
+The MCP endpoint `POST /mcp` (`backend/services/alldots-api/src/mcp/mcpHandler.ts`) serves only `tools/list` and `tools/call`. Any other JSON-RPC method, including `initialize`, answers `-32601 Unknown method`, so a standard MCP client cannot complete its handshake, and every non-POST request answers 404. The handler authenticates first (a run credential or a human session/Bearer, then the tenant scope); that order stays.
 
 This issue answers the handshake so standard clients can connect. #1788 builds on it by recording the client name sent in `initialize`.
 
@@ -338,16 +338,16 @@ Decision: the supported protocol versions are `2025-06-18`, `2025-03-26` and `20
 
 Load `io-hardening` and `testing`.
 
-1. Handle `initialize` in `createMcpRequestListener`, after authentication and inside the tenant scope like the other methods: result `{ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "semprec", version } }`. `params` that are missing or malformed answer `-32602` (the same shape as invalid tool arguments).
+1. Handle `initialize` in `createMcpRequestListener`, after authentication and inside the tenant scope like the other methods: result `{ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "alldots", version } }`. `params` that are missing or malformed answer `-32602` (the same shape as invalid tool arguments).
 2. A JSON-RPC notification (no `id`), such as `notifications/initialized`, answers HTTP 202 with an empty body and nothing else; this applies to any notification method.
 3. A `GET` (and any non-POST method) on `/mcp` answers 405 with `Allow: POST`. `tools/list` and `tools/call` are unchanged.
 4. `initialize` persists no domain or handshake/client data and exposes no other tenant/user data; human and run-credential responses are identical. Preserve #1512 authentication: only the caller session's normal `last_seen_at`/`expires_at` touch is allowed, with no new run-credential write.
 
 #### Touches
 
-- backend/services/semprec-api/src/mcp/mcpHandler.ts
-- backend/services/semprec-api/src/__tests__ (mcp handler tests)
-- backend/services/semprec-api/src/mcp/__tests__/mcpHandler.test.ts (existing protocol harness, including actual human-session/run-credential initialize equivalence and persistence assertions)
+- backend/services/alldots-api/src/mcp/mcpHandler.ts
+- backend/services/alldots-api/src/__tests__ (mcp handler tests)
+- backend/services/alldots-api/src/mcp/__tests__/mcpHandler.test.ts (existing protocol harness, including actual human-session/run-credential initialize equivalence and persistence assertions)
 
 #### Scope
 
@@ -364,7 +364,7 @@ Load `io-hardening` and `testing`.
 
 #### Acceptance criteria
 
-- `initialize` with a supported `protocolVersion` returns that version, `capabilities: { tools: {} }` and `serverInfo.name = "semprec"`; an unsupported version returns `2025-06-18`.
+- `initialize` with a supported `protocolVersion` returns that version, `capabilities: { tools: {} }` and `serverInfo.name = "alldots"`; an unsupported version returns `2025-06-18`.
 - `notifications/initialized` returns 202 with no body, and a following `tools/list` returns the same tools as before.
 - `GET /mcp` returns 405 with `Allow: POST`.
 - An unauthenticated `initialize` is rejected exactly as an unauthenticated `tools/list` is.
@@ -376,12 +376,12 @@ Load `io-hardening` and `testing`.
 
 Model tier rationale: The change is a decision document with no code, but it fixes the storage, addressing and lifecycle contract that nine later issues implement, so a gap here propagates into data that is hard to migrate.
 
-A page can contain subpages: a block of type `page` that is a page of its own, nested without a fixed depth (a project note holds "Release checklist", which holds "Notes for version 0.4"). Semprec has no place for such a page today. The Yjs document of an item is the only page storage (`docs`, with `docs.item_id` NOT NULL and at most one document per item, `0003_docs.sql`), so a standalone page needs an item of its own. Breadcrumbs come from `getItemPath` (`backend/packages/data/src/chokePoint/itemReads.ts`), which follows `databases.parent_item_id` and stops at the first repeated database, so it cannot walk a chain of items that live in one database. An inline database under every parent would add an items partition and a write to the shared `databases` table for each page that has a subpage, and the partition attach waits for other tenants' writes to that table (decision record `2026-10-08-items-partitions-attached-under-share-update-exclusive`). The sync socket allows at most 32 open documents per connection (`backend/packages/realtime/src/docSync.ts`). A custom module route may not be CRUD over module data (`backend/packages/module-registry/src/manifest.ts`, decision record `2026-09-11-module-manifest-custom-routes`).
+A page can contain subpages: a block of type `page` that is a page of its own, nested without a fixed depth (a project note holds "Release checklist", which holds "Notes for version 0.4"). Alldots has no place for such a page today. The Yjs document of an item is the only page storage (`docs`, with `docs.item_id` NOT NULL and at most one document per item, `0003_docs.sql`), so a standalone page needs an item of its own. Breadcrumbs come from `getItemPath` (`backend/packages/data/src/chokePoint/itemReads.ts`), which follows `databases.parent_item_id` and stops at the first repeated database, so it cannot walk a chain of items that live in one database. An inline database under every parent would add an items partition and a write to the shared `databases` table for each page that has a subpage, and the partition attach waits for other tenants' writes to that table (decision record `2026-10-08-items-partitions-attached-under-share-update-exclusive`). The sync socket allows at most 32 open documents per connection (`backend/packages/realtime/src/docSync.ts`). A custom module route may not be CRUD over module data (`backend/packages/module-registry/src/manifest.ts`, decision record `2026-09-11-module-manifest-custom-routes`).
 
 This issue records where subpages live. The page operations are implemented by #1676, #1722, #1725 and #1715; deletion, restore and orphan handling by #1723, #1763, #1855 and #1749; the delete impact preview (#1856) and the proposal options (#1959) build on the same model. It builds on the block-model decision of #1366 and the page operation family of #1394.
 
 Decisions to record (each with the rejected alternative and the trade-off):
-- Storage: one hidden system database `pages` per tenant (owner module id `pages`, declared in the docs module manifest with no overview or switcher order, so it is never shown as a collection), created on first use under an advisory lock rather than by the seed, so no tenant backfill is needed. Each subpage is one item of it, with a document of kind `page`; the page's id is the item id and its address is `semprec://page/<itemId>`.
+- Storage: one hidden system database `pages` per tenant (owner module id `pages`, declared in the docs module manifest with no overview or switcher order, so it is never shown as a collection), created on first use under an advisory lock rather than by the seed, so no tenant backfill is needed. Each subpage is one item of it, with a document of kind `page`; the page's id is the item id and its address is `alldots://page/<itemId>`.
 - Parent link: the system-owned text property `parentItemId` on the Pages item points to the host item or parent page; breadcrumbs walk that property. Rejected: a relation property (edge hooks and cardinality triggers for no gain), inline databases per parent (partition and shared-table lock per page), and a subtree of blocks inside one document (the sync socket would open the whole tree, trash and search would work inside one document, and a link would be a block id only).
 - Page block: type `page` with `pageId` (the Pages item id) and `text` holding the title as plain text without inline attributes. This amends the block-model decision, which gave `page` blocks no text: the title is the text of the block in the parent, because the editor edits it there.
 - Title source: the block text in the parent document is the source of truth. The `title` property of the Pages item is a mirror, written by `page.rename` and by a post-commit job after a parent document changes; trash, export, item reads, search and breadcrumbs read the mirror and never load the parent document.
@@ -425,7 +425,7 @@ Load `adr-conventions`. Reconcile the existing accepted ADR below; no code and n
 
 Model tier rationale: The deliverable is an authorization decision (who may grant a project access to external tools) that later code must follow literally, so a wrong or loosely worded rule is expensive; it needs care even though no code changes.
 
-The Inbox can propose connecting an MCP server and the user confirms it together with a key. The card also lets the user say which projects should use the server. Today the codebase forbids any grant write outside the project's AGENT page: `project_mcp_grants` (default `granted = false`) can be written only by `setProjectMcpGrant` in `backend/packages/data/src/mcp/mcpGrantsAdminStore.ts`, which is kept off the public surface of `@semprec/data`, and the header of `backend/packages/data/src/mcp/mcpProjectGrantsStore.ts` records that "agents, including proposal confirmation, have no write path to grants". The only human path is `PATCH /api/projects/:projectItemId/mcp-grants/:mcpToolRegistrationId` on a project's AGENT page (`backend/services/semprec-api/src/mcpAgentPageHandler.ts`), whose list (`GET /api/projects/:projectItemId/mcp-grants`) already returns each tool's `riskClass`. Grants also only become possible after a sync has registered the server's tools (#1976 runs it after the confirm). The code comments alone are not an ADR, so the stance needs to be recorded as a decision.
+The Inbox can propose connecting an MCP server and the user confirms it together with a key. The card also lets the user say which projects should use the server. Today the codebase forbids any grant write outside the project's AGENT page: `project_mcp_grants` (default `granted = false`) can be written only by `setProjectMcpGrant` in `backend/packages/data/src/mcp/mcpGrantsAdminStore.ts`, which is kept off the public surface of `@alldots/data`, and the header of `backend/packages/data/src/mcp/mcpProjectGrantsStore.ts` records that "agents, including proposal confirmation, have no write path to grants". The only human path is `PATCH /api/projects/:projectItemId/mcp-grants/:mcpToolRegistrationId` on a project's AGENT page (`backend/services/alldots-api/src/mcpAgentPageHandler.ts`), whose list (`GET /api/projects/:projectItemId/mcp-grants`) already returns each tool's `riskClass`. Grants also only become possible after a sync has registered the server's tools (#1976 runs it after the confirm). The code comments alone are not an ADR, so the stance needs to be recorded as a decision.
 
 Relevant accepted decisions to read and cite where they apply: `docs/adr/2026-09-18-restricted-mcp-run-credentials-for-approval-gated-calls.md`, `docs/adr/2026-09-18-non-destructive-generic-operations-bypass-agent-approval.md`, `docs/adr/2026-10-16-stdio-mcp-confined-to-admin-tenants.md`, `docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md` and `docs/adr/2026-09-10-single-writer-ownership-model.md`.
 
@@ -560,9 +560,9 @@ Load `state-writes`, `error-handling` and `testing`.
 - backend/packages/data/src/domainWriteHooks.ts (hook registration line)
 - backend/packages/data/src/journal/journalWriteHook.ts (new)
 - backend/packages/data/src/__tests__/ (journal hook tests; fixture fixes)
-- backend/services/semprec-api/src/__tests__/itemsHandler.test.ts (Journal create case)
+- backend/services/alldots-api/src/__tests__/itemsHandler.test.ts (Journal create case)
 - backend/packages/agent-runtime/src/__tests__/genericOperationAgentTools.test.ts (only the required real agent Journal item.create refusal)
-- backend/services/semprec-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only the required authenticated MCP Journal item.create refusal)
+- backend/services/alldots-api/src/__tests__/mcpRunCredentialTenancy.test.ts (only the required authenticated MCP Journal item.create refusal)
 
 #### Scope
 

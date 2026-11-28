@@ -9,9 +9,9 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { createGenericOperationGateway } from "@semprec/application";
-import { CAPABILITY_IDS, runInTenant, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { createGenericOperationGateway } from "@alldots/application";
+import { CAPABILITY_IDS, runInTenant, type AuthenticatedActor } from "@alldots/shared";
 import {
   allowLoopbackOutboundForTests,
   startHttpContractServer,
@@ -19,7 +19,7 @@ import {
   startStdioContractServer,
   type ContractServerTool,
   type McpContractServer,
-} from "@semprec/data/testSupport/mcpContractServers";
+} from "@alldots/data/testSupport/mcpContractServers";
 import {
   ApprovalRequiredError,
   CORE_AGENT_RUN_ACTION_ID,
@@ -41,7 +41,7 @@ import {
   type CollectionMetadataResolver,
   type McpConnectionConfig,
   type ViewTypeRegistry,
-} from "@semprec/data";
+} from "@alldots/data";
 import { createApprovalGatedMcpInvokeTool, createMcpInvokeTool, resolveMcpInvocation } from "../mcpInvokeTool.js";
 
 const SEARCH_TOOL: ContractServerTool = {
@@ -128,15 +128,15 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec" });
+      const result = await invoke({ query: "alldots" });
 
       expect(result).toEqual({
         error: false,
-        result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
+        result: JSON.stringify({ name: "search_web", arguments: { query: "alldots" } }),
       });
       expect(contractServer.getLastToolCall()).toEqual({
         name: "search_web",
-        arguments: { query: "semprec" },
+        arguments: { query: "alldots" },
         meta: null,
       });
     });
@@ -147,7 +147,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { server, registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec", __forceError: true });
+      const result = await invoke({ query: "alldots", __forceError: true });
 
       expect(result).toEqual({
         error: true,
@@ -162,7 +162,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec" }, AbortSignal.abort());
+      const result = await invoke({ query: "alldots" }, AbortSignal.abort());
 
       expect(result).toEqual({ error: true, result: "MCP tool call was cancelled before it completed" });
       expect(contractServer.getLastToolCall()).toBeNull();
@@ -175,7 +175,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     const { projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
     const invoke = createMcpInvokeTool(pool, projectItemId, randomUUID());
-    const result = await invoke({ query: "semprec" });
+    const result = await invoke({ query: "alldots" });
 
     expect(result.error).toBe(true);
     expect(contractServer.getHandshakeCount()).toBe(0);
@@ -190,7 +190,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     );
 
     const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
-    const result = await invoke({ query: "semprec" });
+    const result = await invoke({ query: "alldots" });
 
     expect(result.error).toBe(true);
     expect(contractServer.getHandshakeCount()).toBe(0);
@@ -203,7 +203,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     const spoofedProjectItemId = randomUUID();
 
     const invoke = createMcpInvokeTool(pool, spoofedProjectItemId, registration.id);
-    const result = await invoke({ query: "semprec" });
+    const result = await invoke({ query: "alldots" });
 
     expect(result.error).toBe(true);
     expect(contractServer.getHandshakeCount()).toBe(0);
@@ -227,7 +227,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     servers.push(contractServer);
     const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
-    const resolution = await resolveMcpInvocation(pool, projectItemId, registration.id, { query: "semprec" });
+    const resolution = await resolveMcpInvocation(pool, projectItemId, registration.id, { query: "alldots" });
 
     expect(resolution.ok).toBe(true);
     if (resolution.ok) {
@@ -244,7 +244,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      expect((await invoke({ query: "test", semprecReason: reason })).error).toBe(true);
+      expect((await invoke({ query: "test", alldotsReason: reason })).error).toBe(true);
       const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
       expect(rows[0]?.count).toBe("0");
       expect(contractServer.getHandshakeCount()).toBe(0);
@@ -256,11 +256,11 @@ describe("MCP invoke adapter (issue #128)", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
       const reason = "😀".repeat(500);
-      const accepted = await invoke({ query: "test", semprecReason: reason });
+      const accepted = await invoke({ query: "test", alldotsReason: reason });
       expect(accepted.error).toBe(false);
       expect(accepted.approvalRequestId).toBeDefined();
       expect((await getApprovalRequest(pool, accepted.approvalRequestId!))?.reason).toBe(reason);
-      const rejected = await invoke({ query: "test", semprecReason: "😀".repeat(501) });
+      const rejected = await invoke({ query: "test", alldotsReason: "😀".repeat(501) });
       expect(rejected.error).toBe(true);
       const { rows } = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
       expect(rows[0]?.count).toBe("1");
@@ -298,7 +298,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec" });
+      const result = await invoke({ query: "alldots" });
 
       expect(result.error).toBe(false);
       expect(contractServer.getHandshakeCount()).toBe(0);
@@ -315,7 +315,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(request!.payload).toEqual({
         mcpToolRegistrationId: registration.id,
         mcpServerItemId: server.id,
-        args: { query: "semprec" },
+        args: { query: "alldots" },
       });
     });
 
@@ -327,7 +327,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
 
       const riskClassOf = async (): Promise<string> => {
-        const result = await invoke({ query: "semprec" });
+        const result = await invoke({ query: "alldots" });
         const id = result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
         return (await getApprovalRequest(pool, id))!.riskClass;
       };
@@ -339,14 +339,14 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(await riskClassOf()).toBe("outbound");
     });
 
-    it("stores semprecReason on the request and strips it from the stored args (issue #1420)", async () => {
+    it("stores alldotsReason on the request and strips it from the stored args (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { server, registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec", semprecReason: "To find your notes." });
+      const result = await invoke({ query: "alldots", alldotsReason: "To find your notes." });
 
       expect(result.error).toBe(false);
       const request = await getApprovalRequest(pool, result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!);
@@ -354,7 +354,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(request!.payload).toEqual({
         mcpToolRegistrationId: registration.id,
         mcpServerItemId: server.id,
-        args: { query: "semprec" },
+        args: { query: "alldots" },
       });
     });
 
@@ -372,9 +372,9 @@ describe("MCP invoke adapter (issue #128)", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test", threadId });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const first = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
-      const again = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
-      const without = await invoke({ query: "semprec" });
+      const first = await invoke({ query: "alldots" }, undefined, { toolCallId: "call_1" });
+      const again = await invoke({ query: "alldots" }, undefined, { toolCallId: "call_1" });
+      const without = await invoke({ query: "alldots" });
 
       expect(again.approvalRequestId).toBe(first.approvalRequestId);
       expect((await getApprovalRequest(pool, first.approvalRequestId!))!.toolCallId).toBe("call_1");
@@ -416,35 +416,35 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(JSON.stringify(request!.description)).not.toContain("secret-value");
     });
 
-    it("creates no request and returns an error for a semprecReason over 500 characters (issue #1420)", async () => {
+    it("creates no request and returns an error for a alldotsReason over 500 characters (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec", semprecReason: "x".repeat(501) });
+      const result = await invoke({ query: "alldots", alldotsReason: "x".repeat(501) });
 
       expect(result.error).toBe(true);
       const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
       expect(rows[0].count).toBe(0);
     });
 
-    it("normalizes a null semprecReason to an absent reason", async () => {
+    it("normalizes a null alldotsReason to an absent reason", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec", semprecReason: null });
+      const result = await invoke({ query: "alldots", alldotsReason: null });
       expect(result.error).toBe(false);
       const request = await getApprovalRequest(pool, result.approvalRequestId!);
       expect(request?.reason).toBeNull();
-      expect(request?.payload).toMatchObject({ args: { query: "semprec" } });
-      expect(JSON.stringify(request?.payload)).not.toContain("semprecReason");
+      expect(request?.payload).toMatchObject({ args: { query: "alldots" } });
+      expect(JSON.stringify(request?.payload)).not.toContain("alldotsReason");
     });
 
-    it("does not send semprecReason to the MCP server when the tool needs no approval (issue #1420)", async () => {
+    it("does not send alldotsReason to the MCP server when the tool needs no approval (issue #1420)", async () => {
       const contractServer = startStdioContractServer([SEARCH_TOOL]);
       servers.push(contractServer);
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
@@ -452,11 +452,11 @@ describe("MCP invoke adapter (issue #128)", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec", semprecReason: "why" });
+      const result = await invoke({ query: "alldots", alldotsReason: "why" });
 
       expect(result.error).toBe(false);
-      expect(contractServer.getLastToolCall()).toMatchObject({ name: "search_web", arguments: { query: "semprec" } });
-      expect(JSON.stringify(contractServer.getLastToolCall())).not.toContain("semprecReason");
+      expect(contractServer.getLastToolCall()).toMatchObject({ name: "search_web", arguments: { query: "alldots" } });
+      expect(JSON.stringify(contractServer.getLastToolCall())).not.toContain("alldotsReason");
     });
 
     it("continues straight through to execution when the tool does not require approval", async () => {
@@ -467,15 +467,15 @@ describe("MCP invoke adapter (issue #128)", () => {
       const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
 
       const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
-      const result = await invoke({ query: "semprec" });
+      const result = await invoke({ query: "alldots" });
 
       expect(result).toEqual({
         error: false,
-        result: JSON.stringify({ name: "search_web", arguments: { query: "semprec" } }),
+        result: JSON.stringify({ name: "search_web", arguments: { query: "alldots" } }),
       });
       expect(contractServer.getLastToolCall()).toEqual({
         name: "search_web",
-        arguments: { query: "semprec" },
+        arguments: { query: "alldots" },
         meta: null,
       });
     });
@@ -510,7 +510,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       expect(JSON.stringify(afterFirst)).not.toContain("private-argument-sentinel");
 
       // A second, independent call is a different transition and gets its own notification.
-      const second = await invoke({ query: "semprec again" });
+      const second = await invoke({ query: "alldots again" });
       const secondRequestId = second.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
       expect(secondRequestId).not.toBe(firstRequestId);
 
@@ -523,7 +523,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     });
 
     it("notifies the user of the tenant the request is created in, with a link that names the request and no user (issues #1018, #1787)", async () => {
-      const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+      const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "alldots_data"));
       try {
         const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
         const userB = await runInTenant(tenantB, () =>
@@ -574,7 +574,7 @@ describe("MCP invoke adapter (issue #128)", () => {
             run.id,
             projectItemId,
             registration.id,
-          )({ query: "semprec" });
+          )({ query: "alldots" });
           return result.result.match(/Approval request ([0-9a-f-]{36})/i)![1]!;
         });
 
@@ -637,7 +637,7 @@ describe("MCP invoke adapter (issue #128)", () => {
           projectItemId,
           registration.id,
         )({
-          query: "semprec",
+          query: "alldots",
         });
 
         expect(approvalAnnouncements).toEqual([
@@ -653,8 +653,8 @@ describe("MCP invoke adapter (issue #128)", () => {
         const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
         const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
 
-        const first = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
-        const redelivered = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
+        const first = await invoke({ query: "alldots" }, undefined, { toolCallId: "call_1" });
+        const redelivered = await invoke({ query: "alldots" }, undefined, { toolCallId: "call_1" });
 
         expect(redelivered.approvalRequestId).toBe(first.approvalRequestId);
         expect(approvalAnnouncements).toEqual([
@@ -675,8 +675,8 @@ describe("MCP invoke adapter (issue #128)", () => {
           projectItemId,
           registration.id,
         )({
-          query: "semprec",
-          semprecReason: "x".repeat(501),
+          query: "alldots",
+          alldotsReason: "x".repeat(501),
         });
 
         expect(result.error).toBe(true);
@@ -752,7 +752,7 @@ describe("MCP invoke adapter (issue #128)", () => {
             run.id,
             projectItemId,
             registration.id,
-          )({ query: "semprec" });
+          )({ query: "alldots" });
           if (mcp.approvalRequestId === undefined) throw new Error("Expected an MCP approval request");
           const mcpLink = await linkOf(mcp.approvalRequestId);
           expect(mcpLink).toBe(`${destination}${mcp.approvalRequestId}`);
@@ -798,7 +798,7 @@ describe("MCP invoke adapter (issue #128)", () => {
     });
 
     it("refuses a foreign registration like a missing one without approval side effects", async () => {
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       let failure: { error: unknown } | undefined;
       try {
         const tenantB = await createTestTenant(pool);
@@ -817,7 +817,7 @@ describe("MCP invoke adapter (issue #128)", () => {
             );
             expect(databases.rows).toHaveLength(1);
             const projects = await client.query<{ id: string }>(
-              "SELECT id FROM items WHERE properties->>'name' = 'Semprec'",
+              "SELECT id FROM items WHERE properties->>'name' = 'Alldots'",
             );
             expect(projects.rows).toHaveLength(1);
             await client.query("INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)", [
@@ -929,7 +929,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
 
       const invoke = createMcpInvokeTool(pool, projectItemId, registration.id);
-      const first = await invoke({ query: "semprec" });
+      const first = await invoke({ query: "alldots" });
       expect(first.error).toBe(false);
 
       await upsertMcpToolRegistration(pool, {
@@ -944,10 +944,10 @@ describe("MCP invoke adapter (issue #128)", () => {
       });
       const compileSpy = vi.spyOn(Ajv.prototype, "compile");
 
-      const rejected = await invoke({ query: "semprec" });
+      const rejected = await invoke({ query: "alldots" });
       expect(rejected.error).toBe(true);
 
-      const accepted = await invoke({ query: "semprec", extra: "value" });
+      const accepted = await invoke({ query: "alldots", extra: "value" });
       expect(accepted.error).toBe(false);
 
       expect(compileSpy).toHaveBeenCalledTimes(1);

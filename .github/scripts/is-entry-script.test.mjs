@@ -15,7 +15,7 @@ const scripts = [
 ];
 
 function scratch(t) {
-  const dir = mkdtempSync(join(tmpdir(), "semprec-entry-script-"));
+  const dir = mkdtempSync(join(tmpdir(), "alldots-entry-script-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

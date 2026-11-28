@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -90,7 +90,7 @@ describe("tenant_observability_checks (issue #999)", () => {
     it("writes a stalled mailbox of tenant B only under B and keeps it out of tenant zero's report", async () => {
       const tenantB = await createTestTenant(pool);
       const mailboxB = await addErroredMailbox(tenantB);
-      dataPool = await createRuntimeRolePool(pool, "semprec_data");
+      dataPool = await createRuntimeRolePool(pool, "alldots_data");
 
       await runCheck(dataPool);
 
@@ -113,7 +113,7 @@ describe("tenant_observability_checks (issue #999)", () => {
     it("does not evaluate the mailboxes of a suspended tenant", async () => {
       const tenantB = await createTestTenant(pool, { status: "suspended" });
       await addErroredMailbox(tenantB);
-      dataPool = await createRuntimeRolePool(pool, "semprec_data");
+      dataPool = await createRuntimeRolePool(pool, "alldots_data");
 
       await runCheck(dataPool);
 
@@ -135,7 +135,7 @@ describe("tenant_observability_checks (issue #999)", () => {
         `CREATE TRIGGER fail_tenant_check_insert BEFORE INSERT ON tenant_observability_checks
          FOR EACH ROW EXECUTE FUNCTION fail_tenant_check_insert()`,
       );
-      dataPool = await createRuntimeRolePool(pool, "semprec_data");
+      dataPool = await createRuntimeRolePool(pool, "alldots_data");
 
       await expect(runCheck(dataPool)).rejects.toBeInstanceOf(AggregateError);
 

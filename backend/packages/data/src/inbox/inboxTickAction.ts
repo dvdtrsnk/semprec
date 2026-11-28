@@ -15,12 +15,12 @@ import {
   buildTickEnvelope,
   type TickSnapshot,
   type ProposalComputationResult,
-  type ComputeSemprecProposalFn,
+  type ComputeAlldotsProposalFn,
 } from "./inboxTickSnapshot.js";
 export type {
   ProposalComputationInput,
   ProposalComputationResult,
-  ComputeSemprecProposalFn,
+  ComputeAlldotsProposalFn,
 } from "./inboxTickSnapshot.js";
 import { listActiveInboxTypes } from "./inboxTypesStore.js";
 import {
@@ -35,10 +35,10 @@ import { assistantSideChanged, mergeRecomputeWithManualValues } from "./tickReco
 export { aiProposalPatch, readAiProposal } from "./proposalEnvelope.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
-import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+import { alldotsTickActionConfigSchema, type AlldotsTickActionConfig } from "./proposalEnvelope.js";
 import { invalidReasonLabel } from "./invalidReason.js";
 import { referencedItemIdsOf } from "./proposalReferences.js";
-export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+export { alldotsTickActionConfigSchema, type AlldotsTickActionConfig } from "./proposalEnvelope.js";
 export { MAX_PROPOSAL_NEW_OPTIONS } from "./proposalEnvelope.js";
 import {
   assertValidEnvelopePageSections,
@@ -60,7 +60,7 @@ export {
 } from "./proposalEnvelope.js";
 import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
-import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@semprec/shared";
+import { AiGatewayFailedError, createLogger, type AiGatewayFailureReason, type Logger } from "@alldots/shared";
 import type { ActionContext, ActionHandler } from "../scheduler/actions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -71,7 +71,7 @@ import { prepareUserItemPatch, createItemWithClient, updateItemWithClient } from
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { computeInboxFingerprintV2, isFingerprintCurrent } from "./fingerprint.js";
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
-import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
+import { ALLDOTS_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { assertValidFileFromAttachmentStep } from "./fileAttachmentStep.js";
@@ -103,7 +103,7 @@ const logger: Logger = createLogger("inbox-tick");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
+export { ALLDOTS_TICK_ACTION_ID, ALLDOTS_TICK_QUEUE_NAME } from "./inboxTickKeys.js";
 
 /**
  * A soft-deleted proposal counts as none, so the tick creates instead of revising a deleted row (which would throw
@@ -113,7 +113,7 @@ export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys
  */
 async function findExistingProposal(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   sourceItemId: string,
 ): Promise<ItemRow | null> {
   const sourceInboxRelationDefinition = await getRelationDefinitionByKey(
@@ -144,7 +144,7 @@ async function findExistingProposal(
  */
 async function lockUnlockedProposal(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   snapshot: ItemRow,
 ): Promise<ItemRow | null> {
   await client.query("SAVEPOINT lock_unlocked_proposal");
@@ -321,7 +321,7 @@ export async function assertValidProposalEnvelope(
     // Grant separation enforced here, not only declared in the manifest: a user `revise` builds its envelope from raw
     // input and could otherwise name Inbox/Inbox item types as `target`, and confirm's generic create would bypass
     // their `writable: false` because nothing upstream reads the manifest.
-    if (targetDatabase.ownerModuleId && SEMPREC_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
+    if (targetDatabase.ownerModuleId && ALLDOTS_READ_ONLY_MODULE_IDS.includes(targetDatabase.ownerModuleId)) {
       throw new ValidationError(`Proposal envelope target '${envelope.target}' is not a writable target database`, {
         field: "target",
       });
@@ -402,7 +402,7 @@ export async function assertValidProposalEnvelope(
  */
 async function writeNeedsClarification(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   sourceItemId: string,
   existingProposal: ItemRow | null,
   message: string,
@@ -517,7 +517,7 @@ export function isFinalInvalid(properties: Record<string, unknown>): boolean {
  */
 async function invalidateProposalForDeletedSource(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   existingProposal: ItemRow | null,
   sourceItemId: string,
   sourceItem: ItemRow | null,
@@ -581,7 +581,7 @@ export async function storedEnvelopeStillValid(client: PoolClient, proposal: Ite
  */
 async function reopenRestoredSourceProposal(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   invalidCard: ItemRow,
   sourceItemId: string,
 ): Promise<ItemRow | null> {
@@ -632,7 +632,7 @@ async function reopenRestoredSourceProposal(
  */
 async function readTickSnapshot(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   sourceItemId: string,
 ): Promise<TickSnapshot | null> {
   const item = await itemsStore.getItemById(client, config.inboxDatabaseId, sourceItemId);
@@ -735,7 +735,7 @@ async function readTickSnapshot(
  */
 async function reviseProposal(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   existing: ItemRow,
   sourceItemId: string,
   fingerprint: string,
@@ -789,7 +789,7 @@ async function reviseProposal(
 /** The source must still exist, undeleted, with the same type edge and fingerprint; `null` after logging otherwise. */
 async function currentSourceFingerprint(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   snapshot: TickSnapshot,
 ): Promise<{ item: ItemRow; fingerprint: string } | null> {
   const item = await itemsStore.lockItemById(client, config.inboxDatabaseId, snapshot.item.id);
@@ -821,7 +821,7 @@ async function currentSourceFingerprint(
  */
 async function writeTickResult(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   snapshot: TickSnapshot,
   envelope: ProposalEnvelope | ValidationError | null,
   reason: string | null,
@@ -907,7 +907,7 @@ async function writeTickResult(
  */
 async function writeComputeFailure(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   snapshot: TickSnapshot,
   reason: AiGatewayFailureReason,
 ): Promise<void> {
@@ -958,11 +958,11 @@ async function writeComputeFailure(
  * queue attempt (unless the source changed or the card is locked); otherwise it is rethrown so the queue retries.
  * Other errors propagate unchanged.
  */
-export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemprecProposalFn): ActionHandler {
+export function createAlldotsTickAction(pool: Pool, computeProposal: ComputeAlldotsProposalFn): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
     if (!context.itemId) return;
     // Throws, surfacing as a recorded heartbeat failure, rather than silently no-op'ing on a misconfigured heartbeat.
-    const config = semprecTickActionConfigSchema.parse(actionConfig);
+    const config = alldotsTickActionConfigSchema.parse(actionConfig);
     const sourceItemId = context.itemId;
 
     const snapshot = await withTickTransaction(pool, (client) => readTickSnapshot(client, config, sourceItemId));

@@ -74,7 +74,7 @@ Load `db-migrations`, `state-writes`, `canonical-keys` and `testing`.
 - backend/packages/data/src/index.ts (barrel export if a new symbol is public)
 - backend/packages/data/src/__tests__/ (new tests for the cutover, advance and ownership)
 
-- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/alldots-api/src/__tests__/batch34Contracts.test.ts
 - backend/packages/data/src/testSupport/taskSeriesFixtures.ts
 
 - docs/adr/2026-11-07-task-series-cutover-uses-bounded-owner-backfill.md
@@ -305,9 +305,9 @@ Load `db-migrations`, `canonical-keys` and `testing`.
 - backend/packages/data/src/__tests__/ (cutover and seed tests)
 
 - backend/packages/data/src/manifest/knownActionIds.ts (journalEventLinks owner registry)
-- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
-- backend/services/semprec-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
-- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
+- backend/services/alldots-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/alldots-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
+- backend/services/alldots-api/src/__tests__/schemaHandler.test.ts
 
 #### Scope
 
@@ -334,7 +334,7 @@ Load `db-migrations`, `canonical-keys` and `testing`.
 
 Model tier rationale: One derived-value sync step hooked into an existing after-document-update job, computing a set difference of relation edges under a system owner process; the edge writes and the trigger exist, but create and delete must stay exactly in step with the text.
 
-A Journal day often refers to calendar events in its text. #1614 lets page Markdown carry an item link `[Title](semprec://items/<itemId>)` as the link attribute of a text run, and the parser writes no relation edge. #1609 adds the Journal relation `events` to Events as a system-owned property with owner process `journalEventLinks` (`JOURNAL_EVENT_LINKS_OWNER_PROCESS` in `journal/journalOwnerProcesses.ts`), so users, agents and MCP clients cannot write it directly. #1658 runs a page-text job after a document update, and #1711 adds a call for Journal pages to that job to recompute the entry's summary from its Markdown (#1608).
+A Journal day often refers to calendar events in its text. #1614 lets page Markdown carry an item link `[Title](alldots://items/<itemId>)` as the link attribute of a text run, and the parser writes no relation edge. #1609 adds the Journal relation `events` to Events as a system-owned property with owner process `journalEventLinks` (`JOURNAL_EVENT_LINKS_OWNER_PROCESS` in `journal/journalOwnerProcesses.ts`), so users, agents and MCP clients cannot write it directly. #1658 runs a page-text job after a document update, and #1711 adds a call for Journal pages to that job to recompute the entry's summary from its Markdown (#1608).
 
 Decision: the `events` relation of a Journal entry is a derived value: every link in the entry's page to an Events item adds the relation, and removing the link removes it. The text is the single source of truth; there is no other writer of the relation.
 
@@ -346,11 +346,11 @@ Batch 34 reconciliation: No page doc means no text sync; no historical backfill 
 
 Load `state-writes`, `canonical-keys` and `testing`.
 
-1. Add `syncJournalEventLinks(client, journalItemId, markdown)` in `backend/packages/data/src/journal/journalEventLinks.ts`: collect the destinations `semprec://items/<id>` of the inline links in the Markdown, keep the ids that are live (not trashed) items of the tenant's Events database, and compare that set with the entry's current `events` edges.
+1. Add `syncJournalEventLinks(client, journalItemId, markdown)` in `backend/packages/data/src/journal/journalEventLinks.ts`: collect the destinations `alldots://items/<id>` of the inline links in the Markdown, keep the ids that are live (not trashed) items of the tenant's Events database, and compare that set with the entry's current `events` edges.
 2. Create each missing edge and delete each edge whose event is no longer linked, through the choke point relation operations with the system relation context owner process `JOURNAL_EVENT_LINKS_OWNER_PROCESS`, in one transaction. When the two sets are equal, write nothing.
 3. Links to items of other databases are ignored. A link to an event that is in the trash does not count, so its edge is removed on the next sync.
 4. Call it from the after-document-update job for a Journal entry's page, next to the summary recompute of #1711, with the Markdown that job already serialises; do not serialise the page a second time.
-5. Tests: a day whose page gains `[Standup](semprec://items/<event id>)` has the `events` edge to that event after the job runs; removing the link removes the edge; two links to the same event give one edge; a link to a task creates no edge; an unchanged page writes no edge and announces nothing; a user write through the generic relation endpoint is still refused; another tenant's event ids are never linked.
+5. Tests: a day whose page gains `[Standup](alldots://items/<event id>)` has the `events` edge to that event after the job runs; removing the link removes the edge; two links to the same event give one edge; a link to a task creates no edge; an unchanged page writes no edge and announces nothing; a user write through the generic relation endpoint is still refused; another tenant's event ids are never linked.
 
 #### Touches
 
@@ -358,8 +358,8 @@ Load `state-writes`, `canonical-keys` and `testing`.
 - the after-document-update job delivered by #1658 (one extra call for Journal pages, next to the call of #1711)
 - backend/packages/data/src/journal/__tests__/ (event link sync tests)
 
-- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
-- backend/services/semprec-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
+- backend/services/alldots-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/alldots-api/src/mcp/__tests__/mcpGenericOperationsContract.test.ts
 
 #### Scope
 
@@ -581,8 +581,8 @@ Load `canonical-keys`, `db-migrations`, `error-handling` and `testing`.
 - backend/packages/data/src/__tests__/manifest.test.ts
 - backend/packages/data/src/__tests__/tenantCutoverMigrations.test.ts
 
-- backend/services/semprec-api/src/__tests__/batch34Contracts.test.ts
-- backend/services/semprec-api/src/__tests__/schemaHandler.test.ts
+- backend/services/alldots-api/src/__tests__/batch34Contracts.test.ts
+- backend/services/alldots-api/src/__tests__/schemaHandler.test.ts
 - backend/packages/data/src/__tests__/catalogResolution.unit.test.ts
 
 #### Scope

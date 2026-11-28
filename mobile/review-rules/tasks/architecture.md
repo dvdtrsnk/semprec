@@ -14,7 +14,7 @@ Gradle build:
    failure — added to presentation or data instead of a domain use case, so
    that another caller would have to make it again — `DOMAIN-SOURCE`, medium.
 4. A package that does not match its directory, or one package declared in two
-   modules — medium: each module owns its package (`cz.semprec.app.core`,
+   modules — medium: each module owns its package (`cz.alldots.app.core`,
    `.domain`, `.data`, `.presentation`, `.sdk`), so a type is found by its
    package, and detekt does not check this (`InvalidPackageDeclaration` is off
    in `config/detekt/detekt.yml`).

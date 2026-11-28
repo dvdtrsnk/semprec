@@ -23,7 +23,7 @@ resolution: {"pullRequests":[],"commit":"11aab97b1fe6cac6537e30c67c982b5c08617f9
 
 Model tier rationale: An intermittent CI failure in a tenant isolation suite needs its cause found in time-dependent heartbeat scheduling, without weakening the isolation assertion.
 
-`backend/services/semprec-api/src/__tests__/tenantIsolationJobs.test.ts:2710` ("system tasks … one run does each tenant's work in that tenant only") failed in the develop push CI after #2114. The bystander tenant's fingerprint gained one `heartbeat_occurrences` row while the system job under test ran. A heartbeat that falls due by wall-clock time can therefore write into a tenant the case treats as untouched.
+`backend/services/alldots-api/src/__tests__/tenantIsolationJobs.test.ts:2710` ("system tasks … one run does each tenant's work in that tenant only") failed in the develop push CI after #2114. The bystander tenant's fingerprint gained one `heartbeat_occurrences` row while the system job under test ran. A heartbeat that falls due by wall-clock time can therefore write into a tenant the case treats as untouched.
 
 ## Task
 
@@ -33,7 +33,7 @@ Model tier rationale: An intermittent CI failure in a tenant isolation suite nee
 
 ## Touches
 
-- backend/services/semprec-api/src/__tests__/tenantIsolationJobs.test.ts
+- backend/services/alldots-api/src/__tests__/tenantIsolationJobs.test.ts
 - heartbeat scheduling code, only if the cause lies there
 
 ## Scope

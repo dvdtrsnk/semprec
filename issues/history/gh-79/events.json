@@ -2,7 +2,7 @@
   {
     "id": 30204476381,
     "node_id": "LE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFO73Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204476381",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204476381",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -38,7 +38,7 @@
   {
     "id": 30204478085,
     "node_id": "LE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFPChQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204478085",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204478085",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -103,14 +103,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABBbTubw",
         "number": 80,
         "title": "docs: add pipeline smoke test 3 marker file",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/80",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/80",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/80",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/80",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/80.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/80.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/80",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/80",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/80.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/80.patch",
           "merged_at": "2026-08-29T08:22:09Z"
         },
         "bodySha256": "fd541385ebead9ab5b3f66321ebeff30b4ac7dad17c2c7e0250fd4e8836b3c23"
@@ -120,7 +120,7 @@
   {
     "id": 30204484552,
     "node_id": "UNLE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFPbyA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204484552",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204484552",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -156,7 +156,7 @@
   {
     "id": 30204484572,
     "node_id": "LE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFPb3A",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204484572",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204484572",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -192,7 +192,7 @@
   {
     "id": 30204504475,
     "node_id": "REFE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFQpmw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204504475",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204504475",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -216,14 +216,14 @@
     },
     "event": "referenced",
     "commit_id": "336ed217a007e29915622d386bea5ea30ea6fd73",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/336ed217a007e29915622d386bea5ea30ea6fd73",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/336ed217a007e29915622d386bea5ea30ea6fd73",
     "created_at": "2026-08-29T08:22:11Z",
     "performed_via_github_app": null
   },
   {
     "id": 30204504592,
     "node_id": "CE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFQqEA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204504592",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204504592",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -254,9 +254,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5461276559",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/79#issuecomment-5461276559",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/79",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5461276559",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/79#issuecomment-5461276559",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/79",
     "id": 5461276559,
     "node_id": "IC_kwDOUFuQ4c8AAAABRYR3jw",
     "user": {
@@ -286,7 +286,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5461276559/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5461276559/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -324,8 +324,8 @@
         "site_admin": false
       },
       "name": "dvdtrsnk-agent",
-      "description": "Autonomous agent processing approved issues in dvdtrsnk/semprec",
-      "external_url": "https://github.com/dvdtrsnk/semprec",
+      "description": "Autonomous agent processing approved issues in dvdtrsnk/alldots",
+      "external_url": "https://github.com/dvdtrsnk/alldots",
       "html_url": "https://github.com/apps/dvdtrsnk-agent",
       "created_at": "2026-08-27T18:39:22Z",
       "updated_at": "2026-08-27T19:05:39Z",
@@ -367,7 +367,7 @@
   {
     "id": 30204508119,
     "node_id": "LE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFQ31w",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204508119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204508119",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,
@@ -403,7 +403,7 @@
   {
     "id": 30204508137,
     "node_id": "UNLE_lADOUFuQ4c8AAAABOwn5aM8AAAAHCFQ36Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30204508137",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30204508137",
     "actor": {
       "login": "dvdtrsnk-agent[bot]",
       "id": 321888475,

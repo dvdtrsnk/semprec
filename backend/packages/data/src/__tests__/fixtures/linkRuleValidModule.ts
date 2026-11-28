@@ -1,4 +1,4 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 
 /** Rules over the seeded core databases: Projects.healthRecords is the inverse side of HealthRecords.projects. */
 export const manifest: ModuleManifest = {

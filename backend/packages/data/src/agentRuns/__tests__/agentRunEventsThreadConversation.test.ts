@@ -9,7 +9,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createAgentRun, finishAgentRun } from "../agentRunsStore.js";
 import { insertAgentRunEvent, listSessionAgentRunEventsFromLastCompaction } from "../agentRunEventsStore.js";
@@ -143,7 +143,7 @@ describe("thread conversation key (issue #1560)", () => {
     const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
     await createUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "unused", tenantId: tenantB });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const createThreadRun = (tenantId: string) =>
         runInTenant(tenantId, async () => {

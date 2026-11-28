@@ -4,7 +4,7 @@ import {
   MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES,
   type ProjectAgentGuidanceSectionKey,
   type ProjectAgentGuidanceSections,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { requireSingleRow } from "../db/pool.js";
 import { guidanceDriftHeartbeatStore } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { logger } from "../tenancy/logger.js";

@@ -80,7 +80,7 @@ export async function openSecret(encrypted: EncryptedSecret, key: Buffer, associ
 }
 
 function dataKeyWrapAssociatedData(tenantId: string): Uint8Array {
-  return new TextEncoder().encode(`semprec:tenant-key:v1:${tenantId}`);
+  return new TextEncoder().encode(`alldots:tenant-key:v1:${tenantId}`);
 }
 
 /**

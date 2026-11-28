@@ -4,7 +4,7 @@
 //   approval.emailSend   {mailboxName, recipientCount}   (no recipient, no subject and no body: those are argument values)
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
-import { canonicalizeJson } from "@semprec/shared";
+import { canonicalizeJson } from "@alldots/shared";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { createPendingApprovalRequestAndPublish } from "../mcp/approvalRequestRealtime.js";
 import { getApprovalRequestSourceKind } from "../mcp/approvalRequestsQueue.js";

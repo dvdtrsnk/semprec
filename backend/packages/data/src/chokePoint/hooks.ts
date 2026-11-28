@@ -4,7 +4,7 @@
 // knows every domain by name. See
 // docs/architecture/data-model-and-writes.md#write-time-registries-datachokepointhooksts.
 import type { PoolClient } from "pg";
-import type { Item } from "@semprec/shared";
+import type { Item } from "@alldots/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 import type { SystemWriterProcess, WriterIdentity, WriterKind } from "./writerKind.js";

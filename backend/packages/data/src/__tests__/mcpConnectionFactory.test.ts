@@ -4,7 +4,7 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTenantZeroUser,
@@ -154,7 +154,7 @@ describe("MCP connection factory (issue #231)", () => {
     it("records stdio invocation connection success and failed handshake in its tenant", async () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const item = await createMcpServerItem(contract.connectionConfig);
         await runInTenant(getTenantZeroId(), async () => {
@@ -250,7 +250,7 @@ describe("MCP connection factory (issue #231)", () => {
           tenantId,
           role,
         });
-        const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+        const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
         try {
           await runInTenant(tenantId, async () => {
             await seedSystem(runtimePool, createViewTypeRegistry());
@@ -312,7 +312,7 @@ describe("MCP connection factory (issue #231)", () => {
       await makeSoleTenantAdmin();
       const contract = startStdioContractServer();
       const item = await createMcpServerItem(contract.connectionConfig, "sk-stdio-secret");
-      const parentSecretName = "SEMPREC_TEST_PARENT_SECRET";
+      const parentSecretName = "ALLDOTS_TEST_PARENT_SECRET";
       const previous = process.env[parentSecretName];
       process.env[parentSecretName] = "parent-only-value";
       try {
@@ -888,7 +888,7 @@ describe("MCP connection factory (issue #231)", () => {
     ["http", startHttpContractServer],
   ])("records actual %s invocation connection outcomes in the tenant", async (_transport, startServer) => {
     const tenantId = getTenantZeroId();
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     let first: Awaited<ReturnType<typeof startServer>> | undefined;
     let firstStopped = false;
     try {
@@ -951,7 +951,7 @@ describe("MCP connection factory (issue #231)", () => {
 
   it("keeps a real failed invocation's connection state after the caller rolls back", async () => {
     const tenantId = getTenantZeroId();
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const contract = await startHttpContractServer();
       const item = await (async () => {

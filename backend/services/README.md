@@ -1,1 +1,1 @@
-Standalone processes (semprec-api, semprec-agents, semprec-transcribe, semprec-ai-gateway). Mail live-sync runs inside semprec-api.
+Standalone processes (alldots-api, alldots-agents, alldots-transcribe, alldots-ai-gateway). Mail live-sync runs inside alldots-api.

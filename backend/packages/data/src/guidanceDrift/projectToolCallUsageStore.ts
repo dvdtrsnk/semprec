@@ -7,7 +7,7 @@ import {
   parseToolEventPayload,
   type ProjectToolCallGroup,
   type ProjectToolCallUsageStore,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import type { PoolClient } from "pg";
 
 interface CandidateRow {

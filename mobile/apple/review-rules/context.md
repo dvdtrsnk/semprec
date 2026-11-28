@@ -1,18 +1,18 @@
-This is the `mobile/apple/` platform of the Semprec monorepo (the repository
+This is the `mobile/apple/` platform of the Alldots monorepo (the repository
 root, `backend/`, `web/`, `mobile/` and `mobile/android/` are separate
 platforms with their own review-rules and are reviewed independently).
-`mobile/apple/` is one SwiftUI codebase that builds the Semprec app for iOS,
+`mobile/apple/` is one SwiftUI codebase that builds the Alldots app for iOS,
 iPadOS and macOS — native macOS, not Mac Catalyst — from the same targets: one
 app, all three, not separate projects. Every target uses
-`SemprecProject.destinations` (`[.iPhone, .iPad, .mac]`) and
-`SemprecProject.deploymentTargets` (iOS and macOS minimums from
+`AlldotsProject.destinations` (`[.iPhone, .iPad, .mac]`) and
+`AlldotsProject.deploymentTargets` (iOS and macOS minimums from
 `Tuist/ProjectDescriptionHelpers/ProjectConfiguration.swift`), builds for
 arm64 only, in Swift 6 language mode with complete strict concurrency, with
 Debug and Release configurations only. The one exception is the XCUITest
-bundle `SemprecUITests`, which builds for iPhone and iPad only
+bundle `AlldotsUITests`, which builds for iPhone and iPad only
 (`.iOS(ProjectConfiguration.iosMinimum)`), because macOS XCUITest needs the
 Accessibility permission, which build machines do not grant. Tuist, pinned in `.tuist-version`,
-generates the projects and the `Semprec` workspace from `Workspace.swift`, the
+generates the projects and the `Alldots` workspace from `Workspace.swift`, the
 `Project.swift` manifests and `Tuist/ProjectDescriptionHelpers/`; the packages
 (Factory as `FactoryKit`, NavigatorUI) are pinned in `Tuist/Package.swift` and
 `Tuist/Package.resolved`. `scope.md` includes every file under `mobile/apple/`
@@ -62,7 +62,7 @@ same shared ViewModels, so the two apps are expected to behave alike
   enum, `Resources/Localizable.xcstrings` and `Tests/`. About has no shared
   ViewModel: `AboutScreen` is a view that closes itself through
   `@Environment(\.dismiss)`.
-- `Projects/App` — the `Semprec` app target: `SemprecApp` (one `WindowGroup`),
+- `Projects/App` — the `Alldots` app target: `AlldotsApp` (one `WindowGroup`),
   `AppScene` (a `TabView(selection:)` with a NavigatorUI
   `ManagedNavigationStack` per tab, the selected tab and the scene's root
   `Navigator` in its own `@State`, and the view of every `AppDestination`,
@@ -74,26 +74,26 @@ same shared ViewModels, so the two apps are expected to behave alike
   NavigatorUI stack, which remembers what it pushed to tell the stack's top),
   the routers `AppHomeRouter` and
   `AppSettingsRouter`, the Info.plist keys in `Project.swift`, and the macOS
-  App Sandbox entitlements (`Entitlements/Semprec.entitlements`, applied only
+  App Sandbox entitlements (`Entitlements/Alldots.entitlements`, applied only
   for `sdk=macosx*`). A pre-compile phase runs
   `mobile/scripts/kmp-framework --embed`.
 - `docs/auth-bridge.md` — the native-session bridge contract of issue #141,
   which no code implements yet.
 
-The unit test bundles run hosted in the app and in the `Semprec` scheme:
+The unit test bundles run hosted in the app and in the `Alldots` scheme:
 `CoreKitTests` check every mapping branch of the bridges with Kotlin values
 they build (`SharedMappingTests`) and drive the real Kotlin ViewModels through
 the bridges (`SharedScreenModelTests`), `HomeFeatureTests` and
-`SettingsFeatureTests` use scripted models, and `SemprecTests` cover the
+`SettingsFeatureTests` use scripted models, and `AlldotsTests` cover the
 routers and `NavigationContext` over a spy and a real `Navigator`
 (`NavigationTests`), the real `AppScene` in a window, where the Home router
 pushes onto the Home stack and the Settings router presents About as a sheet
 over the Settings stack (`AppSceneNavigationTests`), and that a closed scene
-releases its composition (`SceneLifetimeTests`); only `SemprecTests` links
+releases its composition (`SceneLifetimeTests`); only `AlldotsTests` links
 against the app executable (`BUNDLE_LOADER`), and it is the one test bundle
 that imports NavigatorUI. The
-XCUITest bundle `SemprecUITests` (`Projects/App/UITests/`, its own
-`SemprecUITests` scheme, iOS simulator only) launches the app and walks its
+XCUITest bundle `AlldotsUITests` (`Projects/App/UITests/`, its own
+`AlldotsUITests` scheme, iOS simulator only) launches the app and walks its
 flows by the identifiers the app and the features declare, compiling
 `AppIdentifiers.swift`, `HomeIdentifiers.swift` and `SettingsIdentifiers.swift`
 instead of importing their modules; no UI test runs on macOS. The platform
@@ -125,7 +125,7 @@ target whose policy entry allows it (`KMP-FRAMEWORK`), exactly one CoreKit
 bridge per shared screen ViewModel, also one that extends `ScreenViewModel`
 through another class, and `lease.close()` in the `deinit` of every bridge
 (`VM-BRIDGE`), `NavigatorUI` imported only by the app target and its tests
-(`SemprecTests`) and by no `*ViewModel.swift` (`NAV-OWNERSHIP`), the identity
+(`AlldotsTests`) and by no `*ViewModel.swift` (`NAV-OWNERSHIP`), the identity
 values of `ProjectConfiguration.swift` (`APPLE-IDENTITY`), a `<X>Screen.swift`
 next to every `<X>ViewModel.swift` that sits directly in a folder below a
 `Screens/` directory (`ORG-SCREEN`), and the String Catalog keys of every
@@ -141,10 +141,10 @@ version (`swiftlint_version` in `.swiftlint.yml`, 0.65.1), runs
 `kmp_framework_outside_corekit` rule, which exempts CoreKit's `Sources` and
 `Tests`), generates the workspace, builds Debug
 and Release for the iOS Simulator, an iOS device (`generic/platform=iOS`) and
-macOS, builds the iOS-only `SemprecUITests` target for the iOS Simulator
-(`build-for-testing`, no device needed), and runs the `Semprec` scheme's tests on
+macOS, builds the iOS-only `AlldotsUITests` target for the iOS Simulator
+(`build-for-testing`, no device needed), and runs the `Alldots` scheme's tests on
 macOS; only when the caller passes an iOS simulator does it run them there and
-then the `SemprecUITests` scheme, so without one the UI tests compile but do not
+then the `AlldotsUITests` scheme, so without one the UI tests compile but do not
 run. For changes under `mobile/`, CI reports the non-required `mobile-android`
 (architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
 Relay also runs `verify-mobile` after `verify-web`. These runs omit device

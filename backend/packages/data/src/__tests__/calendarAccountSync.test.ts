@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createUser } from "../auth/usersStore.js";
@@ -349,7 +349,7 @@ function sampleLongestTransaction(done: () => boolean): Promise<number> {
     while (!done()) {
       const { rows } = await admin.query<{ age: number | null }>(
         `SELECT max(extract(epoch FROM now() - xact_start))::float8 AS age FROM pg_stat_activity
-          WHERE datname = current_database() AND usename = 'semprec_data' AND xact_start IS NOT NULL`,
+          WHERE datname = current_database() AND usename = 'alldots_data' AND xact_start IS NOT NULL`,
       );
       longest = Math.max(longest, rows[0]?.age ?? 0);
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -361,7 +361,7 @@ function sampleLongestTransaction(done: () => boolean): Promise<number> {
 describe("calendar sync of internet accounts", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   afterAll(async () => {
@@ -1046,7 +1046,7 @@ describe("calendar sync of internet accounts", () => {
 
   it("a pass of 2000 Events keeps every transaction short while reads and a manual sync request go through", async () => {
     // As the API process shares its pool: the pass and the reads on six connections, two seconds per statement.
-    const shared = await createRuntimeRolePool(admin, "semprec_data", { statementTimeoutMs: 2_000, max: 6 });
+    const shared = await createRuntimeRolePool(admin, "alldots_data", { statementTimeoutMs: 2_000, max: 6 });
     try {
       const fake = bulkProvider(6, 334);
       const accountId = await createAccount({ calendarsEnabled: true });

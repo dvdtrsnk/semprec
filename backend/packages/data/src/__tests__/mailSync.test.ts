@@ -5,7 +5,7 @@ import { GraphRestClient } from "../mail/graphRestClient.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -26,7 +26,7 @@ import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
 import { installQueueSchema } from "../db/queueSchema.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
@@ -1009,7 +1009,7 @@ describe("provider_message_id uniqueness convergence", () => {
       const conflictInput = await baseInput("<conflict@x>", { providerMessageId: "guarded-provider" });
       const continuationInput = await baseInput("<continuation@x>");
       const nextInput = await baseInput("<next@x>");
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       const operationPids: Array<Promise<number>> = [];
       runtimePool.on("acquire", (client: PoolClient) => {
         operationPids.push(
@@ -1050,7 +1050,7 @@ describe("provider_message_id uniqueness convergence", () => {
         const role = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
           "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
         );
-        expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+        expect(role.rows[0]).toEqual({ name: "alldots_data", bypass: false, superuser: false });
         const holderPid = await bounded(holderStarted);
         waiter = withTransaction(runtimePool, async (client) => {
           reportWaiter(await backendPid(client));
@@ -2280,7 +2280,7 @@ describe("mail sync job error handling", () => {
     "competing-in-flight",
   ] as const)
     tenantIt(`runs the real Gmail move phase outside transactions before reconcile: ${scenario}`, async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let releaseOwner: () => void = () => {};
       let owner: Promise<void> | undefined;
       let ownerToken: string | null | undefined;
@@ -2335,7 +2335,7 @@ describe("mail sync job error handling", () => {
           const calls: string[] = [];
           const assertNoTransaction = async () => {
             const result = await pool.query<{ pid: number; xact_start: Date | null }>(
-              "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+              "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'alldots_data'",
             );
             expect(result.rows.length).toBeGreaterThan(0);
             expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
@@ -2490,7 +2490,7 @@ describe("mail sync job error handling", () => {
   for (const provider of ["graph", "imap"] as const)
     for (const scenario of ["competing-completion", "competing-in-flight", "completed-before-baseline"] as const)
       tenantIt(`protects ${provider} job observations for ${scenario}`, async () => {
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         let releaseOwner: () => void = () => {};
         let owner: Promise<void> | undefined;
         let ownerToken: string | null | undefined;
@@ -3559,7 +3559,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
     await createOwner();
     const mailboxId = await createSyncMailbox();
     const ids = await moduleIds();
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     await runWithCleanup(
       "Runtime pool cleanup failed",
       () =>
@@ -3643,7 +3643,7 @@ describe("mail_sync_error recipient in a tenant", () => {
 
   beforeEach(async () => {
     pool ??= getTestPool();
-    runtimePool ??= await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool ??= await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "alldots_data"));
     await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
@@ -4789,7 +4789,7 @@ describe("queued sync status forward repair", () => {
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
     await installQueueSchema(pool);
-    runtime = await createRuntimeRolePool(pool, "semprec_data");
+    runtime = await createRuntimeRolePool(pool, "alldots_data");
   });
   afterEach(async () => {
     await runtime?.end();
@@ -4964,7 +4964,7 @@ describe("queued sync status forward repair", () => {
       async () => {
         await pool.query("CREATE SEQUENCE test_sync_repair_order");
         sequenceCreated = true;
-        await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO semprec_data");
+        await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO alldots_data");
         await pool.query(`CREATE FUNCTION test_sync_repair_failure() RETURNS trigger LANGUAGE plpgsql AS $$
           BEGIN IF nextval('test_sync_repair_order') > 1 THEN RAISE EXCEPTION 'test later tenant repair failure'; END IF;
           RETURN NEW; END $$`);

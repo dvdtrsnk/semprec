@@ -1,4 +1,4 @@
-plugins { id("semprec.android.application") }
+plugins { id("alldots.android.application") }
 
 android {
     // The About sheet shows BuildConfig.VERSION_NAME and BuildConfig.VERSION_CODE.

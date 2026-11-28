@@ -1,6 +1,6 @@
 // A transcript that goes to the Trash takes its Semp status problem with it, resolved as
 // `sourceDeleted`, which the resolved history leaves out.
-import { transcriptionProblemKey } from "@semprec/shared";
+import { transcriptionProblemKey } from "@alldots/shared";
 import type { ItemDeleteHook } from "../chokePoint/hooks.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { resolveProblem } from "../semp/sempProblemsStore.js";

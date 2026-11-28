@@ -2,7 +2,7 @@ import CoreKit
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// A signed-in scene keeps its sync socket connected while it is not in the background, and closes it when it goes
 /// to the background or stops showing its tabs. A window of the test host is no SwiftUI scene, so the test sets the

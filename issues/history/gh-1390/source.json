@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1390",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1390",
   "id": 6022249423,
   "node_id": "I_kwDOUFuQ4c8AAAABZvQ7zw",
   "number": 1390,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1320",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1320",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** none\n**Model tier:** low\n\n## Context\n\nModel tier rationale: Adds an existing enqueue call at the exits of one function using an established pattern, with no new contract.\n\nEach Journal day entry caches a list of its Inbox items in `items.computed.inboxItems`, including the status of each item's processing card (`backend/packages/data/src/inbox/journalInboxCompute.ts`). The recompute job `JOURNAL_INBOX_RECOMPUTE` is enqueued on capture (`inboxStore.ts`), in the read phase of the Inbox tick (`readTickSnapshot` in `inbox/inboxTickAction.ts`) and on confirm, reject and revise (`proposalActions.ts`). The write phase of the tick, `writeTickResult` and the `writeNeedsClarification` it calls, creates or revises the card but enqueues no recompute, so the cached status of the item stays at its old value (or null) until something else touches the item. After a recompute the item of the day is announced to clients with an invalidation after commit.\n\n#1489 adds the processing state and proposal summary to the same cache; it relies on the cache being recomputed whenever the tick writes a card.\n\n## Task\n\nLoad `state-writes` and `testing`.\n\n1. In `inbox/inboxTickAction.ts`, in the same transaction as each card write of the tick's write phase, call `enqueueJournalInboxRecomputeForInboxItem(client, sourceItemId)`. Cover every path that writes a card: creating a new proposal, revising an existing proposal (`reviseProposal`), and `writeNeedsClarification` (both its create and revise branches). Do not enqueue on the paths that write nothing (stale skips).\n2. Tests: after a tick that creates a card, a recompute job for the item's day is enqueued with the day's job key; same for a revised card and for a needs-clarification write; a stale-skipped tick enqueues nothing; running the job makes `computed.inboxItems[].status` equal to the new card status.\n\n## Touches\n\n- backend/packages/data/src/inbox/inboxTickAction.ts (`writeTickResult`, `writeNeedsClarification`)\n- backend/packages/data/src/inbox/__tests__/ (tick recompute tests)\n\n## Scope\n\n### In scope\n\n- Enqueueing the day recompute from the tick's write phase.\n\n### Out of scope\n\n- New fields in the cached summary; #1489 and #1969.\n- Running the tick in production and its compute step; #1434.\n- Recording compute failures; #1485.\n\n## Acceptance criteria\n\n- When the tick writes a new card for an Inbox item, then a day recompute is enqueued in the same transaction and, once run, the item's `status` in `computed.inboxItems` is the card's status.\n- When the tick revises a card or writes needs-clarification, then the same happens.\n- When the tick skips because the item changed or was deleted, then no recompute is enqueued.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1390/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1390/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import type { ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleCatalogs } from "@alldots/module-registry";
 import { getModelDisplayCatalogs, resolveModelDisplayName, resolveOperationLabel } from "../modelDisplayNames.js";
 
 describe("resolveModelDisplayName", () => {

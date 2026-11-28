@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { BlockInputError, parseMarkdown } from "@alldots/block-model";
 import { z } from "zod";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";

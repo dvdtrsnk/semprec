@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABFB8XCQ",
         "number": 536,
         "title": "Bump code-review-bot pin to the clean-PR verdict-reuse fix",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/536",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/536",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/536",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/536",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/536.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/536.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/536",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/536",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/536.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/536.patch",
           "merged_at": "2026-09-25T00:45:23Z"
         },
         "bodySha256": "0071ae3b3b4fcb8665ed3023b81738237e15a91fb9e586d41013412b9f894e60"
@@ -48,7 +48,7 @@
   {
     "id": 31800925511,
     "node_id": "CE_lADOUFuQ4c8AAAABTF-tss8AAAAHZ3udRw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31800925511",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31800925511",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

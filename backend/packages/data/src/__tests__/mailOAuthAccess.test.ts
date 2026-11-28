@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
 import { logger } from "../mail/logger.js";
 import { refreshAndPersistAccessToken, type RefreshAndPersistAccessTokenInput } from "../mail/mailOAuthAccess.js";
@@ -175,7 +175,7 @@ describe("refreshAndPersistAccessToken", () => {
 
   it("allows the owning tenant and refuses a foreign credential without a provider request", async () => {
     const otherTenant = await createTestTenant(pool);
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const itemId = randomUUID();
     try {
       await runInTenant(otherTenant, () =>
@@ -225,7 +225,7 @@ describe("refreshAndPersistAccessToken", () => {
     );
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
-      options: "-c role=semprec_data",
+      options: "-c role=alldots_data",
     });
     const pids: Promise<{ pid: number } | { error: unknown }>[] = [];
     operationPool.on("acquire", (client) => {
@@ -346,7 +346,7 @@ describe("refreshAndPersistAccessToken", () => {
     const itemId = await seed("generation-1");
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
-      options: `-c role=semprec_data -c lock_timeout=${scenario.configured} -c statement_timeout=${scenario.configured}`,
+      options: `-c role=alldots_data -c lock_timeout=${scenario.configured} -c statement_timeout=${scenario.configured}`,
       max: 1,
     });
     let operationClient: PoolClient | undefined;
@@ -388,7 +388,7 @@ describe("refreshAndPersistAccessToken", () => {
     const itemId = await seed("before-timeout");
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
-      options: "-c role=semprec_data",
+      options: "-c role=alldots_data",
     });
     const pids: Promise<number>[] = [];
     operationPool.on("acquire", (client) => {
@@ -493,7 +493,7 @@ describe("refreshAndPersistAccessToken", () => {
     const itemId = await seed("before-commit");
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
-      options: "-c role=semprec_data",
+      options: "-c role=alldots_data",
     });
     const pidResults: Promise<{ pid: number } | { error: unknown }>[] = [];
     operationPool.on("acquire", (client) => {
@@ -652,7 +652,7 @@ describe("refreshAndPersistAccessToken", () => {
     const itemId = await seed("rollback-generation");
     const operationPool = new Pool({
       connectionString: process.env.TEST_DATABASE_URL,
-      options: "-c role=semprec_data",
+      options: "-c role=alldots_data",
     });
     const pids: Promise<{ pid: number } | { error: unknown }>[] = [];
     operationPool.on("acquire", (client) => {

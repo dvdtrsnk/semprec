@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { ValidationError } from "../errors.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -41,7 +41,7 @@ const DEFAULTS = {
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 beforeEach(async () => {

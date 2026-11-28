@@ -674,9 +674,9 @@ describe("drafts and authorized SMTP sending", () => {
           `serializes ${competitor} and failed-send cleanup with ${order}`,
           async () => {
             const ownerPool = pool;
-            const runtimePool = await createRuntimeRolePool(ownerPool, "semprec_data");
-            const failedPool = await createRuntimeRolePool(ownerPool, "semprec_data");
-            const competitorPool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const runtimePool = await createRuntimeRolePool(ownerPool, "alldots_data");
+            const failedPool = await createRuntimeRolePool(ownerPool, "alldots_data");
+            const competitorPool = await createRuntimeRolePool(ownerPool, "alldots_data");
             const failedPids: Array<Promise<number>> = [];
             const competitorPids: Array<Promise<number>> = [];
             const recordPid = (client: PoolClient, pids: Array<Promise<number>>) => {
@@ -751,7 +751,7 @@ describe("drafts and authorized SMTP sending", () => {
               const runtimeRole = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
                 "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
               );
-              expect(runtimeRole.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+              expect(runtimeRole.rows[0]).toEqual({ name: "alldots_data", bypass: false, superuser: false });
               const anchorIds: string[] = [];
               if (competitor === "bridge") {
                 for (const id of ["<bridge-anchor@example.com>", "<bridge-other@example.com>"]) {
@@ -1062,11 +1062,11 @@ describe("drafts and authorized SMTP sending", () => {
 
     beforeEach(async () => {
       ownerPool = pool;
-      pool = await createRuntimeRolePool(ownerPool, "semprec_data");
+      pool = await createRuntimeRolePool(ownerPool, "alldots_data");
       const role = await pool.query<{ name: string; bypass: boolean; superuser: boolean }>(
         "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
       );
-      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
       chokePoint = createChokePoint(pool);
     });
 

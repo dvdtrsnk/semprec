@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/application",
+  "name": "@alldots/application",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,12 +16,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/data": "workspace:*",
-    "@semprec/shared": "workspace:*",
+    "@alldots/data": "workspace:*",
+    "@alldots/shared": "workspace:*",
     "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@semprec/queue": "workspace:*",
+    "@alldots/queue": "workspace:*",
     "@types/pg": "^8.23.1",
     "vitest": "^4.1.11"
   }

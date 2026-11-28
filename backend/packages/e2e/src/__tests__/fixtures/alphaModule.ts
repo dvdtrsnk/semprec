@@ -1,7 +1,7 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 import type { JobHelpers } from "graphile-worker";
-import { createItemWithClient } from "@semprec/data";
-import { enqueueJob } from "@semprec/queue";
+import { createItemWithClient } from "@alldots/data";
+import { enqueueJob } from "@alldots/queue";
 
 /**
  * One half of the e2e cross-module scenario: declares a database, a task, a data migration and a

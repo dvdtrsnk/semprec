@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABE_XeoA",
         "number": 490,
         "title": "Bump code-review-bot pin to the cheap-reuse-after-rebase release",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/490",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/490",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/490",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/490",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/490.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/490.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/490",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/490",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/490.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/490.patch",
           "merged_at": "2026-09-24T19:19:07Z"
         },
         "bodySha256": "ebb80a6baa8b6fd8e09cac8a3e2a1e04ed6525f877078f87cfc406cb99e84331"
@@ -48,7 +48,7 @@
   {
     "id": 31784170545,
     "node_id": "CE_lADOUFuQ4c8AAAABTDIFbs8AAAAHZnv0MQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31784170545",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31784170545",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -110,8 +110,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABTDXeLQ",
         "number": 492,
         "title": "Bump code-review-bot pin: verdict-reuse base-SHA fix",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/492",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/492",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f28558ac9e47dc0c5fc3b18daceedd33bfc15d726879dad93ce6d7523abae96c"
       }

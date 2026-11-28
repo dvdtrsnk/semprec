@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { runItemPurgeHooks } from "../chokePoint/hooks.js";
 import { deleteItemDependents } from "../chokePoint/itemTrash.js";

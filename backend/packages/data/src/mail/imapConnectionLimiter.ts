@@ -79,7 +79,7 @@ export interface ImapConnectionLease {
  * share), per server host for work connections, and the logins per server host. A waiting caller queues instead of
  * opening a connection the provider would reject or count against the address. Per process only: across processes the
  * pass lease (`claimMailSyncPass`) keeps one sync pass per account, and every IMAP connection of the deployment is
- * opened by the one `semprec-api` process.
+ * opened by the one `alldots-api` process.
  */
 export interface ImapConnectionLimiter {
   /** Waits for a slot of the account and, for `work`, of the host. Waits longer than 3 minutes reject. */

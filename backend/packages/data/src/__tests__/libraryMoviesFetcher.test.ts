@@ -1,8 +1,8 @@
 import "../domainWriteHooks.js";
 import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { getItemAutomation } from "../library/itemAutomationStore.js";
@@ -138,7 +138,7 @@ describe("TMDB response mapping", () => {
 
   it("keeps the TMDB token out of a real queued 401 outcome and worker logs", async () => {
     const admin = getTestPool();
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     const failures: unknown[] = [];
     try {
       await resetDatabase(admin);

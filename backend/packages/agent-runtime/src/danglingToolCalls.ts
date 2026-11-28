@@ -1,4 +1,4 @@
-import type { AgentRunEventRow } from "@semprec/data";
+import type { AgentRunEventRow } from "@alldots/data";
 
 const IDENTITY_FIELDS = ["operation", "mcp", "targetDatabaseId", "targetItemId"] as const;
 

@@ -1,4 +1,4 @@
-import { generateDataKey, resolveMasterKeyFromEnv, unwrapDataKey, wrapDataKey } from "@semprec/credentials";
+import { generateDataKey, resolveMasterKeyFromEnv, unwrapDataKey, wrapDataKey } from "@alldots/credentials";
 import type { Queryable } from "../db/pool.js";
 
 export interface TenantDataKey {

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 
 const INBOX_MANIFEST_PATH = new URL("../inboxModuleManifest.js", import.meta.url).href;
 const INBOX_MODULE_ID = "inboxPipeline";

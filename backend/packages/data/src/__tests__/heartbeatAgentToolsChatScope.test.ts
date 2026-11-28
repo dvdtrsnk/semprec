@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { removeAgentDatabaseGrant, setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
@@ -43,7 +43,7 @@ let tenantB: string;
 let health: DatabaseRow;
 let otherSensitiveId: string;
 let projectsDatabase: DatabaseRow;
-let semprecProjectId: string;
+let alldotsProjectId: string;
 
 function inTenantA<T>(fn: () => Promise<T>): Promise<T> {
   return runInTenant(tenantA, fn);
@@ -140,7 +140,7 @@ async function pendingManualFireJobs(heartbeatId: string): Promise<number> {
 describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #2018)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantA = await createTestTenant(adminPool);
     tenantB = await createTestTenant(adminPool);
@@ -156,12 +156,12 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
         projectsDatabase = projects;
         health = healthDatabase;
         const { rows } = await client.query<{ id: string }>(
-          "SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = 'Semprec' AND deleted_at IS NULL",
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'name' = 'Alldots' AND deleted_at IS NULL",
           [projects.id],
         );
-        const semprec = rows[0];
-        if (!semprec) throw new Error("The seeded Semprec project is missing");
-        semprecProjectId = semprec.id;
+        const alldots = rows[0];
+        if (!alldots) throw new Error("The seeded Alldots project is missing");
+        alldotsProjectId = alldots.id;
         const { rows: sensitiveRows } = await client.query<{ id: string }>(
           "SELECT id FROM databases WHERE sensitive AND id <> $1 ORDER BY id LIMIT 1",
           [healthDatabase.id],
@@ -178,18 +178,18 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
   });
 
   describe("heartbeat.list", () => {
-    it("gives a chat run the heartbeats of the Semprec project and of another project with their project names", async () => {
+    it("gives a chat run the heartbeats of the Alldots project and of another project with their project names", async () => {
       const garden = await newProject("Garden");
-      const ownHeartbeat = await newHeartbeat(semprecProjectId, "Weekly journal cleanup");
+      const ownHeartbeat = await newHeartbeat(alldotsProjectId, "Weekly journal cleanup");
       const gardenHeartbeat = await newHeartbeat(garden, "Water the plants");
-      const run = await chatRun(semprecProjectId);
+      const run = await chatRun(alldotsProjectId);
 
       const entries = listEntries(await list(run));
 
       expect(entries.find((entry) => entry.id === ownHeartbeat)).toMatchObject({
         name: "Weekly journal cleanup",
-        projectItemId: semprecProjectId,
-        projectName: "Semprec",
+        projectItemId: alldotsProjectId,
+        projectName: "Alldots",
         enabled: true,
         rule: DAILY_RULE,
         lastFiredAt: null,
@@ -204,7 +204,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
     it("gives a null project name to a heartbeat whose project item has no name", async () => {
       const unnamed = await inTenantA(() => createTestProjectItem(dataPool));
       const unnamedHeartbeat = await newHeartbeat(unnamed, "Nameless project job");
-      const run = await chatRun(semprecProjectId);
+      const run = await chatRun(alldotsProjectId);
 
       const entry = listEntries(await list(run)).find((candidate) => candidate.id === unnamedHeartbeat);
 
@@ -214,21 +214,21 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
     it("gives a run delegated from a chat run the same tenant scope, through the inherited thread", async () => {
       const garden = await newProject("Greenhouse");
       const gardenHeartbeat = await newHeartbeat(garden, "Check the greenhouse");
-      const semprecHeartbeat = await newHeartbeat(semprecProjectId, "Delegated visibility check");
-      const parent = await chatRun(semprecProjectId);
+      const alldotsHeartbeat = await newHeartbeat(alldotsProjectId, "Delegated visibility check");
+      const parent = await chatRun(alldotsProjectId);
       const child = await chatRun(garden, { parentRunId: parent });
 
       const ids = listedIds(await list(child));
 
       expect(ids).toContain(gardenHeartbeat);
-      expect(ids).toContain(semprecHeartbeat);
+      expect(ids).toContain(alldotsHeartbeat);
     });
 
     it("never lists another tenant's heartbeats to a chat run", async () => {
       const foreignProject = await runInTenant(tenantB, () => createTestProjectItem(dataPool));
       const foreignHeartbeat = await newHeartbeat(foreignProject, "Tenant B secret job", tenantB);
-      const ownHeartbeat = await newHeartbeat(semprecProjectId, "Tenant A job");
-      const run = await chatRun(semprecProjectId);
+      const ownHeartbeat = await newHeartbeat(alldotsProjectId, "Tenant A job");
+      const run = await chatRun(alldotsProjectId);
 
       const entries = listEntries(await list(run));
 
@@ -240,7 +240,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
     it("keeps a run without a thread, an item thread run, a tick thread run and a heartbeat run on their own project", async () => {
       const garden = await newProject("Own project only");
       const gardenHeartbeat = await newHeartbeat(garden, "Own heartbeat");
-      const semprecHeartbeat = await newHeartbeat(semprecProjectId, "Foreign heartbeat");
+      const alldotsHeartbeat = await newHeartbeat(alldotsProjectId, "Foreign heartbeat");
       const itemThread = await inTenantA(() =>
         withTransaction(dataPool, async (client) => {
           // Raw SQL: the thread's subject is an Inbox item this test does not need; the column has no foreign key.
@@ -262,7 +262,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
       for (const run of runs) {
         const entries = listEntries(await list(run));
         expect(entries.map((entry) => entry.id)).toContain(gardenHeartbeat);
-        expect(entries.map((entry) => entry.id)).not.toContain(semprecHeartbeat);
+        expect(entries.map((entry) => entry.id)).not.toContain(alldotsHeartbeat);
         const own = entries.find((entry) => entry.id === gardenHeartbeat);
         expect(own).not.toHaveProperty("projectItemId");
         expect(own).not.toHaveProperty("projectName");
@@ -379,7 +379,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
       const garden = await newProject("History garden");
       const gardenHeartbeat = await newHeartbeat(garden, "History garden job");
       const gardenRun = await startHeartbeatRun(garden, gardenHeartbeat, "watered");
-      const run = await chatRun(semprecProjectId);
+      const run = await chatRun(alldotsProjectId);
 
       const outcome = await history(run, gardenHeartbeat);
 
@@ -393,7 +393,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
       const foreignProject = await runInTenant(tenantB, () => createTestProjectItem(dataPool));
       const foreignHeartbeat = await newHeartbeat(foreignProject, "Tenant B history job", tenantB);
       const unknown = "00000000-0000-4000-8000-0000000000aa";
-      const run = await chatRun(semprecProjectId);
+      const run = await chatRun(alldotsProjectId);
 
       expect(await history(run, foreignHeartbeat)).toEqual({
         error: true,
@@ -420,7 +420,7 @@ describe("heartbeat agent tools: the tenant scope of a Semp chat run (issue #201
     it("answers another project's heartbeat from a chat run with the not-found error and enqueues nothing", async () => {
       const garden = await newProject("Trigger garden");
       const gardenHeartbeat = await newHeartbeat(garden, "Trigger garden job");
-      const run = await chatRun(semprecProjectId);
+      const run = await chatRun(alldotsProjectId);
 
       expect(await trigger(run, gardenHeartbeat)).toEqual({
         error: true,

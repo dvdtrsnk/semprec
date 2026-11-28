@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { z } from "zod";
-import { readPageBlocks } from "@semprec/block-model";
+import { readPageBlocks } from "@alldots/block-model";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";

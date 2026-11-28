@@ -16,8 +16,8 @@ final class DefaultsWakeStorage: NSObject {
     // MARK: - Init
     init(
         defaults: UserDefaults = .standard,
-        settingsKey: String = "cz.semprec.wakeSettings",
-        missionsKey: String = "cz.semprec.wakeMissions"
+        settingsKey: String = "cz.alldots.wakeSettings",
+        missionsKey: String = "cz.alldots.wakeMissions"
     ) {
         self.defaults = defaults
         self.settingsKey = settingsKey

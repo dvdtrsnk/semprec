@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1361",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1361",
   "id": 6022214504,
   "node_id": "I_kwDOUFuQ4c8AAAABZvOzaA",
   "number": 1361,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1299",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1299",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** none\n**Model tier:** low\n\n## Context\n\nModel tier rationale: Pure label changes in two JSON catalogs following the existing key pattern, with no schema, lifecycle or persisted-data change.\n\nThe Czech catalog `backend/packages/data/src/library/i18n/cs.json` uses wording that differs from the app's visible text. Today it reads: the movies database is \"Filmy/seriály\", the books status option `toRead` is \"K přečtení\", the movies status option `watched` is \"Zhlédnuto\", the movies `secondaryRating` property is \"Hodnocení kritiků\", and the movies `watchedWith` property is \"Sledováno s\". The app calls these \"Filmy a seriály\", \"Chci číst\", \"Viděno\", \"Hodnocení zdroje\" and \"Viděl jsem s\". These names are what the schema endpoint returns to the Czech UI, so changing the catalog aligns the schema text with the product without any client mapping.\n\nThe key `property.movies.secondaryRating.name` is also referenced by `MOVIES_LIBRARY_CONTRACT.secondaryRatingLabel` in `library/libraryModuleContract.ts`; only its translation changes, the key stays.\n\n#1514 adds more keys to the same catalogs and builds on this issue so the two do not conflict on the file.\n\n## Task\n\nLoad `canonical-keys`.\n\n1. In `backend/packages/data/src/library/i18n/cs.json` change the values of: `database.movies.name` to \"Filmy a seriály\", `property.books.status.option.toRead` to \"Chci číst\", `property.movies.status.option.watched` to \"Viděno\", `property.movies.secondaryRating.name` to \"Hodnocení zdroje\", `property.movies.watchedWith.name` to \"Viděl jsem s\".\n2. Keep every key unchanged. Do not change `en.json` unless a value there contradicts the new meaning (the English \"source rating\" meaning of `secondaryRating` should read \"Source rating\"; check and align it).\n3. If an existing test asserts the old Czech strings, update it.\n\n## Touches\n\n- backend/packages/data/src/library/i18n/cs.json\n- backend/packages/data/src/library/i18n/en.json (only the `secondaryRating` value, if it differs)\n- backend/packages/data/src/__tests__/library.test.ts (only if it asserts the old strings)\n\n## Scope\n\n### In scope\n\n- The five Czech label changes and their English counterpart for the source rating.\n\n### Out of scope\n\n- New keys for year and isbn: #1514.\n- Any change to option values, property keys or the stored schema.\n\n## Acceptance criteria\n\n- When the Czech schema is read, then the movies database is named \"Filmy a seriály\", the books status option `toRead` is \"Chci číst\", the movies status option `watched` is \"Viděno\", the movies `secondaryRating` is \"Hodnocení zdroje\" and `watchedWith` is \"Viděl jsem s\".\n- When the catalogs are compared, then `cs.json` and `en.json` still have exactly the same key set.\n- When the stored values or option keys are read, then they are unchanged.\n\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1361/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1361/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

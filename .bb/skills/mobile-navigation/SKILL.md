@@ -13,7 +13,7 @@ destinations could not be composed differently by the app. The `NAV-OWNERSHIP`
 rule of `mobile/scripts/architecture.mjs` fails an `androidx.navigation` import
 or a `NavController`/`NavHostController` in any Gradle module but `:android:app`
 and in any ViewModel file there, and a NavigatorUI import in any Apple target
-but the app and its tests (`SemprecTests`) and in any `*ViewModel.swift`.
+but the app and its tests (`AlldotsTests`) and in any `*ViewModel.swift`.
 
 ## 1. The chain of one navigation
 
@@ -44,7 +44,7 @@ itself natively (`AboutSheet`'s `onDismiss`, `@Environment(\.dismiss)` in
 ## 2. Android: an acknowledged command queue
 
 The app owns `SceneNavigation`
-(`mobile/android/app/src/main/kotlin/cz/semprec/app/navigation/SceneNavigation.kt`),
+(`mobile/android/app/src/main/kotlin/cz/alldots/app/navigation/SceneNavigation.kt`),
 an androidx `ViewModel` of `MainActivity` built with `createSavedStateHandle()`
 from `CreationExtras` that carry only the saved-state registry and
 `ViewModelStore` owners. Never hand it the activity's default extras: their
@@ -197,8 +197,8 @@ and a new adapter would forget what the stack holds.
   which owns the `HomeSDK`.
 
 NavigatorUI is imported only in `Projects/App/Sources` and in the app's tests
-in `Projects/App/Tests` (`ARCH-APPLE` allows it for `Semprec` and
-`SemprecTests` only, and `NAV-OWNERSHIP`, whose owners are the same two
+in `Projects/App/Tests` (`ARCH-APPLE` allows it for `Alldots` and
+`AlldotsTests` only, and `NAV-OWNERSHIP`, whose owners are the same two
 targets, also fails it in any `*ViewModel.swift`). A new destination needs an
 `AppDestination` case, a branch in `destinationView`, and the router method in
 the app's router; a new tab an `AppTab` case and its `Tab(…, value:)`.
@@ -232,8 +232,8 @@ resets.
 | Android app | `SceneNavigationTest`, `QueuedNavigationTest` | order, one command at a time, redelivery after a stopped collector, no redelivery after acknowledge, survival across reconstruction; dropped unreadable commands, saved values of another type under either key, non-`String` entries and duplicate sequences; the next sequence above every queued one; every command, and ids such as `"null"`, `""` and `"a/b?c=%20 d&e#f"`, round-tripped |
 | Android device | `SmokeFlowTest`, `HomeStackTest`, `LaunchIntentTest` | list to detail and back, including recreation; a detail over another item's detail and back to the first; no second push of the detail on top; a detail for ids such as `"null"`; the About sheet and Done; a Home command right after recreation on Settings; every item id reaching its detail entry unchanged; a launch with extras named like the saved keys, with Navigation's deep-link extras to the detail (without arguments, with a `String` or `Int` `itemId`, without it, as `deepLinkExtras`, in a `FLAG_ACTIVITY_NEW_TASK` launch) or with a data URI, and a new intent with deep-link extras and a data URI delivered with `FLAG_ACTIVITY_SINGLE_TOP`, each showing the Home list with no detail and no crash, and the activity handing none of it on (ids read from the real Home graph) |
 | Apple feature | `HomeViewModelTests`, `SettingsViewModelTests` | effects reach a router spy; for Home also effects raised before observation and while the screen was away, each routed once |
-| Apple app | `NavigationTests`, `AppSceneNavigationTests`, `SceneLifetimeTests` (`SemprecTests`) | each router changes the right stack through a `StackSpy`, routes before registration are dropped, scenes do not share navigation; the detail on top is not pushed again and another item's detail stacks, also on a real `Navigator` after a back swipe; the adapter's `top` through pushes and pops, and an entry it did not push; registering the same navigator again keeps its adapter; in the real `AppScene`, the Home router pushes the detail onto the Home stack and the Settings router presents About as a sheet over the Settings stack, and on macOS a click on a row right of its label opens the row; a closed scene releases its composition and its screen model factory |
-| Apple UI, iOS simulator | `SmokeFlowTests` (`SemprecUITests`) | list to detail and Back, then another detail with content; Settings, About with the version and Done; each tab keeping its stack across a tab switch |
+| Apple app | `NavigationTests`, `AppSceneNavigationTests`, `SceneLifetimeTests` (`AlldotsTests`) | each router changes the right stack through a `StackSpy`, routes before registration are dropped, scenes do not share navigation; the detail on top is not pushed again and another item's detail stacks, also on a real `Navigator` after a back swipe; the adapter's `top` through pushes and pops, and an entry it did not push; registering the same navigator again keeps its adapter; in the real `AppScene`, the Home router pushes the detail onto the Home stack and the Settings router presents About as a sheet over the Settings stack, and on macOS a click on a row right of its label opens the row; a closed scene releases its composition and its screen model factory |
+| Apple UI, iOS simulator | `SmokeFlowTests` (`AlldotsUITests`) | list to detail and Back, then another detail with content; Settings, About with the version and Done; each tab keeping its stack across a tab switch |
 
 A change to navigation updates the row of each platform it touches, and runs
 the device tests on a reserved emulator and simulator (`mobile-verify`).

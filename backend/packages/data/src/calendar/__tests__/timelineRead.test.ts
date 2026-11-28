@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { wallClockToInstant } from "../../calendarTime.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -256,7 +256,7 @@ function byId(a: { id: string }, b: { id: string }): number {
 describe("calendar timeline read (issue #1717)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("verify calendar timeline role", () =>
       dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

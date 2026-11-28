@@ -6,9 +6,9 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
-import { createAgentRun, createSempChatThread, listAgentRunEvents, withTransaction } from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { createAgentRun, createSempChatThread, listAgentRunEvents, withTransaction } from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import type { CompactionAdapter } from "../compaction.js";
 import { reconstructConversationHistory } from "../conversationReconstruction.js";
 import { runAgentTurn } from "../lifecycleAdapter.js";
@@ -73,7 +73,7 @@ describe("stored tool results of sensitive databases (issue #1827)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

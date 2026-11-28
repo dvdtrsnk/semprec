@@ -1,5 +1,5 @@
-import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@semprec/module-registry";
-import { NumberFilterConfigSchema } from "@semprec/shared";
+import { resolveCatalogLabel, type ModuleCatalogs, type ModuleRegistry } from "@alldots/module-registry";
+import { NumberFilterConfigSchema } from "@alldots/shared";
 import type { PropertyRow, PropertyType, RelationDefinitionRow } from "../types.js";
 
 export type ManifestLocale = "cs" | "en";

@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
@@ -371,7 +371,7 @@ async function reopenedSeries(preset: string): Promise<{ old: string; next: stri
 describe("the midnight Tasks rollover", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -746,7 +746,7 @@ describe("the midnight Tasks rollover", () => {
   it("observes a concurrent completion before attempting a missed transition", async () => {
     const old = await task({ date: day(-1) });
     const seriesId = await setRecurrence(old, "daily");
-    const actionPool = await createRuntimeRolePool(admin, "semprec_data");
+    const actionPool = await createRuntimeRolePool(admin, "alldots_data");
     const held = holdTransaction((client) =>
       updateItemWithClient(
         client,

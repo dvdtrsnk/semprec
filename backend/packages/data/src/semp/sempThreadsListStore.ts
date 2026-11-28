@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
-import { stripMarkdown } from "@semprec/block-model";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { stripMarkdown } from "@alldots/block-model";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";

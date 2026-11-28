@@ -325,7 +325,7 @@ empties the write registries.
 
 ## Pages and blocks
 
-### Block model (`shared/block-model/`, package `@semprec/block-model`)
+### Block model (`shared/block-model/`, package `@alldots/block-model`)
 
 - A page is the Yjs document of an item (`docs.item_id`, at most one per item). Blocks are `Y.Map`s
   in `doc.getMap('blocks')`; order is the flat `Y.Array` `doc.getArray('order')`; hierarchy is only
@@ -345,7 +345,7 @@ empties the write registries.
 
 - A subpage is an item of the tenant's hidden `pages` system database (owner module `pages`), created
   on first use under an advisory lock (`data/docs/pagesDatabase.ts`). Its address is
-  `semprec://page/<itemId>`.
+  `alldots://page/<itemId>`.
 - Its system-owned `parentItemId` (text, not a relation) names the host or parent page. Only the
   creation owner (`createSubpage`) sets it; nothing reparents pages. A page is never its own ancestor.
 - The `page` block's `text` in the parent document is the title's source of truth; the Pages item's

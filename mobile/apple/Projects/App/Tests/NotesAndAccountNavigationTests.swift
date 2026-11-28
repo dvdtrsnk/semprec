@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The routes of the notes screen and of the profile sheet: which stack they reach and how.
 final class NotesAndAccountNavigationTests: XCTestCase {

@@ -10,7 +10,7 @@
   lease or closes it twice; an effect lost or delivered twice; a feature owning
   navigation state; cancellation shown as an error; a task that keeps working
   after its screen is gone; code that compiles for one of iOS and macOS only
-  (the iOS-only XCUITest bundle `SemprecUITests` excepted); a
+  (the iOS-only XCUITest bundle `AlldotsUITests` excepted); a
   `review-rules/` rule or task weakened or dropped without the Task asking for
   it, a scope pattern that drops or cannot match the files it intends, or a
   platform left with no task.

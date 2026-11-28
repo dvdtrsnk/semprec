@@ -8,7 +8,7 @@ touch-policy discrepancy below also prevents claiming a clean Phase 5 audit.
 ## Evidence and scope
 
 The inputs are the two exports attached to BB thread `thr_qswg4sdx4m`:
-`semprec-source-raw.zip` and `semprec-opendesign-export.zip`. Both contain exactly the
+`alldots-source-raw.zip` and `alldots-opendesign-export.zip`. Both contain exactly the
 same canvas bytes (SHA-256
 `0bd3cddd9431b21f969b2c5ea3c2d6898bacce95143b54c00d188a9127688e81`).
 No exported HTML was executed. The source reports a comparison with `develop

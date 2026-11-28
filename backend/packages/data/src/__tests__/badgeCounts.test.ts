@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser as createRawUser } from "../auth/usersStore.js";
 import { createAgentRun, type CreateAgentRunInput } from "../agentRuns/agentRunsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -56,7 +56,7 @@ function badgeCountsOf(pool: Pool, userId: string) {
 describe("GET /api/badge-counts (issue #1828)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

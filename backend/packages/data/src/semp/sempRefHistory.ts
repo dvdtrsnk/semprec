@@ -4,7 +4,7 @@ import {
   sempMessageRefSchema,
   type SempMessageRef,
   type SempRefResolution,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { resolveMailThreadRefTargets } from "../mail/mailThreadRef.js";
 import { assertDescriptionShape } from "../mcp/approvalRequestsStore.js";
 import { labelTranscriptSegmentRefs, type TranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";

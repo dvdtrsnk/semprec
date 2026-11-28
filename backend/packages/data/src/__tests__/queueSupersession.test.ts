@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@semprec/queue";
+import { enqueueJob, registerTask, runWorker, type Runner, type TaskList } from "@alldots/queue";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 let pool: Pool;

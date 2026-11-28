@@ -2,7 +2,7 @@ import Combine
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// A tapped notification opens on the Calendar tab: a calendar change or an event's reminder the event, a task's
 /// reminder the task, an invitation the invitations, also when the tap launched the app before the tab was shown.

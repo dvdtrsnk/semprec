@@ -3,7 +3,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
-import type { SemprecTickActionConfig } from "./proposalEnvelope.js";
+import type { AlldotsTickActionConfig } from "./proposalEnvelope.js";
 
 const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
   ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
@@ -15,7 +15,7 @@ const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
  */
 export async function linkSourceInboxRelation(
   client: PoolClient,
-  config: Pick<SemprecTickActionConfig, "processingProposalsDatabaseId">,
+  config: Pick<AlldotsTickActionConfig, "processingProposalsDatabaseId">,
   proposalId: string,
   sourceItemId: string,
 ): Promise<void> {

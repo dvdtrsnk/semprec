@@ -1,6 +1,6 @@
 ---
 name: define-behavior
-description: Turn a feature idea into a user-approved behavior specification and a batch of dependency-ordered, self-contained repository issues (epic + implementation issues) in dvdtrsnk/semprec, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
+description: Turn a feature idea into a user-approved behavior specification and a batch of dependency-ordered, self-contained repository issues (epic + implementation issues) in dvdtrsnk/alldots, finishing with a bounded, consensus-gated two-agent audit and automatic spec:approved labeling. Invoked explicitly as /define-behavior <idea>; supports a dry-run mode.
 disable-model-invocation: true
 ---
 

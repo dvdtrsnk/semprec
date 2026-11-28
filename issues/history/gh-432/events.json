@@ -2,7 +2,7 @@
   {
     "id": 31352672422,
     "node_id": "LE_lADOUFuQ4c8AAAABR2tWAM8AAAAHTMPQpg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31352672422",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31352672422",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -38,7 +38,7 @@
   {
     "id": 31353276684,
     "node_id": "REFE_lADOUFuQ4c8AAAABR2tWAM8AAAAHTM0JDA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31353276684",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31353276684",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -62,14 +62,14 @@
     },
     "event": "referenced",
     "commit_id": "5be89cda17de0d35aceb0d5f4bd6252e08d6f7f2",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/5be89cda17de0d35aceb0d5f4bd6252e08d6f7f2",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/5be89cda17de0d35aceb0d5f4bd6252e08d6f7f2",
     "created_at": "2026-09-17T22:19:46Z",
     "performed_via_github_app": null
   },
   {
     "id": 31724555808,
     "node_id": "LE_lADOUFuQ4c8AAAABR2tWAM8AAAAHYu5OIA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31724555808",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31724555808",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -105,7 +105,7 @@
   {
     "id": 31724555849,
     "node_id": "LE_lADOUFuQ4c8AAAABR2tWAM8AAAAHYu5OSQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31724555849",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31724555849",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -139,9 +139,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5808456808",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/432#issuecomment-5808456808",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/432",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5808456808",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/432#issuecomment-5808456808",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/432",
     "id": 5808456808,
     "node_id": "IC_kwDOUFuQ4c8AAAABWjYEaA",
     "user": {
@@ -171,7 +171,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5808456808/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5808456808/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -280,14 +280,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABE4VFLw",
         "number": 477,
         "title": "Add property.getByKey to GenericApplicationPort to replace resolveRelationProperty's O(N) list+filter (#432)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/477",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/477",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/477",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/477",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/477.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/477.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/477",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/477",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/477.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/477.patch",
           "merged_at": "2026-09-24T06:45:16Z"
         },
         "bodySha256": "a3c4810cd53898e7175115538274c13780c4b072eb84393206b56b5be176592f"
@@ -297,7 +297,7 @@
   {
     "id": 31734518888,
     "node_id": "CE_lADOUFuQ4c8AAAABR2tWAM8AAAAHY4ZUaA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31734518888",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31734518888",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -330,7 +330,7 @@
   {
     "id": 31735620149,
     "node_id": "LE_lADOUFuQ4c8AAAABR2tWAM8AAAAHY5ciNQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31735620149",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31735620149",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -366,7 +366,7 @@
   {
     "id": 31739474925,
     "node_id": "UNLE_lADOUFuQ4c8AAAABR2tWAM8AAAAHY9Hz7Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31739474925",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31739474925",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -402,7 +402,7 @@
   {
     "id": 31739474947,
     "node_id": "UNLE_lADOUFuQ4c8AAAABR2tWAM8AAAAHY9H0Aw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31739474947",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31739474947",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -467,14 +467,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABE9-IJQ",
         "number": 485,
         "title": "Take a merged pull request's issue out of the Relay queue",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/485",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/485",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/485",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/485",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/485.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/485.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/485",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/485",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/485.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/485.patch",
           "merged_at": "2026-09-24T17:00:54Z"
         },
         "bodySha256": "65f0cb0f6d02beab72b93fae733fb48dfc2468bdeb13c302341216cfcb15b847"
@@ -484,7 +484,7 @@
   {
     "id": 31774646238,
     "node_id": "REFE_lADOUFuQ4c8AAAABR2tWAM8AAAAHZeqf3g",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31774646238",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31774646238",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -508,14 +508,14 @@
     },
     "event": "referenced",
     "commit_id": "9d1b55e690853fe88938f4810d09c14cb62c33c5",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/9d1b55e690853fe88938f4810d09c14cb62c33c5",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/9d1b55e690853fe88938f4810d09c14cb62c33c5",
     "created_at": "2026-09-24T16:50:56Z",
     "performed_via_github_app": null
   },
   {
     "id": 31775340663,
     "node_id": "REFE_lADOUFuQ4c8AAAABR2tWAM8AAAAHZfU4dw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31775340663",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31775340663",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -539,7 +539,7 @@
     },
     "event": "referenced",
     "commit_id": "3a0b8d31830e261c121ee483b8ae14dd028b404b",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/3a0b8d31830e261c121ee483b8ae14dd028b404b",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/3a0b8d31830e261c121ee483b8ae14dd028b404b",
     "created_at": "2026-09-24T17:00:55Z",
     "performed_via_github_app": null
   }

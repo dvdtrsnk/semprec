@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { ModuleRegistry, type EditorSchemaDescriptor, type ModuleCatalogs } from "@semprec/module-registry";
+import { ModuleRegistry, type EditorSchemaDescriptor, type ModuleCatalogs } from "@alldots/module-registry";
 import {
   buildEditorValues,
   findMissingRequired,

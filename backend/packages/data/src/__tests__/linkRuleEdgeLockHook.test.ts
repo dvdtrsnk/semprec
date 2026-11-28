@@ -1,8 +1,8 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { ModuleRegistry, type ModuleManifest } from "@semprec/module-registry";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { ModuleRegistry, type ModuleManifest } from "@alldots/module-registry";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -143,7 +143,7 @@ describe("linkRuleEdgeLockHook for a rule whose via relation is on the source's 
     registry.validateLinkRules();
     vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check lock hook role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

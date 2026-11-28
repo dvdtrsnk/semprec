@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant, type AuthenticatedActor, type GenericApplicationPort } from "@semprec/shared";
-import { createChokePoint, createCollectionMetadataResolver, loadFullModuleRegistry } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { runInTenant, type AuthenticatedActor, type GenericApplicationPort } from "@alldots/shared";
+import { createChokePoint, createCollectionMetadataResolver, loadFullModuleRegistry } from "@alldots/data";
+import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@alldots/data/testSupport";
 import { createGenericApplicationService } from "../genericApplicationService.js";
 
 let admin: Pool;
@@ -24,7 +24,7 @@ async function lastAuthorOf(itemId: string): Promise<string | undefined> {
 describe("page.rename through the generic application service (issue #1725)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     service = createGenericApplicationService(
       runtime,
       await createCollectionMetadataResolver(await loadFullModuleRegistry()),

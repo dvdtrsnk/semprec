@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -63,7 +63,7 @@ const occurrence = (tenantId: string, tasks: string, seriesId: string, occurrenc
 describe("projectTaskOccurrences (issue #1672)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -256,7 +256,7 @@ describe("projectTaskOccurrences (issue #1672)", () => {
   });
 
   it("reads with one query per kind whatever the range, and with one when there is no series", async () => {
-    const counted = await createRuntimeRolePool(admin, "semprec_data");
+    const counted = await createRuntimeRolePool(admin, "alldots_data");
     try {
       const countQueries = (from: string, to: string) =>
         runInTenant(tenant, () =>

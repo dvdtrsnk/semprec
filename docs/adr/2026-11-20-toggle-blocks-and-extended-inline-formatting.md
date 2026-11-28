@@ -44,9 +44,9 @@ unchanged and applies to the new fields.
   delimiter that opens when a closing one follows; the writer therefore escapes a `~` next to another `~` or next to
   a strike delimiter as `\~`. Nothing inside a code span is markup. A `<span>` or `<mark>` whose `data-color` is not a
   registry key is consumed and its text keeps no color.
-- A `toggle` block is always written with its `semprec:block` comment (`type=toggle`), followed by its content written
+- A `toggle` block is always written with its `alldots:block` comment (`type=toggle`), followed by its content written
   like a text line; the comment is what tells it from a text block on read.
-- A toggle heading is always written with its `semprec:block` comment carrying the extra field `toggle=true`, after
+- A toggle heading is always written with its `alldots:block` comment carrying the extra field `toggle=true`, after
   `indent`. The parser applies `toggle=true` only when the line is an `h1`-`h3` heading and ignores it on every other
   type.
 

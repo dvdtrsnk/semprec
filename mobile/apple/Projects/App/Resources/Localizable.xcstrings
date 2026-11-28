@@ -166,13 +166,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zařízení už drží tolik budíků Semprec, kolik dovolí. Nejdřív nějaký zruš."
+            "value" : "Zařízení už drží tolik budíků Alldots, kolik dovolí. Nejdřív nějaký zruš."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The device holds as many Semprec alarms as it allows. Cancel one first."
+            "value" : "The device holds as many Alldots alarms as it allows. Cancel one first."
           }
         }
       }
@@ -198,13 +198,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Budíky nejsou pro Semprec povolené. Povol je v Nastavení."
+            "value" : "Budíky nejsou pro Alldots povolené. Povol je v Nastavení."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Alarms are not allowed for Semprec. Allow them in Settings."
+            "value" : "Alarms are not allowed for Alldots. Allow them in Settings."
           }
         }
       }
@@ -538,13 +538,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aby budík mohl zazvonit, povol budíky pro Semprec v Nastavení."
+            "value" : "Aby budík mohl zazvonit, povol budíky pro Alldots v Nastavení."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Allow alarms for Semprec in Settings so that an alarm can ring."
+            "value" : "Allow alarms for Alldots in Settings so that an alarm can ring."
           }
         }
       }

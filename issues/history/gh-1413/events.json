@@ -2,7 +2,7 @@
   {
     "id": 34171526723,
     "node_id": "PIAE_lADOUFuQ4c8AAAABZvSqK88AAAAH9MgeQw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/34171526723",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/34171526723",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -36,8 +36,8 @@
       "repository": {
         "id": 1348178145,
         "node_id": "R_kgDOUFuQ4Q",
-        "name": "semprec",
-        "full_name": "dvdtrsnk/semprec",
+        "name": "alldots",
+        "full_name": "dvdtrsnk/alldots",
         "private": false,
         "owner": {
           "login": "dvdtrsnk",
@@ -60,46 +60,46 @@
           "user_view_type": "public",
           "site_admin": false
         },
-        "html_url": "https://github.com/dvdtrsnk/semprec",
-        "description": "Semprec backend implementation",
+        "html_url": "https://github.com/dvdtrsnk/alldots",
+        "description": "Alldots backend implementation",
         "fork": false,
-        "url": "https://api.github.com/repos/dvdtrsnk/semprec",
-        "forks_url": "https://api.github.com/repos/dvdtrsnk/semprec/forks",
-        "keys_url": "https://api.github.com/repos/dvdtrsnk/semprec/keys{/key_id}",
-        "collaborators_url": "https://api.github.com/repos/dvdtrsnk/semprec/collaborators{/collaborator}",
-        "teams_url": "https://api.github.com/repos/dvdtrsnk/semprec/teams",
-        "hooks_url": "https://api.github.com/repos/dvdtrsnk/semprec/hooks",
-        "issue_events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events{/number}",
-        "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/events",
-        "assignees_url": "https://api.github.com/repos/dvdtrsnk/semprec/assignees{/user}",
-        "branches_url": "https://api.github.com/repos/dvdtrsnk/semprec/branches{/branch}",
-        "tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/tags",
-        "blobs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/blobs{/sha}",
-        "git_tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/tags{/sha}",
-        "git_refs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/refs{/sha}",
-        "trees_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/trees{/sha}",
-        "statuses_url": "https://api.github.com/repos/dvdtrsnk/semprec/statuses/{sha}",
-        "languages_url": "https://api.github.com/repos/dvdtrsnk/semprec/languages",
-        "stargazers_url": "https://api.github.com/repos/dvdtrsnk/semprec/stargazers",
-        "contributors_url": "https://api.github.com/repos/dvdtrsnk/semprec/contributors",
-        "subscribers_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscribers",
-        "subscription_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscription",
-        "commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits{/sha}",
-        "git_commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/commits{/sha}",
-        "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/comments{/number}",
-        "issue_comment_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments{/number}",
-        "contents_url": "https://api.github.com/repos/dvdtrsnk/semprec/contents/{+path}",
-        "compare_url": "https://api.github.com/repos/dvdtrsnk/semprec/compare/{base}...{head}",
-        "merges_url": "https://api.github.com/repos/dvdtrsnk/semprec/merges",
-        "archive_url": "https://api.github.com/repos/dvdtrsnk/semprec/{archive_format}{/ref}",
-        "downloads_url": "https://api.github.com/repos/dvdtrsnk/semprec/downloads",
-        "issues_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues{/number}",
-        "pulls_url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls{/number}",
-        "milestones_url": "https://api.github.com/repos/dvdtrsnk/semprec/milestones{/number}",
-        "notifications_url": "https://api.github.com/repos/dvdtrsnk/semprec/notifications{?since,all,participating}",
-        "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/labels{/name}",
-        "releases_url": "https://api.github.com/repos/dvdtrsnk/semprec/releases{/id}",
-        "deployments_url": "https://api.github.com/repos/dvdtrsnk/semprec/deployments"
+        "url": "https://api.github.com/repos/dvdtrsnk/alldots",
+        "forks_url": "https://api.github.com/repos/dvdtrsnk/alldots/forks",
+        "keys_url": "https://api.github.com/repos/dvdtrsnk/alldots/keys{/key_id}",
+        "collaborators_url": "https://api.github.com/repos/dvdtrsnk/alldots/collaborators{/collaborator}",
+        "teams_url": "https://api.github.com/repos/dvdtrsnk/alldots/teams",
+        "hooks_url": "https://api.github.com/repos/dvdtrsnk/alldots/hooks",
+        "issue_events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events{/number}",
+        "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/events",
+        "assignees_url": "https://api.github.com/repos/dvdtrsnk/alldots/assignees{/user}",
+        "branches_url": "https://api.github.com/repos/dvdtrsnk/alldots/branches{/branch}",
+        "tags_url": "https://api.github.com/repos/dvdtrsnk/alldots/tags",
+        "blobs_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/blobs{/sha}",
+        "git_tags_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/tags{/sha}",
+        "git_refs_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/refs{/sha}",
+        "trees_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/trees{/sha}",
+        "statuses_url": "https://api.github.com/repos/dvdtrsnk/alldots/statuses/{sha}",
+        "languages_url": "https://api.github.com/repos/dvdtrsnk/alldots/languages",
+        "stargazers_url": "https://api.github.com/repos/dvdtrsnk/alldots/stargazers",
+        "contributors_url": "https://api.github.com/repos/dvdtrsnk/alldots/contributors",
+        "subscribers_url": "https://api.github.com/repos/dvdtrsnk/alldots/subscribers",
+        "subscription_url": "https://api.github.com/repos/dvdtrsnk/alldots/subscription",
+        "commits_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits{/sha}",
+        "git_commits_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/commits{/sha}",
+        "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/comments{/number}",
+        "issue_comment_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments{/number}",
+        "contents_url": "https://api.github.com/repos/dvdtrsnk/alldots/contents/{+path}",
+        "compare_url": "https://api.github.com/repos/dvdtrsnk/alldots/compare/{base}...{head}",
+        "merges_url": "https://api.github.com/repos/dvdtrsnk/alldots/merges",
+        "archive_url": "https://api.github.com/repos/dvdtrsnk/alldots/{archive_format}{/ref}",
+        "downloads_url": "https://api.github.com/repos/dvdtrsnk/alldots/downloads",
+        "issues_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues{/number}",
+        "pulls_url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls{/number}",
+        "milestones_url": "https://api.github.com/repos/dvdtrsnk/alldots/milestones{/number}",
+        "notifications_url": "https://api.github.com/repos/dvdtrsnk/alldots/notifications{?since,all,participating}",
+        "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/labels{/name}",
+        "releases_url": "https://api.github.com/repos/dvdtrsnk/alldots/releases{/id}",
+        "deployments_url": "https://api.github.com/repos/dvdtrsnk/alldots/deployments"
       },
       "issue_type": null
     },
@@ -137,8 +137,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvS41w",
         "number": 1416,
         "title": "[calendar-events 02/12] Add calendar properties to the Events schema",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1416",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1416",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "35e70860b7046ef4021fe538602c3cb07b70d561ee3593bfeb19235adbd38eef"
       }
@@ -176,8 +176,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvalbw",
         "number": 1515,
         "title": "[areas-projects 01/13] Add icon, color and position to Areas",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1515",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1515",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "dc7bc91875d0ea455f275e4bd6956fb879d28d50b764e6f8939fee2a2339dda3"
       }
@@ -215,8 +215,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvbbCQ",
         "number": 1525,
         "title": "[collection-schema 08/14] Localize collection search placeholders",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1525",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1525",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "7f85ce159a50fc8e0e7c9fc5a54f83443505ff68be14217f114512191143e525"
       }
@@ -254,8 +254,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvcPOg",
         "number": 1535,
         "title": "[people 02/03] Add phone numbers to People",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1535",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1535",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "5539e4b9078fbbd4e3f138f96cc3c18e649aaa95f7ddb6bc16ccc2144c1e0764"
       }
@@ -293,8 +293,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvcfAg",
         "number": 1538,
         "title": "[collection-query 08/12] Link Events to Areas",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1538",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1538",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "f5752a0c075e0c9980602179079dc0afc0d8cdf9896c48ac89df2aed01aceff5"
       }
@@ -332,8 +332,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvdDQg",
         "number": 1545,
         "title": "[journal 09/21] Relate Journal entries to Projects",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1545",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1545",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "e210fe7e8c60759b3339313f8e41da17e053d4379bf98c203fca1cb3d627cf82"
       }
@@ -371,8 +371,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvdYaQ",
         "number": 1549,
         "title": "[inbox-cards 03/10] Extend People relationship options to the unified list",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1549",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1549",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "5700c31dd637f4a66005b267be453f7bc1975e581406da8a349456c14b7c568a"
       }
@@ -410,8 +410,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvd9sQ",
         "number": 1556,
         "title": "[areas-projects 06/13] Allow many companies and health records per area",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1556",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1556",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "93c0c9c230884f2a728b6cda88ec9806515527faf4af15102b94e8b0c22a1783"
       }
@@ -449,8 +449,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvgn2g",
         "number": 1586,
         "title": "[areas-projects 08/13] Record when a project was completed",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1586",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1586",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "b92dd39a2e094411f922776d1421e52725c20051ae5b87662a00f2ed578a1017"
       }
@@ -488,8 +488,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvgx2w",
         "number": 1588,
         "title": "[files 03/04] Link Files to Events",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1588",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1588",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "cec64dccafa671d3bf13ecbd61ccbce82493601380b2d42d17d85809eb177476"
       }
@@ -527,8 +527,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvlTQw",
         "number": 1647,
         "title": "[collection-schema 13/14] Declare quick filters, default sorts and collection and picker filters in module manifests",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1647",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1647",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "e7122415d58bb37f298db3d3b37d1d972bebe374950dd7d277d09a5dbfac2387"
       }
@@ -566,8 +566,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvpkug",
         "number": 1700,
         "title": "[health 03/09] Add the blood-pressure and prevention health-record tags for new and existing tenants",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1700",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1700",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "ecc67306f048a161f2c56a732d56af5eb142714a6b21a8ab76426e6b3874df9e"
       }
@@ -605,8 +605,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvqYog",
         "number": 1711,
         "title": "[journal 15/21] Title journal entries",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1711",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1711",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "988ddb8fc20e50fb99f5f0707f71f739b24e06b9b9f71b56b57f1535d34ada80"
       }
@@ -644,8 +644,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZvMUXA",
         "number": 1320,
         "title": "[journal] Journal: period keys, reads, ensure, trash, day view and collection — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1320",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1320",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "babb489f334a10502da949500430138c672b68e6489419db33565769828624ac"
       }
@@ -654,7 +654,7 @@
   {
     "id": 34179726678,
     "node_id": "RTE_lADOUFuQ4c8AAAABZvSqK88AAAAH9UU9Vg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/34179726678",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/34179726678",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

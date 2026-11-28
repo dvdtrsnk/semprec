@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
-import type { ModuleRegistry } from "@semprec/module-registry";
-import { canonicalizeJson, type GuidanceManifestPort } from "@semprec/shared";
+import type { ModuleRegistry } from "@alldots/module-registry";
+import { canonicalizeJson, type GuidanceManifestPort } from "@alldots/shared";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 

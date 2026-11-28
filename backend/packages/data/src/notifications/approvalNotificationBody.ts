@@ -1,6 +1,6 @@
 // Rendered once at write time from the request's description snapshot only, so MCP argument
 // values can never reach the body. MCP calls have no Semp undo.
-import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, PAGE_CONVERT_TARGET_TYPES } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, PAGE_CONVERT_TARGET_TYPES } from "@alldots/shared";
 import { isGenericOperationApprovalRequestPayload, type ApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalPeriods.js";
 import { ITEM_DELETE_IMPACT_BODY_KEY, type WriteNotificationInput } from "./notify.js";

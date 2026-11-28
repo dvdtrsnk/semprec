@@ -8,15 +8,15 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createSempChatThread,
   createUser as createStoredUser,
   insertAgentRunEvent,
   withTransaction,
-} from "@semprec/data";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   persistCompaction,
   reconstructBoundedThreadHistory,
@@ -86,7 +86,7 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("removes synthetic persisted checkpoint image fields without changing legacy metadata or stored rows", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -172,7 +172,7 @@ describe("reconstructConversationHistory", () => {
   });
 
   it("bounds stored rows and expanded checkpoints with tenant-scoped complete replay", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const role = await runAsSystem("test:replay-role", () =>
         runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -741,7 +741,7 @@ describe("reconstructConversationHistory", () => {
     const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
     await createStoredUser(pool, { email: `${randomUUID()}@example.test`, passwordHash: "unused", tenantId: tenantB });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const makeRun = (tenantId: string) =>
         runInTenant(tenantId, async () => {

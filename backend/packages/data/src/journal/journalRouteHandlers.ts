@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import * as Y from "yjs";
-import { readPageBlocks, serializeBlocks } from "@semprec/block-model";
+import { readPageBlocks, serializeBlocks } from "@alldots/block-model";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { readCalendarTimeline } from "../calendar/timelineRead.js";

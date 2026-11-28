@@ -1,4 +1,4 @@
-import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
+import type { ModuleDatabaseDescriptor, ModuleManifest } from "@alldots/module-registry";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { SLEEP_RESYNC_TASK_NAME } from "./sleepResync.js";
 

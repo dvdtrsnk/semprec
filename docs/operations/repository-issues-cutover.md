@@ -43,7 +43,7 @@ checksums. PR, review and CI operations remain on GitHub.
 
 ## Deployment boundary
 
-The source cutover is complete in [migration PR #2036](https://github.com/dvdtrsnk/semprec/pull/2036), published as a draft. Live Relay follows the
+The source cutover is complete in [migration PR #2036](https://github.com/dvdtrsnk/alldots/pull/2036), published as a draft. Live Relay follows the
 canonical `develop` tree; it takes up the new authority when the reviewed cutover
 reaches that branch. Both projects remain paused, and this change does not enable
 dispatch or merge the review bot PR. Preserve that operator pause until explicitly

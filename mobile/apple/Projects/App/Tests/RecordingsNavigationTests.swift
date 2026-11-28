@@ -3,7 +3,7 @@ import NavigatorUI
 import OverviewFeature
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The routes of the recordings, the transcript and the page of an event: which stack they reach and how.
 final class RecordingsNavigationTests: XCTestCase {

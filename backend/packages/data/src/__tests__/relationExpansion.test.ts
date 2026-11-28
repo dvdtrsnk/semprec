@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { expandItemRelations } from "../chokePoint/relationExpansion.js";
@@ -13,7 +13,7 @@ import { createCollectionMetadataResolver, type CollectionMetadataResolver } fro
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
 import type { ItemRow } from "../types.js";
-import type { ExpandedRelationTarget, ItemRelationTarget } from "@semprec/shared";
+import type { ExpandedRelationTarget, ItemRelationTarget } from "@alldots/shared";
 let admin: Pool;
 let pool: Pool;
 let cp: ChokePoint;
@@ -46,13 +46,13 @@ async function expand(items: ItemRow[], relations: Record<string, string[]> | tr
 describe("batched relation expansion", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {

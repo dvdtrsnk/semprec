@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { writeBlock, type TextRun } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+import { writeBlock, type TextRun } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
 import "../../domainWriteHooks.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
@@ -32,7 +32,7 @@ const taskName = CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT;
 const inTenant = <T>(fn: () => Promise<T>): Promise<T> => runInTenant(tenant, fn);
 const link = (id: string, text = "Standup"): TextRun => ({
   insert: text,
-  attributes: { link: { href: `semprec://items/${id}` } },
+  attributes: { link: { href: `alldots://items/${id}` } },
 });
 
 async function databaseIds(tenantId: string): Promise<Record<string, string>> {
@@ -90,7 +90,7 @@ const relationEvents = () => invalidations.filter((event) => event.scope === "re
 describe("Journal events relation follows the page's event links (issue #2016)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -210,7 +210,7 @@ describe("Journal events relation follows the page's event links (issue #2016)",
     const standup = await event("Standup");
     await inTenant(() => cp.softDeleteItem(databases.journal!, day));
     await inTenant(() =>
-      withTransaction(pool, (client) => syncJournalEventLinks(client, day, `[Standup](semprec://items/${standup.id})`)),
+      withTransaction(pool, (client) => syncJournalEventLinks(client, day, `[Standup](alldots://items/${standup.id})`)),
     );
     const { rows } = await admin.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM item_relations WHERE item_a = $1",

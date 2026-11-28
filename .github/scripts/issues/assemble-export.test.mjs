@@ -7,7 +7,7 @@ import { digest } from "./records.mjs";
 import { assembleExport, attachmentUrls, normalizeTimelineReference, readExportListing } from "./assemble-export.mjs";
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "semprec-export-assembly-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-export-assembly-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const save = async (path, value) => { await mkdir(join(root, path, ".."), { recursive: true }); await writeFile(join(root, path), JSON.stringify(value)); };
   const issue = { number: 21, state: "closed", body: "Archived specification", comments: 0, sub_issues_summary: { total: 0 } };
@@ -71,7 +71,7 @@ test("bulk history proof is accepted only for the matching source issue and comp
 });
 
 test("timeline reference normalization is idempotent and preserves comments and source identity", () => {
-  const input = { event: "cross-referenced", actor: { login: "owner" }, source: { type: "issue", issue: { id: 42, node_id: "I_42", number: 42, title: "Source", html_url: "https://github.com/dvdtrsnk/semprec/issues/42", repository_url: "https://api.github.com/repos/dvdtrsnk/semprec", state: "closed", body: "Original source body", repository: { duplicate: true } } } };
+  const input = { event: "cross-referenced", actor: { login: "owner" }, source: { type: "issue", issue: { id: 42, node_id: "I_42", number: 42, title: "Source", html_url: "https://github.com/dvdtrsnk/alldots/issues/42", repository_url: "https://api.github.com/repos/dvdtrsnk/alldots", state: "closed", body: "Original source body", repository: { duplicate: true } } } };
   const normalized = normalizeTimelineReference(input);
   assert.equal(normalized.source.issue.number, 42);
   assert.equal(normalized.source.issue.body, undefined);

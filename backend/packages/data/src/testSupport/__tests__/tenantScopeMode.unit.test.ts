@@ -6,12 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyTenantScopeMode, readTenantScopeWarnFiles, selectTenantScopeMode } from "../tenantScopeMode.js";
 
 /**
- * Importing the module also runs it here, where `vitest.unit.config.ts` pins `SEMPREC_TENANT_SCOPE`, so the pinned
+ * Importing the module also runs it here, where `vitest.unit.config.ts` pins `ALLDOTS_TENANT_SCOPE`, so the pinned
  * value stays; each case passes its own env object and leaves `process.env` alone.
  */
 
 const backendDirectory = fileURLToPath(new URL("../../../../../", import.meta.url));
-const LISTED = "services/semprec-api/src/__tests__/tenantIsolationRoutes.test.ts";
+const LISTED = "services/alldots-api/src/__tests__/tenantIsolationRoutes.test.ts";
 const UNLISTED = "packages/data/src/testSupport/__tests__/tenantScopeModeDefault.test.ts";
 const warnFiles: ReadonlySet<string> = new Set([LISTED]);
 
@@ -49,37 +49,37 @@ describe("applyTenantScopeMode", () => {
   it("sets warn for a listed file", () => {
     const env: NodeJS.ProcessEnv = {};
     applyTenantScopeMode(env, absolute(LISTED), warnFiles);
-    expect(env.SEMPREC_TENANT_SCOPE).toBe("warn");
+    expect(env.ALLDOTS_TENANT_SCOPE).toBe("warn");
   });
 
   it("sets strict for a file that is not listed", () => {
     const env: NodeJS.ProcessEnv = {};
     applyTenantScopeMode(env, absolute(UNLISTED), warnFiles);
-    expect(env.SEMPREC_TENANT_SCOPE).toBe("strict");
+    expect(env.ALLDOTS_TENANT_SCOPE).toBe("strict");
   });
 
   it("keeps an explicit strict for a listed file", () => {
-    const env: NodeJS.ProcessEnv = { SEMPREC_TENANT_SCOPE: "strict" };
+    const env: NodeJS.ProcessEnv = { ALLDOTS_TENANT_SCOPE: "strict" };
     applyTenantScopeMode(env, absolute(LISTED), warnFiles);
-    expect(env.SEMPREC_TENANT_SCOPE).toBe("strict");
+    expect(env.ALLDOTS_TENANT_SCOPE).toBe("strict");
   });
 
   it("keeps an explicit warn for a file that is not listed", () => {
-    const env: NodeJS.ProcessEnv = { SEMPREC_TENANT_SCOPE: "warn" };
+    const env: NodeJS.ProcessEnv = { ALLDOTS_TENANT_SCOPE: "warn" };
     applyTenantScopeMode(env, absolute(UNLISTED), warnFiles);
-    expect(env.SEMPREC_TENANT_SCOPE).toBe("warn");
+    expect(env.ALLDOTS_TENANT_SCOPE).toBe("warn");
   });
 
   it("keeps an explicit override when the running file is unknown", () => {
-    const env: NodeJS.ProcessEnv = { SEMPREC_TENANT_SCOPE: "warn" };
+    const env: NodeJS.ProcessEnv = { ALLDOTS_TENANT_SCOPE: "warn" };
     applyTenantScopeMode(env, undefined, warnFiles);
-    expect(env.SEMPREC_TENANT_SCOPE).toBe("warn");
+    expect(env.ALLDOTS_TENANT_SCOPE).toBe("warn");
   });
 
   it("sets nothing and fails when the running file is unknown and there is no override", () => {
     const env: NodeJS.ProcessEnv = {};
     expect(() => applyTenantScopeMode(env, undefined, warnFiles)).toThrow(/cannot determine the running test file/);
-    expect(env.SEMPREC_TENANT_SCOPE).toBeUndefined();
+    expect(env.ALLDOTS_TENANT_SCOPE).toBeUndefined();
   });
 });
 

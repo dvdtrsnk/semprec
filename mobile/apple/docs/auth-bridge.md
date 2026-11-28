@@ -20,7 +20,7 @@ by hand.
    Keychain. Never write it anywhere else (no `UserDefaults`, no disk file).
 2. When presenting the embedded editor, configure the `WKWebView`'s
    `WKUserContentController` with a `WKScriptMessageHandlerWithReply`
-   registered under the name `semprecNativeSession`
+   registered under the name `alldotsNativeSession`
    (`NATIVE_SESSION_BRIDGE_HANDLER_NAME`) — and only on that web view, never
    on a general-purpose in-app browser.
 3. On receiving a message, look up the token currently in the Keychain and
@@ -39,9 +39,9 @@ by hand.
 ## Web side (`web/`, not yet implemented)
 
 1. On startup, detect the bridge before attempting any login flow:
-   `typeof window.webkit?.messageHandlers?.semprecNativeSession !== "undefined"`.
+   `typeof window.webkit?.messageHandlers?.alldotsNativeSession !== "undefined"`.
 2. If present, request the session once via
-   `await window.webkit.messageHandlers.semprecNativeSession.postMessage({})`
+   `await window.webkit.messageHandlers.alldotsNativeSession.postMessage({})`
    and use the returned `token` as `Authorization: Bearer` on every API call
    for the life of the page, exactly as a native client would
    (`SESSION_DELIVERY_CHANNEL_BY_PLATFORM` requires Bearer for `ios`/`macos`).

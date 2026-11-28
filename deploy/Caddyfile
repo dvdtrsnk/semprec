@@ -2,14 +2,14 @@
 # point, no subdomains. Automatic TLS (Let's Encrypt) and HTTP/2 are Caddy defaults for a site
 # address that is a bare domain, so neither needs an explicit directive here.
 #
-# `semprec-api` (configured via /opt/semprec/shared/env/api.env's PORT, see deploy/shared/env/api.env.example,
+# `alldots-api` (configured via /opt/alldots/shared/env/api.env's PORT, see deploy/shared/env/api.env.example,
 # to listen on the same port this reverse_proxy targets) serves `/api/*` (including the
 # `/api/sync` WebSocket upgrade and the Graph webhook — Caddy's reverse_proxy forwards WebSocket
 # upgrades transparently, so no separate handling is needed), `/mcp` and `/healthz`. Caddy serves
 # everything else itself: the web client's static files from the current release, falling back to
 # its index.html for any path it does not have a file for (every client route is a query
 # parameter on `/`).
-{$SEMPREC_DOMAIN} {
+{$ALLDOTS_DOMAIN} {
 	encode zstd gzip
 
 	header {
@@ -50,7 +50,7 @@
 	# file the path is a 404, never the SPA fallback below. The directory is overridable like the
 	# domain so the hermetic test can point it at a scratch directory.
 	handle /.well-known/apple-app-site-association {
-		root * {$SEMPREC_AASA_DIR:/etc/caddy}
+		root * {$ALLDOTS_AASA_DIR:/etc/caddy}
 		rewrite * /apple-app-site-association
 		header Content-Type application/json
 		file_server
@@ -60,7 +60,7 @@
 	# index.html for any path it does not have a file for (every client route is a query
 	# parameter on /).
 	handle {
-		root * /opt/semprec/current/web/dist
+		root * /opt/alldots/current/web/dist
 		try_files {path} /index.html
 		file_server
 	}

@@ -24,7 +24,7 @@ import { McpConnectionError } from "../mcp/mcpConnectionError.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 import { SandboxedStdioClientTransport } from "../mcp/sandboxedStdioTransport.js";
 
-const SOCKET_ENV = "SEMPREC_MCP_LAUNCH_SOCKET";
+const SOCKET_ENV = "ALLDOTS_MCP_LAUNCH_SOCKET";
 const CREDENTIAL = "sk-sandboxed-secret";
 const MAX_HEADER_BYTES = 65_536;
 
@@ -77,12 +77,12 @@ interface FakeLauncher {
 }
 
 /**
- * Stands in for `deploy/bin/semprec-mcp-launch` behind its systemd socket: reads the header, then (in `spawn`
+ * Stands in for `deploy/bin/alldots-mcp-launch` behind its systemd socket: reads the header, then (in `spawn`
  * mode) runs the command with exactly the header's `env` and pipes the socket to it. `allowHalfOpen` keeps
  * the socket writable after the client's EOF, as systemd's accepted socket is.
  */
 async function startFakeLauncher(mode: LauncherMode, answer?: (socket: net.Socket) => void): Promise<FakeLauncher> {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "semprec-mcp-launch-"));
+  const directory = mkdtempSync(path.join(os.tmpdir(), "alldots-mcp-launch-"));
   const socketPath = path.join(directory, "launch.sock");
   const headers: (LaunchHeader | null)[] = [];
   const sockets = new Set<net.Socket>();
@@ -273,11 +273,11 @@ describe("sandboxed stdio MCP transport (issue #1070)", () => {
     return contract;
   }
 
-  describe("with SEMPREC_MCP_LAUNCH_SOCKET set", () => {
+  describe("with ALLDOTS_MCP_LAUNCH_SOCKET set", () => {
     it("completes the handshake through the launcher with only the configured env and the credential", async () => {
       await makeSoleTenantAdmin();
       const launcher = await startFakeLauncher("spawn");
-      const parentSecretName = "SEMPREC_TEST_PARENT_SECRET";
+      const parentSecretName = "ALLDOTS_TEST_PARENT_SECRET";
       const previousSecret = process.env[parentSecretName];
       try {
         process.env[SOCKET_ENV] = launcher.socketPath;
@@ -318,7 +318,7 @@ describe("sandboxed stdio MCP transport (issue #1070)", () => {
 
     it("rejects with handshake_failed and leaves no open socket when the socket path does not exist", async () => {
       await makeSoleTenantAdmin();
-      const directory = mkdtempSync(path.join(os.tmpdir(), "semprec-mcp-launch-missing-"));
+      const directory = mkdtempSync(path.join(os.tmpdir(), "alldots-mcp-launch-missing-"));
       try {
         process.env[SOCKET_ENV] = path.join(directory, "absent.sock");
         const created = spyOnCreatedSockets();
@@ -358,7 +358,7 @@ describe("sandboxed stdio MCP transport (issue #1070)", () => {
     });
   });
 
-  describe("without SEMPREC_MCP_LAUNCH_SOCKET outside tests", () => {
+  describe("without ALLDOTS_MCP_LAUNCH_SOCKET outside tests", () => {
     it.each([
       ["unset", undefined],
       ["empty", ""],

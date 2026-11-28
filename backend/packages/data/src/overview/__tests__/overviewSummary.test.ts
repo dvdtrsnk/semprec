@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
@@ -147,7 +147,7 @@ async function unreadMessages(owner: Tenant, count: number): Promise<void> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runAsSystem("verify overview summary test role", () =>
     runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -156,7 +156,7 @@ beforeAll(async () => {
   expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
   cp = createChokePoint(runtime);
   resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-overview-summary-"));
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-overview-summary-"));
   storage = new LocalFsBlobStorageWriter(storageRoot);
 }, 120_000);
 

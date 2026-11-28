@@ -1,0 +1,58 @@
+[Unit]
+Description=Alldots transcription worker
+Wants=network-online.target
+After=network-online.target docker.service
+StartLimitIntervalSec=15min
+StartLimitBurst=180
+OnFailure=alldots-failping@%n.service
+
+[Service]
+Type=simple
+User=alldots
+Group=alldots
+# Process containment (issue #1071), see deploy/README.md "Service sandboxing".
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+# ReadWritePaths must equal FILES_STORAGE_DIR in /opt/alldots/shared/env/settings.env;
+# changing that variable requires changing this line.
+ReadWritePaths=/opt/alldots/data/files
+# Not set: MemoryDenyWriteExecute=, V8 JIT needs writable-executable pages.
+# Not set: ProcSubset=pid, it hides /proc/cpuinfo and /proc/meminfo that Node os reads.
+# Not set: PrivateUsers=, it remaps the uid/gid namespace that ownership checks depend on.
+WorkingDirectory=/opt/alldots/current/backend
+EnvironmentFile=/opt/alldots/shared/env/data-role.env
+EnvironmentFile=/opt/alldots/shared/env/gateway-token.env
+EnvironmentFile=/opt/alldots/shared/env/settings.env
+EnvironmentFile=/opt/alldots/current/release.env
+SyslogIdentifier=alldots-transcribe
+ExecStart=/usr/bin/env node /opt/alldots/current/backend/services/alldots-transcribe/dist/serve.js
+Restart=on-failure
+RestartSec=5s
+# Worst-case one ASR chunk: ffmpeg extraction (5min cap) + gateway call (10min
+# cap) + checkpoint write; the task exits at its next checkpoint once
+# runner.stop() has begun.
+TimeoutStopSec=960
+
+[Install]
+WantedBy=multi-user.target

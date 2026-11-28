@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadModuleCatalogs, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, type ModuleCatalogs } from "@alldots/module-registry";
 import { renderResolutionTitle } from "../sempResolutionTitles.js";
 
 let catalogs: ModuleCatalogs;

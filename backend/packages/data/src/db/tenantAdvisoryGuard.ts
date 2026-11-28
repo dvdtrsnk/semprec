@@ -1,7 +1,7 @@
 // A transaction-scoped advisory lock keyed by tenant and id, for guards that order whole operations on one record
 // (a mailbox's sync passes and removal, an account's calendar sync passes and Calendars switch).
 import type { PoolClient } from "pg";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 
 /** `lock_not_available`, raised when `lock_timeout` ends a wait. */
 const LOCK_NOT_AVAILABLE = "55P03";

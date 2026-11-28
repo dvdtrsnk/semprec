@@ -5,7 +5,7 @@
 // expanded text is returned to the caller and kept nowhere.
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import type { SempMessageRef } from "@semprec/shared";
+import type { SempMessageRef } from "@alldots/shared";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";

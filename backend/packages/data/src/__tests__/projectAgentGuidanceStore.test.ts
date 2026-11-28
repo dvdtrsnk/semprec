@@ -5,7 +5,7 @@ import { getTestPool, resetDatabase, tenantForNextTestUser } from "../testSuppor
 import { createTenantZeroUser, createTestTenant, getTenantZeroId } from "../testSupport/tenantFixtures.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { GuidanceReferenceNotFoundError, runInTenant } from "@semprec/shared";
+import { GuidanceReferenceNotFoundError, runInTenant } from "@alldots/shared";
 import { createPool, runAfterCommit, withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";

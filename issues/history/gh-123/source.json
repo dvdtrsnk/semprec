@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/123",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/123",
   "id": 5289604807,
   "node_id": "I_kwDOUFuQ4c8AAAABO0j2xw",
   "number": 123,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/122",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/122",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #121\n\n## Context\n\nMCP connections are system resources similar to mailboxes, but secret material cannot live in item JSON.\n\n## Task\n\nSeed Semprec-owned system database `mcpServers` with name, strict connection configuration for `stdio`, `sse`, or `http`, `active`, `syncStatus`, and `lastSynced`. Extend `external_credentials` ownership to MCP server items and use the existing credentials package for encryption/decryption. Extend Processing proposal confirmation for database target `mcpServers`: Semp may propose non-secret name/config, while a logged-in human supplies the credential separately during the same confirmation transaction. Proposal JSON must reject credential fields. Neither proposal nor agent paths may synchronize tools.\n\n## Scope\n\n### In scope\n\n- Database seed, transport config validation, credential ownership, and proposal/confirm integration.\n\n### Out of scope\n\n- Tool discovery, grants, invocation, and new encryption design.\n\n## Acceptance criteria\n\n- No plaintext credential appears in items, proposal history, or logs.\n- Confirm atomically stores server and encrypted credential or neither.\n- Agents can propose server metadata but cannot provide secrets or sync.\n",
+  "body": "**Blocked by:** #121\n\n## Context\n\nMCP connections are system resources similar to mailboxes, but secret material cannot live in item JSON.\n\n## Task\n\nSeed Alldots-owned system database `mcpServers` with name, strict connection configuration for `stdio`, `sse`, or `http`, `active`, `syncStatus`, and `lastSynced`. Extend `external_credentials` ownership to MCP server items and use the existing credentials package for encryption/decryption. Extend Processing proposal confirmation for database target `mcpServers`: Semp may propose non-secret name/config, while a logged-in human supplies the credential separately during the same confirmation transaction. Proposal JSON must reject credential fields. Neither proposal nor agent paths may synchronize tools.\n\n## Scope\n\n### In scope\n\n- Database seed, transport config validation, credential ownership, and proposal/confirm integration.\n\n### Out of scope\n\n- Tool discovery, grants, invocation, and new encryption design.\n\n## Acceptance criteria\n\n- No plaintext credential appears in items, proposal history, or logs.\n- Confirm atomically stores server and encrypted credential or neither.\n- Agents can propose server metadata but cannot provide secrets or sync.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/123/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/123/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

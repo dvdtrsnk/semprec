@@ -48,10 +48,10 @@ describe("computeJournalSummary (issue #1711)", () => {
   });
 
   it("passes over a page link, which has no text, to the first line that has text", () => {
-    expect(computeJournalSummary(`[](semprec://page/${PAGE_UUID})\nOdstavec textu`)).toBe("Odstavec textu");
+    expect(computeJournalSummary(`[](alldots://page/${PAGE_UUID})\nOdstavec textu`)).toBe("Odstavec textu");
   });
 
   it("returns null when the only block is a page link without text", () => {
-    expect(computeJournalSummary(`[](semprec://page/${PAGE_UUID})`)).toBeNull();
+    expect(computeJournalSummary(`[](alldots://page/${PAGE_UUID})`)).toBeNull();
   });
 });

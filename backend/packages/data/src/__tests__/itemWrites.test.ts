@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Settings } from "luxon";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTenantZeroId } from "../testSupport/testDb.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTenantZeroId, getTestPool, resetDatabase } from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createUser,
@@ -9,7 +9,7 @@ import {
   insertAgentRunEvent,
   setNotificationCreatedHook,
   type AgentRunEventKind,
-} from "@semprec/data";
+} from "@alldots/data";
 import { reconstructConversationHistory } from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type { ConversationEntry } from "../types.js";

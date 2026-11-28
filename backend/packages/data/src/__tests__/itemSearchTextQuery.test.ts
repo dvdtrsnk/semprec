@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import type { ItemCountEntryInput } from "../chokePoint/itemReads.js";
@@ -94,7 +94,7 @@ async function refusalOf(request: Promise<unknown>): Promise<ValidationError> {
 describe("q on database.query, view.query and item.count (issue #1857)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
   });

@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { CAPABILITY_IDS } from "@semprec/shared";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CAPABILITY_IDS } from "@alldots/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";

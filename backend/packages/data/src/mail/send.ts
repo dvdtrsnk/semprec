@@ -400,7 +400,7 @@ export async function sendDraftEmail(
       recipientsPeopleKey: moduleIds.recipientsPeopleKey,
     });
 
-    // Only Semprec-written drafts have a `mail_drafts` row. The item is already locked, so the row follows
+    // Only Alldots-written drafts have a `mail_drafts` row. The item is already locked, so the row follows
     // the lock order.
     if ((await getMailDraft(client, input.draftItemId)) !== null) {
       await markMailDraftSent(client, input.draftItemId, sentAt);

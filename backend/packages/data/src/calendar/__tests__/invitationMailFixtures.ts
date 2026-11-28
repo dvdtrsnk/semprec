@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";

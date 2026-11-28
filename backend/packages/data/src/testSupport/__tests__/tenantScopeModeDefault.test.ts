@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, inject, it } from "vitest";
-import { runAsSystem, TenantScopeMissingError } from "@semprec/shared";
+import { runAsSystem, TenantScopeMissingError } from "@alldots/shared";
 import { createPool } from "../../db/pool.js";
 
 declare module "vitest" {
   interface ProvidedContext {
-    /** `null` when the vitest process was started without `SEMPREC_TENANT_SCOPE`. */
+    /** `null` when the vitest process was started without `ALLDOTS_TENANT_SCOPE`. */
     explicitTenantScopeMode: string | null;
   }
 }
@@ -22,7 +22,7 @@ const pool = createPool(connectionString);
 
 function skipUnderOverride(context: { skip: (note?: string) => never }): void {
   if (explicitTenantScopeMode !== null) {
-    context.skip(`the vitest process carries an explicit SEMPREC_TENANT_SCOPE=${explicitTenantScopeMode}`);
+    context.skip(`the vitest process carries an explicit ALLDOTS_TENANT_SCOPE=${explicitTenantScopeMode}`);
   }
 }
 
@@ -33,7 +33,7 @@ describe("the default tenant-scope mode of an integration test file that is not 
 
   it("is strict", (context) => {
     skipUnderOverride(context);
-    expect(process.env.SEMPREC_TENANT_SCOPE).toBe("strict");
+    expect(process.env.ALLDOTS_TENANT_SCOPE).toBe("strict");
   });
 
   it("refuses a query through createPool outside any scope", async (context) => {

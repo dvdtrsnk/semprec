@@ -1,5 +1,5 @@
-import { parseMarkdown, serializeBlocks } from "@semprec/block-model";
-import { MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@semprec/shared";
+import { parseMarkdown, serializeBlocks } from "@alldots/block-model";
+import { MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES } from "@alldots/shared";
 
 const PROJECT_GUIDANCE_HEADING = "## Project-specific guidance";
 

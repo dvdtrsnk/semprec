@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The debug alarm screen's adapter over a scripted shared model: it republishes the state and forwards every intent;
 /// what each intent does is the shared ViewModel's.

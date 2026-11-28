@@ -1,4 +1,4 @@
-import { validateBlockInput, type BlockInput } from "@semprec/block-model";
+import { validateBlockInput, type BlockInput } from "@alldots/block-model";
 import { ValidationError } from "../errors.js";
 
 export function assertValidBlockInput(input: unknown): asserts input is BlockInput {

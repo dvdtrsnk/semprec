@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1637",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1637",
   "id": 6022569331,
   "node_id": "I_kwDOUFuQ4c8AAAABZvkdcw",
   "number": 1637,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1338",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1338",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** #1505, #1634\n**Model tier:** medium\n\n## Context\n\nModel tier rationale: One more implementation of an existing transport interface against a documented REST endpoint, using the established Gmail client and token exchange, with defined threading behavior.\n\nMailboxes that sync through the Gmail API send through the Gmail API as well. The Gmail REST client (`backend/packages/data/src/mail/gmailRestClient.ts`) can read and label messages but cannot send. Gmail only files a sent message into an existing conversation when the request carries that conversation's thread id; the In-Reply-To header alone is not enough.\n\nThis builds on the transport interface and the SMTP transport (#1634) and the Gmail API sync transport (#1505, whose client and access-token handling it extends). Microsoft Graph sending is #1753.\n\n## Task\n\nLoad `io-hardening`, `error-handling` and `testing`.\n\n1. Add `sendMessage(raw, threadId?)` to `GmailRestClient` that calls `users.messages.send` with the raw MIME as base64url and the optional `threadId`, with the same timeout and error discipline as the other Gmail calls. It returns the Gmail message id and thread id.\n2. Implement the `gmail_api` `MailTransport`: obtain an access token from the stored refresh token, pass `providerThreadId` (the provider thread id of the source message, when the draft is a reply) as `threadId`, and return the provider message id.\n3. Map a 400 or 401 from token refresh or send to `MailReauthorizationRequiredError`, and a Gmail response that names an invalid recipient to `MailRecipientRejectedError`; anything else is an ordinary failure. Error text never includes the message or tokens.\n4. Register the transport in the factory for the `gmail_api` sync mode.\n\n## Touches\n\n- backend/packages/data/src/mail/gmailRestClient.ts\n- backend/packages/data/src/mail/gmailTransport.ts (new)\n- backend/packages/data/src/mail/mailTransport.ts (factory registration)\n- backend/packages/data/src/__tests__/gmailRestClient.unit.test.ts\n- backend/packages/data/src/__tests__/gmailTransport.test.ts (new)\n\n## Scope\n\n### In scope\n\n- Sending raw MIME through Gmail with thread id and the error mapping above.\n\n### Out of scope\n\n- Saving a Sent copy (Gmail does it itself).\n- The send route (#1896), Graph (#1753) and SMTP (#1634).\n- Requesting additional OAuth scopes: `gmail.send` is already requested when a mailbox is connected.\n\n## Acceptance criteria\n\n- When a reply is sent with a provider thread id, then the request contains that `threadId` and the message appears in the same Gmail thread.\n- When the token is revoked, then the transport throws `MailReauthorizationRequiredError`.\n- When Gmail rejects a recipient, then the transport throws `MailRecipientRejectedError`.\n- The sent message keeps the Message-ID from the MIME, so the later synced copy deduplicates onto the same item.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1637/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1637/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { inTenantZero } from "../testSupport/tenantFixtures.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -779,7 +779,7 @@ describe("agent writes that would end a value link (issue #1758)", () => {
 
   describe("tenants", () => {
     it("never reserves the links of another tenant, through the runtime role", async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const tenantA = await createTestTenant(pool);
         const tenantB = await createTestTenant(pool);

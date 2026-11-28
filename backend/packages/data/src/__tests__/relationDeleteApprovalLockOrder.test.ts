@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseError, type Pool, type PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
   computeDestructiveResourceProjection,
@@ -46,7 +46,7 @@ let propagation: Participant;
 let replay: Participant;
 
 async function participant(name: string): Promise<Participant> {
-  const pool = await createRuntimeRolePool(admin, "semprec_data");
+  const pool = await createRuntimeRolePool(admin, "alldots_data");
   // Set before the pool opens its first connection, so every backend of this participant carries the name.
   pool.options.application_name = name;
   return { name, pool, cp: createChokePoint(pool) };

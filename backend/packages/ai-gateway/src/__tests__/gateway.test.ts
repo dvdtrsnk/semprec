@@ -12,7 +12,7 @@ import {
   seedSystem,
   setInvalidationHook,
   withTransaction,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -20,8 +20,8 @@ import {
   getTestPool,
   resetDatabase,
   setTenantAiBudget,
-} from "@semprec/data/testSupport";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { BudgetExceededError, complete, diarize, embed, transcribe } from "../gateway.js";
 import { logger } from "../logger.js";
 
@@ -550,7 +550,7 @@ describe("gateway", () => {
   });
 });
 
-describe("gateway caps across tenants, through the semprec_side role", () => {
+describe("gateway caps across tenants, through the alldots_side role", () => {
   const REFUSAL = "AI budget exceeded";
   let adminPool: Pool;
   let sidePool: Pool;
@@ -562,8 +562,8 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
     try {
-      sidePool = await createRuntimeRolePool(adminPool, "semprec_side");
-      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      sidePool = await createRuntimeRolePool(adminPool, "alldots_side");
+      dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     } catch (error) {
       setupCleanupAttempted = true;
       const results = await Promise.allSettled([sidePool?.end(), adminPool.end()]);
@@ -891,7 +891,7 @@ describe("gateway caps across tenants, through the semprec_side role", () => {
   }
 
   async function seedTenantTimezone(tenantId: string, zone: string): Promise<void> {
-    const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     try {
       await runInTenant(tenantId, () => seedSystem(dataPool));
     } finally {

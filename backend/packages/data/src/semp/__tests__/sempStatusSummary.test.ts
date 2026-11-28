@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { recordTokenGatewayCall } from "../../aiGateway/aiGatewayCallsStore.js";
 import { getAiUsageSummary } from "../../aiGateway/aiUsageSummary.js";
 import { setTenantAiBudget } from "../../aiGateway/tenantAiBudgetsStore.js";
@@ -93,7 +93,7 @@ const agentsProblem = (tenant: string, userId: string) =>
 describe("Semp status summary (issue #1631)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("summary test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -11,7 +11,7 @@ A repair of the integration tip, as the section "Repairs of the integration tip"
 - Conflicts: none. The merge was automatic.
 - Files changed: two test files under `backend/`. No production file, nothing under `issues/`. Checked with `git diff --name-only 65aa8a274 bc6995ab1`, which lists exactly:
   - `backend/packages/data/src/__tests__/rowLevelSecurity.test.ts`
-  - `backend/services/semprec-agents/src/__tests__/sempTurnReadAllowances.test.ts`
+  - `backend/services/alldots-agents/src/__tests__/sempTurnReadAllowances.test.ts`
 - Causing sources, both ancestors of the tip (`git merge-base --is-ancestor`):
   - gh-1827, commit `ba4fc32c3` ("Redact sensitive tool results from agent run history"), from chain `e1-097-agent-runtime`, merge `5520e870e`.
   - gh-1812, commit `0bdf371b39d2c51e6ffd01d87b70b208890b074a` ("Store library cover candidates and let the user pick one"), from chain `e1-102-library`, merge `b2f65a450`.
@@ -24,7 +24,7 @@ Entries that `result.json` classifies as real and that failed alone (2 entries i
 
 | File (under `backend/`) | Entry as reported | Failure as reported |
 | --- | --- | --- |
-| `services/semprec-agents/src/__tests__/sempTurnReadAllowances.test.ts` | one-turn read allowances of a Semp turn (issue #1849) > a turn that attaches a health record > lets the agent read the attached record in that turn without a grant, refuses another record of the database, refuses the attached record outside the turn | Shard 1 and alone: `read.text` is `[redacted: sensitive]` but the test expects it to contain `Attached record` (`sempTurnReadAllowances.test.ts:243`). |
+| `services/alldots-agents/src/__tests__/sempTurnReadAllowances.test.ts` | one-turn read allowances of a Semp turn (issue #1849) > a turn that attaches a health record > lets the agent read the attached record in that turn without a grant, refuses another record of the database, refuses the attached record outside the turn | Shard 1 and alone: `read.text` is `[redacted: sensitive]` but the test expects it to contain `Attached record` (`sempTurnReadAllowances.test.ts:243`). |
 | `packages/data/src/__tests__/rowLevelSecurity.test.ts` | row-level security as the runtime roles (whole suite, 14 tests skipped because `beforeAll` failed) | Shard 4 and alone: expected `tenantTables` `toHaveLength(67)` but got 68 (`rowLevelSecurity.test.ts:107`). |
 
 Entries of the same run that this repair does not address (9 entries):
@@ -39,14 +39,14 @@ Entries of the same run that this repair does not address (9 entries):
 | `packages/data/src/agentRuns/__tests__/agentRunsThreadMigration.test.ts` | upgrades populated runs on the historical single-tenant schema with the real migration runner | pass | load |
 | `packages/data/src/__tests__/mailDraftsStore.test.ts` | upgrades populated legacy state before installing the draft table | pass | load |
 | `packages/data/src/__tests__/migrationCompatibility.test.ts` | adds unverified classification without changing populated historical blobs | pass | load |
-| `services/semprec-transcribe/src/transcriptionTask.test.ts` | transcription steps 4-8 > retries and permanent failures (issue #248) > rerun of a finished transcript without meeting notes (issue #1712) > pays no speaker suggestion call for ... (`TranscriptionQueueError: Transcription task failed`) | pass | load |
+| `services/alldots-transcribe/src/transcriptionTask.test.ts` | transcription steps 4-8 > retries and permanent failures (issue #248) > rerun of a finished transcript without meeting notes (issue #1712) > pays no speaker suggestion call for ... (`TranscriptionQueueError: Transcription task failed`) | pass | load |
 
 The load entries hit a 30 s or 120 s test timeout or a statement timeout in the sharded run under four concurrent shards and passed alone. The baseline case is the known failure of the macOS delivery host (the child process has the extra name `__CF_USER_TEXT_ENCODING`).
 
 ## Cause
 
-- gh-1827, `ba4fc32c3`, stores the `tool_result` of a content-bearing operation on a sensitive database as `[redacted: sensitive]` and keeps the real result live in the turn. The Health records database is sensitive. The test of gh-1849 (`f7058f9fb`, chain `e1-096-semprec-agents`, merge `8e9060754`) read the stored `agent_run_events` text and expected `Attached record`. gh-1849 landed before gh-1827, so its test was not written against the redaction; neither chain ran against the other.
-- gh-1812, `0bdf371b3`, added the tenant table `library_cover_candidates` (migration `0156_library_cover_candidates.sql`, comment `semprec:tenancy=tenant`). gh-1849 had moved the hard-coded count to 67 with `agent_run_read_allowances`, so the count became 68. The migration was merged without updating `rowLevelSecurity.test.ts`.
+- gh-1827, `ba4fc32c3`, stores the `tool_result` of a content-bearing operation on a sensitive database as `[redacted: sensitive]` and keeps the real result live in the turn. The Health records database is sensitive. The test of gh-1849 (`f7058f9fb`, chain `e1-096-alldots-agents`, merge `8e9060754`) read the stored `agent_run_events` text and expected `Attached record`. gh-1849 landed before gh-1827, so its test was not written against the redaction; neither chain ran against the other.
+- gh-1812, `0bdf371b3`, added the tenant table `library_cover_candidates` (migration `0156_library_cover_candidates.sql`, comment `alldots:tenancy=tenant`). gh-1849 had moved the hard-coded count to 67 with `agent_run_read_allowances`, so the count became 68. The migration was merged without updating `rowLevelSecurity.test.ts`.
 
 The queue runner did not re-derive the causes; they are the worker's and the reviewer's, and the reviewer checked them against the code and the Tasks of gh-1827 and gh-1812. The queue runner checked only that both commits are ancestors of the tip.
 
@@ -59,7 +59,7 @@ One commit, `bc6995ab1963fd9ea5424fcad475ea37b2668a95`, with trailers `Repair-Of
 | `sempTurnReadAllowances.test.ts` | A faux provider step now captures the tool result the model sees in the live turn, and the test expects it to contain `Attached record`. The stored text is expected to be exactly `[redacted: sensitive]` while `isError` stays false. All other assertions are unchanged. | Scratch change, reverted: `readAllowedItemIds` ignored its refs, so the attached record was refused and the test failed with `expected true to be false`. Scratch change, reverted, with agent-runtime rebuilt before and after: `redactSensitiveToolResult` returned the message unchanged and the test failed on the stored text `to be [redacted: sensitive]`. The old stale matcher was not re-run by the worker; the controller reported its failure. |
 | `rowLevelSecurity.test.ts` | `toHaveLength(67)` became `toHaveLength(68)` and `library_cover_candidates` was added to the `arrayContaining` list of expected tenant tables. | Scratch change, reverted: the count set back to 67 failed with `to have a length of 67 but got 68`. Scratch change, reverted: a list name changed to `library_cover_candidatez` failed the `arrayContaining` assertion. |
 
-The worker's record also states: `install --frozen-lockfile` and `-r run build` in `backend`; the two target files after the repair (2 files, 37 tests passed, before and after the scratch checks); prettier and eslint on both files (pass); `tsc --noEmit` in `services/semprec-agents` (no errors); `productionFilesChanged` empty. It searched the backend tests for the same two stale patterns and found none: `sleepNightRefExpansion.test.ts` asserts only `isError` and `forbidden` on refusals, and no other test hard-codes the tenant table count. No assertion was removed or loosened and no timeout was changed. The worker did not run the baseline `mcpConnectionFactory.test.ts`.
+The worker's record also states: `install --frozen-lockfile` and `-r run build` in `backend`; the two target files after the repair (2 files, 37 tests passed, before and after the scratch checks); prettier and eslint on both files (pass); `tsc --noEmit` in `services/alldots-agents` (no errors); `productionFilesChanged` empty. It searched the backend tests for the same two stale patterns and found none: `sleepNightRefExpansion.test.ts` asserts only `isError` and `forbidden` on refusals, and no other test hard-codes the tenant table count. No assertion was removed or loosened and no timeout was changed. The worker did not run the baseline `mcpConnectionFactory.test.ts`.
 
 ## Review
 
@@ -69,7 +69,7 @@ One reviewer from another context read the range `65aa8a274..bc6995ab1`. The rev
 - Findings: none (`findings` is `[]`). There is no finding to dispose of.
 - Remaining nit the reviewer states, not a finding: the test uses the literal `[redacted: sensitive]`, as `agentRun.e2e.test.ts` does, and not the exported constant. Nothing was changed for it.
 
-What the reviewer checked by reading: only the two test files changed, no production code, nothing under `issues/`. For `rowLevelSecurity`, the matcher is a catalog query (comment `semprec:tenancy=tenant`) plus an exact length; the reviewer counted 69 tenancy=tenant comments in the migrations, minus `resource_grants` dropped in 0082, which gives 68; the exact length is kept, so a later table still fails the count. For `sempTurnReadAllowances`, no assertion was removed or loosened and no timeout touched; the stored-text `toContain` is replaced by two stronger assertions; only successful content-bearing results are marked for redaction, so the `forbidden` assertions on error results are unaffected, and `isError` stays false after redaction; the faux step order and count are unchanged and the helper types are valid for pi-ai 0.85.1. The cause is confirmed against the Tasks of gh-1827 and gh-1812. A search of other tests that read `agent_run_events` tool_result text (`sleepNightRefExpansion`, `sempThreadPrompt`, `tenantIsolationRoutes`, `agentRun.e2e`) found only `isError` or error text, already-redacted expectations, or non-sensitive data. Limit the reviewer states: it ran no test and did not re-execute the worker's mutation claims.
+What the reviewer checked by reading: only the two test files changed, no production code, nothing under `issues/`. For `rowLevelSecurity`, the matcher is a catalog query (comment `alldots:tenancy=tenant`) plus an exact length; the reviewer counted 69 tenancy=tenant comments in the migrations, minus `resource_grants` dropped in 0082, which gives 68; the exact length is kept, so a later table still fails the count. For `sempTurnReadAllowances`, no assertion was removed or loosened and no timeout touched; the stored-text `toContain` is replaced by two stronger assertions; only successful content-bearing results are marked for redaction, so the `forbidden` assertions on error results are unaffected, and `isError` stays false after redaction; the faux step order and count are unchanged and the helper types are valid for pi-ai 0.85.1. The cause is confirmed against the Tasks of gh-1827 and gh-1812. A search of other tests that read `agent_run_events` tool_result text (`sleepNightRefExpansion`, `sempThreadPrompt`, `tenantIsolationRoutes`, `agentRun.e2e`) found only `isError` or error text, already-redacted expectations, or non-sensitive data. Limit the reviewer states: it ran no test and did not re-execute the worker's mutation claims.
 
 ## Gate on the merged tree
 
@@ -88,7 +88,7 @@ Run in `backend/` of the integration worktree with `npx -y pnpm@9.12.0`, on the 
 | Targeted integration run, the known baseline case of `mcpConnectionFactory.test.ts` | FAIL | "gives the child exactly the inherited names, the config's env names and the credential name": the child has the additional name `__CF_USER_TEXT_ENCODING`. Known baseline of the macOS delivery host, same diff as in the full tier. Not a result of this repair and did not hold the landing. |
 | `install --frozen-lockfile` | NOT RUN | The merge changes neither the lockfile nor any `package.json`. |
 | `run check:pi-import-paths` | NOT RUN | Not part of the gate set for this repair. |
-| `--filter @semprec/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
+| `--filter @alldots/data run check-migration-numbering` | NOT RUN | Not part of the gate set for this repair. The repair adds no migration. |
 | `run test:e2e` | NOT RUN | Not part of the gate set for this repair. No end-to-end file and no production file changed. |
 | Whole integration tier | NOT RUN | See "Not repaired and open". |
 

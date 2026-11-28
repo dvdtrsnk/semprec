@@ -7,7 +7,7 @@ import {
   runInTenant,
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { setMcpToolDisplayLabel } from "../mcpGrantsAdminStore.js";
@@ -83,7 +83,7 @@ describe("suggestMcpToolLabels (issue gh-1983)", () => {
   beforeEach(async () => {
     adminPool ??= getTestPool();
     await resetDatabase(adminPool);
-    dataPool ??= await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool ??= await createRuntimeRolePool(adminPool, "alldots_data");
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
     serverId = randomUUID();

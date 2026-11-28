@@ -1,7 +1,7 @@
 // `coreAgentRunAction` cannot import the mail resolvers (`scheduler/actions.ts` is imported by the choke
 // point, which the mail module imports), so the agents composition root passes them in.
 import type { Pool } from "pg";
-import type { AiGatewayClientPort } from "@semprec/shared";
+import type { AiGatewayClientPort } from "@alldots/shared";
 import type { CoreAgentRunDependencies } from "../scheduler/actions.js";
 import { createAnswerExpectedGate } from "../scheduler/answerExpectedFilter.js";
 import { resolveMailThreadRunProject } from "./newEmailRunProject.js";

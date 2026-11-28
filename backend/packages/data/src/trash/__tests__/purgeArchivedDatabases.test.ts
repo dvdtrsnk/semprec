@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { currentTenantScope, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runInTenant } from "@alldots/shared";
 import { createBlob } from "../../blobs/blobsStore.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -118,7 +118,7 @@ async function sweep(storage: BlobStorageWriter, alternate?: BlobStorageWriter, 
 describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(dataPool);
   });
 

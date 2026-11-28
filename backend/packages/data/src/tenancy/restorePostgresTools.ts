@@ -249,12 +249,12 @@ export class RestorePostgresTools {
 
   async restoreArchive(database: string, archive: Buffer, selection: string, signal?: AbortSignal): Promise<void> {
     if (
-      !/^semprec_restore_[a-f0-9]{32}$/.test(database) ||
+      !/^alldots_restore_[a-f0-9]{32}$/.test(database) ||
       !/^\d+; \d+ \d+ TABLE DATA public tenant_keys \S+$/.test(selection)
     )
       throw new Error("Invalid restore selection");
     const script =
-      "umask 077; f=$(mktemp /tmp/semprec-key-toc.XXXXXXXX) || exit 1; " +
+      "umask 077; f=$(mktemp /tmp/alldots-key-toc.XXXXXXXX) || exit 1; " +
       'printf "%s\\n" "$1" > "$f" || { rm -f -- "$f"; exit 1; }; ' +
       'pg_restore --username=postgres --dbname="$2" --data-only --exit-on-error --no-owner --no-privileges --use-list="$f"; ' +
       's=$?; rm -f -- "$f" || exit 1; exit "$s"';

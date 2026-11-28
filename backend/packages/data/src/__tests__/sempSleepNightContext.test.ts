@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runInTenant, type SempMessageRef } from "@semprec/shared";
+import { runInTenant, type SempMessageRef } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -57,7 +57,7 @@ async function seededTenant(): Promise<SleepTenant> {
   const plans = await database(SLEEP_PLANS_MODULE_ID);
   const nights = await database(SLEEP_NIGHTS_MODULE_ID);
   const inbox = await database("inbox");
-  if (!inbox.ownerProjectItemId) throw new Error("Missing Semprec project");
+  if (!inbox.ownerProjectItemId) throw new Error("Missing Alldots project");
   const planRows = await inTenant(tenantId, async (client) => {
     const { rows } = await client.query<{ id: string; properties: { name: string; wakeDays: string[] } }>(
       "SELECT id, properties FROM items WHERE database_id = $1 AND deleted_at IS NULL",
@@ -106,7 +106,7 @@ async function grantSleep(t: SleepTenant, access: "none" | "read" | "write", onl
 }
 
 interface ReadOptions {
-  /** Defaults to the Semprec project; `null` is no project. */
+  /** Defaults to the Alldots project; `null` is no project. */
   project?: string | null;
   attachedThisTurn?: boolean;
   night?: string;
@@ -130,7 +130,7 @@ function readNight(t: SleepTenant, options: ReadOptions = {}): Promise<SempRefCo
 describe("a sleepNight reference read (issue #1853)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

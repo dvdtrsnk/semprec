@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The routes of the Tasks screen and of the Podrobnosti sheet: which stack they reach, and how.
 final class WorkNavigationTests: XCTestCase {

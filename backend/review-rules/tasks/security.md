@@ -16,7 +16,7 @@ Check for security vulnerabilities:
 6. A new external HTTP call (IMAP, AI gateway, webhook) with no timeout, no size cap
    on the response, or no error handling that could hang the owning process — medium.
 7. An AI-provider credential (API key, token) configured or read anywhere outside
-   `semprec-ai-gateway`'s own environment — high: only the gateway process may hold
+   `alldots-ai-gateway`'s own environment — high: only the gateway process may hold
    provider credentials, so a leak or misuse is containable to one process.
 8. Any change under `.github/workflows/` that the linked issue's Task section does
    not explicitly call for — critical: the workflows ARE the merge gate, and a PR

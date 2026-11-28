@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { getBlob } from "../blobs/blobsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -10,7 +10,7 @@ import { tenantLane } from "../tenancy/tenantLane.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { listInboxAttachments } from "./inboxAttachmentsStore.js";
 
-// The handler is `semprec-transcribe`'s `inboxVoiceNoteTranscribe.ts`; it makes the gateway calls and writes the
+// The handler is `alldots-transcribe`'s `inboxVoiceNoteTranscribe.ts`; it makes the gateway calls and writes the
 // property through the store functions here.
 
 /**

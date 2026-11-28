@@ -2,9 +2,9 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { removeAgentDatabaseGrant, setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { getAccess, type AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
@@ -107,7 +107,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 describe("per-database agent grants (issue #1810)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await inTenant(() => seedSystem(dataPool, createViewTypeRegistry()));

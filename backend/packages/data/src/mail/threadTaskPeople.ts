@@ -3,8 +3,8 @@
 // job does the work later under each task's row lock. Removing an edge never removes a person from a task.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 import type { RelationEdgeChangedHook } from "../chokePoint/hooks.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";

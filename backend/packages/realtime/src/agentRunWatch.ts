@@ -6,8 +6,8 @@ import {
   getSempVoiceDelivery,
   listAgentRunEventsAfter,
   type AgentRunEventRow,
-} from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import type { AgentStreamMessage } from "./pgNotifyPublisher.js";
 import { isAgentRunEventId, isUuid, type AgentDeltaChunk, type OutboundFrame } from "./protocolV1.js";
 import { sendWithBackpressure } from "./backpressure.js";

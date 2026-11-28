@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createPool, requireSingleRow, withTransaction } from "../../db/pool.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -17,7 +17,7 @@ import { EMAILS_RELATION_CONTEXT } from "../emailsRelationContext.js";
 import { reindexItemSearch, searchItems } from "../search.js";
 
 let adminPool: Pool;
-/** Runtime role (semprec_data) pool: row-level security applies to every read and write in this file. */
+/** Runtime role (alldots_data) pool: row-level security applies to every read and write in this file. */
 let dataPool: Pool;
 
 interface MailFixture {
@@ -128,7 +128,7 @@ async function storedMessage(tenantId: string, itemId: string): Promise<StoredMe
 describe("drafts and sent mail are read by definition (issue #1461)", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   });
 
   beforeEach(async () => {

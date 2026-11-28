@@ -9,7 +9,7 @@ export const SESSION_DEVICE_LOCK_CLASS = 2334;
 /** Transaction-scoped. Ids are cast through `uuid` so two spellings of one `deviceId` share a key. */
 export async function lockSessionDevice(client: PoolClient, userId: string, deviceId: string): Promise<void> {
   await client.query(
-    "SELECT pg_advisory_xact_lock($1::int4, hashtext('semprec_device:' || $2::uuid::text || ':' || $3::uuid::text))",
+    "SELECT pg_advisory_xact_lock($1::int4, hashtext('alldots_device:' || $2::uuid::text || ':' || $3::uuid::text))",
     [SESSION_DEVICE_LOCK_CLASS, userId, deviceId],
   );
 }

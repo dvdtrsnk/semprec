@@ -6,7 +6,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   claimSempMessage,
   createAgentRun,
@@ -17,15 +17,15 @@ import {
   startSempMessageTurn,
   withTransaction,
   type AgentRunEventKind,
-} from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import { reconstructBoundedThreadHistory, reconstructConversationHistory } from "../conversationReconstruction.js";
 import type { CompactionAdapter } from "../compaction.js";
 import type { AgentMessage, ConversationEntry } from "../types.js";
 
 /**
  * What a wake rebuilds from a thread's history once a reply was regenerated: the replaced reply's whole turn is gone
- * and nothing else is missing. Turns are played with the production writers of `semprec-agents`' turn handler, on the
+ * and nothing else is missing. Turns are played with the production writers of `alldots-agents`' turn handler, on the
  * runtime role pool.
  */
 
@@ -143,7 +143,7 @@ describe("the history a wake rebuilds after a regeneration", () => {
     await resetDatabase(admin);
     // A run needs the tenant's user as its actor.
     await createTenantZeroUser(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     tenant = getTenantZeroId();
   });
 

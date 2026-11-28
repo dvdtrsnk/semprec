@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { registerItemCreateHook, type ItemCreateHookContext } from "../chokePoint/hooks.js";
 import { createItemWithRelationsWithClient, type InitialItemRelation } from "../index.js";
@@ -34,13 +34,13 @@ describe("item.create with relations", () => {
   let tenant: string;
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {

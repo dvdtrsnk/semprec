@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getCalendarClock } from "../calendarTime.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
@@ -13,7 +13,7 @@ describe("calendar clock tenant scope", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
     await resetDatabase(adminPool);
-    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {

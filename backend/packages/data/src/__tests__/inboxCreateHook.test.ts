@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";

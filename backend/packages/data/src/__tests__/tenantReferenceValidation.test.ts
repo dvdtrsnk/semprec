@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -68,7 +68,7 @@ describe("references are validated inside the caller's tenant (issue #1017)", ()
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const registry = createViewTypeRegistry();
     registerMailboxClientViewType(registry);
     registerJournalInboxViewType(registry);
@@ -115,7 +115,7 @@ describe("references are validated inside the caller's tenant (issue #1017)", ()
   describe("onItemEvent heartbeat rules", () => {
     const rule = (databaseId: string) => ({ kind: "onItemEvent", databaseId, event: "create" });
     const create = (client: Parameters<typeof createHeartbeat>[0], ruleInput: unknown) =>
-      createHeartbeat(client, { projectItemId: randomUUID(), name: "hb", rule: ruleInput, actionId: "semprec.tick" });
+      createHeartbeat(client, { projectItemId: randomUUID(), name: "hb", rule: ruleInput, actionId: "alldots.tick" });
 
     it("rejects createHeartbeat for a foreign or random database identically and writes no row", async () => {
       const errors = await runInTenant(tenantA, async () => {

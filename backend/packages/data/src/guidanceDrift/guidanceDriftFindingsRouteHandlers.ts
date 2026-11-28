@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { GuidanceReferenceNotFoundError, type GuidanceDriftFinding } from "@semprec/shared";
+import { GuidanceReferenceNotFoundError, type GuidanceDriftFinding } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";

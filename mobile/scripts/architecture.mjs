@@ -481,10 +481,10 @@ function appleConfiguration(tree) {
 
 /**
  * The targets a Tuist `Project.swift` declares, each with its dependencies. Declarations are
- * `SemprecProject.framework(<name>, …)`, `SemprecProject.tests(<name>, for: <host>, …)` and Tuist's
+ * `AlldotsProject.framework(<name>, …)`, `AlldotsProject.tests(<name>, for: <host>, …)` and Tuist's
  * `.target(name:…, product:…)`; dependencies are `.project(target:path:)`, `.target(name:)` and `.external(name:)`
- * inside them, plus the host of a `tests` target, which `SemprecProject.tests` adds as `.target(name:)`
- * (apple/Tuist/ProjectDescriptionHelpers/SemprecProject.swift). A `.target` also carries the entries of its
+ * inside them, plus the host of a `tests` target, which `AlldotsProject.tests` adds as `.target(name:)`
+ * (apple/Tuist/ProjectDescriptionHelpers/AlldotsProject.swift). A `.target` also carries the entries of its
  * `sources:` argument, a string or an array of strings, each relative to the project; the helpers compile
  * `Sources/**` or `Tests/**` and carry none. Names and paths are string literals, `\(…)` interpolations and `let`
  * aliases of `ProjectConfiguration` values.
@@ -512,7 +512,7 @@ function parseManifest(code, configuration) {
   const argument = (args, label) => args.find((a) => a.label === label)?.value;
 
   const targets = [];
-  for (const m of code.matchAll(/(SemprecProject\.framework|SemprecProject\.tests|\.target)\s*\(/g)) {
+  for (const m of code.matchAll(/(AlldotsProject\.framework|AlldotsProject\.tests|\.target)\s*\(/g)) {
     const open = m.index + m[0].length - 1;
     const close = matchClose(code, open);
     if (close === -1) continue;
@@ -538,7 +538,7 @@ function parseManifest(code, configuration) {
         target.sources.push({ expression, path: resolve(expression), line: lineAt(code, index) });
       }
     }
-    if (declaration === "SemprecProject.tests") {
+    if (declaration === "AlldotsProject.tests") {
       const host = argument(args, "for") ?? "";
       target.dependencies.push({ kind: "target", expression: host, name: resolve(host), line: target.line });
     }

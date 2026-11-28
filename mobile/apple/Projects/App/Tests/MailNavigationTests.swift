@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the Mail screens do in the app: the router changes the stack of its tab, and the real scene shows the screen of
 /// each mail destination.

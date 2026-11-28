@@ -1,1 +1,1 @@
-plugins { id("semprec.kmp") }
+plugins { id("alldots.kmp") }

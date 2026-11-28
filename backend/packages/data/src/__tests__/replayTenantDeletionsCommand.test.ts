@@ -70,8 +70,8 @@ describe("runReplayCommand (issue #1078)", () => {
 
   beforeEach(async () => {
     await resetDatabase(adminPool);
-    workDir = await mkdtemp(join(tmpdir(), "semprec-test-replay-cli-"));
-    openedPools = [await createRuntimeRolePool(adminPool, "semprec_data")];
+    workDir = await mkdtemp(join(tmpdir(), "alldots-test-replay-cli-"));
+    openedPools = [await createRuntimeRolePool(adminPool, "alldots_data")];
     out = [];
     err = [];
     openCalls = 0;
@@ -113,7 +113,7 @@ describe("runReplayCommand (issue #1078)", () => {
     const target = await tenantWithAdmin();
     const ledger = await ledgerFile(`${target}\n`);
     // Nothing listens on port 1, so the first query of the replay fails with a connection error.
-    const unreachable = createPool("postgres://nobody@127.0.0.1:1/semprec");
+    const unreachable = createPool("postgres://nobody@127.0.0.1:1/alldots");
     openedPools = [unreachable];
     const endSpy = vi.spyOn(unreachable, "end");
 
@@ -184,14 +184,14 @@ describe("runReplayCommand (issue #1078)", () => {
       if (!baseUrl) throw new Error("Missing isolated test database URL");
       const password = randomUUID();
       // The password is a generated UUID and the role name is fixed, so interpolation is closed.
-      await adminPool.query(`ALTER ROLE semprec_data WITH PASSWORD '${password}'`);
+      await adminPool.query(`ALTER ROLE alldots_data WITH PASSWORD '${password}'`);
       const url = new URL(baseUrl);
-      url.username = "semprec_data";
+      url.username = "alldots_data";
       url.password = password;
       const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
       await promisify(execFile)(
         "bash",
-        [join(backend, "../deploy/systemd/scripts/semprec-restore-activation.test.sh")],
+        [join(backend, "../deploy/systemd/scripts/alldots-restore-activation.test.sh")],
         {
           env: {
             ...process.env,
@@ -216,7 +216,7 @@ describe("runReplayCommand (issue #1078)", () => {
       await invokeActivation(lastAdmin);
       expect(await statusOf(lastAdmin)).toBe("deleting");
       expect(readFileSync(join(workDir, "activated"), "utf8").trim()).toBe(
-        "start semprec-api.service semprec-agents.service semprec-transcribe.service semprec-ai-gateway.service",
+        "start alldots-api.service alldots-agents.service alldots-transcribe.service alldots-ai-gateway.service",
       );
     }, 180_000);
 

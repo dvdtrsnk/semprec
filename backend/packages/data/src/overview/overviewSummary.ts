@@ -1,6 +1,6 @@
 // Assembles the Overview summary from each owner's counting function; counts nothing itself.
 import type { Pool } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { countOpenInboxCards } from "../inbox/inboxCardsStore.js";

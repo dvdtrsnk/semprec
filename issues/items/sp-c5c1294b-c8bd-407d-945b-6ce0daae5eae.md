@@ -36,10 +36,10 @@ Load `kmp-shared`, `testing`, `error-handling` and `mobile-verify`.
 
 ## Touches
 
-- mobile/shared/data/src/commonMain/kotlin/cz/semprec/app/data/OfflineStore.kt (the kept person)
-- mobile/shared/data/src/commonMain/kotlin/cz/semprec/app/data/HttpAuthRepository.kt
-- mobile/shared/umbrella/src/commonMain/kotlin/cz/semprec/app/sdk/HomeSDK.kt
-- mobile/shared/data/src/commonTest/kotlin/cz/semprec/app/data/HttpAuthRepositoryTest.kt
+- mobile/shared/data/src/commonMain/kotlin/cz/alldots/app/data/OfflineStore.kt (the kept person)
+- mobile/shared/data/src/commonMain/kotlin/cz/alldots/app/data/HttpAuthRepository.kt
+- mobile/shared/umbrella/src/commonMain/kotlin/cz/alldots/app/sdk/HomeSDK.kt
+- mobile/shared/data/src/commonTest/kotlin/cz/alldots/app/data/HttpAuthRepositoryTest.kt
 - docs/adr/2026-11-23-mobile-keeps-the-answers-of-the-offline-set.md (opening without a connection)
 
 ## Scope

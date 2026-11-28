@@ -229,7 +229,7 @@ public enum InternetAccountsAction: Equatable, Sendable {
     case dismissSignInFailure
     /// Starts the browser sign-in of a new account that syncs mail and, when `calendars`, its calendars.
     case startSignIn(provider: InternetOAuthProvider, calendars: Bool)
-    /// The browser came back to `semprec://oauth` at `callbackUrl`.
+    /// The browser came back to `alldots://oauth` at `callbackUrl`.
     case signInReturned(callbackUrl: String)
     /// The person closed the browser before it came back.
     case signInCancelled
@@ -242,7 +242,7 @@ public enum InternetAccountsEffect: Equatable, Sendable {
     case openAccount(accountId: String)
     /// A new account was connected and the list shows it; the form closes.
     case connected
-    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `semprec://oauth`; the app reports
+    /// Opens `url`, the provider's sign-in page, in a browser session that ends at `alldots://oauth`; the app reports
     /// how it ended with `signInReturned`, `signInCancelled` or `signInFailed`.
     case openSignIn(url: String)
 }

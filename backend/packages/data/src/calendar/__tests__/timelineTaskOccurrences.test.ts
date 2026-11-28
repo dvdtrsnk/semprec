@@ -4,7 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -261,7 +261,7 @@ async function stretchFixture(w: ReturnType<typeof world>) {
 beforeAll(async () => {
   admin = getTestPool();
   await resetDatabase(admin);
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   const role = await runAsSystem("test:role", () =>
     pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

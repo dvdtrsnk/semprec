@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { createDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { runSeed } from "../db/runSeed.js";
@@ -48,7 +48,7 @@ async function moduleIdsIn(tenantId: string): Promise<Array<string | null>> {
 describe("provisionTenant (issue #1005)", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   });
 
   beforeEach(async () => {
@@ -60,11 +60,11 @@ describe("provisionTenant (issue #1005)", () => {
     await adminPool.end();
   });
 
-  it("runs every connection of a role pool as semprec_data under row-level security", async () => {
+  it("runs every connection of a role pool as alldots_data under row-level security", async () => {
     const { rows } = await dataPool.query<{ user: string; active: boolean }>(
       "SELECT current_user AS user, row_security_active('public.databases') AS active",
     );
-    expect(rows[0]).toEqual({ user: "semprec_data", active: true });
+    expect(rows[0]).toEqual({ user: "alldots_data", active: true });
   });
 
   it("provisions a provisioning tenant in its own scope and activates it", async () => {

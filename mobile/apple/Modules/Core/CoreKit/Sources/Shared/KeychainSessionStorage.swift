@@ -13,7 +13,7 @@ final class KeychainSessionStorage: NSObject, SharedSDK.SessionStorage, @uncheck
     private var memory: SharedSDK.StoredSession?
 
     // MARK: - Init
-    init(service: String = "cz.semprec.session") {
+    init(service: String = "cz.alldots.session") {
         self.service = service
     }
 

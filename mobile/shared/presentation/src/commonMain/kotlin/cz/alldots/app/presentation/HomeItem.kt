@@ -1,0 +1,8 @@
+package cz.alldots.app.presentation
+
+import cz.alldots.app.domain.PlaceholderItem
+
+/** One placeholder item on the Home and Detail screens. Native code renders its title from [ordinal]. */
+data class HomeItem(val id: String, val ordinal: Int)
+
+internal fun PlaceholderItem.toHomeItem() = HomeItem(id, ordinal)

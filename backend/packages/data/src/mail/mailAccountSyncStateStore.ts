@@ -512,7 +512,7 @@ export interface GmailRouteTarget {
 }
 
 /**
- * Uses the `semprec_router`-owned function that reads past RLS (see
+ * Uses the `alldots_router`-owned function that reads past RLS (see
  * docs/architecture/tenancy-and-security.md#cross-tenant-router-functions). Returns ids only; the
  * caller enters each tenant before touching the mailbox.
  */
@@ -629,7 +629,7 @@ export async function getMailAccountSyncStateByGraphSubscriptionId(
 }
 
 /**
- * Uses the `semprec_router`-owned function that reads past RLS (see
+ * Uses the `alldots_router`-owned function that reads past RLS (see
  * docs/architecture/tenancy-and-security.md#cross-tenant-router-functions). Only the tenant id
  * leaves it; the caller enters that tenant and re-reads the row.
  */

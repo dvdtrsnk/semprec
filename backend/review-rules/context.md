@@ -1,7 +1,7 @@
-This is the `backend/` platform of the Semprec monorepo (the other platforms,
+This is the `backend/` platform of the Alldots monorepo (the other platforms,
 `web/` and the three mobile platforms `mobile/`, `mobile/android/` and
 `mobile/apple/`, have their own review-rules and are reviewed independently).
-Semprec is a personal life-organization system; the backend
+Alldots is a personal life-organization system; the backend
 is a TypeScript/Node pnpm workspace (`packages/*`, `services/*`)
 implementing: a Postgres schema engine with a generic choke-point CRUD API,
 Yjs CRDT blocks/canvas, hardcoded core databases, IMAP email sync, an
@@ -17,17 +17,17 @@ acceptance-criteria check, which verifies the diff against the linked issue dire
 
 The codebase is past scaffold: `packages/*` has a populated Postgres data layer
 (schema, auth, mail sync, agent runs, blobs) behind the generic choke-point API,
-`services/semprec-api` is a REST/WebSocket adapter onto it, `services/semprec-ai-gateway`
+`services/alldots-api` is a REST/WebSocket adapter onto it, `services/alldots-ai-gateway`
 is the sole path to a model provider, `packages/realtime` carries authenticated
 WebSocket sync and NOTIFY-driven invalidation, and `packages/queue` runs the
 Graphile Worker-backed scheduler (heartbeats, mail sync sweeps, notification fanout,
 trash purge, and more). Review-rules here apply in full to every PR touching this
 tree, not just from some future first-real-implementation PR.
 
-Tenancy: Semprec is multi-tenant. Each user has one tenant, which holds all of that
+Tenancy: Alldots is multi-tenant. Each user has one tenant, which holds all of that
 user's data and agents, and nothing is shared between tenants. Isolation is enforced
 twice: by Postgres row-level security on every table classified
-`semprec:tenancy=tenant`, and by an explicit tenant scope (`app.tenant_id`) on every
+`alldots:tenancy=tenant`, and by an explicit tenant scope (`app.tenant_id`) on every
 code path. A missing scope fails closed: nothing visible, writes refused.
 `app_tenant_default()` is strict: it returns the tenant of the current scope and never
 a sole-tenant fallback. Do not report a pre-existing scope-less query that the pull

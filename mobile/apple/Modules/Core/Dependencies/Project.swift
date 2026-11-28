@@ -4,9 +4,9 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "Dependencies",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "Dependencies",
             dependencies: [
                 .project(target: "CoreKit", path: "../CoreKit"),

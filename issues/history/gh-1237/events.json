@@ -2,7 +2,7 @@
   {
     "id": 33917105374,
     "node_id": "LE_lADOUFuQ4c8AAAABZA4F-s8AAAAH5Z303g",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917105374",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917105374",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -38,7 +38,7 @@
   {
     "id": 33917119151,
     "node_id": "RTE_lADOUFuQ4c8AAAABZA4F-s8AAAAH5Z4qrw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917119151",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917119151",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -102,14 +102,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJ-aFYQ",
         "number": 1239,
         "title": "[ci-stability-followup 02/02] Keep the module-manifest unit tests inside their timeout under host load (#1237)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1239",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1239",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1239",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1239",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1239.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1239.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1239",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1239",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1239.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1239.patch",
           "merged_at": "2026-10-22T08:49:11Z"
         },
         "bodySha256": "aa069587ddbd1ff02dbca723cc2076dc2a920bb9021db34771b7a605dc4d6d83"
@@ -148,8 +148,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZC9x8A",
         "number": 1240,
         "title": "[ci-stability-followup 03/03] Warm the systemDatabases manifest import once in its catalog unit test",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1240",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1240",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f7dffbba55623625302a41acd97b3b8d620e4bd97bf35cdf76d4b4dacc8d6c14"
       }
@@ -158,7 +158,7 @@
   {
     "id": 33929248264,
     "node_id": "RTE_lADOUFuQ4c8AAAABZA4F-s8AAAAH5lc-CA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33929248264",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33929248264",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -222,14 +222,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABJ-ktog",
         "number": 1241,
         "title": "[ci-stability-followup 03/03] Warm the systemDatabases manifest import once in its catalog unit test (#1240)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1241",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1241",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1241",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1241",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1241.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1241.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1241",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1241",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1241.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1241.patch",
           "merged_at": "2026-10-22T09:13:18Z"
         },
         "bodySha256": "f96f71f5028fe576a802b596ac1ed97aebe61cf3d3e6fa22274e9101f7166652"
@@ -239,7 +239,7 @@
   {
     "id": 33931117698,
     "node_id": "CE_lADOUFuQ4c8AAAABZA4F-s8AAAAH5nPEgg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33931117698",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33931117698",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -272,7 +272,7 @@
   {
     "id": 33931117997,
     "node_id": "REFE_lADOUFuQ4c8AAAABZA4F-s8AAAAH5nPFrQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33931117997",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33931117997",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -296,7 +296,7 @@
     },
     "event": "referenced",
     "commit_id": "215d034e12925c2619e32156de26afd183a1a329",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/215d034e12925c2619e32156de26afd183a1a329",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/215d034e12925c2619e32156de26afd183a1a329",
     "created_at": "2026-10-22T08:49:13Z",
     "performed_via_github_app": null
   }

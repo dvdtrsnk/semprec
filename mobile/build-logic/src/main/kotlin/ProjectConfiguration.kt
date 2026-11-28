@@ -10,7 +10,7 @@ fun Project.configurationValue(name: String): String {
     return properties.getProperty(name) ?: error("gradle/project.properties has no value for $name.")
 }
 
-/** Android namespace of a module: the root namespace followed by its Gradle path (`cz.semprec.app.shared.core`). */
+/** Android namespace of a module: the root namespace followed by its Gradle path (`cz.alldots.app.shared.core`). */
 fun Project.moduleNamespace(): String = configurationValue("namespace") + path.replace(':', '.')
 
 /** SDK levels, Java 17 and test defaults shared by every Android module, KMP modules included. */

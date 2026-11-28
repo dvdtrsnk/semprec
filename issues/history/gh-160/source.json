@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/160",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/160",
   "id": 5289606850,
   "node_id": "I_kwDOUFuQ4c8AAAABO0j-wg",
   "number": 160,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/159",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/159",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #23, #121, #158\n\n## Context\n\nREST is authoritative and minimal realtime fanout exists, but the final protocol needs one authenticated connection and a closed message catalog before adding stream implementations.\n\n## Task\n\nImplement `WS /api/sync` in `packages/realtime` and mount it in `semprec-api`. Authenticate during HTTP upgrade with the same session cookie used by web or Bearer token used by native clients; invalid credentials return HTTP 401 and create no socket. Associate every socket with user/session identity. Define and validate protocol-v1 frames: inbound `doc:open`, `doc:close`, `agent:watch`, `agent:unwatch`; outbound `invalidate`, `notification`, `agent:event`, `agent:delta`; and binary frames prefixed by the 16-byte document UUID. Maintain one socket per client and one dedicated PostgreSQL LISTEN connection per API process, never per client. On session-revocation NOTIFY, close all sockets for that exact session with 4401; revalidate the session during heartbeat as a fallback.\n\n## Scope\n\n### In scope\n\n- Upgrade/auth, identity registry, message codecs/validation, single LISTEN ownership, revocation closure.\n\n### Out of scope\n\n- Actual stream handlers, delivered by later siblings.\n- Post-connect auth messages and connection-per-traffic-type designs.\n\n## Acceptance criteria\n\n- Cookie and Bearer clients reach the same authenticated socket identity; invalid/revoked credentials never create a socket.\n- Protocol tests reject unknown/malformed text and binary frames without crashing other clients.\n- Revoking one session closes its sockets with 4401 and leaves another session untouched.\n",
+  "body": "**Blocked by:** #23, #121, #158\n\n## Context\n\nREST is authoritative and minimal realtime fanout exists, but the final protocol needs one authenticated connection and a closed message catalog before adding stream implementations.\n\n## Task\n\nImplement `WS /api/sync` in `packages/realtime` and mount it in `alldots-api`. Authenticate during HTTP upgrade with the same session cookie used by web or Bearer token used by native clients; invalid credentials return HTTP 401 and create no socket. Associate every socket with user/session identity. Define and validate protocol-v1 frames: inbound `doc:open`, `doc:close`, `agent:watch`, `agent:unwatch`; outbound `invalidate`, `notification`, `agent:event`, `agent:delta`; and binary frames prefixed by the 16-byte document UUID. Maintain one socket per client and one dedicated PostgreSQL LISTEN connection per API process, never per client. On session-revocation NOTIFY, close all sockets for that exact session with 4401; revalidate the session during heartbeat as a fallback.\n\n## Scope\n\n### In scope\n\n- Upgrade/auth, identity registry, message codecs/validation, single LISTEN ownership, revocation closure.\n\n### Out of scope\n\n- Actual stream handlers, delivered by later siblings.\n- Post-connect auth messages and connection-per-traffic-type designs.\n\n## Acceptance criteria\n\n- Cookie and Bearer clients reach the same authenticated socket identity; invalid/revoked credentials never create a socket.\n- Protocol tests reject unknown/malformed text and binary frames without crashing other clients.\n- Revoking one session closes its sockets with 4401 and leaves another session untouched.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/160/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/160/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

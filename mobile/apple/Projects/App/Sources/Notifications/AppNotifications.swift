@@ -138,9 +138,9 @@ extension AppNotifications {
     }
 
     /// Debug builds get their tokens from the APNs sandbox, Release builds from production, as the build's Info.plist
-    /// says under `SemprecApnsEnvironment`.
+    /// says under `AlldotsApnsEnvironment`.
     nonisolated static func buildEnvironment(bundle: Bundle = .main) -> PushEnvironment {
-        let value = bundle.object(forInfoDictionaryKey: "SemprecApnsEnvironment") as? String
+        let value = bundle.object(forInfoDictionaryKey: "AlldotsApnsEnvironment") as? String
         return value.flatMap(PushEnvironment.init(rawValue:)) ?? .production
     }
 }

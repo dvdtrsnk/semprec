@@ -317,7 +317,7 @@ private extension SempProjectAgentScreen {
                 model: ScriptedSempProjectAgentScreenModel(
                     state: SempProjectAgentState(
                         phase: .ready,
-                        projectName: "Semprec iOS",
+                        projectName: "Alldots iOS",
                         sections: SempSections(
                             purpose: "Pomáhat s vývojem.",
                             allowed: "- číst úkoly",

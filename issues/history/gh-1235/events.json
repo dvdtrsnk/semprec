@@ -2,7 +2,7 @@
   {
     "id": 33917102932,
     "node_id": "LE_lADOUFuQ4c8AAAABZA4EPc8AAAAH5Z3rVA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917102932",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917102932",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -38,7 +38,7 @@
   {
     "id": 33917116338,
     "node_id": "RTE_lADOUFuQ4c8AAAABZA4EPc8AAAAH5Z4fsg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33917116338",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33917116338",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -71,9 +71,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343629365",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1235#issuecomment-6343629365",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1235",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6343629365",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1235#issuecomment-6343629365",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1235",
     "id": 6343629365,
     "node_id": "IC_kwDOUFuQ4c8AAAABehwaNQ",
     "user": {
@@ -99,11 +99,11 @@
     },
     "created_at": "2026-10-22T14:46:54Z",
     "updated_at": "2026-10-22T14:46:54Z",
-    "body": "Implementation prepared ahead of its gate on branch [`mt/1235-item-insert-foreign-database-id`](https://github.com/dvdtrsnk/semprec/tree/mt/1235-item-insert-foreign-database-id) (head `14c1dce5c`). It is stacked on mt/1066 (branched from develop `35d087f45`), so a pull request opened from it shows only this issue's commits once the branches below it have landed.\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through independent reviews against this issue's Task, Acceptance criteria and Out of scope, and those findings are fixed on the branch. Production steps were neither performed nor simulated.\n\nDo not merge before #1058 is signed off. When it is: merge `develop` into the branch, renumber the migration if a newer ordinal has landed meanwhile, and open the pull request against `develop`. `agent:ready` is removed so Relay does not implement this again; the branch is the implementation.",
+    "body": "Implementation prepared ahead of its gate on branch [`mt/1235-item-insert-foreign-database-id`](https://github.com/dvdtrsnk/alldots/tree/mt/1235-item-insert-foreign-database-id) (head `14c1dce5c`). It is stacked on mt/1066 (branched from develop `35d087f45`), so a pull request opened from it shows only this issue's commits once the branches below it have landed.\n\nStatus: full backend `pnpm run verify` passed on the branch. The diff went through independent reviews against this issue's Task, Acceptance criteria and Out of scope, and those findings are fixed on the branch. Production steps were neither performed nor simulated.\n\nDo not merge before #1058 is signed off. When it is: merge `develop` into the branch, renumber the migration if a newer ordinal has landed meanwhile, and open the pull request against `develop`. `agent:ready` is removed so Relay does not implement this again; the branch is the implementation.",
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6343629365/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6343629365/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -171,14 +171,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABKMZ-pg",
         "number": 1284,
         "title": "[mt-isolation-followup 01/01] Answer a foreign and an unknown database id identically on every item insert path (#1235)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1284",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1284",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1284",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1284",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1284.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1284.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1284",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1284",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1284.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1284.patch",
           "merged_at": "2026-10-23T08:16:19Z"
         },
         "bodySha256": "d55b0732c50136e019083ac4fe69d946e6d68bf8bad55740d01a0ca90c15d08e"
@@ -188,7 +188,7 @@
   {
     "id": 34031729063,
     "node_id": "REFE_lADOUFuQ4c8AAAABZA4EPc8AAAAH7HL5pw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/34031729063",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/34031729063",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -212,14 +212,14 @@
     },
     "event": "referenced",
     "commit_id": "8a7c350d58c2abbd76615cf927046577903eb13c",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/8a7c350d58c2abbd76615cf927046577903eb13c",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/8a7c350d58c2abbd76615cf927046577903eb13c",
     "created_at": "2026-10-23T08:16:20Z",
     "performed_via_github_app": null
   },
   {
     "id": 34031729298,
     "node_id": "CE_lADOUFuQ4c8AAAABZA4EPc8AAAAH7HL6kg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/34031729298",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/34031729298",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

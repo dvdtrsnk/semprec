@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
-import { runAsSystem } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { runAsSystem } from "@alldots/shared";
 import {
   createTestTenant,
   createTestProjectItem,

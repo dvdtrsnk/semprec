@@ -61,7 +61,7 @@ function serializeError(value: unknown): unknown {
 }
 
 /**
- * Log levels for every Semprec process:
+ * Log levels for every Alldots process:
  *
  * - `info`: lifecycle milestones and completed work.
  * - `warn`: unexpected but recoverable degradation or retry.

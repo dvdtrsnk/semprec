@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@alldots/data/testSupport";
 import {
   createChokePoint,
   createViewTypeRegistry,
@@ -11,8 +11,8 @@ import {
   type ChokePoint,
   type CollectionMetadataResolver,
   type DatabaseRow,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway } from "../genericOperationGateway.js";
 import { writerIdentityOf } from "../genericApplicationService.js";
 

@@ -1,4 +1,4 @@
-export { parseToolEventPayload } from "@semprec/shared";
+export { parseToolEventPayload } from "@alldots/shared";
 export type {
   McpToolEventIdentity,
   ToolEventMetadata,
@@ -6,4 +6,4 @@ export type {
   ToolResultChange,
   ToolResultDetails,
   ToolResultEventPayload,
-} from "@semprec/shared";
+} from "@alldots/shared";

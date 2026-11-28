@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
 
 /**
- * Integration-tier `setupFiles` entry: sets `SEMPREC_TENANT_SCOPE` per test file, in that file's worker.
+ * Integration-tier `setupFiles` entry: sets `ALLDOTS_TENANT_SCOPE` per test file, in that file's worker.
  *
  * - Files in `tenantScopeWarnFiles.json` run under `warn`; every other file under `strict` (production mode).
  * - A value the vitest process was started with is a developer override and is kept.
@@ -50,8 +50,8 @@ export function applyTenantScopeMode(
   testPath: string | undefined,
   warnFiles: ReadonlySet<string>,
 ): void {
-  if (env.SEMPREC_TENANT_SCOPE !== undefined) return;
-  env.SEMPREC_TENANT_SCOPE = selectTenantScopeMode(testPath, warnFiles);
+  if (env.ALLDOTS_TENANT_SCOPE !== undefined) return;
+  env.ALLDOTS_TENANT_SCOPE = selectTenantScopeMode(testPath, warnFiles);
 }
 
 applyTenantScopeMode(process.env, expect.getState().testPath, readTenantScopeWarnFiles());

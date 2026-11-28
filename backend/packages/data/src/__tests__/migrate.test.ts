@@ -31,7 +31,7 @@ async function withScratchSchema(fn: (pool: Pool) => Promise<void>): Promise<voi
 }
 
 async function withMigrationsDir(files: Record<string, string>, fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(tmpdir(), "semprec-migrate-test-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "alldots-migrate-test-"));
   try {
     for (const [name, sql] of Object.entries(files)) {
       await writeFile(path.join(dir, name), sql, "utf8");

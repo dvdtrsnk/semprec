@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant, withTraceContext } from "@semprec/shared";
+import { runInTenant, withTraceContext } from "@alldots/shared";
 import {
   addPreparedJob,
   assertSearchTaskIdentifiersRegistered,
@@ -13,15 +13,15 @@ import {
   runWorker,
   SEARCH_TASK_IDENTIFIERS,
   type TaskList,
-} from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+} from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getTenantZeroId, resetDatabase } from "../testSupport/testDb.js";
 
 const TASK = "tenantEnvelopeProbe";
 
 let pool: Pool;
-const originalMode = process.env.SEMPREC_TENANT_SCOPE;
+const originalMode = process.env.ALLDOTS_TENANT_SCOPE;
 
 function probeTaskList(observed: Array<string | null>): TaskList {
   return {
@@ -53,8 +53,8 @@ describe("queue tenant envelope", () => {
   });
 
   afterEach(() => {
-    if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-    else process.env.SEMPREC_TENANT_SCOPE = originalMode;
+    if (originalMode === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+    else process.env.ALLDOTS_TENANT_SCOPE = originalMode;
   });
 
   afterAll(async () => {
@@ -140,7 +140,7 @@ describe("queue tenant envelope", () => {
   });
 
   it("runs ensureQueueSchema, runWorker and the runner's stop() with no scope in strict mode", async () => {
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
+    process.env.ALLDOTS_TENANT_SCOPE = "strict";
     await ensureQueueSchema(pool);
 
     const observed: Array<string | null> = [];

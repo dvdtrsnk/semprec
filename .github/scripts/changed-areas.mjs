@@ -46,7 +46,7 @@ export const RULES = Object.freeze([
   { pattern: "backend/", areas: ["backend"] },
   // Three backend tests read deployment files.
   { pattern: "deploy/", areas: ["backend"] },
-  // `@semprec/block-model`: the backend imports it and its tests run in the backend unit tier. The
+  // `@alldots/block-model`: the backend imports it and its tests run in the backend unit tier. The
   // Kotlin port copies its fixture vectors into its own tests instead of reading the file.
   { pattern: "shared/", areas: ["backend"] },
   { pattern: "web/", areas: ["web"] },

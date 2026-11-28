@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
 import {
   getDecryptedCredential,
   storeCredential,

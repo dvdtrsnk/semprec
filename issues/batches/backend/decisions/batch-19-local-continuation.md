@@ -1,7 +1,7 @@
 # Batch 19 local continuation decision
 
 Authority: explicit owner instruction on 2026-11-03 to decide autonomously so
-Semprec development continues, and the append-only ADR
+Alldots development continues, and the append-only ADR
 `2026-11-03-local-development-continues-with-open-production-gates`.
 
 ## Local candidate disposition

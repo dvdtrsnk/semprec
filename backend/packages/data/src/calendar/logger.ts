@@ -1,3 +1,3 @@
-import { createLogger, type Logger } from "@semprec/shared";
+import { createLogger, type Logger } from "@alldots/shared";
 
 export const logger: Logger = createLogger("calendar");

@@ -36,7 +36,7 @@ described elsewhere and only referenced here:
     delta link and delta round in progress, initial-sync mark, next expected activity and failure record
     cleared); delete the folder sync states; resolve the mailbox's Semp problem as `sourceDeleted`; enqueue the
     mail-off `mailboxRemoval` job. After the commit the live sync is stopped through the stop `bindMailboxServiceLiveSyncStop` bound
-    (`semprec-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
+    (`alldots-api` binds `mailLiveSyncControl.stopMailbox`); a failed stop is logged, and in a process without
     a binding the next discovery pass unhosts the account. The item, credential, server settings, sync mode,
     provider account and Gmail routing addresses and the Graph subscription id stay; the provider-side Gmail
     watch and Graph subscription are not cancelled, their renewals stop with the lifecycle and they expire,
@@ -126,7 +126,7 @@ described elsewhere and only referenced here:
   count: its removal deleted its sync state row, so its address can be connected again. The partial unique index
   `mail_account_sync_state_tenant_provider_address_uq` decides concurrent connects; the reads take no row lock.
 - Throttle: action `mailboxCredentialVerification`, 10 verifications per 15 minutes **per user id**, in process
-  memory (`services/semprec-api/src/clientIpThrottle.ts`), handed to custom routes as the `throttle` member.
+  memory (`services/alldots-api/src/clientIpThrottle.ts`), handed to custom routes as the `throttle` member.
   `tryAcquire` runs directly before the verification with no `await` between; a counted attempt is never
   released. Refusal is `RateLimitedError` → 429 `rate_limited` with `Retry-After`. Without a throttle the
   route fails before contacting any server.
@@ -186,10 +186,10 @@ existing iCloud or generic mailbox; its mail, folders and threads stay.
   any case count); otherwise the stored status of the account's calendar sync (`never` before its first pass).
   Switching Calendars on queues a calendar sync pass; for an OAuth account without the calendar scope the client
   then reauthorizes with `services: ["mail", "calendars"]`.
-- `GET /api/mail/oauth/callback` (public, `services/semprec-api/src/mailOauthCallbackHandler.ts`) validates the
+- `GET /api/mail/oauth/callback` (public, `services/alldots-api/src/mailOauthCallbackHandler.ts`) validates the
   query first, then `resolveMailOauthRedirectUrl` looks the state up: `route_mail_oauth_state` names the tenant of an
   open (unused, unexpired) state by its hash, and the target is read inside that tenant. For `redirectTarget: "app"`
-  it answers 302 to `semprec://oauth?state=…&code=…` (or `&error=…`); the URL comes only from the stored state. Any
+  it answers 302 to `alldots://oauth?state=…&code=…` (or `&error=…`); the URL comes only from the stored state. Any
   other state, unknown, used or expired ones included, gets the JSON echo `{ state, code }` /
   `{ state, providerError }`. The callback reads only and writes nothing.
 
@@ -647,8 +647,8 @@ byteSize, stored, blobId, fileItemId }` with `blobId`/`fileItemId` `null` until 
   makes at most 5 provider searches (`MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN`), counted in the process that runs it (no
   per-run budget exists elsewhere); the run's user is counted by `mailRemoteSearch` as well. A human `/mcp` session's
   handler gets the providers and throttle from the custom routes' container; a run's handler is built without it and
-  reads them from `bindMailAgentRemoteSearch`, which `semprec-api`'s `createDispatcher` binds. A process that binds
-  nothing (`semprec-agents` today, which composes no provider clients) answers local matches with
+  reads them from `bindMailAgentRemoteSearch`, which `alldots-api`'s `createDispatcher` binds. A process that binds
+  nothing (`alldots-agents` today, which composes no provider clients) answers local matches with
   `remoteSearch: "unavailable"`.
 
 ### History upload from a native client
@@ -771,7 +771,7 @@ internals proven against the real library by its unit test; an upgrade must re-p
   caller in a tenant scope only reaches its own tenant's entries. The root must be created outside any scope.
 - `stopMailbox(tenantId, mailboxItemId)` waits for in-flight discovery passes and restarts, then stops the
   entry once. Routes reach the root through `createMailLiveSyncControl`
-  (`services/semprec-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
+  (`services/alldots-api/src/mailLiveSyncControl.ts`), bound before the server listens; unbound calls refuse
   with `CustomRouteConfigurationError`; `startMailbox` always refuses.
 - The hosted IMAP lifecycle owns its discovery/startup task. A start queues the account's pass once, however often
   its discovery is retried, and every established IDLE session queues one catch-up pass (see the IDLE transport
@@ -790,7 +790,7 @@ internals proven against the real library by its unit test; an upgrade must re-p
   the subscription's creation) sends `Prefer: IdType="ImmutableId"` (`mail/graphImmutableIds.ts`), so
   `provider_message_id` of a Graph account holds the immutable id, which survives a folder move; a move response
   names the same id, and change notifications name messages by it.
-- `semprec-api` shutdown order (`services/semprec-api/src/shutdown.ts`): listener close → sync server close →
+- `alldots-api` shutdown order (`services/alldots-api/src/shutdown.ts`): listener close → sync server close →
   HTTP drain → `gmailPubSubDispatcher.stop()` → `mailLiveSync.stop()` → `queueRuntime.stop()` →
   `imapSessions.close()` (the kept IMAP sync sessions, once no pass runs) → `pool.end()`.
   A future long-lived outbound loop that enqueues work stops after the drain, before what it would race.
@@ -995,7 +995,7 @@ changed since (`mail/mailThreadChanges.ts`, hooks in `mail/mailThreadChangeHooks
 
 ### Drafts
 
-- A Semprec draft is an Emails item in Drafts plus a `mail_drafts` row (`mail/draft.ts`, `mail/mailDraftsStore.ts`).
+- A Alldots draft is an Emails item in Drafts plus a `mail_drafts` row (`mail/draft.ts`, `mail/mailDraftsStore.ts`).
   A mailbox for which neither the connect nor a sync pass found a Drafts folder refuses a new draft with 409
   `mail_drafts_folder_missing` (`details.mailboxId`) and writes nothing.
 - Every writer of an existing draft uses `lockUnsentDraft`: Emails item `FOR UPDATE`, then `mail_drafts` row.
@@ -1132,7 +1132,7 @@ on-demand content and attachment reads and the provider search.
 ### Attachment facts, photos and voice notes
 
 - The capture enqueues `inboxAttachmentMetadata` (key `inbox-attachment-metadata:<attachmentId>`), run only in
-  `semprec-transcribe` on its own one-slot runner (ffmpeg confinement). It probes dimensions, a 128 px preview and
+  `alldots-transcribe` on its own one-slot runner (ffmpeg confinement). It probes dimensions, a 128 px preview and
   a ≤ 1568 px reduced copy (images, `-max_pixels`), duration, `recordedAt` and `audioKind` (`voiceNote` below
   `INBOX_RECORDING_MIN_SECONDS` = 120, else `recording`). Unreadable files get `metadata.error = "mediaUnreadable"`.
 - `recordInboxAttachmentMetadata` writes `metadata`, `thumbnail_blob_id`, `reduced_blob_id` once (source lock →
@@ -1149,7 +1149,7 @@ on-demand content and attachment reads and the provider search.
 
 ### Tick and the source lock protocol
 
-- `semprec.tick` (`inbox/inboxTickAction.ts`) reads at REPEATABLE READ (`withTickTransaction`), calls the model
+- `alldots.tick` (`inbox/inboxTickAction.ts`) reads at REPEATABLE READ (`withTickTransaction`), calls the model
   outside, and writes at READ COMMITTED (`withTickWriteTransaction`): lock source `FOR UPDATE`, re-read
   properties/type edge/attachment hashes fresh, skip on fingerprint mismatch, hold the source to commit.
 - Source-input writers (attachments, the Inbox type edge hooks, `Processing proposals.sourceInbox` association
@@ -1168,8 +1168,8 @@ on-demand content and attachment reads and the provider search.
 
 ### Proposal context
 
-- `readProposalWorkspaceContext` (via `services/semprec-api/src/proposalContext.ts`) reads as the tick's
-  Semprec project; databases from `listUnreadableDatabaseIds` contribute nothing (no empty group or count).
+- `readProposalWorkspaceContext` (via `services/alldots-api/src/proposalContext.ts`) reads as the tick's
+  Alldots project; databases from `listUnreadableDatabaseIds` contribute nothing (no empty group or count).
 - Only four built-in kinds, ≤ 20 entries each (`CONTEXT_LIMIT_PER_KIND`), texts cut at 100 chars: projects
   `id,name,status`; people `id,name,relationship`; companies
   `id,name,registrationNumber`; events `id,name,type,date` (capture date −1 … +14 days).
@@ -1181,7 +1181,7 @@ on-demand content and attachment reads and the provider search.
 
 ### Cards: kinds and producers
 
-- `kind: inbox` cards: `semprec.tick` produces the primary card of a source. The only other producer is
+- `kind: inbox` cards: `alldots.tick` produces the primary card of a source. The only other producer is
   `splitInboxSourceWithClient` (`inbox/proposalSplit.ts`) for siblings: primary locked `FOR UPDATE`, not decided,
   ≤ 10 cards total (`MAX_SPLIT_CARDS`); siblings carry `splitFromProposalId` and are ignored by the tick.
 - Recording cards: an `inbox` card with `entityKind: "transcription"` (derived kind `recording`) is built by the
