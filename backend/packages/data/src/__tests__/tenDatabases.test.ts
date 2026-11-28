@@ -37,7 +37,7 @@ async function completeAndFindNext(tasksId: string, taskId: string) {
   return next;
 }
 
-describe("ten hardcoded databases (issue #24)", () => {
+describe("hardcoded core databases (issue #24)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     viewTypeRegistry = createViewTypeRegistry();

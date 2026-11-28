@@ -11,7 +11,7 @@ import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { DatabaseRow } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
 import { THREADS_MODULE_ID } from "./emailModuleKeys.js";
-import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
+import { CORE_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
 import { INBOX_TYPE_MODULE_TARGET_DATABASES, PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
 import { CAPTURE_CHANNELS } from "../inbox/captureSource.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
@@ -39,7 +39,7 @@ export interface InboxPipelineDatabases {
 
 /**
  * Seeds Inbox / Inbox item types / Processing proposals and the Inbox `semprec.tick` heartbeats. Needs the
- * ten databases, Threads and the Semprec project item.
+ * core databases, Threads and the Semprec project item.
  */
 export async function seedInboxPipelineInTransaction(
   client: PoolClient,
@@ -123,8 +123,8 @@ export async function seedInboxPipelineInTransaction(
       name: "Target database",
       type: "select",
       owner: "user",
-      // The ten hardcoded databases, then the module targets.
-      config: selectConfig([...TEN_DATABASE_MODULE_IDS, ...INBOX_TYPE_MODULE_TARGET_DATABASES]),
+      // The hardcoded core databases, then the module targets.
+      config: selectConfig([...CORE_DATABASE_MODULE_IDS, ...INBOX_TYPE_MODULE_TARGET_DATABASES]),
     },
   ]);
 

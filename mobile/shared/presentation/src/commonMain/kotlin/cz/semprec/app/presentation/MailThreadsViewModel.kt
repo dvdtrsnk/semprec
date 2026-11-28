@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailContentRepository
 import cz.semprec.app.domain.MailFacets
+import cz.semprec.app.domain.MailProjectNames
 import cz.semprec.app.domain.MailRepository
 import cz.semprec.app.domain.MailSearchResult
 import cz.semprec.app.domain.MailThreadList
@@ -36,6 +37,7 @@ class MailThreadsViewModel internal constructor(
     private val mailboxes: MailboxRepository,
     private val content: MailContentRepository,
     private val lists: SyncMailThreadList,
+    private val projectNames: MailProjectNames,
     start: MailListStart,
     changes: Flow<Unit> = emptyFlow(),
     remoteChanges: Flow<Unit> = emptyFlow(),
@@ -63,6 +65,7 @@ class MailThreadsViewModel internal constructor(
         load(showWait = true)
         loadFacets()
         loadMailboxes()
+        start.projectId?.let(::loadProjectName)
     }
 
     override fun onAction(action: MailThreadsAction) {
@@ -78,8 +81,8 @@ class MailThreadsViewModel internal constructor(
             is MailThreadsAction.Search -> change { it.copy(search = action.text.trim()) }
             is MailThreadsAction.SelectFilter -> change { it.copy(filter = action.filter) }
             is MailThreadsAction.SelectMailbox -> change { it.togglingMailbox(action.mailboxId) }
-            is MailThreadsAction.SetProject -> change(reloadFacets = true) { it.withProject(action.projectId) }
-            MailThreadsAction.ClearContext -> change(reloadFacets = true) { it.withoutContext() }
+            is MailThreadsAction.SetProject -> change { it.withProject(action.projectId) }
+            MailThreadsAction.ClearContext -> change { it.withoutContext() }
             is MailThreadsAction.ToggleRead -> toggleRead(action.threadId)
             MailThreadsAction.DismissFailure -> update { it.copy(actionFailed = false, actionRefusal = null) }
             is MailThreadsAction.Open -> emit(action.target)
@@ -90,11 +93,10 @@ class MailThreadsViewModel internal constructor(
      * Applies a change of what the list shows and loads the list again behind a wait. A change that does not alter
      * the state loads nothing.
      */
-    private fun change(reloadFacets: Boolean = false, transform: (MailThreadsState) -> MailThreadsState) {
+    private fun change(transform: (MailThreadsState) -> MailThreadsState) {
         if (transform(state.value) == state.value) return
         update(transform)
         load(showWait = true)
-        if (reloadFacets) loadFacets()
     }
 
     private fun load(showWait: Boolean) {
@@ -165,12 +167,21 @@ class MailThreadsViewModel internal constructor(
 
     private fun loadFacets() {
         facetsJob?.cancel()
-        val selected = state.value
         update { it.copy(facets = it.facets.copy(phase = MailFacetsPhase.LOADING)) }
         facetsJob = viewModelScope.launch {
-            val result = mailAttempt { mail.facets(selected.projectId) }
+            val result = mailAttempt { mail.facets() }
             ensureActive()
             update { it.afterFacets(result) }
+        }
+    }
+
+    /** Names the project the list starts with, also one without threads. */
+    private fun loadProjectName(projectId: String) {
+        viewModelScope.launch {
+            val result = mailAttempt { projectNames.projectName(projectId) }
+            ensureActive()
+            val name = if (result is RepositoryResult.Content) result.value else null
+            if (name != null) update { if (it.projectId == projectId) it.copy(projectName = name) else it }
         }
     }
 
@@ -280,7 +291,7 @@ private fun MailThreadsState.afterMore(next: MailThreadList?): MailThreadsState 
 
 private fun MailThreadsState.afterFacets(result: RepositoryResult<MailFacets>?): MailThreadsState = when (result) {
     is RepositoryResult.Content -> copy(
-        projectName = result.value.selectedProjectName ?: projectName,
+        projectName = result.value.projects.firstOrNull { it.id == projectId }?.name ?: projectName,
         facets = MailFacetsState(
             phase = MailFacetsPhase.READY,
             projectTotal = result.value.projectsTotal,

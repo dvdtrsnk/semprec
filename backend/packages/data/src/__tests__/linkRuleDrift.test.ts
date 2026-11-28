@@ -45,7 +45,7 @@ describe("link rule schema drift", () => {
     await pool?.end();
   });
 
-  it("returns nothing for a valid rule over the seeded ten databases", async () => {
+  it("returns nothing for a valid rule over the seeded core databases", async () => {
     const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
     const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
     expect(findings).toEqual([]);

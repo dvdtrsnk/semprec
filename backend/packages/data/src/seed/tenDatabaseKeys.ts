@@ -9,7 +9,7 @@ export const COMPANIES_MODULE_ID = "companies";
 export const TRANSCRIPTS_MODULE_ID = "transcripts";
 export const JOURNAL_MODULE_ID = "journal";
 
-export const TEN_DATABASE_MODULE_IDS = [
+export const CORE_DATABASE_MODULE_IDS = [
   PROJECTS_MODULE_ID,
   TASKS_MODULE_ID,
   PEOPLE_MODULE_ID,
@@ -20,4 +20,4 @@ export const TEN_DATABASE_MODULE_IDS = [
   TRANSCRIPTS_MODULE_ID,
   JOURNAL_MODULE_ID,
 ] as const;
-export type TenDatabaseModuleId = (typeof TEN_DATABASE_MODULE_IDS)[number];
+export type CoreDatabaseModuleId = (typeof CORE_DATABASE_MODULE_IDS)[number];

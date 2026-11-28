@@ -26,7 +26,6 @@ public enum SearchSubtitleKind: Equatable, Sendable {
     case phone
     case relationship
     case status
-    case count
     case sender
     case movedFrom
     case missedInEvent

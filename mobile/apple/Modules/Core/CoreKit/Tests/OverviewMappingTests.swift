@@ -177,7 +177,7 @@ final class OverviewMappingTests: XCTestCase {
         let kinds: [(SharedSDK.SearchSubtitleKind, CoreKit.SearchSubtitleKind)] = [
             (.date, .date), (.time, .time), (.timeRange, .timeRange), (.place, .place), (.recurrence, .recurrence),
             (.project, .project), (.people, .people), (.phone, .phone),
-            (.relationship, .relationship), (.status, .status), (.count, .count), (.sender, .sender),
+            (.relationship, .relationship), (.status, .status), (.sender, .sender),
             (.movedFrom, .movedFrom), (.missedInEvent, .missedInEvent)
         ]
         for (shared, native) in kinds {
