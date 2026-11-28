@@ -289,10 +289,14 @@ async function countAttachmentReads<T>(fn: (client: PoolClient) => Promise<T>): 
     const counting = new Proxy(client, {
       get(target, property) {
         if (property === "query") {
-          return (statement: string | QueryConfig, values?: unknown[]) => {
+          const query = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+          // Every overload of `query` takes the statement first, as a text or a config, so the call is passed on as
+          // it came and the overload is the one the caller picked.
+          return (...args: [string | QueryConfig, ...unknown[]]): unknown => {
+            const [statement] = args;
             const text = typeof statement === "string" ? statement : statement.text;
             if (text.includes("FROM inbox_attachments")) reads += 1;
-            return typeof statement === "string" ? target.query(statement, values) : target.query(statement, values);
+            return Reflect.apply(query, target, args);
           };
         }
         return Reflect.get(target, property, target);
