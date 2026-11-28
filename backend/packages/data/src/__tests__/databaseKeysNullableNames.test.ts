@@ -4,7 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
+import { CORE_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -59,15 +59,15 @@ describe("issue #235: databases.key and nullable system names", () => {
     expect(property.name).toBeNull();
   });
 
-  it("seeds the ten hardcoded databases with a stable key and a null name, and null built-in property names", async () => {
+  it("seeds the hardcoded core databases with a stable key and a null name, and null built-in property names", async () => {
     await seedSystem(pool);
     const client = await pool.connect();
     try {
       const { rows } = await client.query<{ owner_module_id: string; key: string | null; name: string | null }>(
         `SELECT owner_module_id, key, name FROM databases WHERE system = true AND owner_module_id = ANY($1)`,
-        [TEN_DATABASE_MODULE_IDS],
+        [CORE_DATABASE_MODULE_IDS],
       );
-      expect(rows).toHaveLength(TEN_DATABASE_MODULE_IDS.length);
+      expect(rows).toHaveLength(CORE_DATABASE_MODULE_IDS.length);
       for (const row of rows) {
         expect(row.key).toBe(row.owner_module_id);
         expect(row.name).toBeNull();

@@ -4,7 +4,7 @@ This is the `backend/` platform of the Semprec monorepo (the other platforms,
 Semprec is a personal life-organization system; the backend
 is a TypeScript/Node pnpm workspace (`packages/*`, `services/*`)
 implementing: a Postgres schema engine with a generic choke-point CRUD API,
-Yjs CRDT blocks/canvas, ten hardcoded core databases, IMAP email sync, an
+Yjs CRDT blocks/canvas, hardcoded core databases, IMAP email sync, an
 inbox processing pipeline, a module contract/registry, an AI agent runtime
 (pi-agent-core) with MCP tools/approval queue/heartbeats, auth,
 notifications, a REST API, WebSocket realtime, and a meeting-transcription
