@@ -177,4 +177,5 @@ internal fun inboxClarifyCard(id: String) = InboxCard(
     schema = null,
 )
 
-internal fun inboxFactory(repository: ScriptedInbox) = InboxViewModelFactory(repository, repository)
+internal fun inboxFactory(repository: ScriptedInbox, attachments: FakeAttachmentFiles = FakeAttachmentFiles()) =
+    InboxViewModelFactory(repository, repository, attachments)

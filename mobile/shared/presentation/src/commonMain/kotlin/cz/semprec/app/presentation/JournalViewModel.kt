@@ -3,10 +3,13 @@ package cz.semprec.app.presentation
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CalendarDay
+import cz.semprec.app.domain.InboxAttachment
+import cz.semprec.app.domain.JournalInboxEntry
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodPage
 import cz.semprec.app.domain.JournalPeriodType
 import cz.semprec.app.domain.LoadJournalPeriod
+import cz.semprec.app.domain.OpenInboxAttachment
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.journalAxis
 import cz.semprec.app.domain.journalAxisWindowContains
@@ -36,10 +39,17 @@ private val FALLBACK_DAY = CalendarDay(2000, 1, 1)
 class JournalViewModel internal constructor(
     initialDay: String,
     private val loadPeriod: LoadJournalPeriod,
+    openAttachment: OpenInboxAttachment,
     changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<JournalState, JournalAction, JournalEffect>(initialState(initialDay)) {
     private var loadJob: Job? = null
     private var prefetchJob: Job? = null
+    private val previews = AttachmentPreviews(viewModelScope, openAttachment) { preview ->
+        update { it.copy(attachment = preview) }
+    }
+
+    /** The Inbox of the period shown, whose attachments the person can open. */
+    private var shownInbox: List<JournalInboxEntry> = emptyList()
 
     /** The last periods read, newest last, for a selection of one of them to show at once. */
     private val kept = LinkedHashMap<JournalPeriod, JournalPeriodPage>()
@@ -69,6 +79,7 @@ class JournalViewModel internal constructor(
                     ensureActive()
                     if (result is RepositoryResult.Content && state.value.selection.toPeriod() == period) {
                         keep(period, result.value)
+                        shownInbox = result.value.inbox
                         update { it.around(result.value) }
                         prefetchAround(state.value.selection)
                     }
@@ -88,8 +99,17 @@ class JournalViewModel internal constructor(
             is JournalAction.Turn -> state.value.selection.let { select(it.kind, it.shifted(action.steps).toString()) }
             is JournalAction.OpenEvent -> emit(JournalEffect.OpenEvent(action.id))
             JournalAction.OpenInbox -> emit(JournalEffect.OpenInbox)
+            is JournalAction.OpenAttachment -> previews.open(action.attachmentId, attachment(action))
+            JournalAction.CloseAttachment -> previews.close()
         }
     }
+
+    /** The attachment of an entry the diary shows, or of one it keeps beside it. */
+    private fun attachment(action: JournalAction.OpenAttachment): InboxAttachment? =
+        (shownInbox + kept.values.flatMap { it.inbox })
+            .firstOrNull { it.id == action.entryId }
+            ?.attachments
+            ?.firstOrNull { it.id == action.attachmentId }
 
     private fun select(kind: JournalPeriodKind, start: String) {
         val day = CalendarDay.parse(start)?.startOf(kind.toType())
@@ -184,6 +204,7 @@ class JournalViewModel internal constructor(
 
     private fun show(page: JournalPeriodPage, selection: JournalSelection) {
         val content = page.toContent(selection)
+        shownInbox = page.inbox
         update {
             it.copy(
                 phase = JournalPhase.CONTENT,

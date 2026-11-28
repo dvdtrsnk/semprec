@@ -16,7 +16,8 @@ data class JournalSelection(val kind: JournalPeriodKind, val start: String)
  * [birthdays] and [inbox]. [today] is the server's current day. [shown] is the period those belong to: right after a new selection it
  * is still the previous one, until the new period arrives, so the screen lays the content out as what it is.
  * [before] and [after] are the periods of the same kind beside [shown], once they have been read: the screen can lay
- * them out beside the shown one before the person turns to them.
+ * them out beside the shown one before the person turns to them. [attachment] is the Inbox attachment the person
+ * opened, while it is made ready, shown or failed.
  */
 data class JournalState(
     val phase: JournalPhase,
@@ -33,6 +34,7 @@ data class JournalState(
     val shown: JournalSelection? = null,
     val before: JournalPeriodContent? = null,
     val after: JournalPeriodContent? = null,
+    val attachment: AttachmentPreviewState? = null,
 )
 
 /** What the diary shows for one period ([shown]), as [JournalState] lists it for the shown period. */

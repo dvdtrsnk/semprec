@@ -14,7 +14,7 @@ enum class InboxCardStatus { PROPOSED, COMPUTING, COMPUTE_FAILED, NEEDS_CLARIFIC
 
 /** What a card was made from. */
 sealed interface InboxOrigin {
-    /** The capture of an Inbox item: its text, the day and time it was captured and its type. */
+    /** The capture of an Inbox item: its text, the day and time it was captured, its type and its files. */
     data class Capture(
         val itemId: String,
         val text: String?,
@@ -22,6 +22,7 @@ sealed interface InboxOrigin {
         val time: String?,
         val typeLabel: String?,
         val typeEmoji: String?,
+        val attachments: List<InboxAttachment> = emptyList(),
     ) : InboxOrigin
 
     data class Transcript(val name: String?, val date: String?) : InboxOrigin

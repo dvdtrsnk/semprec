@@ -4,6 +4,8 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.CalendarDay
+import cz.semprec.app.domain.InboxAttachment
+import cz.semprec.app.domain.InboxAttachmentLocation
 import cz.semprec.app.domain.InboxCapture
 import cz.semprec.app.domain.InboxCaptureFile
 import cz.semprec.app.domain.InboxCaptureSource
@@ -167,8 +169,15 @@ class CaptureProjectionTest {
                         typeEmoji = "🧾",
                         status = WAITING_INBOX_STATUS,
                         processing = null,
-                        attachmentName = "scan.pdf",
-                        attachmentCount = 1,
+                        attachments = listOf(
+                            InboxAttachment(
+                                id = "c1",
+                                name = "scan.pdf",
+                                mimeType = "application/pdf",
+                                source = "camera",
+                                location = InboxAttachmentLocation.WaitingCapture("c1"),
+                            ),
+                        ),
                     ),
                 ),
                 shown.inbox,

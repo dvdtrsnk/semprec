@@ -2,8 +2,10 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.InboxAttachment
 import cz.semprec.app.domain.InboxCardStatus
 import cz.semprec.app.domain.InboxContent
+import cz.semprec.app.domain.InboxOrigin
 import cz.semprec.app.domain.carrying
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -33,6 +35,9 @@ class InboxViewModel internal constructor(
     private val edits = InboxEditFlow(context)
     private val decisions = InboxDecisionFlow(context)
     private val options = InboxOptionsFlow(context)
+    private val previews = AttachmentPreviews(viewModelScope, deps.openAttachment) { preview ->
+        update { it.copy(attachment = preview) }
+    }
     private var loadJob: Job? = null
     private var pollJob: Job? = null
 
@@ -53,9 +58,17 @@ class InboxViewModel internal constructor(
             InboxAction.Approve, InboxAction.Reject, InboxAction.Undo, is InboxAction.Recompute, is InboxAction.Reset,
             InboxAction.OpenResult, InboxAction.DismissResult, InboxAction.DismissProblem,
             -> decisions.handle(action)
+            is InboxAction.OpenAttachment -> previews.open(action.attachmentId, attachment(action))
+            InboxAction.CloseAttachment -> previews.close()
         }
         options.prefetch()
     }
+
+    /** The attachment of the source of a card of the stack. */
+    private fun attachment(action: InboxAction.OpenAttachment): InboxAttachment? =
+        (model.card(action.cardId)?.origin as? InboxOrigin.Capture)
+            ?.attachments
+            ?.firstOrNull { it.id == action.attachmentId }
 
     private fun load(showWait: Boolean) {
         loadJob?.cancel()

@@ -692,7 +692,7 @@ class InboxViewModelTest : MainDispatcherTest() {
     @Test fun `a write elsewhere in the window reads the stack again`() = runTest(dispatcher) {
         val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         val repository = ScriptedInbox(stackOfTwo, inboxContent(inboxTaskCard("c")))
-        val vm = InboxViewModelFactory(repository, repository, changes).inboxViewModel()
+        val vm = InboxViewModelFactory(repository, repository, FakeAttachmentFiles(), changes).inboxViewModel()
         runCurrent()
         assertEquals(1, repository.stackCalls)
         changes.emit(Unit)

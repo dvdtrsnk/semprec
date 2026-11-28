@@ -17,7 +17,7 @@ data class JournalBirthday(val id: String, val personName: String)
 
 /**
  * One Inbox item captured on a day. [status] and [processing] are the backend's canonical keys; the app writes the
- * words for them. [attachmentName] is the file name of the first attachment, [attachmentCount] how many there are.
+ * words for them. [attachments] are its files in the order the item lists them.
  */
 data class JournalInboxEntry(
     val id: String,
@@ -26,8 +26,7 @@ data class JournalInboxEntry(
     val typeEmoji: String?,
     val status: String?,
     val processing: String?,
-    val attachmentName: String?,
-    val attachmentCount: Int,
+    val attachments: List<InboxAttachment>,
 )
 
 /** A week's page inside a day or a month: [week] is its ISO number, [itemId] and [markdown] are `null` until written. */

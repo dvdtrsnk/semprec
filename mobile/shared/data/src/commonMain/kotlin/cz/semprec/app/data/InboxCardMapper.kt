@@ -117,7 +117,15 @@ private fun presentedKind(kind: InboxCardKind?, status: InboxCardStatus?, contex
 }
 
 private fun InboxSourceDto.toOrigin(): InboxOrigin? = when (kind) {
-    "inboxItem" -> InboxOrigin.Capture(id.orEmpty(), text, date, time, type?.name, type?.emoji)
+    "inboxItem" -> InboxOrigin.Capture(
+        id.orEmpty(),
+        text,
+        date,
+        time,
+        type?.name,
+        type?.emoji,
+        attachments.mapNotNull { it.toServerAttachment() },
+    )
     "transcript" -> InboxOrigin.Transcript(name, completedAt)
     "run" -> InboxOrigin.Run(sourceKind.orEmpty(), threadTitle, heartbeatName, mcpClientName)
     else -> null

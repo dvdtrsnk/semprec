@@ -5,6 +5,8 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.StoredSession
 import cz.semprec.app.domain.CalendarDay
 import cz.semprec.app.domain.ClockTime
+import cz.semprec.app.domain.InboxAttachment
+import cz.semprec.app.domain.InboxAttachmentLocation
 import cz.semprec.app.domain.JournalPeriod
 import cz.semprec.app.domain.JournalPeriodType
 import cz.semprec.app.domain.PageDocument
@@ -39,7 +41,10 @@ private const val DAY_BODY = """{
   "inbox":[
     {"id":"i1","date":"2026-10-16","time":"08:15","text":"Idea","type":{"id":"t","name":"Idea","emoji":"x"},
      "status":"proposed","processing":"proposed","proposalSummary":null,
-     "attachments":[{"attachmentId":"a","blobId":"b","name":"scan.pdf","mimeType":"application/pdf","byteSize":1}]},
+     "attachments":[{"attachmentId":"a","blobId":"b","name":"scan.pdf","mimeType":"application/pdf","byteSize":1,
+       "pageCount":null,"thumbnailBlobId":null,"source":"files"},
+       {"attachmentId":"a2","blobId":"b2","name":null,"mimeType":"image/jpeg","byteSize":2,"pageCount":null,
+       "thumbnailBlobId":"t2","source":"camera"}]},
     {"id":"i2","date":null,"time":null,"text":"  ","type":null,"status":null,"processing":null,"attachments":[]}
   ],
   "events":[
@@ -113,8 +118,13 @@ class HttpJournalRepositoryTest {
         assertTrue(page.events.last().allDay)
         assertEquals("Hotel", page.events.last().place)
         assertEquals("Jana Kovarova", page.birthdays.single().personName)
-        assertEquals("scan.pdf", page.inbox.first().attachmentName)
-        assertEquals(1, page.inbox.first().attachmentCount)
+        assertEquals(
+            listOf(
+                InboxAttachment("a", "scan.pdf", "application/pdf", "files", InboxAttachmentLocation.Blob("b")),
+                InboxAttachment("a2", null, "image/jpeg", "camera", InboxAttachmentLocation.Blob("b2")),
+            ),
+            page.inbox.first().attachments,
+        )
         assertEquals("x", page.inbox.first().typeEmoji)
         assertNull(page.inbox.last().text)
     }

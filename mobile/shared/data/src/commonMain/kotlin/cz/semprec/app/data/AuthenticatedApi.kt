@@ -116,9 +116,10 @@ class AuthenticatedApi(
         return response
     }
 
-    suspend fun download(path: String): ApiBytesResponse {
+    /** Reads the bytes at [path]; [maxBytes] and [requestTimeoutMillis] bound the read ([ApiClient.download]). */
+    suspend fun download(path: String, maxBytes: Long? = null, requestTimeoutMillis: Long? = null): ApiBytesResponse {
         val session = storage.load() ?: return ApiBytesResponse.Failure(FailureKind.UNAUTHORIZED, null)
-        val response = client.download(session.serverUrl, path, session.token)
+        val response = client.download(session.serverUrl, path, session.token, maxBytes, requestTimeoutMillis)
         if (response is ApiBytesResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         return response
     }

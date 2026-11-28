@@ -24,9 +24,9 @@ internal object CaptureProjection {
     /**
      * [answer] to [read] with every capture of [captures] made for the day [read] asks for, and whose id is not among
      * the answer's Inbox entries, listed after those entries in the order of [captures]. Each is an entry with the
-     * capture's id, time and text, the emoji [emojis] names for its type, the name of its file and the status
-     * [WAITING_INBOX_STATUS]. Any other read, an answer that is not a JSON object and a day without such a capture are
-     * returned unchanged.
+     * capture's id, time and text, the emoji [emojis] names for its type, the name, media type and source of its file
+     * and the status [WAITING_INBOX_STATUS]. Any other read, an answer that is not a JSON object and a day without
+     * such a capture are returned unchanged.
      */
     fun apply(
         read: ApiRequest,
@@ -58,7 +58,20 @@ internal object CaptureProjection {
         put("text", text)
         put("type", typeId?.let(emojis::get)?.let { emoji -> buildJsonObject { put("emoji", emoji) } } ?: JsonNull)
         put("status", WAITING_INBOX_STATUS)
-        put("attachments", buildJsonArray { file?.let { add(buildJsonObject { put("name", it.name) }) } })
+        put(
+            "attachments",
+            buildJsonArray {
+                file?.let {
+                    add(
+                        buildJsonObject {
+                            put("name", it.name)
+                            put("mimeType", it.mimeType)
+                            put("source", it.source)
+                        },
+                    )
+                }
+            },
+        )
     }
 }
 

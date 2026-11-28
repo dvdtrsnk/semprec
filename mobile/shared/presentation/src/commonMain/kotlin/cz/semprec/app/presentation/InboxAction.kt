@@ -47,4 +47,10 @@ sealed interface InboxAction {
 
     data object DismissResult : InboxAction
     data object DismissProblem : InboxAction
+
+    /** Makes the attachment [attachmentId] of the card's source ready to preview, in [InboxState.attachment]. */
+    data class OpenAttachment(val cardId: String, val attachmentId: String) : InboxAction
+
+    /** Ends the preview of an attachment, or its failure, and stops one being opened. */
+    data object CloseAttachment : InboxAction
 }

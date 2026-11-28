@@ -77,8 +77,7 @@ data class JournalInboxState(
     val text: String?,
     val emoji: String?,
     val status: JournalInboxStatus,
-    val attachmentName: String?,
-    val attachmentCount: Int,
+    val attachments: List<AttachmentState>,
 )
 
 /** One cell of a row of the time axis; [start] is the first day of its period, `YYYY-MM-DD`. */

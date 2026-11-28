@@ -15,6 +15,7 @@ import cz.semprec.app.core.UnavailableAudioPlayer
 import cz.semprec.app.core.UnavailableAudioRecorder
 import cz.semprec.app.core.UnavailableDeviceAlarms
 import cz.semprec.app.data.ApiClient
+import cz.semprec.app.data.FileInboxAttachmentFiles
 import cz.semprec.app.data.FileMailThreadListCache
 import cz.semprec.app.data.HttpAuthRepository
 import cz.semprec.app.data.HttpCollectionReads
@@ -80,9 +81,10 @@ import kotlinx.coroutines.flow.emptyFlow
  *
  * [sessionStorage] is where the signed-in session survives a restart (the Keychain on Apple); the default forgets
  * it with the process. [cacheDirectory] is a directory the system may empty (the app's cache directory), where the
- * mail thread lists of the signed-in account are kept so they open at once and without a connection; `null` keeps
- * none. Every end of the session empties it: signing out, the server refusing the session, and a restore of a session
- * the server no longer knows. [dataDirectory] is a directory the system keeps (Application Support on Apple), where the
+ * mail thread lists of the signed-in account are kept so they open at once and without a connection, and where the
+ * Inbox attachments opened are written for the preview; `null` keeps no lists and opens no attachment. Every end of
+ * the session empties both: signing out, the server refusing the session, and a restore of a session the server no
+ * longer knows. [dataDirectory] is a directory the system keeps (Application Support on Apple), where the
  * answers of the offline set are kept for the signed-in account, so its screens open from the device and without a
  * connection; every window of the process that names it shares what is kept there, and every end of the session
  * empties it as well. The window reads that set ahead of its screens ([OfflineWarmup]) when it starts with a session
@@ -118,6 +120,7 @@ class HomeSDK(
         device,
         sessionEnded = {
             threadLists.clear()
+            attachmentFiles.clear()
             offline?.clear()
         },
         endingSession = { ending -> RevokePushSubscription(HttpPushRepository(ending), pushSubscriptions)() },
@@ -130,6 +133,7 @@ class HomeSDK(
     }
     private val threadLists: MailThreadListCache =
         cacheDirectory?.let { FileMailThreadListCache(it, auth.api) } ?: NoMailThreadListCache()
+    private val attachmentFiles: FileInboxAttachmentFiles = FileInboxAttachmentFiles(cacheDirectory, auth.api)
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
@@ -158,7 +162,8 @@ class HomeSDK(
     private val inboxRepository = HttpInboxRepository(auth.api, collectionReads)
 
     /** The Inbox screen: the stack of cards the person approves, edits or discards. */
-    val inbox: InboxSDK = InboxSDK(InboxViewModelFactory(inboxRepository, inboxRepository, auth.api.changes.events))
+    val inbox: InboxSDK =
+        InboxSDK(InboxViewModelFactory(inboxRepository, inboxRepository, attachmentFiles, auth.api.changes.events))
 
     // The overview and its search; the recent searches live as long as this SDK, that is, as long as the window.
     private val overviewViewModels = OverviewViewModelFactory(
@@ -210,7 +215,7 @@ class HomeSDK(
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
 
     /** The diary. */
-    val journal: JournalSDK = JournalSDK(auth.api)
+    val journal: JournalSDK = JournalSDK(auth.api, attachmentFiles)
 
     /** The note editor of pages, Journal periods and texts kept elsewhere. */
     val noteEditor: NoteEditorSDK = NoteEditorSDK(auth.api, pageChanges)

@@ -22,6 +22,12 @@ sealed interface JournalAction {
     data class ShowAxisAround(val day: String) : JournalAction
     data class OpenEvent(val id: String) : JournalAction
     data object OpenInbox : JournalAction
+
+    /** Makes the attachment [attachmentId] of the Inbox entry [entryId] ready for [JournalState.attachment]. */
+    data class OpenAttachment(val entryId: String, val attachmentId: String) : JournalAction
+
+    /** Ends the preview of an attachment, or its failure, and stops one being opened. */
+    data object CloseAttachment : JournalAction
 }
 
 sealed interface JournalEffect {
