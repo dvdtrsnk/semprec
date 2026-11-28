@@ -18,6 +18,8 @@ final class CaptureSending {
 
     // MARK: - Dependencies
     private let captures: any WaitingCaptures
+    /// The send that becoming active started, while it runs.
+    private var activeSend: Task<Void, Never>?
     #if os(iOS)
     /// The two background tasks that send the captures while the app is not running.
     let backgroundTasks: CaptureBackgroundTasks
@@ -41,17 +43,31 @@ final class CaptureSending {
     #endif
 
     // MARK: - Methods
-    /// The app became active: sends the captures that wait now. A window's own triggers send them too; this one also
-    /// covers a process whose windows started before the captures were added.
-    func appBecameActive() async {
-        _ = await captures.send()
+    /// The app became active: sends the captures that wait now, or, while the send of an earlier activation still
+    /// runs, answers that one, so activations in quick succession do not stack sends. A window's own triggers send
+    /// them too; this one also covers a process whose windows started before the captures were added. The returned
+    /// task is the send, which tests await.
+    @discardableResult
+    func appBecameActive() -> Task<Void, Never> {
+        if let activeSend { return activeSend }
+        let captures = self.captures
+        let send = Task { @MainActor in
+            _ = await captures.send()
+            self.activeSend = nil
+        }
+        activeSend = send
+        return send
     }
 
-    /// The app moved to the background: on iOS, schedules both background tasks when captures wait.
-    func appMovedToBackground() async {
-        #if os(iOS)
-        await backgroundTasks.scheduleIfWaiting()
-        #endif
+    /// The app moved to the background: on iOS, schedules both background tasks when captures wait. The returned task
+    /// is the check, which tests await.
+    @discardableResult
+    func appMovedToBackground() -> Task<Void, Never> {
+        Task { @MainActor in
+            #if os(iOS)
+            await self.backgroundTasks.scheduleIfWaiting()
+            #endif
+        }
     }
 
     /// A capture was added to the outbox (by the intent, the scanner or the diary): on iOS, schedules both background

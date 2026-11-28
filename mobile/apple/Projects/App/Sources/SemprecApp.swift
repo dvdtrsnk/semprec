@@ -31,8 +31,8 @@ struct SemprecApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: Task { await CaptureSending.shared.appBecameActive() }
-            case .background: Task { await CaptureSending.shared.appMovedToBackground() }
+            case .active: CaptureSending.shared.appBecameActive()
+            case .background: CaptureSending.shared.appMovedToBackground()
             case .inactive: break
             @unknown default: break
             }

@@ -54,7 +54,7 @@ Rejected:
   and when the app moves to the background. A new request replaces the pending one with the same identifier. A
   refused submission is not retried; the next trigger schedules again.
 - **Sending when active.** When the app as a whole becomes active (`scenePhase` of `SemprecApp`), it runs one send
-  through the bridge, on iOS and macOS. On macOS this is the only part that applies, and the BackgroundTasks code is
+  through the bridge, on iOS and macOS; while the send of an earlier activation still runs, it starts none. On macOS this is the only part that applies, and the BackgroundTasks code is
   compiled only for iOS (`#if os(iOS)`).
 - **One owner.** `CaptureSending` (one per process, in the app target) owns all of this. The app delegate, the app's
   phase, the intent, the scanner presenter and the diary report to it. A feature never imports BackgroundTasks. The

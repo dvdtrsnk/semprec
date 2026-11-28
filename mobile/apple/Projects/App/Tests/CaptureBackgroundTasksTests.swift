@@ -17,7 +17,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     func testMovingToTheBackgroundWithCapturesWaitingSchedulesBothTasks() async throws {
         captures.waits = .waiting
 
-        await sending().appMovedToBackground()
+        await sending().appMovedToBackground().value
 
         try assertBothScheduled()
     }
@@ -25,7 +25,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     func testMovingToTheBackgroundWithNothingWaitingSchedulesNothing() async {
         captures.waits = .nothing
 
-        await sending().appMovedToBackground()
+        await sending().appMovedToBackground().value
 
         XCTAssertEqual(captures.waitChecks, 1)
         XCTAssertTrue(scheduler.requests.isEmpty)
@@ -34,7 +34,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
     func testMovingToTheBackgroundWhenTheWaitingCapturesCannotBeCountedSchedulesBothTasks() async throws {
         captures.waits = .unknown
 
-        await sending().appMovedToBackground()
+        await sending().appMovedToBackground().value
 
         try assertBothScheduled()
     }
@@ -59,7 +59,7 @@ final class CaptureBackgroundTasksTests: XCTestCase {
         captures.waits = .waiting
         scheduler.refuses = [CaptureBackgroundTasks.sendIdentifier]
 
-        await sending().appMovedToBackground()
+        await sending().appMovedToBackground().value
 
         XCTAssertEqual(scheduler.requests.map(\.identifier), [
             CaptureBackgroundTasks.sendIdentifier,

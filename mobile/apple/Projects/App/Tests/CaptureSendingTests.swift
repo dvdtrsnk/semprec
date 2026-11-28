@@ -12,8 +12,26 @@ final class CaptureSendingTests: XCTestCase {
         captures.waits = .waiting
         let sending = CaptureSending(captures: captures)
 
-        await sending.appBecameActive()
+        await sending.appBecameActive().value
 
         XCTAssertEqual(captures.sends, 1)
+    }
+
+    func testBecomingActiveAgainWhileTheSendRunsJoinsItAndAfterItEndsSendsAgain() async throws {
+        let captures = CapturesDouble()
+        captures.holdsSend = true
+        let sending = CaptureSending(captures: captures)
+
+        let first = sending.appBecameActive()
+        let second = sending.appBecameActive()
+        try await eventually { captures.sends == 1 }
+        XCTAssertEqual(first, second)
+        first.cancel()
+        await first.value
+        XCTAssertEqual(captures.sends, 1)
+
+        captures.holdsSend = false
+        await sending.appBecameActive().value
+        XCTAssertEqual(captures.sends, 2)
     }
 }
