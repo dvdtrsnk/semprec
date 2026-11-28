@@ -1,11 +1,13 @@
 import CoreKit
 import DesignSystem
+import PDFKit
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
 /// The row under today's Inbox items that writes something down into the Inbox: a type picked from a menu, a text,
-/// and a photo or a file. The text stays in this view until it is sent; a capture that went through clears it.
+/// and a photo, a file or, on an iPhone or iPad with the document scanner, a scanned document. The text stays in this
+/// view until it is sent; a capture that went through clears it.
 struct JournalCaptureRow: View {
 
     // MARK: - Dependencies
@@ -18,7 +20,8 @@ struct JournalCaptureRow: View {
     @State private var choosingPhoto = false
     @State private var photo: PhotosPickerItem?
     @State private var importing = false
-    /// A picked photo or file whose bytes could not be read.
+    @State private var scanning = false
+    /// A picked photo or file whose bytes could not be read, or a scan that could not be kept.
     @State private var unreadable = false
 
     // MARK: - Body
@@ -51,6 +54,7 @@ struct JournalCaptureRow: View {
         }
         .photosPicker(isPresented: $choosingPhoto, selection: $photo, matching: .images)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in pickFile(result) }
+        .documentScanner(isPresented: $scanning, onFinish: attachScan) { unreadable = true }
         .onChange(of: photo) { _, item in pickPhoto(item) }
         .onChange(of: viewModel.captured) { _, _ in draft = "" }
         .alert(
@@ -105,6 +109,14 @@ private extension JournalCaptureRow {
             }
             Button { importing = true } label: {
                 Label { Text("journal.capture.file", bundle: .module) } icon: { Image(systemName: "doc") }
+            }
+            if ScanDocument.isScannerSupported {
+                Button { scanning = true } label: {
+                    Label { Text("journal.capture.scan", bundle: .module) } icon: {
+                        Image(systemName: "doc.viewfinder")
+                    }
+                }
+                .accessibilityIdentifier(JournalIdentifiers.captureScan)
             }
         } label: {
             Label { Text("journal.capture.attach", bundle: .module) } icon: { Image(systemName: "paperclip") }
@@ -178,6 +190,10 @@ private extension JournalCaptureRow {
                 unreadable = true
             }
         }
+    }
+
+    func attachScan(_ pages: [PDFPage]) {
+        if !viewModel.attachScan(pages, scannedAt: .now) { unreadable = true }
     }
 
     func pickFile(_ result: Result<URL, Error>) {

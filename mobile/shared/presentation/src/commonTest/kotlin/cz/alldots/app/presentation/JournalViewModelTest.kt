@@ -6,7 +6,9 @@ import cz.alldots.app.domain.JournalPeriod
 import cz.alldots.app.domain.JournalPeriodType
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -21,9 +23,12 @@ private const val DIARY = "Morning **note**\n\n- [ ] Boots\n\n1. one\n1. two\n\n
 @OptIn(ExperimentalCoroutinesApi::class)
 class JournalViewModelTest : MainDispatcherTest() {
     private val repository = FakeJournalRepository()
+    private val attachments = FakeAttachmentFiles()
 
-    private fun viewModel(day: String = "2026-10-16") =
-        JournalViewModelFactory(repository, UnusedInboxCaptures).journalViewModel(day)
+    private fun factory(changes: Flow<Unit> = emptyFlow()) =
+        JournalViewModelFactory(repository, UnusedInboxCaptures, attachments, changes)
+
+    private fun viewModel(day: String = "2026-10-16") = factory().journalViewModel(day)
 
     private fun TestScope.loaded(day: String = "2026-10-16"): JournalViewModel =
         viewModel(day).also { runCurrent() }
@@ -83,7 +88,10 @@ class JournalViewModelTest : MainDispatcherTest() {
         assertTrue(event.hasTranscript)
         assertEquals("Jana Kovarova", state.birthdays.single().personName)
         assertEquals(JournalInboxStatus.PROPOSED, state.inbox.single().status)
-        assertEquals(2, state.inbox.single().attachmentCount)
+        assertEquals(
+            listOf(AttachmentState("a1", "scan.pdf", "application/pdf"), AttachmentState("a2", null, "image/jpeg")),
+            state.inbox.single().attachments,
+        )
         vm.close()
     }
 
@@ -97,7 +105,10 @@ class JournalViewModelTest : MainDispatcherTest() {
 
     @Test fun `inbox processing wins over the card status and unknown keys are none`() = runTest(dispatcher) {
         val keys =
-            listOf("pending", "failed", "needsClarification", "proposed", "confirmed", "rejected", "invalid", "other")
+            listOf(
+                "waiting", "pending", "failed", "needsClarification", "proposed", "confirmed", "rejected", "invalid",
+                "other",
+            )
         repository.onPeriod = {
             content(
                 periodPage(it).copy(
@@ -110,7 +121,8 @@ class JournalViewModelTest : MainDispatcherTest() {
         val vm = loaded()
         assertEquals(
             listOf(
-                JournalInboxStatus.PENDING, JournalInboxStatus.FAILED, JournalInboxStatus.NEEDS_CLARIFICATION,
+                JournalInboxStatus.WAITING, JournalInboxStatus.PENDING, JournalInboxStatus.FAILED,
+                JournalInboxStatus.NEEDS_CLARIFICATION,
                 JournalInboxStatus.PROPOSED, JournalInboxStatus.CONFIRMED, JournalInboxStatus.REJECTED,
                 JournalInboxStatus.INVALID, JournalInboxStatus.NONE,
             ),
@@ -295,7 +307,7 @@ class JournalViewModelTest : MainDispatcherTest() {
     @Test fun `a write elsewhere reads the periods ahead again`() = runTest(dispatcher) {
         val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         repository.onPeriod = { content(periodPage(it, markdown = "BEFORE")) }
-        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        val vm = factory(changes).journalViewModel("2026-10-16")
         runCurrent()
         repository.onPeriod = { content(periodPage(it, markdown = "AFTER")) }
         changes.emit(Unit)
@@ -370,7 +382,7 @@ class JournalViewModelTest : MainDispatcherTest() {
     @Test fun `a write elsewhere drops the periods beside the shown one until they are read again`() =
         runTest(dispatcher) {
             val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-            val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+            val vm = factory(changes).journalViewModel("2026-10-16")
             runCurrent()
             val gate = CompletableDeferred<Unit>()
             repository.onPeriod = { repository.late(gate, content(periodPage(it))) }
@@ -393,7 +405,7 @@ class JournalViewModelTest : MainDispatcherTest() {
                 else -> repository.late(gate, content(periodPage(it, markdown = "BEFORE THE WRITE")))
             }
         }
-        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        val vm = factory(changes).journalViewModel("2026-10-16")
         runCurrent()
         // The shown period is read again slowly, so the read ahead that began before the write ends first.
         val reread = CompletableDeferred<Unit>()
@@ -621,7 +633,7 @@ class JournalViewModelTest : MainDispatcherTest() {
         runTest(dispatcher) {
             val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
             withDiary()
-            val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+            val vm = factory(changes).journalViewModel("2026-10-16")
             runCurrent()
             val before = vm.state.value
             repository.onPeriod = {
@@ -644,7 +656,7 @@ class JournalViewModelTest : MainDispatcherTest() {
             gate.await()
             content(periodPage(it))
         }
-        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        val vm = factory(changes).journalViewModel("2026-10-16")
         runCurrent()
         changes.emit(Unit)
         runCurrent()

@@ -5,7 +5,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { writeComputed } from "../chokePoint/itemsStore.js";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction, type Queryable } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import {
   INBOX_MODULE_ID,
@@ -54,6 +54,29 @@ export interface JournalInboxAttachmentSummary {
   pageCount: number | null;
   thumbnailBlobId: string | null;
   source: InboxAttachmentSource;
+}
+
+/** One read for all `inboxItemIds`; each item's attachments in position order, an item without any is absent. */
+export async function listInboxAttachmentSummaries(
+  client: Queryable,
+  inboxItemIds: string[],
+): Promise<Map<string, JournalInboxAttachmentSummary[]>> {
+  const byItem = new Map<string, JournalInboxAttachmentSummary[]>();
+  for (const attachment of await listInboxAttachments(client, inboxItemIds)) {
+    const forItem = byItem.get(attachment.inboxItemId) ?? [];
+    forItem.push({
+      attachmentId: attachment.attachmentId,
+      blobId: attachment.blobId,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      byteSize: Number(attachment.byteSize),
+      pageCount: attachment.metadata?.pages ?? null,
+      thumbnailBlobId: attachment.thumbnailBlobId,
+      source: attachment.source,
+    });
+    byItem.set(attachment.inboxItemId, forItem);
+  }
+  return byItem;
 }
 
 /** Canonical keys and enum values only; locale labels are resolved client-side. */
@@ -262,25 +285,10 @@ async function computeJournalInboxItems(
     ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id)
     : null;
 
-  // One read for the whole day, ordered by item then position.
-  const attachmentsByItem = new Map<string, JournalInboxAttachmentSummary[]>();
-  for (const attachment of await listInboxAttachments(
+  const attachmentsByItem = await listInboxAttachmentSummaries(
     client,
     items.map((item) => item.id),
-  )) {
-    const forItem = attachmentsByItem.get(attachment.inboxItemId) ?? [];
-    forItem.push({
-      attachmentId: attachment.attachmentId,
-      blobId: attachment.blobId,
-      name: attachment.name,
-      mimeType: attachment.mimeType,
-      byteSize: Number(attachment.byteSize),
-      pageCount: attachment.metadata?.pages ?? null,
-      thumbnailBlobId: attachment.thumbnailBlobId,
-      source: attachment.source,
-    });
-    attachmentsByItem.set(attachment.inboxItemId, forItem);
-  }
+  );
 
   const summaries: JournalInboxItemSummary[] = [];
   for (const item of items) {

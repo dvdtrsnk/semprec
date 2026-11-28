@@ -1,5 +1,7 @@
 package cz.alldots.app.data
 
+import cz.alldots.app.domain.InboxAttachment
+import cz.alldots.app.domain.InboxAttachmentLocation
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -45,7 +47,30 @@ internal data class InboxSourceDto(
     val threadTitle: String? = null,
     val heartbeatName: String? = null,
     val mcpClientName: String? = null,
+    val attachments: List<InboxAttachmentDto> = emptyList(),
 )
+
+/**
+ * A file of an Inbox item as the diary's day and the cards' `inboxItem` source list it. A capture that waits on the
+ * device has only [name], [mimeType] and [source] ([CaptureProjection]).
+ */
+@Serializable
+internal data class InboxAttachmentDto(
+    val attachmentId: String? = null,
+    val blobId: String? = null,
+    val name: String? = null,
+    val mimeType: String? = null,
+    val source: String? = null,
+) {
+    /** The attachment on the server; `null` without a blob, whose bytes could not be read. */
+    fun toServerAttachment(): InboxAttachment? = blobId?.let { blob ->
+        InboxAttachment(attachmentId ?: blob, name, mimeType, source, InboxAttachmentLocation.Blob(blob))
+    }
+
+    /** The file of the capture [captureId] that waits in the outbox; the capture has one file at most. */
+    fun toWaitingAttachment(captureId: String): InboxAttachment =
+        InboxAttachment(captureId, name, mimeType, source, InboxAttachmentLocation.WaitingCapture(captureId))
+}
 
 @Serializable
 internal data class InboxSourceTypeDto(val id: String = "", val name: String = "", val emoji: String = "")

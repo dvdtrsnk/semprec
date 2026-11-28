@@ -19,23 +19,30 @@ import io.ktor.http.HttpMethod
  * With [offline], a read of the offline set ([OfflineRoutes]) is answered by that layer, from what the device keeps
  * or from the server (docs/adr/2026-11-23-mobile-answers-from-the-device-at-once-and-reads-again-behind.md), and a write of a queued
  * route ([QueuedRoute]) is sent or queued by it (docs/adr/2026-11-23-mobile-writes-wait-in-an-ordered-queue-without-a-
- * connection.md); the window's [AuthenticatedApi] sends what the layer replays. Every other request still goes to the
- * server, and the layer learns from its outcome whether the server was reached and whether a write may have changed
- * what it keeps.
+ * connection.md); the window's [AuthenticatedApi] sends what the layer replays, and the Inbox captures its outbox keeps
+ * ([CaptureOutbox]). Every other request still goes to the server, and the layer learns from its outcome whether the
+ * server was reached and whether a write may have changed what it keeps.
+ *
+ * A window's api ([takesOverSender] `true`) attaches its sender to [offline] and replaces the one attached before; an
+ * entry without a window (`false`, `InboxCaptureSDK`) attaches its sender only when none is attached yet
+ * (docs/adr/2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk.md).
  */
 class AuthenticatedApi(
     private val client: ApiClient,
     private val storage: SessionStorage,
     val changes: ItemChanges = ItemChanges(),
     internal val offline: OfflineLayer? = null,
+    takesOverSender: Boolean = true,
     private val onSessionRejected: suspend () -> Unit,
 ) {
     /**
-     * Sends the writes the offline layer queued, with the session signed in when each goes out; a `401` signs the
-     * window out, as for [send].
+     * Sends what the offline layer keeps (the queued writes, the note pages and the Inbox captures), with the session
+     * signed in when each request goes out; a `401` signs the window out, as for [send].
      */
     private val queueSender = object : QueueSender {
         override fun account(): String? = storage.load()?.let(::accountKey)
+
+        override fun session(): StoredSession? = storage.load()
 
         override suspend fun send(request: ApiRequest): ApiResponse {
             val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
@@ -43,10 +50,17 @@ class AuthenticatedApi(
             if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
             return response
         }
+
+        override suspend fun upload(path: String, body: RawBody): ApiResponse {
+            val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
+            val response = client.upload(session.serverUrl, path, session.token, body, emptyList())
+            if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+            return response
+        }
     }
 
     init {
-        offline?.writes?.attach(queueSender)
+        if (takesOverSender) offline?.writes?.attach(queueSender) else offline?.writes?.attachIfNone(queueSender)
     }
 
     /** The session the calls go out with, or `null` when nobody is signed in. */
@@ -102,9 +116,10 @@ class AuthenticatedApi(
         return response
     }
 
-    suspend fun download(path: String): ApiBytesResponse {
+    /** Reads the bytes at [path]; [maxBytes] and [requestTimeoutMillis] bound the read ([ApiClient.download]). */
+    suspend fun download(path: String, maxBytes: Long? = null, requestTimeoutMillis: Long? = null): ApiBytesResponse {
         val session = storage.load() ?: return ApiBytesResponse.Failure(FailureKind.UNAUTHORIZED, null)
-        val response = client.download(session.serverUrl, path, session.token)
+        val response = client.download(session.serverUrl, path, session.token, maxBytes, requestTimeoutMillis)
         if (response is ApiBytesResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         return response
     }

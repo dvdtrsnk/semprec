@@ -172,8 +172,7 @@ fun inboxEntry() = JournalInboxEntry(
     typeEmoji = "x",
     status = "proposed",
     processing = null,
-    attachmentName = "scan.pdf",
-    attachmentCount = 2,
+    attachments = listOf(serverAttachment("a1"), serverAttachment("a2", name = null, mimeType = "image/jpeg")),
 )
 
 /** The captures of the diary's Inbox row, which the diary's own tests never reach. */

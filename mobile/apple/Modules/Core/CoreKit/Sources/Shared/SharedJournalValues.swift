@@ -181,6 +181,7 @@ extension JournalInboxStatus {
     init(_ status: SharedSDK.JournalInboxStatus) {
         switch status {
         case .none: self = .none
+        case .waiting: self = .waiting
         case .pending: self = .pending
         case .failed: self = .failed
         case .needsClarification: self = .needsClarification
@@ -202,8 +203,7 @@ extension JournalInboxItem {
             text: item.text,
             emoji: item.emoji,
             status: JournalInboxStatus(item.status),
-            attachmentName: item.attachmentName,
-            attachmentCount: Int(item.attachmentCount)
+            attachments: item.attachments.map(InboxAttachment.init)
         )
     }
 }

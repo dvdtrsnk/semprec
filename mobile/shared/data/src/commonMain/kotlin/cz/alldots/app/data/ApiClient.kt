@@ -15,13 +15,16 @@ import io.ktor.client.request.setBody
 import io.ktor.client.request.url
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsBytes
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentLength
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.readRemaining
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.close
 import kotlinx.coroutines.CancellationException
@@ -40,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.io.readByteArray
 
 private const val REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
@@ -154,25 +158,44 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         null
     }
 
-    /** Reads the bytes of a `GET`, with the media type the server named. */
-    suspend fun download(serverUrl: String, path: String, token: String?): ApiBytesResponse = try {
+    /**
+     * Reads the bytes of a `GET`, with the media type the server named. With [maxBytes] a body longer than that is
+     * read no further than one byte past it and fails as [FailureKind.INVALID_DATA]; [requestTimeoutMillis] replaces
+     * the default bound.
+     */
+    suspend fun download(
+        serverUrl: String,
+        path: String,
+        token: String?,
+        maxBytes: Long? = null,
+        requestTimeoutMillis: Long? = null,
+    ): ApiBytesResponse = try {
         http.prepareRequest {
             method = HttpMethod.Get
             url("$serverUrl$path")
+            if (requestTimeoutMillis != null) timeout { this.requestTimeoutMillis = requestTimeoutMillis }
             if (token != null) header(HttpHeaders.Authorization, "Bearer $token")
         }.execute { response ->
             val failure = failureKind(response.status)
-            if (failure == null) {
-                val type = response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
-                ApiBytesResponse.Success(response.status.value, type ?: DEFAULT_MEDIA_TYPE, response.bodyAsBytes())
-            } else {
-                ApiBytesResponse.Failure(failure, response.status.value)
+            val bytes = if (failure == null) bodyBytes(response, maxBytes) else null
+            val type = response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
+            when {
+                failure != null -> ApiBytesResponse.Failure(failure, response.status.value)
+                bytes == null -> ApiBytesResponse.Failure(FailureKind.INVALID_DATA, response.status.value)
+                else -> ApiBytesResponse.Success(response.status.value, type ?: DEFAULT_MEDIA_TYPE, bytes)
             }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
         ApiBytesResponse.Failure(FailureKind.UNAVAILABLE, null)
+    }
+
+    /** The body of [response], or `null` when it is longer than [maxBytes]; read no further than one byte beyond. */
+    private suspend fun bodyBytes(response: HttpResponse, maxBytes: Long?): ByteArray? = when {
+        maxBytes == null -> response.bodyAsBytes()
+        (response.contentLength() ?: 0L) > maxBytes -> null
+        else -> response.bodyAsChannel().readRemaining(maxBytes + 1).readByteArray().takeIf { it.size <= maxBytes }
     }
 
     /**

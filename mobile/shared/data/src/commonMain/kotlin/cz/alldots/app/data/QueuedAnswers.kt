@@ -53,7 +53,6 @@ internal object QueuedAnswers {
         QueuedRoute.CLEAR_TASK_RECURRENCE,
         QueuedRoute.HOST_EVENT,
         QueuedRoute.INVITATION_ANSWER,
-        QueuedRoute.INBOX_CAPTURE,
         -> ApiResponse.Success(OK_STATUS, "{}")
     }
 

@@ -52,6 +52,6 @@ private extension JournalNotes {
 private extension JournalCaptureViewModel {
 
     static var preview: JournalCaptureViewModel {
-        JournalCaptureViewModel(model: ScriptedInboxCaptureScreenModel(state: InboxCaptureState()))
+        JournalCaptureViewModel(model: ScriptedInboxCaptureScreenModel(state: InboxCaptureState()), onCaptured: {})
     }
 }

@@ -11,13 +11,22 @@ internal actual fun readCacheFile(path: String): String? = try {
     null
 }
 
-internal actual fun writeCacheFile(path: String, text: String): Boolean = try {
+internal actual fun readCacheBytes(path: String): ByteArray? = try {
+    File(path).takeIf(File::isFile)?.readBytes()
+} catch (_: IOException) {
+    null
+}
+
+internal actual fun writeCacheFile(path: String, text: String): Boolean =
+    writeCacheBytes(path, text.toByteArray(Charsets.UTF_8))
+
+internal actual fun writeCacheBytes(path: String, bytes: ByteArray): Boolean = try {
     val target = File(path)
     val directory = target.absoluteFile.parentFile
     directory.mkdirs()
     val written = File.createTempFile(target.name, ".tmp", directory)
     try {
-        written.writeText(text, Charsets.UTF_8)
+        written.writeBytes(bytes)
         Files.move(
             written.toPath(),
             target.toPath(),

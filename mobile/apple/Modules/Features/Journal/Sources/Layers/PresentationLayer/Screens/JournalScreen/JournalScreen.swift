@@ -87,6 +87,7 @@ struct JournalScreen: View {
             .onChange(of: viewModel.state.selection) { _, selection in
                 if selection == todayBrings { todayBrings = nil } else { selectionTicks += 1 }
             }
+            .journalAttachmentPreview(viewModel.state.attachment, close: viewModel.closeAttachment)
             .task { await viewModel.observe() }
     }
 }
@@ -239,6 +240,8 @@ private extension JournalScreen {
             capture: capture,
             flippedSections: $flippedSections,
             onOpenEvent: viewModel.openEvent,
+            openingAttachment: viewModel.state.attachment?.openingId,
+            onOpenAttachment: viewModel.openAttachment,
             onOpenInbox: viewModel.openInbox,
             onCaptured: viewModel.retry
         )

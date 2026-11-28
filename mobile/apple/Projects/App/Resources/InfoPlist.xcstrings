@@ -22,13 +22,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Alldots čte čárové a QR kódy, kterými se zastavuje budík."
+            "value" : "Alldots čte čárové a QR kódy, kterými se zastavuje budík, a skenuje dokumenty do Inboxu."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Alldots reads the barcodes and QR codes that stop your wake-up alarm."
+            "value" : "Alldots reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox."
           }
         }
       }

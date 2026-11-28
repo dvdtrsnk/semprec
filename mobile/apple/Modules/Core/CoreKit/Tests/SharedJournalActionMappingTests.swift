@@ -12,6 +12,25 @@ final class SharedJournalActionMappingTests: XCTestCase {
         XCTAssertTrue(SharedJournalScreenModel.action(.retry) is SharedSDK.JournalActionRetry)
         XCTAssertTrue(SharedJournalScreenModel.action(.goToday) is SharedSDK.JournalActionGoToday)
         XCTAssertTrue(SharedJournalScreenModel.action(.openInbox) is SharedSDK.JournalActionOpenInbox)
+        XCTAssertTrue(
+            SharedJournalScreenModel.action(.closeAttachment) is SharedSDK.JournalActionCloseAttachment
+        )
+    }
+
+    func testOpeningAnAttachmentCarriesTheEntryAndTheAttachment() throws {
+        let open = try XCTUnwrap(
+            SharedJournalScreenModel.action(.openAttachment(entryId: "i1", attachmentId: "a1"))
+                as? SharedSDK.JournalActionOpenAttachment
+        )
+        XCTAssertEqual(open.entryId, "i1")
+        XCTAssertEqual(open.attachmentId, "a1")
+    }
+
+    func testTheStateCarriesTheAttachmentPreview() {
+        let preview = SharedSDK.AttachmentPreviewState(attachmentId: "a1", phase: .opening, path: nil, failure: nil)
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, attachment: preview))
+        XCTAssertEqual(state.attachment, AttachmentPreview(attachmentId: "a1", phase: .opening))
+        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.content)).attachment)
     }
 
     func testNavigationActionsCarryTheirArguments() throws {
@@ -65,7 +84,8 @@ final class SharedJournalActionMappingTests: XCTestCase {
 
     func testInboxStatusesMapEveryCase() {
         let pairs: [(SharedSDK.JournalInboxStatus, CoreKit.JournalInboxStatus)] = [
-            (.none, .none), (.pending, .pending), (.failed, .failed), (.needsClarification, .needsClarification),
+            (.none, .none), (.waiting, .waiting), (.pending, .pending), (.failed, .failed),
+            (.needsClarification, .needsClarification),
             (.proposed, .proposed), (.confirmed, .confirmed), (.rejected, .rejected), (.invalid, .invalid)
         ]
         for (shared, native) in pairs { XCTAssertEqual(CoreKit.JournalInboxStatus(shared), native) }

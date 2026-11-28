@@ -985,6 +985,326 @@
         }
       }
     },
+    "intent.addToInbox.day" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Den"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Day"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.description" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapíše text do Inboxu v Alldotsu, i bez připojení, nebo do něj naskenuje dokument."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Writes a text into the Alldots Inbox, also without a connection, or scans a document into it."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text se v tomto zařízení nepodařilo uložit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The text could not be saved on this device."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uloženo. Do Inboxu se dostane, jakmile bude zařízení online."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved. It reaches the Inbox once the device is online."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.cancelled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skenování bylo zrušeno. Nic se neuložilo."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scanning was cancelled. Nothing was saved."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sken se v tomto zařízení nepodařilo uložit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The scan could not be saved on this device."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírám skener."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the scanner."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sken je uložený. Do Inboxu se dostane, jakmile bude zařízení online."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan saved. It reaches the Inbox once the device is online."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.scan.unavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toto zařízení neumí skenovat dokumenty."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device cannot scan documents."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.signIn" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nejdřív se přihlaste do Alldotsu v aplikaci."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to Alldots in the app first."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.text" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.text.empty" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Napište text, který chcete přidat."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Write the text to add."
+          }
+        }
+      }
+    },
+    "intent.addToInbox.text.request" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Co chcete přidat?"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What do you want to add?"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat do Inboxu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add to Inbox"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.type" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Typ"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Type"
+          }
+        }
+      }
+    },
+    "intent.addToInbox.type.request" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jaký typ?"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Which type?"
+          }
+        }
+      }
+    },
+    "intent.inboxType.name" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Typ v Inboxu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inbox type"
+          }
+        }
+      }
+    },
+    "intent.inboxType.none" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez typu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No type"
+          }
+        }
+      }
+    },
+    "intent.inboxType.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan"
+          }
+        }
+      }
+    },
+    "intent.scanIntoInbox.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat do Inboxu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan into Inbox"
+          }
+        }
+      }
+    },
     "pending.finance" : {
       "localizations" : {
         "cs" : {

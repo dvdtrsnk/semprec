@@ -51,6 +51,10 @@ private class PageServer : QueueSender {
 
     override fun account(): String = accountKey(PAGE_SESSION)
 
+    override fun session(): StoredSession = PAGE_SESSION
+
+    override suspend fun upload(path: String, body: RawBody): ApiResponse = error("No note page uploads")
+
     override suspend fun send(request: ApiRequest): ApiResponse {
         val itemId = request.path.removePrefix("/api/items/").removeSuffix("/page.md")
         sent += "${request.method.value} $itemId"

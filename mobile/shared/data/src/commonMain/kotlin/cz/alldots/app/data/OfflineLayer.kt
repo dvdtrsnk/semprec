@@ -93,8 +93,11 @@ internal data class ApiRequest(
  * emits, so the screens of every window read again, and the queue is replayed.
  *
  * After every replay that finished, the note pages that wait are written ([pages]) and, when one is due, the window
- * that registered last ([warmUpWith]) reads the offline set ahead of its screens ([OfflineWarmupSchedule]). [status]
- * tells whether the process is offline and how many changes of the account signed in wait or were refused.
+ * that registered last ([warmUpWith]) reads the offline set ahead of its screens ([OfflineWarmupSchedule]). The Inbox
+ * captures wait in their own outbox ([captures], docs/adr/2026-11-27-inbox-captures-wait-in-a-device-outbox-that-
+ * outlives-the-session.md), which sends them when one is added, when the server is reached again or the socket
+ * connects, and when a window starts. [status] tells whether the process is offline and how many changes of the
+ * account signed in wait, the captures of its person included, or were refused.
  */
 class OfflineLayer internal constructor(
     internal val store: OfflineStore,
@@ -112,6 +115,10 @@ class OfflineLayer internal constructor(
     /** The note pages read and written through the device. */
     val pages = OfflinePages(store, state) { writes.sender() }
 
+    /** The Inbox captures that wait for the server, sent through the window's sender; never removed by [clear]. */
+    internal val captures = CaptureOutbox(store, scope, state, clock, newId) { writes.sender() }
+    private val captureViews = CaptureViews(store, captures)
+
     init {
         writes.afterReplay = {
             pages.writeWaiting()
@@ -120,22 +127,27 @@ class OfflineLayer internal constructor(
         state.onReachedAgain = {
             warmups.due()
             writes.replaySoon()
+            captures.sendSoon()
         }
     }
 
     /** Emits when what the screens of every window show may have changed. */
     val changes: Flow<Unit> = state.changes
 
-    /** Whether the process is offline, and what the queue of the account signed in holds, as they change. */
+    /**
+     * Whether the process is offline, and what the queue of the account signed in and the captures of its person
+     * hold, as they change.
+     */
     override val status: Flow<OfflineStatus> =
-        combine(state.connectivity.offlineChanges, writes.status) { offline, queue ->
-            OfflineStatus(offline, queue.waiting, queue.failures.size)
+        combine(state.connectivity.offlineChanges, writes.status, captures.waiting) { offline, queue, captured ->
+            OfflineStatus(offline, queue.waiting + captured, queue.failures.size)
         }.distinctUntilChanged()
 
     /**
      * Answers [request], a read of the offline set made with [session]; [transmit] sends it to the server. Every id
-     * the device made that the server answered is replaced by the server's id first, and the writes still queued are
-     * applied to the answer ([QueuedViews]).
+     * the device made that the server answered is replaced by the server's id first, the writes still queued are
+     * applied to the answer ([QueuedViews]), and a day of the diary lists the Inbox captures of [session]'s person that
+     * wait in the outbox ([CaptureViews]).
      */
     internal suspend fun read(
         session: StoredSession,
@@ -145,7 +157,8 @@ class OfflineLayer internal constructor(
         val account = accountKey(session)
         val queued = store.queue.state(account)
         val resolved = queued?.let { request.resolved(it.ids) } ?: request
-        return views.project(account, resolved, reads.answer(account, resolved, transmit), queued)
+        val answer = views.project(account, resolved, reads.answer(account, resolved, transmit), queued)
+        return captureViews.project(session, account, resolved, answer)
     }
 
     /** Sends or queues [request], a write of [route] made with [session]; [transmit] sends it to the server. */
@@ -174,13 +187,33 @@ class OfflineLayer internal constructor(
         state.connected()
         warmups.due()
         writes.replaySoon()
+        captures.sendSoon()
     }
 
-    /** A window starts: its [warmup] reads the offline set ahead of the screens from now on, once the queue replayed. */
+    /**
+     * A window starts: its [warmup] reads the offline set ahead of the screens from now on, once the queue replayed,
+     * and the captures that wait are sent.
+     */
     fun warmUpWith(warmup: OfflineWarmup) {
         warmups.register(warmup)
         writes.replaySoon()
+        captures.sendSoon()
     }
+
+    /**
+     * Sends the Inbox captures that wait now, through the layer's sender, or joins the round under way; answers
+     * whether no capture of the person signed in is left ([CaptureOutbox.send]). Cancelling it cancels the round when
+     * no other trigger waits for it. For an entry without a window, such as an App Intent's `InboxCaptureSDK`, which
+     * cannot wait for a window's triggers.
+     */
+    suspend fun sendCaptures(): Boolean = captures.send()
+
+    /**
+     * Whether an Inbox capture of the person signed in waits for the server ([CaptureOutbox.waits]); `false` when
+     * nobody is signed in. For an entry without a window that decides whether to send them later, such as the Apple
+     * app's background tasks.
+     */
+    suspend fun capturesWait(): Boolean = captures.waits()
 
     /** The sync socket of a window received a frame: something the server keeps changed. */
     internal suspend fun frameArrived() {
@@ -191,10 +224,14 @@ class OfflineLayer internal constructor(
         writes.forgetFailures()
     }
 
-    /** Removes everything kept, the queue included, as the session ended. */
+    /**
+     * Removes everything kept, the queue included, as the session ended. The Inbox captures stay on the device until
+     * the server created them; with nobody signed in none of them is counted.
+     */
     suspend fun clear() {
         store.clear()
         writes.cleared()
+        captures.cleared()
         state.locked { state.freshness.clear() }
     }
 

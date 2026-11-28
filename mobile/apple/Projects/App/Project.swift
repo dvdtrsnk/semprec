@@ -38,12 +38,20 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.productivity",
                 // AlarmKit asks for this when the first sleep alarm is scheduled; macOS has no AlarmKit and ignores it.
                 "NSAlarmKitUsageDescription": "Alldots rings your alarms even in silent mode and through a Focus.",
-                // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS.
-                "NSCameraUsageDescription": "Alldots reads the barcodes and QR codes that stop your wake-up alarm.",
+                // The wake guard reads the codes that stop a sleep alarm with the camera, on iOS and on macOS; on iOS the
+                // document scanner of Add to Inbox uses it too.
+                "NSCameraUsageDescription": "Alldots reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox.",
                 "NSMicrophoneUsageDescription": "Alldots records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
-                // `remote-notification` lets a silent push wake the app to read its reminders again.
-                "UIBackgroundModes": ["audio", "remote-notification"],
+                // The background tasks that send the Inbox captures waiting in the device's outbox
+                // (`CaptureBackgroundTasks`, iOS only): a processing task that needs the network and an app refresh.
+                "BGTaskSchedulerPermittedIdentifiers": [
+                    "cz.alldots.app.inboxCaptures.send",
+                    "cz.alldots.app.inboxCaptures.refresh",
+                ],
+                // `remote-notification` lets a silent push wake the app to read its reminders again; `fetch` and
+                // `processing` let the system run the app refresh and processing tasks above.
+                "UIBackgroundModes": ["audio", "fetch", "processing", "remote-notification"],
                 // The APNs environment the device token is registered for, by build configuration.
                 "AlldotsApnsEnvironment": "$(ALLDOTS_APNS_ENVIRONMENT)",
                 "UILaunchScreen": [:],

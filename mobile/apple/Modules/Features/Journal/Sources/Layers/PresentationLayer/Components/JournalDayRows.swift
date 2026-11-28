@@ -66,11 +66,15 @@ struct JournalBirthdayRow: View {
     }
 }
 
-/// An Inbox item captured on the selected day: when, its type, its text, its first attachment and where it stands.
+/// An Inbox item captured on the selected day: when, its type, its text, its attachments by name and where it
+/// stands. A tap on an attachment opens it; the one being made ready shows a progress indicator.
 struct JournalInboxRow: View {
 
     // MARK: - Dependencies
     let item: JournalInboxItem
+    /// The id of the attachment being made ready to preview.
+    let openingAttachment: String?
+    let onOpenAttachment: (InboxAttachment) -> Void
 
     // MARK: - Body
     var body: some View {
@@ -80,18 +84,49 @@ struct JournalInboxRow: View {
             Text(item.emoji ?? "+")
             VStack(alignment: .leading, spacing: 4) {
                 if let text = item.text { Text(text) }
-                if let attachment { Label(attachment, systemImage: "paperclip").font(.footnote) }
+                ForEach(item.attachments) { attachment in
+                    attachmentButton(attachment)
+                }
                 if let status = item.status.message {
                     Text(status).font(.footnote).foregroundStyle(item.status.color)
                 }
             }
             Spacer(minLength: 0)
+            if item.status == .waiting {
+                Image(systemName: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(item.status.color)
+                    .accessibilityLabel(Text("journal.inbox.status.waiting", bundle: .module))
+            }
         }
     }
 
-    private var attachment: String? {
-        guard item.attachmentCount > 0 else { return nil }
-        return item.attachmentName ?? String(localized: "journal.inbox.attachment", bundle: .module)
+}
+
+// MARK: - Subviews
+private extension JournalInboxRow {
+
+    func attachmentButton(_ attachment: InboxAttachment) -> some View {
+        let opening = openingAttachment == attachment.id
+        return Button { onOpenAttachment(attachment) } label: {
+            HStack(spacing: 6) {
+                Label(
+                    attachment.name ?? String(localized: "journal.inbox.attachment", bundle: .module),
+                    systemImage: "paperclip"
+                )
+                .font(.footnote)
+                .foregroundStyle(Theme.Colors.accent)
+                if opening {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel(Text("journal.attachment.opening", bundle: .module))
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(opening)
+        .accessibilityIdentifier(JournalIdentifiers.inboxAttachmentPrefix + attachment.id)
     }
 }
 
@@ -100,7 +135,7 @@ private extension JournalInboxStatus {
 
     var message: String? {
         switch self {
-        case .none: nil
+        case .none, .waiting: nil
         case .pending: String(localized: "journal.inbox.status.pending", bundle: .module)
         case .failed: String(localized: "journal.inbox.status.failed", bundle: .module)
         case .needsClarification: String(localized: "journal.inbox.status.needsClarification", bundle: .module)
@@ -115,7 +150,7 @@ private extension JournalInboxStatus {
         switch self {
         case .failed, .invalid, .rejected: Theme.Colors.destructive
         case .proposed, .needsClarification: Theme.Colors.accent
-        case .none, .pending, .confirmed: Theme.Colors.secondaryText
+        case .none, .waiting, .pending, .confirmed: Theme.Colors.secondaryText
         }
     }
 }
@@ -134,8 +169,18 @@ private extension JournalInboxStatus {
         JournalInboxRow(
             item: JournalInboxItem(
                 id: "i", time: "18:02", text: "Faktura za obklady", emoji: "💸", status: .proposed,
-                attachmentName: "Fotka 18:02", attachmentCount: 1
-            )
+                attachments: [
+                    InboxAttachment(id: "a1", name: "Faktura.pdf", mediaType: "application/pdf"),
+                    InboxAttachment(id: "a2", mediaType: "image/jpeg")
+                ]
+            ),
+            openingAttachment: "a2",
+            onOpenAttachment: { _ in }
+        )
+        JournalInboxRow(
+            item: JournalInboxItem(id: "c", time: "18:10", text: "Zavolat instalatérovi", status: .waiting),
+            openingAttachment: nil,
+            onOpenAttachment: { _ in }
         )
     }
     .padding()

@@ -24,6 +24,7 @@ import {
   type UnknownKindProposalEnvelope,
 } from "./proposalEnvelope.js";
 import { describeUpdateSteps, type ProposalChange } from "./proposalChanges.js";
+import { listInboxAttachmentSummaries, type JournalInboxAttachmentSummary } from "./journalInboxCompute.js";
 import { selectActiveSteps } from "./proposalStepGraph.js";
 
 /** `total` still counts every open card. */
@@ -81,6 +82,8 @@ export type InboxCardResolvedSource =
       date: string | null;
       time: string | null;
       type: InboxCardType | null;
+      /** In the diary's order; `[]` for an item without attachments. */
+      attachments: JournalInboxAttachmentSummary[];
     }
   | {
       kind: "transcript";
@@ -453,10 +456,11 @@ async function buildProposalCards(
       )
     ).map((item) => [item.id, item] as const),
   );
-  const typeByInboxItemId = await loadItemTypes(
+  const inboxItems = candidates.flatMap((c) => sourceItems.get(c.inboxItemId ?? "") ?? []);
+  const typeByInboxItemId = await loadItemTypes(client, inboxDatabaseId, inboxItems);
+  const attachmentsByInboxItemId = await listInboxAttachmentSummaries(
     client,
-    inboxDatabaseId,
-    candidates.flatMap((c) => sourceItems.get(c.inboxItemId ?? "") ?? []),
+    inboxItems.map((item) => item.id),
   );
 
   const envelopes = new Map<string, { envelope: CardEnvelope; steps: ProposalStep[] | null }>();
@@ -504,6 +508,7 @@ async function buildProposalCards(
         date: stringOrNull(inboxItem.properties.date),
         time: stringOrNull(inboxItem.properties.time),
         type: typeByInboxItemId.get(inboxItem.id) ?? null,
+        attachments: attachmentsByInboxItemId.get(inboxItem.id) ?? [],
       };
     } else if (candidate.kind === "transcript" && transcript) {
       resolvedSource = {

@@ -17,6 +17,9 @@ struct JournalPageView: View {
     /// default.
     @Binding var flippedSections: Set<String>
     let onOpenEvent: (JournalEvent) -> Void
+    /// The id of the Inbox attachment being made ready to preview.
+    let openingAttachment: String?
+    let onOpenAttachment: (JournalInboxItem, InboxAttachment) -> Void
     let onOpenInbox: () -> Void
     let onCaptured: () -> Void
 
@@ -97,7 +100,9 @@ private extension JournalPageView {
                 .accessibilityIdentifier(JournalIdentifiers.inboxProcess)
             }, content: {
                 ForEach(items) { item in
-                    JournalInboxRow(item: item)
+                    JournalInboxRow(item: item, openingAttachment: openingAttachment) { attachment in
+                        onOpenAttachment(item, attachment)
+                    }
                     if item.id != items.last?.id || isToday { rowDivider }
                 }
                 if isToday {

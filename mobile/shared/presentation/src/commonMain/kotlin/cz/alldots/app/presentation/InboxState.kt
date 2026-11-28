@@ -78,7 +78,7 @@ data class InboxFieldState(
 
 data class InboxGroupState(val key: String, val fields: List<InboxFieldState>)
 
-/** What a card was made from. Which members matter follows [kind]. */
+/** What a card was made from. Which members matter follows [kind]; [attachments] are the files of a capture. */
 data class InboxOriginState(
     val kind: InboxOriginKind,
     val text: String?,
@@ -91,6 +91,7 @@ data class InboxOriginState(
     val threadTitle: String?,
     val heartbeatName: String?,
     val mcpClientName: String?,
+    val attachments: List<AttachmentState>,
 )
 
 data class InboxApprovalState(val risk: InboxRiskLevel, val operation: String, val reason: String?)
@@ -128,7 +129,8 @@ data class InboxPickerState(
 
 /**
  * The Inbox: the cards that wait for a decision, the top one first. [handled] and [dropped] count what the person
- * decided in this visit, for the summary shown once the stack is empty.
+ * decided in this visit, for the summary shown once the stack is empty. [attachment] is the attachment of a card's
+ * source the person opened, while it is made ready, shown or failed.
  */
 data class InboxState(
     val phase: InboxPhase = InboxPhase.LOADING,
@@ -143,4 +145,5 @@ data class InboxState(
     val problem: InboxProblem? = null,
     val problemFailure: FailureKind? = null,
     val picker: InboxPickerState? = null,
+    val attachment: AttachmentPreviewState? = null,
 )

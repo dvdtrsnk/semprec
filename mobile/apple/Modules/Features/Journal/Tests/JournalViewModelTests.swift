@@ -48,13 +48,17 @@ final class JournalViewModelTests: XCTestCase {
         viewModel.showAxis(around: "2029-03-10")
         viewModel.openEvent(JournalEvent(id: "e1", title: "Standup"))
         viewModel.openInbox()
+        viewModel.openAttachment(JournalInboxItem(id: "i1"), InboxAttachment(id: "a1"))
+        viewModel.closeAttachment()
         XCTAssertEqual(model.actions, [
             .retry,
             .select(kind: .month, start: "2026-10-01"),
             .goToday,
             .showAxisAround(day: "2029-03-10"),
             .openEvent(id: "e1"),
-            .openInbox
+            .openInbox,
+            .openAttachment(entryId: "i1", attachmentId: "a1"),
+            .closeAttachment
         ])
         XCTAssertTrue(router.calls.isEmpty, "Only an effect of the shared ViewModel navigates")
     }

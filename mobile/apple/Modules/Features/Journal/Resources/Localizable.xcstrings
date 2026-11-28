@@ -97,6 +97,38 @@
         }
       }
     },
+    "journal.attachment.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohu se nepodařilo otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment could not be opened"
+          }
+        }
+      }
+    },
+    "journal.attachment.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírá se příloha"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the attachment"
+          }
+        }
+      }
+    },
     "journal.axis.label" : {
       "localizations" : {
         "cs" : {
@@ -253,6 +285,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remove the attachment"
+          }
+        }
+      }
+    },
+    "journal.capture.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat dokument"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan document"
           }
         }
       }
@@ -525,6 +573,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rejected"
+          }
+        }
+      }
+    },
+    "journal.inbox.status.waiting" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Čeká na odeslání"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting to be sent"
           }
         }
       }

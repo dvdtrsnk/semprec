@@ -97,9 +97,6 @@ internal data class JournalBirthdayDto(val id: String, val personName: String) {
 internal data class JournalInboxTypeDto(val emoji: String? = null)
 
 @Serializable
-internal data class JournalAttachmentDto(val name: String? = null)
-
-@Serializable
 internal data class JournalInboxDto(
     val id: String,
     val time: String? = null,
@@ -107,7 +104,7 @@ internal data class JournalInboxDto(
     val type: JournalInboxTypeDto? = null,
     val status: String? = null,
     val processing: String? = null,
-    val attachments: List<JournalAttachmentDto> = emptyList(),
+    val attachments: List<InboxAttachmentDto> = emptyList(),
 ) {
     fun toDomain(): JournalInboxEntry = JournalInboxEntry(
         id = id,
@@ -116,8 +113,11 @@ internal data class JournalInboxDto(
         typeEmoji = type?.emoji,
         status = status,
         processing = processing,
-        attachmentName = attachments.firstOrNull()?.name,
-        attachmentCount = attachments.size,
+        attachments = if (status == WAITING_INBOX_STATUS) {
+            attachments.map { it.toWaitingAttachment(id) }
+        } else {
+            attachments.mapNotNull { it.toServerAttachment() }
+        },
     )
 }
 

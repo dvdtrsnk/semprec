@@ -53,10 +53,12 @@ internal data class KeptAnswer(val status: Int, val body: String, val etag: Stri
  */
 internal class OfflineStore(
     directory: String,
-    private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     maxAnswers: Int = MAX_KEPT_ANSWERS,
 ) {
-    val root = "${directory.trimEnd('/')}/$ROOT"
+    /** The data directory the store keeps its `offline` directory in. */
+    val directory = directory.trimEnd('/')
+    val root = "${this.directory}/$ROOT"
     val json = Json { encodeDefaults = true }
     private val lock = Mutex()
 

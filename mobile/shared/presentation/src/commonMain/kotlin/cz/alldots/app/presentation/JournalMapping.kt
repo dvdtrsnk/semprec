@@ -75,11 +75,11 @@ internal fun JournalInboxEntry.toState() = JournalInboxState(
     text = text,
     emoji = typeEmoji,
     status = inboxStatus(processing ?: status),
-    attachmentName = attachmentName,
-    attachmentCount = attachmentCount,
+    attachments = attachments.map { it.toState() },
 )
 
 private fun inboxStatus(key: String?): JournalInboxStatus = when (key) {
+    "waiting" -> JournalInboxStatus.WAITING
     "pending" -> JournalInboxStatus.PENDING
     "failed" -> JournalInboxStatus.FAILED
     "needsClarification" -> JournalInboxStatus.NEEDS_CLARIFICATION

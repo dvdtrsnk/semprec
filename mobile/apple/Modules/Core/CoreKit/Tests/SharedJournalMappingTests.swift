@@ -109,7 +109,7 @@ final class SharedJournalMappingTests: XCTestCase {
     func testStateMapsEventsBirthdaysInboxAndAxis() {
         let inbox = SharedSDK.JournalInboxState(
             id: "i1", time: "08:15", text: "Idea", emoji: "x", status: .proposed,
-            attachmentName: "scan.pdf", attachmentCount: 2
+            attachments: [SharedSDK.AttachmentState(id: "a1", name: "scan.pdf", mediaType: "application/pdf")]
         )
         let state = SharedJournalScreenModel.state(JournalKotlin.state(
             .content,
@@ -124,7 +124,10 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.events.first?.hasTranscript, true)
         XCTAssertEqual(state.birthdays, [JournalBirthday(id: "b1", personName: "Jana")])
         XCTAssertEqual(state.inbox.first?.status, .proposed)
-        XCTAssertEqual(state.inbox.first?.attachmentCount, 2)
+        XCTAssertEqual(
+            state.inbox.first?.attachments,
+            [InboxAttachment(id: "a1", name: "scan.pdf", mediaType: "application/pdf")]
+        )
         XCTAssertEqual(state.axis.first?.kind, .day)
         XCTAssertEqual(state.axis.first?.cells.first?.start, "2026-10-16")
         XCTAssertEqual(state.axis.first?.cells.first?.weekday, 5)

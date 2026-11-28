@@ -1,7 +1,7 @@
 package cz.alldots.app.presentation
 
 sealed interface JournalAction {
-    /** Reads the selected period again. */
+    /** Reads the selected period again; a period already shown stays on screen until the answer replaces it. */
     data object Retry : JournalAction
 
     /** Shows the period of [kind] that starts on [start] (`YYYY-MM-DD`). */
@@ -22,6 +22,12 @@ sealed interface JournalAction {
     data class ShowAxisAround(val day: String) : JournalAction
     data class OpenEvent(val id: String) : JournalAction
     data object OpenInbox : JournalAction
+
+    /** Makes the attachment [attachmentId] of the Inbox entry [entryId] ready for [JournalState.attachment]. */
+    data class OpenAttachment(val entryId: String, val attachmentId: String) : JournalAction
+
+    /** Ends the preview of an attachment, or its failure, and stops one being opened. */
+    data object CloseAttachment : JournalAction
 }
 
 sealed interface JournalEffect {

@@ -6,6 +6,7 @@ import cz.alldots.app.domain.EditInboxCard
 import cz.alldots.app.domain.InboxDecisions
 import cz.alldots.app.domain.InboxRepository
 import cz.alldots.app.domain.LoadInbox
+import cz.alldots.app.domain.OpenInboxAttachment
 
 /** What the Inbox needs from the domain; the factory of the ViewModel builds it. */
 internal class InboxDependencies(
@@ -14,6 +15,7 @@ internal class InboxDependencies(
     val decide: DecideInboxCard,
     val repository: InboxRepository,
     val decisions: InboxDecisions,
+    val openAttachment: OpenInboxAttachment,
 )
 
 /**

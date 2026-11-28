@@ -59,7 +59,8 @@ extension SharedJournalScreenModel {
             inbox: state.inbox.map(JournalInboxItem.init),
             shown: state.shown.map(JournalSelection.init),
             before: state.before.map(JournalPeriodContent.init),
-            after: state.after.map(JournalPeriodContent.init)
+            after: state.after.map(JournalPeriodContent.init),
+            attachment: state.attachment.map(AttachmentPreview.init)
         )
     }
 
@@ -72,6 +73,9 @@ extension SharedJournalScreenModel {
         case .showAxisAround(let day): SharedSDK.JournalActionShowAxisAround(day: day)
         case .openEvent(let id): SharedSDK.JournalActionOpenEvent(id: id)
         case .openInbox: SharedSDK.JournalActionOpenInbox.shared
+        case .openAttachment(let entryId, let attachmentId):
+            SharedSDK.JournalActionOpenAttachment(entryId: entryId, attachmentId: attachmentId)
+        case .closeAttachment: SharedSDK.JournalActionCloseAttachment.shared
         }
     }
 

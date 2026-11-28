@@ -23,7 +23,11 @@ private class StatusSender : QueueSender {
 
     override fun account(): String = accountKey(STATUS_SESSION)
 
+    override fun session(): StoredSession = STATUS_SESSION
+
     override suspend fun send(request: ApiRequest): ApiResponse = answer
+
+    override suspend fun upload(path: String, body: RawBody): ApiResponse = answer
 }
 
 /** The status the offline layer tells: its offline state and what the queue of the signed-in account holds. */

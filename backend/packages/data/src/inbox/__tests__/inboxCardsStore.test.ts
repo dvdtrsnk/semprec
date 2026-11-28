@@ -1,12 +1,13 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import type { Pool, PoolClient, QueryConfig } from "pg";
 import { runInTenant } from "@alldots/shared";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { deleteRelationWithClient } from "../../chokePoint/relationOps.js";
+import { createBlob, tenantBlobStorageKey } from "../../blobs/blobsStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createAgentRun, type AgentRunRow } from "../../agentRuns/agentRunsStore.js";
@@ -27,6 +28,11 @@ import {
 } from "../../testSupport/pageProposalFixtures.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { createTranscriptEventCard, matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
+import {
+  insertInboxAttachments,
+  recordInboxAttachmentMetadata,
+  type InboxAttachmentSource,
+} from "../inboxAttachmentsStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inboxTickAction.js";
@@ -255,6 +261,50 @@ async function transcriptCard(name: string, date: string): Promise<{ transcriptI
       return { transcriptId: transcript.id, cardId: rows[0].id };
     }),
   );
+}
+
+/** An attachment added through the attachment store, as the capture route adds it. */
+async function attach(
+  inboxItemId: string,
+  fixture: { mimeType: string; byteSize: number; keyName: string; source: InboxAttachmentSource },
+): Promise<{ attachmentId: string; blobId: string }> {
+  return inTenantZeroTransaction(async (client) => {
+    const blob = await createBlob(client, {
+      mimeType: fixture.mimeType,
+      byteSize: fixture.byteSize,
+      storageKey: await tenantBlobStorageKey(client, `inbox/${fixture.keyName}`),
+    });
+    const [attachmentId] = await insertInboxAttachments(client, inboxItemId, [
+      { blobId: blob.id, source: fixture.source },
+    ]);
+    if (attachmentId === undefined) throw new Error("No attachment was inserted");
+    return { attachmentId, blobId: blob.id };
+  });
+}
+
+/** The client of `fn`, counting the statements that read `inbox_attachments`; the pooled client is not modified. */
+async function countAttachmentReads<T>(fn: (client: PoolClient) => Promise<T>): Promise<{ result: T; reads: number }> {
+  let reads = 0;
+  const result = await inTenantZeroTransaction((client) => {
+    const counting = new Proxy(client, {
+      get(target, property) {
+        if (property === "query") {
+          const query = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+          // Every overload of `query` takes the statement first, as a text or a config, so the call is passed on as
+          // it came and the overload is the one the caller picked.
+          return (...args: [string | QueryConfig, ...unknown[]]): unknown => {
+            const [statement] = args;
+            const text = typeof statement === "string" ? statement : statement.text;
+            if (text.includes("FROM inbox_attachments")) reads += 1;
+            return Reflect.apply(query, target, args);
+          };
+        }
+        return Reflect.get(target, property, target);
+      },
+    });
+    return fn(counting);
+  });
+  return { result, reads };
 }
 
 describe("listInboxCards (issue #1807)", () => {
@@ -637,7 +687,170 @@ describe("listInboxCards (issue #1807)", () => {
         date: "2026-08-28",
         time: "09:15",
         type: { id: taskTypeId, name: "Task", emoji: "☑️" },
+        attachments: [],
       });
+    });
+
+    it("lists the attachments of the Inbox item in the diary's order, each with its blob, name, type, thumbnail and source", async () => {
+      const card = await proposedCard("Receipt and invoice");
+      const photo = await attach(card.itemId, {
+        mimeType: "image/jpeg",
+        byteSize: 2_400_000,
+        keyName: randomUUID(),
+        source: "camera",
+      });
+      const invoice = await attach(card.itemId, {
+        mimeType: "application/pdf",
+        byteSize: 52_000,
+        keyName: `${randomUUID()}-invoice.pdf`,
+        source: "files",
+      });
+      await inTenantZeroTransaction((client) =>
+        recordInboxAttachmentMetadata(client, {
+          attachmentId: photo.attachmentId,
+          metadata: { width: 3000, height: 4000, pages: null },
+          thumbnail: {
+            mimeType: "image/jpeg",
+            byteSize: 900,
+            storageKey: `inbox-attachments/${randomUUID()}.jpg`,
+            contentHash: randomUUID().replaceAll("-", "").repeat(2),
+          },
+          reduced: null,
+        }),
+      );
+      const { rows } = await adminPool.query<{ thumbnail_blob_id: string | null }>(
+        "SELECT thumbnail_blob_id FROM inbox_attachments WHERE attachment_id = $1",
+        [photo.attachmentId],
+      );
+      const thumbnailBlobId = rows[0]?.thumbnail_blob_id;
+      expect(thumbnailBlobId).toEqual(expect.any(String));
+
+      const source = cardOf(await listCards(adminPool, ownerId), card.cardId).resolvedSource;
+
+      expect(source).toMatchObject({ kind: "inboxItem", id: card.itemId });
+      expect(source && "attachments" in source ? source.attachments : null).toEqual([
+        {
+          attachmentId: photo.attachmentId,
+          blobId: photo.blobId,
+          name: null,
+          mimeType: "image/jpeg",
+          byteSize: 2_400_000,
+          pageCount: null,
+          thumbnailBlobId,
+          source: "camera",
+        },
+        {
+          attachmentId: invoice.attachmentId,
+          blobId: invoice.blobId,
+          name: "invoice.pdf",
+          mimeType: "application/pdf",
+          byteSize: 52_000,
+          pageCount: null,
+          thumbnailBlobId: null,
+          source: "files",
+        },
+      ]);
+    });
+
+    it("reads the attachments of a page of cards with one query, however many cards it holds", async () => {
+      const first = await proposedCard("First capture");
+      await attach(first.itemId, { mimeType: "image/png", byteSize: 10, keyName: randomUUID(), source: "scan" });
+      const listAll = (client: PoolClient) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" });
+      const withOneCard = await countAttachmentReads(listAll);
+
+      for (const text of ["Second capture", "Third capture"]) {
+        const card = await proposedCard(text);
+        await attach(card.itemId, { mimeType: "image/png", byteSize: 10, keyName: randomUUID(), source: "share" });
+      }
+      const withThreeCards = await countAttachmentReads(listAll);
+
+      expect(withOneCard.result.cards).toHaveLength(1);
+      expect(withThreeCards.result.cards).toHaveLength(3);
+      expect(
+        withThreeCards.result.cards.map((card) =>
+          card.resolvedSource && "attachments" in card.resolvedSource ? card.resolvedSource.attachments.length : null,
+        ),
+      ).toEqual([1, 1, 1]);
+      expect([withOneCard.reads, withThreeCards.reads]).toEqual([1, 1]);
+    });
+
+    it("lists for each of two tenants only its own item's attachments, on the runtime role", async () => {
+      const dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
+      try {
+        const card = await proposedCard("First tenant capture");
+        const own = await attach(card.itemId, {
+          mimeType: "image/jpeg",
+          byteSize: 100,
+          keyName: randomUUID(),
+          source: "camera",
+        });
+        const otherTenantId = await createTestTenant(adminPool);
+        await provisionTenant(dataPool, otherTenantId);
+        const foreign = await runInTenant(otherTenantId, async () => {
+          const databases = await withTransaction(dataPool, async (client) => {
+            const { rows } = await client.query<{ id: string; owner_module_id: string }>(
+              "SELECT id, owner_module_id FROM databases WHERE owner_module_id IN ('inbox', 'inboxItemTypes', 'processingProposals')",
+            );
+            const idOf = (moduleId: string) => rows.find((row) => row.owner_module_id === moduleId)?.id ?? "";
+            return {
+              inboxDatabaseId: idOf("inbox"),
+              inboxItemTypesDatabaseId: idOf("inboxItemTypes"),
+              processingProposalsDatabaseId: idOf("processingProposals"),
+            };
+          });
+          const itemId = await withTransaction(dataPool, async (client) => {
+            const type = await createInboxTypeWithClient(client, {
+              inboxItemTypesDatabaseId: databases.inboxItemTypesDatabaseId,
+              name: "Task",
+              emoji: "☑️",
+              processingMethod: "database",
+              targetDatabase: "tasks",
+            });
+            const item = await createInboxItemWithClient(client, {
+              inboxDatabaseId: databases.inboxDatabaseId,
+              date: "2026-08-28",
+              time: "09:00",
+              text: "Second tenant capture",
+              type: type.id,
+            });
+            return item.id;
+          });
+          await createAlldotsTickAction(dataPool, TASK_COMPUTATION)(databases, {
+            heartbeatId: "hb",
+            projectItemId: "proj",
+            itemId,
+          });
+          // Added after the tick, as for the first tenant: the tick waits for an image without metadata.
+          const attachmentId = await withTransaction(dataPool, async (client) => {
+            const blob = await createBlob(client, {
+              mimeType: "image/jpeg",
+              byteSize: 100,
+              storageKey: await tenantBlobStorageKey(client, `inbox/${randomUUID()}`),
+            });
+            const [inserted] = await insertInboxAttachments(client, itemId, [{ blobId: blob.id, source: "share" }]);
+            return inserted;
+          });
+          return { itemId, attachmentId };
+        });
+
+        const attachmentIdsOf = (list: InboxCardList) =>
+          list.cards.map((listed) =>
+            listed.resolvedSource && "attachments" in listed.resolvedSource
+              ? [listed.resolvedSource.id, listed.resolvedSource.attachments.map((a) => a.attachmentId)]
+              : null,
+          );
+        const asFirstTenant = await inTenantZero(() =>
+          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
+        );
+        const asSecondTenant = await runInTenant(otherTenantId, () =>
+          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
+        );
+
+        expect(attachmentIdsOf(asFirstTenant)).toEqual([[card.itemId, [own.attachmentId]]]);
+        expect(attachmentIdsOf(asSecondTenant)).toEqual([[foreign.itemId, [foreign.attachmentId]]]);
+      } finally {
+        await dataPool.end();
+      }
     });
 
     it("still names the Inbox item of a card that became invalid because the item was deleted", async () => {

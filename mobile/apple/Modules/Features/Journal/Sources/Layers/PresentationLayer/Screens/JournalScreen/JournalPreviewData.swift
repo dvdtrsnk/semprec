@@ -92,7 +92,7 @@ extension JournalState {
             JournalInboxItem(id: "i1", time: "08:15", text: "Nápad: šablona nabídky pro klienty", emoji: "💡"),
             JournalInboxItem(
                 id: "i2", time: "18:02", text: "Faktura za obklady", emoji: "💸", status: .proposed,
-                attachmentName: "Fotka 18:02", attachmentCount: 1
+                attachments: [InboxAttachment(id: "a1", name: "Fotka 18:02.jpg", mediaType: "image/jpeg")]
             )
         ]
     )

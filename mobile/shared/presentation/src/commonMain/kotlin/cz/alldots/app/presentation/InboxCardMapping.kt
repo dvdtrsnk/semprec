@@ -49,6 +49,7 @@ private fun InboxOrigin.toState(): InboxOriginState = when (this) {
         threadTitle = null,
         heartbeatName = null,
         mcpClientName = null,
+        attachments = attachments.map { it.toState() },
     )
     is InboxOrigin.Transcript -> InboxOriginState(
         kind = InboxOriginKind.TRANSCRIPT,
@@ -62,6 +63,7 @@ private fun InboxOrigin.toState(): InboxOriginState = when (this) {
         threadTitle = null,
         heartbeatName = null,
         mcpClientName = null,
+        attachments = emptyList(),
     )
     is InboxOrigin.Run -> InboxOriginState(
         kind = InboxOriginKind.RUN,
@@ -75,6 +77,7 @@ private fun InboxOrigin.toState(): InboxOriginState = when (this) {
         threadTitle = threadTitle,
         heartbeatName = heartbeatName,
         mcpClientName = mcpClientName,
+        attachments = emptyList(),
     )
 }
 

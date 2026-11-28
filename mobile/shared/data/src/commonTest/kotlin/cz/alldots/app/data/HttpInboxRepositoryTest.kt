@@ -1,6 +1,8 @@
 package cz.alldots.app.data
 
 import cz.alldots.app.core.FailureKind
+import cz.alldots.app.domain.InboxAttachment
+import cz.alldots.app.domain.InboxAttachmentLocation
 import cz.alldots.app.domain.InboxCard
 import cz.alldots.app.domain.InboxCardKind
 import cz.alldots.app.domain.InboxCardStatus
@@ -46,7 +48,9 @@ private const val TASKS_SCHEMA = """{"tenant":{"timezone":"Europe/Prague","today
 private const val TASK_CARD = """{"cardId":"$CARD","source":"proposal","cardKind":"task","baseKind":"task",
   "status":"proposed","version":"$VERSION",
   "resolvedSource":{"kind":"inboxItem","id":"i1","text":"Send the invoice","date":"2026-10-16","time":"08:12",
-    "type":{"id":"ty1","name":"Task","emoji":"T"}},
+    "type":{"id":"ty1","name":"Task","emoji":"T"},
+    "attachments":[{"attachmentId":"at1","blobId":"bl1","name":null,"mimeType":"application/pdf","byteSize":5,
+      "pageCount":null,"thumbnailBlobId":null,"source":"share"},{"attachmentId":"at2","name":"lost.png"}]},
   "context":null,"targets":[{"databaseKey":"tasks","label":"Tasks"}],
   "envelope":{"entityKind":"database","target":"$TASKS_DB",
     "properties":{"name":"Send the invoice","date":"2026-10-17","timeFrom":"09:00","done":false,"category":{"newOption":"Work"}},
@@ -98,6 +102,11 @@ class HttpInboxRepositoryTest {
         assertEquals("i1", origin.itemId)
         assertEquals("Send the invoice", origin.text)
         assertEquals("Task", origin.typeLabel)
+        assertEquals(
+            listOf(InboxAttachment("at1", null, "application/pdf", "share", InboxAttachmentLocation.Blob("bl1"))),
+            origin.attachments,
+            "an attachment without a blob has no bytes to open and is left out",
+        )
         val envelope = card.envelope!!
         assertEquals(InboxEntityKind.DATABASE, envelope.entityKind)
         assertEquals(InboxValue.Text("09:00"), envelope.properties["timeFrom"])
